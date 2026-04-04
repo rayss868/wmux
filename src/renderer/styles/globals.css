@@ -22,7 +22,31 @@
 
 /* ─── Theme CSS Variables ────────────────────────────────────────────────── */
 
-:root, [data-theme="catppuccin-mocha"] {
+:root, [data-theme="hinomaru"] {
+  --bg-base: #FAF8F5;
+  --bg-mantle: #F0ECE6;
+  --bg-surface: #E2DDD4;
+  --bg-overlay: #D4CFC6;
+  --text-muted: #A8A098;
+  --text-subtle: #8A827A;
+  --text-sub: #4A4540;
+  --text-sub2: #6A655E;
+  --text-main: #2A2522;
+  --accent-cursor: #2A2522;
+  --accent-blue: #2C5F7C;
+  --accent-green: #5A7A6A;
+  --accent-red: #BC002D;
+  --accent-yellow: #C4882D;
+  --accent-pink: #A85060;
+  --accent-teal: #4A8A7A;
+  --accent-purple: #7B6B8A;
+  /* RGB variants for opacity usage */
+  --accent-blue-rgb: 44, 95, 124;
+  --bg-surface-rgb: 226, 221, 212;
+  --bg-base-rgb: 250, 248, 245;
+}
+
+[data-theme="catppuccin-mocha"] {
   --bg-base: #1E1E2E;
   --bg-mantle: #181825;
   --bg-surface: #313244;
@@ -40,7 +64,6 @@
   --accent-pink: #F5C2E7;
   --accent-teal: #94E2D5;
   --accent-purple: #CBA6F7;
-  /* RGB variants for opacity usage */
   --accent-blue-rgb: 137, 180, 250;
   --bg-surface-rgb: 49, 50, 68;
   --bg-base-rgb: 30, 30, 46;
@@ -159,29 +182,6 @@
   --accent-blue-rgb: 192, 192, 192;
   --bg-surface-rgb: 10, 10, 10;
   --bg-base-rgb: 0, 0, 0;
-}
-
-[data-theme="hinomaru"] {
-  --bg-base: #FAF8F5;
-  --bg-mantle: #F0ECE6;
-  --bg-surface: #E2DDD4;
-  --bg-overlay: #D4CFC6;
-  --text-muted: #A8A098;
-  --text-subtle: #8A827A;
-  --text-sub: #4A4540;
-  --text-sub2: #6A655E;
-  --text-main: #2A2522;
-  --accent-cursor: #2A2522;
-  --accent-blue: #2C5F7C;
-  --accent-green: #5A7A6A;
-  --accent-red: #BC002D;
-  --accent-yellow: #C4882D;
-  --accent-pink: #A85060;
-  --accent-teal: #4A8A7A;
-  --accent-purple: #7B6B8A;
-  --accent-blue-rgb: 44, 95, 124;
-  --bg-surface-rgb: 226, 221, 212;
-  --bg-base-rgb: 250, 248, 245;
 }
 
 [data-theme="taegeuk"] {

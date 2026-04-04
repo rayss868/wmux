@@ -234,7 +234,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   // ─── Theme ──────────────────────────────────────────────────────────────
-  theme: 'catppuccin-mocha',
+  theme: 'hinomaru',
 
   setTheme: (theme) => {
     document.documentElement.setAttribute('data-theme', theme);
