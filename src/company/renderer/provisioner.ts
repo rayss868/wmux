@@ -5,7 +5,7 @@
 import { useStore } from '../../renderer/stores';
 import { createSurface, createLeafPane, generateId, sanitizePtyText } from '../../shared/types';
 import type { AgentPreset } from '../types';
-import { loadSoul, condenseSoul, hasSoul, prefetchSouls } from '../core/SoulLoader';
+import { hasSoul, prefetchSouls, getSoulWriteCommand } from '../core/SoulLoader';
 
 // ─── Wait for Claude CLI ready ───────────────────────────────────────────────
 
@@ -52,6 +52,7 @@ export async function spawnAgentWorkspace(
   initialPrompt?: string,
   cwd?: string,
   workUnit?: import('../types').WorkUnit,
+  presetId?: string,
 ): Promise<{ workspaceId: string; ptyId: string; paneId: string }> {
   // 1. Generate workspaceId first so we can pass it to PTY for identity resolution
   const workspaceId = generateId('ws');
@@ -78,7 +79,12 @@ export async function spawnAgentWorkspace(
     });
   });
 
-  // 4. Send startup command
+  // 5. Write SOUL as .claude/CLAUDE.md BEFORE launching Claude Code
+  if (presetId && cwd) {
+    await writeSoulToPty(ptyId, presetId, cwd);
+  }
+
+  // 6. Send startup command (launches Claude Code)
   if (command) {
     await window.electronAPI.pty.write(ptyId, sanitizePtyText(command) + '\r');
   }
@@ -104,18 +110,18 @@ export async function spawnAgentWorkspace(
   return { workspaceId, ptyId, paneId: rootPane.id };
 }
 
-// ─── Soul-enriched prompt helper ─────────────────────────────────────────────
+// ─── Soul file writer ────────────────────────────────────────────────────────
 
 /**
- * Append condensed SOUL content to a base prompt if available.
- * Uses the in-memory cache (pre-warmed by prefetchSouls).
+ * Write SOUL as .claude/CLAUDE.md via PTY shell command BEFORE launching Claude.
+ * Claude Code reads CLAUDE.md automatically — no prompt injection needed.
  */
-async function enrichPromptWithSoul(basePrompt: string, presetId: string): Promise<string> {
-  if (!hasSoul(presetId)) return basePrompt;
-  const raw = await loadSoul(presetId);
-  if (!raw) return basePrompt;
-  const soul = condenseSoul(raw);
-  return `${basePrompt} [AGENT SOUL] ${soul}`;
+async function writeSoulToPty(ptyId: string, presetId: string, workDir: string): Promise<void> {
+  const cmd = await getSoulWriteCommand(presetId, workDir);
+  if (!cmd) return;
+  await window.electronAPI.pty.write(ptyId, cmd + '\r');
+  // Wait for file write to complete
+  await new Promise((r) => setTimeout(r, 1000));
 }
 
 // ─── Spawn entire company from template ──────────────────────────────────────
@@ -191,7 +197,7 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
 
     // ── Spawn Lead ──
     try {
-      let leadPrompt = [
+      const leadPrompt = [
         `You are the ${dept.leadName.replace(/-/g, ' ')}, leading the ${dept.name} department of "${companyName}".`,
         `Your team members: ${memberNames}.`,
         `Other departments: ${otherDepts}.`,
@@ -204,14 +210,12 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
         `IMPORTANT: Always use the wmux CLI to send messages. Do NOT output [WMUX-MSG] text directly.`,
       ].join(' ');
 
-      // Enrich lead prompt with SOUL personality (best-effort)
-      // Look up lead preset from the store (lead is the member matching leadId)
+      // Lead preset for SOUL file — Claude Code reads .claude/CLAUDE.md automatically
       const storedLead = deptObj.members.find((m) => m.id === deptObj.leadId);
       const leadPresetId = storedLead?.preset ?? dept.leadName;
-      leadPrompt = await enrichPromptWithSoul(leadPrompt, leadPresetId);
 
       const { workspaceId: leadWsId, ptyId: leadPtyId } = await spawnAgentWorkspace(
-        `${dept.name} — ${dept.leadName}`, `claude --teammate-mode auto${permFlag}`, 'lead', dept.name, leadPrompt, cwdArg,
+        `${dept.name} — ${dept.leadName}`, `claude --teammate-mode auto${permFlag}`, 'lead', dept.name, leadPrompt, cwdArg, undefined, leadPresetId,
       );
 
       const lead = g().company?.departments.find((d) => d.id === deptObj.id)?.members.find((m) => m.id === deptObj.leadId);
@@ -233,7 +237,7 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
 
       try {
         const teammates = dept.members.filter((m2) => m2.name !== mem.name).map((m2) => `${m2.name}(${m2.preset})`).join(', ') || 'none';
-        let memPrompt = [
+        const memPrompt = [
           `You are ${mem.name}, the ${mem.preset.replace(/-/g, ' ')} in the ${dept.name} department of "${companyName}".`,
           `Your lead: ${dept.leadName}. Your teammates: ${teammates}.`,
           `Communication: Use the wmux CLI tool (Bash) to send messages:`,
@@ -244,11 +248,8 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
           `IMPORTANT: Always use the wmux CLI to send messages. Do NOT output [WMUX-MSG] text directly.`,
         ].join(' ');
 
-        // Enrich member prompt with SOUL personality (best-effort)
-        memPrompt = await enrichPromptWithSoul(memPrompt, mem.preset);
-
         const { workspaceId: memWsId, ptyId: memPtyId } = await spawnAgentWorkspace(
-          `${dept.name} — ${mem.name}`, `claude --teammate-mode auto${permFlag}`, 'member', dept.name, memPrompt, cwdArg,
+          `${dept.name} — ${mem.name}`, `claude --teammate-mode auto${permFlag}`, 'member', dept.name, memPrompt, cwdArg, undefined, mem.preset,
         );
 
         g().setMemberWorkspace(storedMember.id, memWsId);
@@ -285,7 +286,7 @@ export async function spawnMember(
     .filter((m) => m.name !== memberName && m.id !== dept?.leadId)
     .map((m) => m.name).join(', ') || 'none';
 
-  let rolePrompt = [
+  const rolePrompt = [
     `You are ${memberName}, the ${preset.replace(/-/g, ' ')} in the ${deptName} department of "${companyName}".`,
     `Your lead: ${leadName}. Your teammates: ${teammates}.`,
     `Communication: Use the wmux CLI tool (Bash) to send messages:`,
@@ -296,11 +297,8 @@ export async function spawnMember(
     `IMPORTANT: Always use the wmux CLI. Do NOT output [WMUX-MSG] text directly.`,
   ].join(' ');
 
-  // Enrich with SOUL personality (best-effort)
-  rolePrompt = await enrichPromptWithSoul(rolePrompt, preset);
-
   const { workspaceId, ptyId } = await spawnAgentWorkspace(
-    `${deptName} — ${memberName}`, `claude --teammate-mode auto${permFlag}`, 'member', deptName, rolePrompt, cwdArg,
+    `${deptName} — ${memberName}`, `claude --teammate-mode auto${permFlag}`, 'member', deptName, rolePrompt, cwdArg, undefined, preset,
   );
 
   // Enter plan mode after 8s

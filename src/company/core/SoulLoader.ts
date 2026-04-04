@@ -155,6 +155,25 @@ export function condenseSoul(raw: string): string {
 }
 
 /**
+ * Generate a shell command that writes the SOUL as .claude/CLAUDE.md.
+ * The command is injected into the PTY BEFORE launching Claude Code,
+ * so Claude Code reads it automatically on startup.
+ * Returns the shell command string, or null if no soul available.
+ */
+export async function getSoulWriteCommand(presetId: string, workDir: string): Promise<string | null> {
+  if (!hasSoul(presetId)) return null;
+  const raw = await loadSoul(presetId);
+  if (!raw) return null;
+
+  // Escape single quotes for shell safety
+  const escaped = raw.replace(/'/g, "'\\''");
+  const dir = workDir.replace(/\\/g, '/');
+
+  // mkdir -p + write file in one command, then clear screen
+  return `mkdir -p '${dir}/.claude' && cat > '${dir}/.claude/CLAUDE.md' << 'WMUX_SOUL_EOF'\n${escaped}\nWMUX_SOUL_EOF\nclear`;
+}
+
+/**
  * Clear the in-memory soul cache. Useful for testing or forced refresh.
  */
 export function clearSoulCache(): void {
