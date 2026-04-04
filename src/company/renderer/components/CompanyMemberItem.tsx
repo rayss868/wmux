@@ -1,4 +1,5 @@
 import type { TeamMember, MemberStatus } from '../../types';
+import { hasSoul } from '../../core/SoulLoader';
 
 interface CompanyMemberItemProps {
   member: TeamMember;
@@ -50,7 +51,7 @@ const STATUS_COLORS: Record<MemberStatus, string> = {
   pooled: 'var(--accent-blue)',
 };
 
-/** Abbreviate a preset slug into a 2–4 char badge label. */
+/** Abbreviate a preset slug into a 2-4 char badge label. */
 function presetShortLabel(preset: string): string {
   const parts = preset.split('-');
   if (parts.length === 1) return preset.slice(0, 3).toUpperCase();
@@ -62,6 +63,14 @@ function presetShortLabel(preset: string): string {
     .toUpperCase();
 }
 
+/** Prettify a preset slug: "frontend-developer" -> "Frontend Developer" */
+function presetFullName(preset: string): string {
+  return preset
+    .split('-')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
 export default function CompanyMemberItem({
   member,
   isLead,
@@ -71,7 +80,9 @@ export default function CompanyMemberItem({
   const statusLabel = STATUS_LABELS[member.status] ?? 'Idle';
   const statusColor = STATUS_COLORS[member.status] ?? 'var(--text-muted)';
   const shortLabel = presetShortLabel(member.preset);
+  const fullName = presetFullName(member.preset);
   const isProvisioned = !!member.workspaceId && !!member.ptyId;
+  const soulAvailable = hasSoul(member.preset);
 
   return (
     <div
@@ -93,13 +104,32 @@ export default function CompanyMemberItem({
         <StatusDot status={member.status} />
       </span>
 
-      {/* name */}
-      <span
-        className={`text-[11px] font-mono flex-1 truncate ${isLead ? 'font-bold' : ''}`}
-        style={{ color: 'var(--text-main)' }}
-      >
-        {member.name}
-      </span>
+      {/* name + full preset */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span
+            className={`text-[11px] font-mono truncate ${isLead ? 'font-bold' : ''}`}
+            style={{ color: 'var(--text-main)' }}
+          >
+            {member.name}
+          </span>
+          {soulAvailable && (
+            <span
+              className="shrink-0 text-[8px]"
+              style={{ color: 'var(--accent-blue)' }}
+              title="SOUL persona loaded"
+            >
+              {'\u2726'}
+            </span>
+          )}
+        </div>
+        <span
+          className="text-[9px] font-mono block truncate"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {fullName}
+        </span>
+      </div>
 
       {/* pending badge */}
       {pendingMessageCount > 0 && (
@@ -119,7 +149,7 @@ export default function CompanyMemberItem({
           color: statusColor,
           border: '1px solid var(--bg-overlay)',
         }}
-        title={member.preset.replace(/-/g, ' ')}
+        title={fullName}
       >
         {shortLabel}
       </span>

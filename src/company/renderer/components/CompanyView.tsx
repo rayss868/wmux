@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useStore } from '../../../renderer/stores';
-import { spawnCompany, spawnMember } from '../provisioner';
+import { spawnCompany, spawnMember, destroyCompanyWithCleanup } from '../provisioner';
 import CreateCompanyDialog, { type CompanyTemplateResult } from './CreateCompanyDialog';
 import CompanyMemberItem from './CompanyMemberItem';
 import AddMemberDialog from './AddMemberDialog';
+import { hasSoul } from '../../core/SoulLoader';
 
 /* ── tiny icons ────────────────────────────────────────────────────────────── */
 
@@ -57,12 +58,7 @@ function ManageView({ onClose }: { onClose: () => void }) {
 
   const handleDestroy = () => {
     if (!confirm('Destroy company and all teams?')) return;
-    for (const dept of company.departments) {
-      for (const m of dept.members) {
-        if (m.ptyId) window.electronAPI.pty.dispose(m.ptyId);
-      }
-    }
-    useStore.getState().destroyCompany();
+    destroyCompanyWithCleanup();
     onClose();
   };
 
@@ -71,72 +67,143 @@ function ManageView({ onClose }: { onClose: () => void }) {
       {/* header */}
       <div className="flex items-center justify-between mb-4">
         <div>
-          <div className="text-sm font-mono font-bold" style={{ color: 'var(--text-main)' }}>{company.name}</div>
-          <div className="text-[9px] font-mono" style={{ color: 'var(--text-muted)' }}>
-            {company.departments.length} dept &middot; {prov}/{total} provisioned
+          <div className="text-base font-mono font-bold" style={{ color: 'var(--text-main)' }}>{company.name}</div>
+          <div className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+            {company.departments.length} departments &middot; {prov}/{total} provisioned
           </div>
         </div>
         <div className="flex items-center gap-1.5">
           <button onClick={handleDestroy}
-            className="px-2.5 py-1 rounded text-[10px] font-mono hover:bg-[rgba(243,139,168,0.1)]"
+            className="px-3 py-1.5 rounded-lg text-[10px] font-mono transition-all hover:bg-[rgba(243,139,168,0.1)]"
             style={{ color: 'var(--accent-red)', border: '1px solid var(--accent-red)' }}>
             Destroy
           </button>
         </div>
       </div>
 
-      {/* department list */}
-      <div className="flex-1 overflow-y-auto -mx-5 px-5 space-y-2" style={{ maxHeight: 380 }}>
-        {company.departments.map((dept) => {
-          const lead = dept.members.find((m) => m.id === dept.leadId);
-          const others = dept.members.filter((m) => m.id !== dept.leadId);
-          return (
-            <div key={dept.id} className="rounded overflow-hidden"
-              style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}>
-              <div className="flex items-center justify-between px-3 py-1.5"
-                style={{ borderBottom: '1px solid var(--bg-surface)' }}>
-                <span className="text-[11px] font-mono font-bold" style={{ color: 'var(--text-main)' }}>
-                  {dept.name}
-                  <span className="font-normal ml-1.5" style={{ color: 'var(--text-muted)' }}>{dept.members.length}</span>
-                </span>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => setAddingTo(addingTo === dept.id ? null : dept.id)}
-                    className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono hover:bg-[rgba(166,227,161,0.08)]"
-                    style={{ color: 'var(--accent-green)' }}>
-                    <Iplus />add
-                  </button>
-                  <button onClick={() => useStore.getState().removeDepartment(dept.id)}
-                    className="p-0.5 rounded hover:bg-[rgba(243,139,168,0.08)]"
-                    style={{ color: 'var(--accent-red)' }}><Itrash /></button>
-                </div>
-              </div>
+      {/* ── Org Chart ── */}
+      <div className="flex-1 overflow-y-auto -mx-5 px-5" style={{ maxHeight: 420 }}>
 
-              {lead && <CompanyMemberItem member={lead} isLead pendingMessageCount={pendingCounts[lead.id] ?? 0} />}
-              {others.map((m) => (
-                <CompanyMemberItem key={m.id} member={m} isLead={false} pendingMessageCount={pendingCounts[m.id] ?? 0} />
-              ))}
+        {/* CEO node at top */}
+        <div className="flex flex-col items-center mb-3">
+          <div
+            className="px-4 py-1.5 rounded-lg text-[11px] font-mono font-bold flex items-center gap-2"
+            style={{
+              backgroundColor: 'var(--bg-mantle)',
+              color: 'var(--accent-yellow)',
+              border: '1px solid var(--accent-yellow)',
+            }}
+          >
+            <span>{'\u2605'}</span>
+            <span>CEO</span>
+            <span
+              className="text-[9px] font-normal ml-1"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              {company.ceoWorkspaceId ? 'Active' : 'Idle'}
+            </span>
+          </div>
+          {/* Connector line from CEO down */}
+          {company.departments.length > 0 && (
+            <div
+              style={{
+                width: 1,
+                height: 16,
+                backgroundColor: 'var(--bg-overlay)',
+              }}
+            />
+          )}
+        </div>
 
-              {addingTo === dept.id && (
-                <AddMemberDialog
-                  deptName={dept.name}
-                  onConfirm={(name, preset, customPath) => handleAddMember(dept.id, dept.name, name, preset, customPath)}
-                  onCancel={() => setAddingTo(null)}
-                />
-              )}
-            </div>
-          );
-        })}
-
-        {addingDept ? (
-          <AddDeptRow onAdd={(n, l) => { useStore.getState().addDepartment(n, l); setAddingDept(false); }}
-            onCancel={() => setAddingDept(false)} />
-        ) : (
-          <button onClick={() => setAddingDept(true)}
-            className="w-full flex items-center justify-center gap-1.5 py-3 rounded text-[10px] font-mono transition-colors hover:border-[var(--accent-blue)] hover:text-[var(--accent-blue)]"
-            style={{ color: 'var(--text-muted)', border: '1px dashed var(--bg-overlay)' }}>
-            <Iplus /> Add Department
-          </button>
+        {/* Horizontal connector bar */}
+        {company.departments.length > 1 && (
+          <div className="flex justify-center mb-0">
+            <div
+              style={{
+                height: 1,
+                backgroundColor: 'var(--bg-overlay)',
+                width: `${Math.min(company.departments.length * 120, 440)}px`,
+                maxWidth: '90%',
+              }}
+            />
+          </div>
         )}
+
+        {/* Department cards */}
+        <div className="space-y-2 mt-2">
+          {company.departments.map((dept) => {
+            const lead = dept.members.find((m) => m.id === dept.leadId);
+            const others = dept.members.filter((m) => m.id !== dept.leadId);
+            const activeCount = dept.members.filter((m) => m.status === 'running' || m.status === 'waiting').length;
+
+            return (
+              <div key={dept.id} className="rounded-lg overflow-hidden"
+                style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}>
+
+                {/* Dept header */}
+                <div className="flex items-center justify-between px-4 py-2"
+                  style={{ borderBottom: '1px solid var(--bg-surface)' }}>
+                  <div className="flex items-center gap-2">
+                    {/* Vertical connector dot */}
+                    <div
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: 'var(--accent-blue)', opacity: 0.6 }}
+                    />
+                    <span className="text-[12px] font-mono font-bold" style={{ color: 'var(--text-main)' }}>
+                      {dept.name}
+                    </span>
+                    <span
+                      className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                      style={{
+                        backgroundColor: activeCount > 0 ? 'rgba(137, 180, 250, 0.1)' : 'var(--bg-surface)',
+                        color: activeCount > 0 ? 'var(--accent-blue)' : 'var(--text-muted)',
+                      }}
+                    >
+                      {activeCount}/{dept.members.length} active
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setAddingTo(addingTo === dept.id ? null : dept.id)}
+                      className="flex items-center gap-0.5 px-2 py-1 rounded-md text-[9px] font-mono transition-colors hover:bg-[rgba(166,227,161,0.08)]"
+                      style={{ color: 'var(--accent-green)' }}>
+                      <Iplus />add
+                    </button>
+                    <button onClick={() => useStore.getState().removeDepartment(dept.id)}
+                      className="p-1 rounded-md hover:bg-[rgba(243,139,168,0.08)] transition-colors"
+                      style={{ color: 'var(--accent-red)' }}><Itrash /></button>
+                  </div>
+                </div>
+
+                {/* Members */}
+                <div className="py-0.5">
+                  {lead && <CompanyMemberItem member={lead} isLead pendingMessageCount={pendingCounts[lead.id] ?? 0} />}
+                  {others.map((m) => (
+                    <CompanyMemberItem key={m.id} member={m} isLead={false} pendingMessageCount={pendingCounts[m.id] ?? 0} />
+                  ))}
+                </div>
+
+                {addingTo === dept.id && (
+                  <AddMemberDialog
+                    deptName={dept.name}
+                    onConfirm={(name, preset, customPath) => handleAddMember(dept.id, dept.name, name, preset, customPath)}
+                    onCancel={() => setAddingTo(null)}
+                  />
+                )}
+              </div>
+            );
+          })}
+
+          {addingDept ? (
+            <AddDeptRow onAdd={(n, l) => { useStore.getState().addDepartment(n, l); setAddingDept(false); }}
+              onCancel={() => setAddingDept(false)} />
+          ) : (
+            <button onClick={() => setAddingDept(true)}
+              className="w-full flex items-center justify-center gap-1.5 py-3 rounded-lg text-[10px] font-mono transition-all hover:border-[var(--accent-blue)] hover:text-[var(--accent-blue)]"
+              style={{ color: 'var(--text-muted)', border: '1px dashed var(--bg-overlay)' }}>
+              <Iplus /> Add Department
+            </button>
+          )}
+        </div>
       </div>
 
       {/* footer */}
@@ -157,7 +224,7 @@ function AddDeptRow({ onAdd, onCancel }: { onAdd: (n: string, l: string) => void
   const ok = !!(n.trim() && l.trim());
   const go = () => { if (ok) onAdd(n.trim(), l.trim()); };
   return (
-    <div className="flex items-center gap-1.5 p-2 rounded"
+    <div className="flex items-center gap-1.5 p-2 rounded-lg"
       style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}>
       <input value={n} onChange={(e) => setN(e.target.value)} placeholder="Dept" autoFocus
         onKeyDown={(e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape') onCancel(); }}
@@ -183,13 +250,27 @@ interface CompanyViewProps { onClose: () => void; }
 export default function CompanyView({ onClose }: CompanyViewProps) {
   const hasCompany = useStore((s) => s.company !== null);
   const handleConfirm = (result: CompanyTemplateResult) => {
-    // 1. Create company synchronously in store
-    useStore.getState().createCompany(result.name, result.skipPermissions, result.workDir || undefined);
+    const g = useStore.getState;
 
-    // 2. Close dialog first
+    // 1. Create company
+    g().createCompany(result.name, result.skipPermissions, result.workDir || undefined);
+
+    // 2. Populate departments + members in store BEFORE anything else
+    for (const d of result.template.departments) {
+      g().addDepartment(d.name, d.leadName);
+      const co = g().company;
+      if (!co) continue;
+      const dept = co.departments.find((dep) => dep.name === d.name);
+      if (!dept) continue;
+      for (const m of d.members) {
+        g().addMember(dept.id, m.name, m.preset as import('../../types').AgentPreset, m.customAgentPath);
+      }
+    }
+
+    // 3. Close dialog (sidebar now shows full org chart)
     onClose();
 
-    // 3. Spawn agents in background (fire-and-forget, detached from component lifecycle)
+    // 4. Spawn agents in background (store already populated)
     spawnCompany({
       companyName: result.name,
       skipPermissions: result.skipPermissions,
@@ -221,12 +302,12 @@ export default function CompanyView({ onClose }: CompanyViewProps) {
         className="flex flex-col"
         onMouseDown={(e) => e.stopPropagation()}
         style={{
-          width: 520,
+          width: 560,
           maxHeight: 'calc(100vh - 80px)',
           backgroundColor: 'var(--bg-base)',
           border: '1px solid var(--bg-surface)',
           borderRadius: 12,
-          padding: 20,
+          padding: '24px 28px',
           boxShadow: '0 25px 60px rgba(0,0,0,0.7)',
         }}
       >
