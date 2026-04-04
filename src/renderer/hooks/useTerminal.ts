@@ -170,7 +170,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
 
       // Pass app shortcuts through to useKeyboard (don't let xterm consume them)
-      if (e.ctrlKey && !e.shiftKey && [',', 'b', 'k', 'i', 'n', 't'].includes(e.key)) {
+      // Check both e.key and e.code for Korean IME compatibility
+      const shortcutKeys = [',', 'b', 'k', 'i', 'n', 't'];
+      const shortcutCodes = ['Comma', 'KeyB', 'KeyK', 'KeyI', 'KeyN', 'KeyT'];
+      if (e.ctrlKey && !e.shiftKey && (shortcutKeys.includes(e.key) || shortcutCodes.includes(e.code))) {
         return false; // let DOM bubble to useKeyboard
       }
       if (e.ctrlKey && e.shiftKey) {
@@ -194,7 +197,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
 
       // Ctrl+C: copy if selection exists, otherwise send SIGINT
-      if (e.ctrlKey && !e.shiftKey && e.key === 'c') {
+      // Use e.code (layout-independent) so it works with Korean IME (e.key='ㅊ')
+      if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
         const sel = terminal.getSelection();
         if (sel) {
           void window.clipboardAPI.writeText(sel);
@@ -207,7 +211,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       // Ctrl+V: paste from clipboard (use our IPC clipboard, block event
       // so xterm doesn't also paste via browser's native paste event)
-      if (e.ctrlKey && !e.shiftKey && e.key === 'v') {
+      // Use e.code for IME compatibility (e.key='ㅍ' with Korean IME)
+      if (e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
         e.preventDefault();
         void (async () => {
           // Try text first
