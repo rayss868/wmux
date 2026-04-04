@@ -37,6 +37,7 @@ const STATUS_LABELS: Record<MemberStatus, string> = {
   error: 'Error',
   waiting: 'Waiting',
   stuck: 'Stuck',
+  pooled: 'Pooled',
 };
 
 const STATUS_COLORS: Record<MemberStatus, string> = {
@@ -46,6 +47,7 @@ const STATUS_COLORS: Record<MemberStatus, string> = {
   error: 'var(--accent-red)',
   waiting: 'var(--accent-yellow)',
   stuck: 'var(--accent-red)',
+  pooled: 'var(--accent-blue)',
 };
 
 /** Abbreviate a preset slug into a 2–4 char badge label. */

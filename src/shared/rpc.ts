@@ -57,6 +57,7 @@ export type RpcMethod =
   | 'daemon.listSessions'
   | 'daemon.ping'
   | 'daemon.shutdown'
+  | 'daemon.compact'
   | 'a2a.resolve.identity'
   | 'a2a.whoami'
   | 'a2a.discover'
@@ -138,6 +139,7 @@ export const ALL_RPC_METHODS = [
   'daemon.listSessions',
   'daemon.ping',
   'daemon.shutdown',
+  'daemon.compact',
   'a2a.resolve.identity',
   'a2a.whoami',
   'a2a.discover',

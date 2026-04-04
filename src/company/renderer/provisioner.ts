@@ -13,6 +13,7 @@ function waitForClaudeReady(ptyId: string, timeoutMs = 30000): Promise<void> {
     let resolved = false;
     let cleanup: (() => void) | null = null;
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let dataReceived = 0;
 
     const finish = () => {
       if (resolved) return;
@@ -23,7 +24,11 @@ function waitForClaudeReady(ptyId: string, timeoutMs = 30000): Promise<void> {
 
     cleanup = window.electronAPI.pty.onData((id, data) => {
       if (id !== ptyId || resolved) return;
-      if (data.includes('>') || data.includes('\u276F') || data.includes('Claude')) {
+      dataReceived++;
+      // Skip first few data chunks (shell startup, PS1 prompt containing ">")
+      // Claude's ready indicator appears after the CLI banner/loading
+      if (dataReceived <= 2) return;
+      if (data.includes('\u276F') || data.includes('Claude') || data.includes('claude') || data.includes('>')) {
         finish();
         setTimeout(resolve, 500);
       }
@@ -45,6 +50,7 @@ export async function spawnAgentWorkspace(
   companyDeptName?: string,
   initialPrompt?: string,
   cwd?: string,
+  workUnit?: import('../types').WorkUnit,
 ): Promise<{ workspaceId: string; ptyId: string; paneId: string }> {
   // 1. Create PTY
   const { id: ptyId } = await window.electronAPI.pty.create(cwd ? { cwd } : undefined);
@@ -71,10 +77,22 @@ export async function spawnAgentWorkspace(
     await window.electronAPI.pty.write(ptyId, sanitizePtyText(command) + '\r');
   }
 
-  // 5. Wait for Claude ready, then inject prompt
+  // 5. Wait for Claude ready, then inject prompt (with optional scope enforcement)
   if (initialPrompt) {
+    let prompt = initialPrompt;
+    if (workUnit) {
+      const scopeLines = [
+        `\n[FILE SCOPE ENFORCEMENT]`,
+        `You may ONLY modify these files: ${workUnit.ownedFiles.join(', ')}`,
+        workUnit.forbiddenFiles.length > 0
+          ? `You must NOT modify these files: ${workUnit.forbiddenFiles.join(', ')}`
+          : '',
+        `All other files are read-only. Violations will be caught by pre-commit hook.`,
+      ].filter(Boolean);
+      prompt += scopeLines.join('\n');
+    }
     await waitForClaudeReady(ptyId);
-    await window.electronAPI.pty.write(ptyId, sanitizePtyText(initialPrompt) + '\r');
+    await window.electronAPI.pty.write(ptyId, sanitizePtyText(prompt) + '\r');
   }
 
   return { workspaceId, ptyId, paneId: rootPane.id };
@@ -98,20 +116,11 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
   const permFlag = skipPermissions ? ' --dangerously-skip-permissions' : '';
   const cwdArg = workDir || undefined;
 
-  // ── Phase 1: Populate store immediately (sidebar shows org chart right away) ──
+  // Store is already populated by the caller (handleConfirm).
+  // This function only spawns PTYs and injects prompts.
   const g = useStore.getState;
-  for (const dept of departments) {
-    g().addDepartment(dept.name, dept.leadName);
-    const co = g().company;
-    if (!co) continue;
-    const deptObj = co.departments[co.departments.length - 1];
-    if (!deptObj) continue;
-    for (const mem of dept.members) {
-      g().addMember(deptObj.id, mem.name, mem.preset as AgentPreset, mem.customAgentPath);
-    }
-  }
 
-  // ── Phase 2: Build org chart for prompts ──
+  // ── Build org chart for prompts ──
   const orgLines = departments.map(
     (d) => `[${d.name}] Lead: ${d.leadName} / Members: ${d.members.map((m) => `${m.name}(${m.preset})`).join(', ')}`,
   );
@@ -136,7 +145,7 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
     );
     g().setCeoWorkspace(ceoWsId);
   } catch (err) {
-    console.error('Failed to spawn CEO:', err);
+    console.error('[company] Failed to spawn CEO:', err);
   }
 
   // ── Phase 4: Spawn leads and members (each wrapped in try-catch) ──
@@ -173,16 +182,16 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
         g().setMemberPty(lead.id, leadPtyId);
       }
     } catch (err) {
-      console.error(`Failed to spawn lead for ${dept.name}:`, err);
+      console.error(`[company] Failed to spawn lead for ${dept.name}:`, err);
+      const lead = g().company?.departments.find((d) => d.id === deptObj.id)?.members.find((m) => m.id === deptObj.leadId);
+      if (lead) g().updateMemberStatus(lead.id, 'error', String(err));
     }
 
-    // ── Spawn Members ──
-    const storedMembers = g().company?.departments.find((d) => d.id === deptObj.id)?.members.filter((m) => m.id !== deptObj.leadId) ?? [];
-
-    for (let i = 0; i < dept.members.length; i++) {
-      const mem = dept.members[i];
-      const storedMember = storedMembers[i];
-      if (!storedMember) continue;
+    // ── Spawn Members (match by name, not index) ──
+    for (const mem of dept.members) {
+      const freshDept = g().company?.departments.find((d) => d.id === deptObj.id);
+      const storedMember = freshDept?.members.find((m) => m.name === mem.name && m.id !== freshDept.leadId);
+      if (!storedMember) { console.warn(`Member "${mem.name}" not found in store, skipping spawn`); continue; }
 
       try {
         const teammates = dept.members.filter((m2) => m2.name !== mem.name).map((m2) => `${m2.name}(${m2.preset})`).join(', ') || 'none';
@@ -208,7 +217,8 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
           void window.electronAPI.pty.write(memPtyId, '/plan\r');
         }, 8000);
       } catch (err) {
-        console.error(`Failed to spawn member ${mem.name}:`, err);
+        console.error(`[company] Failed to spawn member ${mem.name}:`, err);
+        g().updateMemberStatus(storedMember.id, 'error', String(err));
       }
     }
   }
@@ -255,4 +265,46 @@ export async function spawnMember(
   }, 8000);
 
   return { workspaceId, ptyId };
+}
+
+// ─── Destroy company: dispose all PTYs then clean store ──────────────────────
+
+export function destroyCompanyWithCleanup(): void {
+  const state = useStore.getState();
+  const company = state.company;
+  if (!company) return;
+
+  // Collect all PTY IDs (members + CEO workspace)
+  const ptyIds: string[] = [];
+  for (const dept of company.departments) {
+    for (const m of dept.members) {
+      if (m.ptyId) ptyIds.push(m.ptyId);
+    }
+  }
+
+  // Also dispose CEO workspace PTY
+  if (company.ceoWorkspaceId) {
+    const ceoWs = state.workspaces.find((ws) => ws.id === company.ceoWorkspaceId);
+    if (ceoWs) {
+      const leaves = collectLeafSurfaces(ceoWs.rootPane);
+      for (const ptyId of leaves) {
+        if (!ptyIds.includes(ptyId)) ptyIds.push(ptyId);
+      }
+    }
+  }
+
+  // Dispose all PTYs (fire-and-forget, errors ignored)
+  for (const ptyId of ptyIds) {
+    window.electronAPI.pty.dispose(ptyId).catch(() => { /* ignore dispose errors */ });
+  }
+  console.log(`[company] Destroyed: disposed ${ptyIds.length} PTYs`);
+
+  // Clean store
+  state.destroyCompany();
+}
+
+/** Collect all ptyIds from a pane tree. */
+function collectLeafSurfaces(pane: import('../../shared/types').Pane): string[] {
+  if (pane.type === 'leaf') return pane.surfaces.map((s) => s.ptyId).filter(Boolean);
+  return pane.children.flatMap(collectLeafSurfaces);
 }

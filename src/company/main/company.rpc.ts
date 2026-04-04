@@ -1,6 +1,7 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../../main/pipe/RpcRouter';
 import { sendToRenderer } from '../../main/pipe/handlers/_bridge';
+import { CircuitBreaker } from './CircuitBreaker';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -11,6 +12,9 @@ type GetWindow = () => BrowserWindow | null;
  * company store handles state mutations and PTY write operations.
  */
 export function registerCompanyRpc(router: RpcRouter, getWindow: GetWindow): void {
+  const circuitBreaker = new CircuitBreaker();
+  circuitBreaker.startCleanup();
+
   /**
    * company.create
    * Creates a new company with the given name.
@@ -243,9 +247,14 @@ export function registerCompanyRpc(router: RpcRouter, getWindow: GetWindow): voi
     if (typeof params['message'] !== 'string' || params['message'].trim().length === 0) {
       throw new Error('company.a2a.send: missing required param "message"');
     }
+    const from = params['from'] as string;
+    const to = params['to'] as string;
+    if (!circuitBreaker.checkSend(from, to)) {
+      throw new Error(`[CircuitBreaker] Channel ${from}\u2192${to} is rate-limited. Try again later.`);
+    }
     return sendToRenderer(getWindow, 'company.a2a.send', {
-      from: params['from'],
-      to: params['to'],
+      from,
+      to,
       message: params['message'],
       priority: params['priority'] ?? 'normal',
       workspaceId: params['workspaceId'] ?? '',
@@ -259,8 +268,12 @@ export function registerCompanyRpc(router: RpcRouter, getWindow: GetWindow): voi
     if (typeof params['message'] !== 'string' || params['message'].trim().length === 0) {
       throw new Error('company.a2a.broadcast: missing required param "message"');
     }
+    const broadcastFrom = params['from'] as string;
+    if (!circuitBreaker.checkBroadcast(broadcastFrom)) {
+      throw new Error(`[CircuitBreaker] Broadcast from ${broadcastFrom} is rate-limited. Try again later.`);
+    }
     return sendToRenderer(getWindow, 'company.a2a.broadcast', {
-      from: params['from'],
+      from: broadcastFrom,
       message: params['message'],
       priority: params['priority'] ?? 'normal',
       workspaceId: params['workspaceId'] ?? '',

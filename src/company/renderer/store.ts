@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../../renderer/stores/index';
-import { generateId } from '../../shared/types';
+import { generateId, createWorkspace } from '../../shared/types';
 import type {
   Company,
   Department,
@@ -15,6 +15,8 @@ import type { QueuedMessage } from '../core/MessageQueue';
 
 /** Maximum number of pending messages in the queue to prevent memory exhaustion. */
 const MAX_MESSAGE_QUEUE_SIZE = 500;
+/** Maximum number of content-hash entries for loop detection. */
+const MAX_TASK_HISTORY_SIZE = 1000;
 /** Maximum number of pending approval requests. */
 const MAX_APPROVAL_QUEUE_SIZE = 50;
 
@@ -72,11 +74,41 @@ export interface CompanySlice {
   addFeedEntry: (entry: Omit<MessageFeedEntry, 'id' | 'timestamp'>) => void;
   clearFeed: () => void;
 
+  // Team structure
+  promoteMemberToLead: (deptId: string, memberId: string) => void;
+  reassignMember: (memberId: string, fromDeptId: string, toDeptId: string) => void;
+  incrementTurnCount: (memberId: string) => void;
+  markCompacted: (memberId: string) => void;
+
   // A2A inbox (per-member structured message store)
   memberInbox: Record<string, InboxMessage[]>;
   addToInbox: (memberId: string, msg: Omit<InboxMessage, 'id' | 'timestamp' | 'read'>) => void;
   ackInbox: (memberId: string, messageIds: string[]) => void;
   getInbox: (memberId: string, unreadOnly?: boolean) => InboxMessage[];
+
+  // Loop prevention (L2)
+  taskHistory: Record<string, { from: string; to: string; attempts: number; firstSeen: number }>;
+  waitGraph: Record<string, string>; // memberId -> waiting-on memberId
+}
+
+// ── Loop-prevention helpers ──────────────────────────────────────────────
+
+function findMemberByName(state: StoreState, name: string): TeamMember | undefined {
+  if (!state.company) return undefined;
+  for (const dept of state.company.departments) {
+    const member = dept.members.find((m) => m.name === name);
+    if (member) return member;
+  }
+  return undefined;
+}
+
+function findMemberById(state: StoreState, id: string): TeamMember | undefined {
+  if (!state.company) return undefined;
+  for (const dept of state.company.departments) {
+    const member = dept.members.find((m) => m.id === id);
+    if (member) return member;
+  }
+  return undefined;
 }
 
 export interface MessageFeedEntry {
@@ -94,6 +126,8 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
   messageQueue: [],
   memberCosts: {},
   sessionStartTime: null,
+  taskHistory: {},
+  waitGraph: {},
 
   // ─── Company CRUD ─────────────────────────────────────────────────────────
 
@@ -115,15 +149,23 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
   destroyCompany: () => set((state) => {
     // Remove all company-linked workspaces
     state.workspaces = state.workspaces.filter((ws) => !ws.companyRole);
-    // If active workspace was a company one, switch to first remaining
+    // If no workspaces remain, create a default one
+    if (state.workspaces.length === 0) {
+      state.workspaces.push(createWorkspace('Workspace 1'));
+    }
+    // Switch to first remaining workspace if active was removed
     if (!state.workspaces.some((ws) => ws.id === state.activeWorkspaceId)) {
       state.activeWorkspaceId = state.workspaces[0]?.id || '';
     }
+    // Switch sidebar back to workspaces tab
+    state.sidebarMode = 'workspaces';
     state.company = null;
     state.memberCosts = {};
     state.sessionStartTime = null;
     state.messageQueue = [];
     state.approvalQueue = [];
+    state.taskHistory = {};
+    state.waitGraph = {};
   }),
 
   // ─── Department ──────────────────────────────────────────────────────────
@@ -203,6 +245,38 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
           member.lastMessage = lastMessage;
         }
         member.lastActivity = Date.now();
+
+        // Wait graph tracking for cycle detection
+        if (status === 'waiting') {
+          const lastSent = state.messageFeed
+            .filter((f) => f.from === (member.name || memberId))
+            .pop();
+          if (lastSent) {
+            const targetMember = findMemberByName(state, lastSent.to);
+            if (targetMember) {
+              state.waitGraph[memberId] = targetMember.id;
+              // Cycle detection: follow the chain
+              const visited = new Set<string>([memberId]);
+              let current = targetMember.id;
+              while (current && state.waitGraph[current]) {
+                if (visited.has(state.waitGraph[current])) {
+                  console.log(`[WaitGraph] Cycle detected involving ${memberId}`);
+                  // Break cycle: clear edges for both parties
+                  delete state.waitGraph[current];
+                  delete state.waitGraph[memberId];
+                  const blocker = findMemberById(state, current);
+                  if (blocker) blocker.status = 'stuck';
+                  break;
+                }
+                visited.add(current);
+                current = state.waitGraph[current];
+              }
+            }
+          }
+        } else {
+          delete state.waitGraph[memberId];
+        }
+
         return;
       }
     }
@@ -362,6 +436,64 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
     state.messageFeed = [];
   }),
 
+  // ─── Team structure ────────────────────────────────────────────────────
+
+  promoteMemberToLead: (deptId, memberId) => set((state) => {
+    if (!state.company) return;
+    const dept = state.company.departments.find((d) => d.id === deptId);
+    if (!dept) return;
+    const member = dept.members.find((m) => m.id === memberId);
+    if (!member) return;
+    // Demote old lead to regular member status
+    const oldLead = dept.members.find((m) => m.id === dept.leadId);
+    if (oldLead && oldLead.status !== 'error') {
+      oldLead.status = 'idle';
+    }
+    dept.leadId = memberId;
+  }),
+
+  reassignMember: (memberId, fromDeptId, toDeptId) => set((state) => {
+    if (!state.company) return;
+    const fromDept = state.company.departments.find((d) => d.id === fromDeptId);
+    const toDept = state.company.departments.find((d) => d.id === toDeptId);
+    if (!fromDept || !toDept) return;
+    const memberIdx = fromDept.members.findIndex((m) => m.id === memberId);
+    if (memberIdx === -1) return;
+    // Cannot reassign the lead
+    if (fromDept.leadId === memberId) return;
+    const member = fromDept.members[memberIdx];
+    // Track original department for pool return
+    if (!member.originalDeptId) {
+      member.originalDeptId = fromDeptId;
+    }
+    member.status = 'idle';
+    fromDept.members.splice(memberIdx, 1);
+    toDept.members.push(member);
+  }),
+
+  incrementTurnCount: (memberId) => set((state) => {
+    if (!state.company) return;
+    for (const dept of state.company.departments) {
+      const member = dept.members.find((m) => m.id === memberId);
+      if (member) {
+        member.turnCount = (member.turnCount ?? 0) + 1;
+        return;
+      }
+    }
+  }),
+
+  markCompacted: (memberId) => set((state) => {
+    if (!state.company) return;
+    for (const dept of state.company.departments) {
+      const member = dept.members.find((m) => m.id === memberId);
+      if (member) {
+        member.turnCount = 0;
+        member.lastCompactedAt = Date.now();
+        return;
+      }
+    }
+  }),
+
   // ─── A2A inbox ──────────────────────────────────────────────────────────
   memberInbox: {},
 
@@ -370,6 +502,51 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
       state.memberInbox[memberId] = [];
     }
     const inbox = state.memberInbox[memberId];
+
+    // Content hash dedup — detect repeated identical messages
+    const contentKey = `${msg.from}:${memberId}:${msg.message.toLowerCase().replace(/\s+/g, ' ').trim()}`;
+    const hashKey = `${contentKey.slice(0, 100)}:${contentKey.length}`;
+    const existing = state.taskHistory[hashKey];
+    if (existing) {
+      existing.attempts++;
+      if (existing.attempts >= 3) {
+        // Abandon — don't deliver, inject system warning instead
+        const warning: InboxMessage = {
+          ...msg,
+          id: generateId('inbox'),
+          timestamp: Date.now(),
+          read: false,
+          from: '[WMUX-SYSTEM]',
+          message: `Task abandoned after 3 identical attempts from ${msg.from}. Change approach or escalate.`,
+        };
+        inbox.push(warning);
+        if (inbox.length > MAX_INBOX_SIZE) {
+          state.memberInbox[memberId] = inbox.slice(-MAX_INBOX_SIZE);
+        }
+        return;
+      }
+    } else {
+      // Evict oldest entries if at capacity
+      const keys = Object.keys(state.taskHistory);
+      if (keys.length >= MAX_TASK_HISTORY_SIZE) {
+        let oldestKey = keys[0];
+        let oldestTime = state.taskHistory[oldestKey].firstSeen;
+        for (const k of keys) {
+          if (state.taskHistory[k].firstSeen < oldestTime) {
+            oldestKey = k;
+            oldestTime = state.taskHistory[k].firstSeen;
+          }
+        }
+        delete state.taskHistory[oldestKey];
+      }
+      state.taskHistory[hashKey] = {
+        from: msg.from,
+        to: memberId,
+        attempts: 1,
+        firstSeen: Date.now(),
+      };
+    }
+
     const full: InboxMessage = {
       ...msg,
       id: generateId('inbox'),

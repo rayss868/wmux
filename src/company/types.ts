@@ -34,7 +34,7 @@ export type AgentPreset =
   // Custom
   | 'custom';
 
-export type MemberStatus = 'idle' | 'running' | 'complete' | 'error' | 'waiting' | 'stuck';
+export type MemberStatus = 'idle' | 'running' | 'complete' | 'error' | 'waiting' | 'stuck' | 'pooled';
 
 export interface TeamMember {
   id: string;
@@ -46,6 +46,10 @@ export interface TeamMember {
   status: MemberStatus;
   lastMessage?: string;
   lastActivity?: number;
+  assignedTaskId?: string;
+  originalDeptId?: string;
+  turnCount?: number;
+  lastCompactedAt?: number;
 }
 
 export interface Department {
@@ -54,6 +58,36 @@ export interface Department {
   leadId: string;
   members: TeamMember[];
   worktreeBranch?: string;
+  maxConcurrentPerDept?: number;
+}
+
+export interface WorkUnit {
+  id: string;
+  assigneeId: string;
+  branch?: string;
+  ownedFiles: string[];
+  forbiddenFiles: string[];
+  interfaceContracts?: InterfaceContract[];
+  dependsOn: string[];
+  status: 'pending' | 'in-progress' | 'completed' | 'failed';
+}
+
+export interface InterfaceContract {
+  symbol: string;
+  file: string;
+  typeSignature?: string;
+  fromUnitId?: string;
+}
+
+export interface CompactionSnapshot {
+  memberId: string;
+  memberName: string;
+  role: string;
+  currentTask?: string;
+  decisions: string[];
+  modifiedFiles: string[];
+  pendingInbox: number;
+  timestamp: number;
 }
 
 export interface Company {
