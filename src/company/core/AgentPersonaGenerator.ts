@@ -5,6 +5,7 @@
 
 import type { PresetInfo } from './presets';
 import type { WorkflowTemplate } from './workflows';
+import { loadSoulSync, condenseSoul, hasSoul } from './SoulLoader';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,23 @@ export interface MemberPersonaOptions {
 export interface CeoPersonaOptions {
   companyName: string;
   departments: { name: string; leadName: string; leadPreset: string }[];
+}
+
+// ─── Soul Enrichment ─────────────────────────────────────────────────────────
+
+/**
+ * Enrich a base persona with SOUL content if available in memory cache.
+ * Falls back to the base persona if no SOUL is cached yet.
+ * For async loading (fetch from GitHub), use loadSoul() from SoulLoader before calling this.
+ */
+export function enrichWithSoul(basePersona: string, presetId: string): string {
+  if (!hasSoul(presetId)) return basePersona;
+
+  const raw = loadSoulSync(presetId);
+  if (!raw) return basePersona;
+
+  const soul = condenseSoul(raw);
+  return `${basePersona}\n\n## Agent Soul\n\nThe following defines your deep persona, philosophy, and working style:\n\n${soul}`;
 }
 
 // ─── Lead Persona ─────────────────────────────────────────────────────────────
@@ -55,7 +73,7 @@ export function generateLeadPersona(options: LeadPersonaOptions): string {
 
   const toolList = leadPreset.tools.join(', ');
 
-  return `# ${departmentName} Team Lead — ${companyName}
+  const base = `# ${departmentName} Team Lead — ${companyName}
 
 You are the **${leadPreset.name}** and Team Lead of the **${departmentName}** department at **${companyName}**.
 
@@ -92,6 +110,8 @@ ${toolList}
 2. Never skip the verification step before marking a task complete.
 3. Document all decisions and blockers for transparency.
 `;
+
+  return enrichWithSoul(base, leadPreset.id);
 }
 
 // ─── Member Persona ───────────────────────────────────────────────────────────
@@ -111,7 +131,7 @@ export function generateMemberPersona(options: MemberPersonaOptions): string {
 
   const toolList = memberPreset.tools.join(', ');
 
-  return `# ${memberPreset.name} — ${companyName}
+  const base = `# ${memberPreset.name} — ${companyName}
 
 You are **${memberName}**, a **${memberPreset.name}** in the **${departmentName}** department of **${companyName}**.
 
@@ -147,6 +167,8 @@ ${toolList}
 2. Verify your output meets requirements before reporting completion.
 3. Keep responses concise and structured.
 `;
+
+  return enrichWithSoul(base, memberPreset.id);
 }
 
 // ─── CEO Persona ──────────────────────────────────────────────────────────────

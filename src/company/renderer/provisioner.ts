@@ -5,6 +5,7 @@
 import { useStore } from '../../renderer/stores';
 import { createSurface, createLeafPane, generateId, sanitizePtyText } from '../../shared/types';
 import type { AgentPreset } from '../types';
+import { loadSoul, condenseSoul, hasSoul, prefetchSouls } from '../core/SoulLoader';
 
 // ─── Wait for Claude CLI ready ───────────────────────────────────────────────
 
@@ -103,6 +104,20 @@ export async function spawnAgentWorkspace(
   return { workspaceId, ptyId, paneId: rootPane.id };
 }
 
+// ─── Soul-enriched prompt helper ─────────────────────────────────────────────
+
+/**
+ * Append condensed SOUL content to a base prompt if available.
+ * Uses the in-memory cache (pre-warmed by prefetchSouls).
+ */
+async function enrichPromptWithSoul(basePrompt: string, presetId: string): Promise<string> {
+  if (!hasSoul(presetId)) return basePrompt;
+  const raw = await loadSoul(presetId);
+  if (!raw) return basePrompt;
+  const soul = condenseSoul(raw);
+  return `${basePrompt} [AGENT SOUL] ${soul}`;
+}
+
 // ─── Spawn entire company from template ──────────────────────────────────────
 
 export interface SpawnCompanyOpts {
@@ -124,6 +139,18 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
   // Store is already populated by the caller (handleConfirm).
   // This function only spawns PTYs and injects prompts.
   const g = useStore.getState;
+
+  // Pre-fetch all agent SOULs in parallel before spawning (best-effort, non-blocking)
+  const allPresets: string[] = [];
+  for (const dept of departments) {
+    // Lead preset is the first member's preset or inferred from leadName
+    for (const mem of dept.members) {
+      allPresets.push(mem.preset);
+    }
+  }
+  prefetchSouls(allPresets).catch(() => {
+    // Soul prefetch failure is non-fatal; agents will use base prompts
+  });
 
   // ── Build org chart for prompts ──
   const orgLines = departments.map(
@@ -164,7 +191,7 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
 
     // ── Spawn Lead ──
     try {
-      const leadPrompt = [
+      let leadPrompt = [
         `You are the ${dept.leadName.replace(/-/g, ' ')}, leading the ${dept.name} department of "${companyName}".`,
         `Your team members: ${memberNames}.`,
         `Other departments: ${otherDepts}.`,
@@ -176,6 +203,12 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
         `Workflow: 1) Receive CEO task. 2) Decompose into subtasks. 3) Assign via wmux CLI. 4) Review member plans. 5) Consolidate and report to CEO.`,
         `IMPORTANT: Always use the wmux CLI to send messages. Do NOT output [WMUX-MSG] text directly.`,
       ].join(' ');
+
+      // Enrich lead prompt with SOUL personality (best-effort)
+      // Look up lead preset from the store (lead is the member matching leadId)
+      const storedLead = deptObj.members.find((m) => m.id === deptObj.leadId);
+      const leadPresetId = storedLead?.preset ?? dept.leadName;
+      leadPrompt = await enrichPromptWithSoul(leadPrompt, leadPresetId);
 
       const { workspaceId: leadWsId, ptyId: leadPtyId } = await spawnAgentWorkspace(
         `${dept.name} — ${dept.leadName}`, `claude --teammate-mode auto${permFlag}`, 'lead', dept.name, leadPrompt, cwdArg,
@@ -200,7 +233,7 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
 
       try {
         const teammates = dept.members.filter((m2) => m2.name !== mem.name).map((m2) => `${m2.name}(${m2.preset})`).join(', ') || 'none';
-        const memPrompt = [
+        let memPrompt = [
           `You are ${mem.name}, the ${mem.preset.replace(/-/g, ' ')} in the ${dept.name} department of "${companyName}".`,
           `Your lead: ${dept.leadName}. Your teammates: ${teammates}.`,
           `Communication: Use the wmux CLI tool (Bash) to send messages:`,
@@ -210,6 +243,9 @@ export async function spawnCompany(opts: SpawnCompanyOpts): Promise<void> {
           `You are in PLAN MODE. Create a plan first, then wait for your lead to approve before executing.`,
           `IMPORTANT: Always use the wmux CLI to send messages. Do NOT output [WMUX-MSG] text directly.`,
         ].join(' ');
+
+        // Enrich member prompt with SOUL personality (best-effort)
+        memPrompt = await enrichPromptWithSoul(memPrompt, mem.preset);
 
         const { workspaceId: memWsId, ptyId: memPtyId } = await spawnAgentWorkspace(
           `${dept.name} — ${mem.name}`, `claude --teammate-mode auto${permFlag}`, 'member', dept.name, memPrompt, cwdArg,
@@ -249,7 +285,7 @@ export async function spawnMember(
     .filter((m) => m.name !== memberName && m.id !== dept?.leadId)
     .map((m) => m.name).join(', ') || 'none';
 
-  const rolePrompt = [
+  let rolePrompt = [
     `You are ${memberName}, the ${preset.replace(/-/g, ' ')} in the ${deptName} department of "${companyName}".`,
     `Your lead: ${leadName}. Your teammates: ${teammates}.`,
     `Communication: Use the wmux CLI tool (Bash) to send messages:`,
@@ -259,6 +295,9 @@ export async function spawnMember(
     `You are in PLAN MODE. Create a plan first, then wait for your lead to approve before executing.`,
     `IMPORTANT: Always use the wmux CLI. Do NOT output [WMUX-MSG] text directly.`,
   ].join(' ');
+
+  // Enrich with SOUL personality (best-effort)
+  rolePrompt = await enrichPromptWithSoul(rolePrompt, preset);
 
   const { workspaceId, ptyId } = await spawnAgentWorkspace(
     `${deptName} — ${memberName}`, `claude --teammate-mode auto${permFlag}`, 'member', deptName, rolePrompt, cwdArg,
