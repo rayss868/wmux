@@ -5,6 +5,7 @@ process.on('uncaughtException', (err) => {
   console.error('[Main] Uncaught exception:', err);
 });
 
+import * as crypto from 'crypto';
 import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron';
 import { createWindow } from './window/createWindow';
 import { PTYManager } from './pty/PTYManager';
@@ -39,7 +40,7 @@ if (process.env.WMUX_DISABLE_CDP !== 'true') {
   // Randomize port within range to prevent predictable scanning
   const basePort = 18800;
   const range = 100;
-  cdpPort = basePort + Math.floor(Math.random() * range);
+  cdpPort = basePort + crypto.randomInt(range);
   app.commandLine.appendSwitch('remote-debugging-port', cdpPort.toString());
   console.log(`[WinMux] CDP enabled on port ${cdpPort}`);
 }

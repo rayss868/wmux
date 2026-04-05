@@ -208,7 +208,10 @@ export class McpRegistrar {
   private readJson(filePath: string): Record<string, any> {
     try {
       if (fs.existsSync(filePath)) {
-        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'), (key, value) => {
+          if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+          return value;
+        });
       }
     } catch { /* corrupted — start fresh */ }
 
