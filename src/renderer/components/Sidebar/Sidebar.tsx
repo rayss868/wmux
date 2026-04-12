@@ -50,21 +50,44 @@ export default function Sidebar() {
     if (!ws) return;
 
     const leaves = collectLeaves(ws.rootPane);
-    const surfaces: Surface[] = leaves.flatMap((l) => l.surfaces);
-
     const meta = ws.metadata;
-    const lines: string[] = [
-      `You are "${ws.name}" (${ws.id}).`,
-    ];
-    if (meta?.cwd) lines.push(`CWD: ${meta.cwd}`);
 
-    // Compact surface summary
-    const termSurfaces = surfaces.filter((s) => (s.surfaceType || 'terminal') === 'terminal');
-    const browserSurfaces = surfaces.filter((s) => s.surfaceType === 'browser');
-    const parts: string[] = [];
-    if (termSurfaces.length) parts.push(`${termSurfaces.length} terminal`);
-    if (browserSurfaces.length) parts.push(`${browserSurfaces.length} browser`);
-    if (parts.length) lines.push(`Surfaces: ${parts.join(', ')}`);
+    const lines: string[] = [
+      `# wmux Workspace: "${ws.name}"`,
+      `- Workspace ID: ${ws.id}`,
+      '',
+      '## Panes',
+    ];
+
+    let paneIndex = 1;
+    for (const leaf of leaves) {
+      const isActive = leaf.id === ws.activePaneId;
+      for (const s of leaf.surfaces) {
+        const surfaceType = s.surfaceType || 'terminal';
+        const activeTag = isActive ? '[ACTIVE] ' : '';
+
+        if (surfaceType === 'browser') {
+          lines.push(`${paneIndex}. ${activeTag}Browser`);
+          lines.push(`   - Surface ID: ${s.id}`);
+          if (s.browserUrl) lines.push(`   - URL: ${s.browserUrl}`);
+        } else {
+          lines.push(`${paneIndex}. ${activeTag}Terminal — ${s.shell || 'unknown'}`);
+          lines.push(`   - Surface ID: ${s.id}`);
+          lines.push(`   - PTY ID: ${s.ptyId}`);
+          const cwd = meta?.cwd || s.cwd;
+          if (cwd) lines.push(`   - CWD: ${cwd}`);
+          if (meta?.gitBranch) lines.push(`   - Git: ${meta.gitBranch}`);
+        }
+        lines.push('');
+        paneIndex++;
+      }
+    }
+
+    lines.push('## MCP Control');
+    lines.push('- Send command: terminal_send({ text: "..." })');
+    lines.push('- Target specific terminal: terminal_send({ text: "...", ptyId: "<pty-id>" })');
+    lines.push('- Navigate browser: browser_navigate({ url: "...", surfaceId: "<surface-id>" })');
+    lines.push('- List all surfaces: surface_list()');
 
     await window.clipboardAPI.writeText(lines.join('\n'));
 
