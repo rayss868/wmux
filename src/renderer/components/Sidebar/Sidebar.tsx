@@ -104,6 +104,7 @@ export default function Sidebar() {
             className="text-[var(--text-subtle)] hover:text-[var(--accent-green)] text-lg leading-none transition-colors"
             onClick={togglePicker}
             title={t('sidebar.newWorkspaceTooltip')}
+            data-onboarding-target="add-workspace"
           >
             +
           </button>

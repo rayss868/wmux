@@ -1,42 +1,53 @@
 export interface OnboardingStep {
   id: string;
+  titleKey: string;
+  descriptionKey: string;
   targetSelector: string;
-  title: string;
-  description: string;
-  position?: 'top' | 'bottom' | 'left' | 'right' | 'auto';
+  /** Preferred tooltip placement relative to the highlighted element */
+  placement: 'top' | 'bottom' | 'left' | 'right';
 }
 
+/**
+ * Onboarding tutorial steps.
+ *
+ * Each step highlights a specific UI element using `data-onboarding-target`
+ * attributes added to existing components. The `targetSelector` is a CSS
+ * selector that matches the element to spotlight.
+ */
 export const ONBOARDING_STEPS: OnboardingStep[] = [
   {
     id: 'split-pane',
-    targetSelector: '[data-onboarding-target="split-button"]',
-    title: 'Split Terminal',
-    description:
-      'Press Ctrl+D to split the terminal vertically, or Ctrl+Shift+D to split horizontally. Run multiple commands side by side.',
-    position: 'bottom',
+    titleKey: 'onboarding.step1.title',
+    descriptionKey: 'onboarding.step1.description',
+    targetSelector: '[data-onboarding-target="pane-area"]',
+    placement: 'bottom',
   },
   {
-    id: 'sidebar',
-    targetSelector: '[data-onboarding-target="sidebar"]',
-    title: 'Workspace Sidebar',
-    description:
-      'Manage your workspaces here. Create new ones, rename, or switch between them with a single click.',
-    position: 'right',
+    id: 'add-workspace',
+    titleKey: 'onboarding.step2.title',
+    descriptionKey: 'onboarding.step2.description',
+    targetSelector: '[data-onboarding-target="add-workspace"]',
+    placement: 'right',
+  },
+  {
+    id: 'open-browser',
+    titleKey: 'onboarding.step3.title',
+    descriptionKey: 'onboarding.step3.description',
+    targetSelector: '[data-onboarding-target="status-bar"]',
+    placement: 'top',
   },
   {
     id: 'command-palette',
-    targetSelector: '[data-onboarding-target="command-palette"]',
-    title: 'Command Palette',
-    description:
-      'Press Ctrl+Shift+P to open the command palette. Quickly access any action without leaving the keyboard.',
-    position: 'bottom',
+    titleKey: 'onboarding.step4.title',
+    descriptionKey: 'onboarding.step4.description',
+    targetSelector: '[data-onboarding-target="settings-button"]',
+    placement: 'top',
   },
   {
-    id: 'status-bar',
-    targetSelector: '[data-onboarding-target="status-bar"]',
-    title: 'Status Bar',
-    description:
-      'The status bar shows your active workspace, pane count, and quick actions. Right-click for more options.',
-    position: 'bottom',
+    id: 'notification-panel',
+    titleKey: 'onboarding.step5.title',
+    descriptionKey: 'onboarding.step5.description',
+    targetSelector: '[data-onboarding-target="notification-bell"]',
+    placement: 'top',
   },
 ];

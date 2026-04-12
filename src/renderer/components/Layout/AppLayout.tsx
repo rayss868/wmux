@@ -110,6 +110,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     company: companySafe,
     memberCosts: state.memberCosts,
     sessionStartTime: state.sessionStartTime ?? undefined,
+    tokenDataByPty: Object.keys(state.tokenDataByPty).length > 0 ? state.tokenDataByPty : undefined,
     // User preferences
     theme: state.theme,
     locale: state.locale,

@@ -237,4 +237,160 @@ describe('TokenTracker', () => {
       expect(events).toHaveLength(2);
     });
   });
+
+  // ====================================================================
+  // ── Supplementary scenarios ─────────────────────────────────────────
+  // ====================================================================
+
+  describe('multiline data with token line extraction', () => {
+    beforeEach(() => feedLine('Claude Code'));
+
+    it('extracts token line from a chunk with many non-token lines', () => {
+      tracker.feed(
+        'Compiling src/index.ts...\n' +
+        'Build complete in 2.3s\n' +
+        'Running tests...\n' +
+        'Total tokens: 88,000\n' +
+        'All tests passed.\n'
+      );
+      expect(events).toHaveLength(1);
+      expect(events[0].totalTokens).toBe(88000);
+    });
+
+    it('extracts multiple token lines from a single multiline chunk', () => {
+      tracker.feed(
+        'Starting analysis...\n' +
+        'Total cost: $2.10\n' +
+        'Processing files...\n' +
+        'Session: 70k input, 30k output\n' +
+        'Done.\n'
+      );
+      expect(events).toHaveLength(2);
+      expect(events[0].totalCost).toBe(2.1);
+      expect(events[1].inputTokens).toBe(70000);
+      expect(events[1].outputTokens).toBe(30000);
+      expect(events[1].totalTokens).toBe(100000);
+    });
+  });
+
+  describe('ANSI escape mixed with token lines in a single chunk', () => {
+    beforeEach(() => feedLine('Claude Code'));
+
+    it('parses token data from an ANSI-heavy multiline chunk', () => {
+      tracker.feed(
+        '\x1b[1;34m> Building project...\x1b[0m\n' +
+        '\x1b[32mSuccess\x1b[0m\n' +
+        '\x1b[1;33mTotal cost: $3.14\x1b[0m\n' +
+        '\x1b[90m────────────────\x1b[0m\n' +
+        '\x1b[36mSession: 200k input, 80k output\x1b[0m\n'
+      );
+      expect(events).toHaveLength(2);
+      expect(events[0].totalCost).toBe(3.14);
+      expect(events[1].inputTokens).toBe(200000);
+      expect(events[1].outputTokens).toBe(80000);
+    });
+
+    it('handles OSC sequences mixed with token info', () => {
+      feedLine('\x1b]0;terminal title\x07Total tokens: 12,345');
+      expect(events).toHaveLength(1);
+      expect(events[0].totalTokens).toBe(12345);
+    });
+  });
+
+  describe('multiple token updates replace (not sum) for all fields', () => {
+    beforeEach(() => feedLine('Claude Code'));
+
+    it('totalTokens: last value wins', () => {
+      feedLine('Total tokens: 100,000');
+      feedLine('Total tokens: 250,000');
+      feedLine('Total tokens: 180,000');
+      const acc = tracker.getAccumulated();
+      expect(acc.totalTokens).toBe(180000);
+    });
+
+    it('inputTokens and outputTokens: last value wins', () => {
+      feedLine('Session: 50k input, 20k output');
+      feedLine('Session: 90k input, 40k output');
+      const acc = tracker.getAccumulated();
+      expect(acc.inputTokens).toBe(90000);
+      expect(acc.outputTokens).toBe(40000);
+      expect(acc.totalTokens).toBe(130000);
+    });
+
+    it('mixed updates across different fields all use last-write-wins', () => {
+      feedLine('Total cost: $1.00');
+      feedLine('Total tokens: 10,000');
+      feedLine('Total cost: $2.50');
+      feedLine('Session: 60k input, 25k output');
+      feedLine('Total cost: $4.00');
+
+      const acc = tracker.getAccumulated();
+      expect(acc.totalCost).toBe(4.0);
+      expect(acc.inputTokens).toBe(60000);
+      expect(acc.outputTokens).toBe(25000);
+      // totalTokens was last set by the Session line (60k+25k=85k),
+      // and the final cost line does not touch totalTokens
+      expect(acc.totalTokens).toBe(85000);
+    });
+  });
+
+  describe('reset() clears gate so post-reset token lines are ignored', () => {
+    it('gate is inactive after reset and reactivates on new banner', () => {
+      feedLine('Claude Code');
+      feedLine('Total cost: $5.00');
+      expect(events).toHaveLength(1);
+
+      tracker.reset();
+
+      // Verify gate is off: token lines should be ignored
+      feedLine('Total cost: $99.00');
+      feedLine('Total tokens: 999,999');
+      expect(events).toHaveLength(1); // still just the original event
+
+      // Re-activate gate
+      feedLine('claude-code started');
+      feedLine('Total cost: $0.50');
+      expect(events).toHaveLength(2);
+      expect(events[1].totalCost).toBe(0.5);
+
+      // Accumulated was wiped, only new data present
+      const acc = tracker.getAccumulated();
+      expect(acc.totalCost).toBe(0.5);
+      expect(acc.totalTokens).toBeUndefined();
+    });
+  });
+
+  describe('buffer trimming on very long lines (>16KB)', () => {
+    beforeEach(() => feedLine('Claude Code'));
+
+    it('trims the line buffer when it exceeds MAX_BUFFER (16KB)', () => {
+      // Feed a huge chunk without newlines, exceeding 16KB
+      const padding = 'x'.repeat(20 * 1024); // 20KB of garbage
+      tracker.feed(padding);
+
+      // The old buffer content should have been trimmed.
+      // Now feed a token line. The padding did not have \n so it is
+      // still in the buffer (trimmed). Appending a newline will cause
+      // the trimmed leftover to be processed as a line, which won't
+      // match anything. Then feed a real token line.
+      tracker.feed('\n');
+      feedLine('Total tokens: 77,777');
+      expect(events).toHaveLength(1);
+      expect(events[0].totalTokens).toBe(77777);
+    });
+
+    it('does not lose data that fits within the 16KB tail after trimming', () => {
+      // Build a payload where the token info is at the very end,
+      // within the last 16KB, but the total exceeds 16KB.
+      const padding = 'a'.repeat(17 * 1024);
+      const tokenLine = 'Total cost: $6.28';
+      // Feed padding (no newline), then newline + token line + newline
+      tracker.feed(padding + '\n' + tokenLine + '\n');
+
+      // The padding line (17KB) was buffered, exceeded MAX_BUFFER,
+      // got trimmed, then split on \n. The token line should parse.
+      expect(events).toHaveLength(1);
+      expect(events[0].totalCost).toBe(6.28);
+    });
+  });
 });

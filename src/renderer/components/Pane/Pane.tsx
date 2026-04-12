@@ -85,6 +85,7 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
         isActive ? 'ring-1 ring-[rgba(var(--accent-blue-rgb),0.5)]' : ''
       } ${hasUnread ? 'notification-ring' : ''} ${flashing ? 'pane-flash' : ''}`}
       onClick={handleClick}
+      data-onboarding-target="pane-area"
     >
       <ErrorBoundary name="pane">
       <SurfaceTabs

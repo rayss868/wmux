@@ -104,6 +104,7 @@ export interface SessionData {
   company?: Company | null;
   memberCosts?: Record<string, number>;
   sessionStartTime?: number;
+  tokenDataByPty?: Record<string, { totalTokens: number; inputTokens: number; outputTokens: number; totalCost: number; lastUpdate: number }>;
 }
 
 // === Custom Theme Colors ===

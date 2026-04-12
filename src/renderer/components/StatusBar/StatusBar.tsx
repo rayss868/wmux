@@ -80,7 +80,7 @@ export default function StatusBar() {
   const activeTokenData = activePtyId ? tokenDataByPty[activePtyId] : undefined;
 
   return (
-    <div className="flex items-center justify-between h-6 px-3 border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono" style={{ backgroundColor: 'var(--bg-mantle)' }}>
+    <div className="flex items-center justify-between h-6 px-3 border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono" style={{ backgroundColor: 'var(--bg-mantle)' }} data-onboarding-target="status-bar">
       {/* Left: workspace + branch */}
       <div className="flex items-center gap-3">
         <span className="text-[var(--text-main)] font-medium">{activeWs?.name || 'wmux'}</span>
@@ -121,6 +121,7 @@ export default function StatusBar() {
           onClick={toggleSettingsPanel}
           className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors ml-1"
           title={t('statusBar.settingsTooltip')}
+          data-onboarding-target="settings-button"
         >
           ⚙
         </button>
