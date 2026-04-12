@@ -1,0 +1,42 @@
+/* ─── Onboarding Overlay ────────────────────────────────────────────────── */
+
+@keyframes onboarding-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes onboarding-spotlight-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Overlay root — sits above all app UI */
+.onboarding-overlay {
+  z-index: 9999;
+}
+
+/* Spotlight cutout — animated position transitions defined inline,
+   but the initial appearance fades in via this animation */
+.onboarding-spotlight {
+  animation: onboarding-spotlight-appear 0.3s ease-out;
+}
+
+/* Tooltip card hover state for buttons */
+.onboarding-tooltip-card button:hover {
+  filter: brightness(1.1);
+}
+
+/* Skip button subtle underline on hover */
+.onboarding-tooltip-card button[data-testid="onboarding-skip"]:hover {
+  text-decoration: underline;
+}

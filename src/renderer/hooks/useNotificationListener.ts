@@ -98,10 +98,15 @@ export function useNotificationListener() {
       }
     });
 
+    const unsubToken = window.electronAPI.token.onUpdate((ptyId, data) => {
+      useStore.getState().updateTokenData(ptyId, data);
+    });
+
     return () => {
       unsubNotif();
       unsubCwd();
       unsubMeta();
+      unsubToken();
     };
   }, []);
 }
