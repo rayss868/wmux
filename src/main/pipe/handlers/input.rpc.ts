@@ -1,6 +1,7 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { PTYManager } from '../../pty/PTYManager';
+import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import { sanitizePtyText } from '../../../shared/types';
 
@@ -45,6 +46,7 @@ export function registerInputRpc(
   router: RpcRouter,
   ptyManager: PTYManager,
   getWindow: GetWindow,
+  getDaemonClient?: () => DaemonClient | null,
 ): void {
   /**
    * input.send — writes text to a PTY session.
@@ -70,13 +72,21 @@ export function registerInputRpc(
       ptyId = await resolveActivePtyId(getWindow);
     }
 
+    const safeText = params['raw'] === true ? text : sanitizePtyText(text);
+
+    // Try local PTYManager first, then daemon
     const instance = ptyManager.get(ptyId);
-    if (!instance) {
-      throw new Error(`input.send: PTY not found — id="${ptyId}"`);
+    if (instance) {
+      ptyManager.write(ptyId, safeText);
+    } else {
+      const dc = getDaemonClient?.();
+      if (dc?.isConnected) {
+        dc.writeToSession(ptyId, safeText);
+      } else {
+        throw new Error(`input.send: PTY not found — id="${ptyId}"`);
+      }
     }
 
-    const safeText = params['raw'] === true ? text : sanitizePtyText(text);
-    ptyManager.write(ptyId, safeText);
     return { ok: true, ptyId };
   });
 
@@ -108,11 +118,17 @@ export function registerInputRpc(
     }
 
     const instance = ptyManager.get(ptyId);
-    if (!instance) {
-      throw new Error(`input.sendKey: PTY not found — id="${ptyId}"`);
+    if (instance) {
+      ptyManager.write(ptyId, sequence);
+    } else {
+      const dc = getDaemonClient?.();
+      if (dc?.isConnected) {
+        dc.writeToSession(ptyId, sequence);
+      } else {
+        throw new Error(`input.sendKey: PTY not found — id="${ptyId}"`);
+      }
     }
 
-    ptyManager.write(ptyId, sequence);
     return { ok: true, ptyId, key };
   });
 

@@ -219,7 +219,7 @@ function attachWindowRecovery(win: BrowserWindow): void {
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
 registerPaneRpc(rpcRouter, () => mainWindow);
-registerInputRpc(rpcRouter, ptyManager, () => mainWindow);
+registerInputRpc(rpcRouter, ptyManager, () => mainWindow, () => daemonClient);
 registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
