@@ -22,6 +22,21 @@ import type { SessionData, PaneLeaf, Pane, Surface } from '../../../shared/types
 import { Terminal } from '@xterm/xterm';
 import { terminalRegistry } from '../../hooks/useTerminal';
 
+/** Map shell executable path to a human-readable display name. */
+function shellDisplayName(shellPath: string): string {
+  const base = shellPath.replace(/\\/g, '/').split('/').pop()?.toLowerCase() || '';
+  if (base.includes('pwsh')) return 'PowerShell 7';
+  if (base.includes('powershell')) return 'PowerShell';
+  if (base.includes('bash')) return 'Bash';
+  if (base.includes('wsl')) return 'WSL';
+  if (base.includes('cmd')) return 'CMD';
+  if (base.includes('zsh')) return 'Zsh';
+  if (base.includes('fish')) return 'Fish';
+  // Strip extension and capitalize
+  const name = base.replace(/\.exe$/i, '');
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
 /** Serialize an xterm Terminal buffer to plain text.
  *  Only includes lines up to the cursor position (skips empty viewport padding). */
 function serializeTerminalBuffer(terminal: Terminal): string {
@@ -358,12 +373,13 @@ export default function AppLayout() {
 
     for (const leaf of emptyLeaves) {
       const paneId = leaf.id;
-      window.electronAPI.pty.create({ workspaceId: wsId }).then((result: { id: string; cwd?: string }) => {
+      window.electronAPI.pty.create({ workspaceId: wsId }).then((result: { id: string; shell?: string; cwd?: string }) => {
         if (cancelled) {
           window.electronAPI.pty.dispose(result.id);
           return;
         }
-        addSurface(paneId, result.id, 'Terminal', result.cwd || '');
+        const shellName = result.shell ? shellDisplayName(result.shell) : 'Terminal';
+        addSurface(paneId, result.id, shellName, result.cwd || '');
         // Set initial CWD in workspace metadata from first pane
         if (result.cwd) {
           const currentMeta = useStore.getState().workspaces.find((w) => w.id === wsId)?.metadata;
