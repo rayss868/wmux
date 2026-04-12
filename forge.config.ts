@@ -24,7 +24,7 @@ const config: ForgeConfig = {
       unpack: '**/node_modules/node-pty/**',
     },
     icon: './assets/icon',
-    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './THIRD_PARTY_NOTICES'],
+    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
   },
   hooks: {
     postPackage: async (_config, packageResult) => {
@@ -75,7 +75,11 @@ const config: ForgeConfig = {
         if (!fs.existsSync(dir)) return;
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
           const full = path.join(dir, entry.name);
-          if (entry.isDirectory()) removePsFiles(full);
+          // Preserve .ps1 files in shell-hooks — they are runtime hook scripts, not NuGet tools
+          if (entry.isDirectory()) {
+            if (entry.name === 'shell-hooks') continue;
+            removePsFiles(full);
+          }
           else if (entry.name.endsWith('.ps1')) {
             fs.unlinkSync(full);
             console.log(`[postPackage] Removed ${path.relative(outputPath, full)}`);

@@ -1,7 +1,10 @@
 import * as pty from 'node-pty';
 import os from 'node:os';
 import fs from 'node:fs';
+import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
+
+export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
 
 export interface PTYInstance {
   id: string;
@@ -18,6 +21,90 @@ export class PTYManager {
 
   onDispose(callback: (ptyId: string) => void): void {
     this.onDisposeCallback = callback;
+  }
+
+  /**
+   * Detect shell type from the shell executable path.
+   */
+  detectShellType(shellPath: string): ShellType {
+    const lower = shellPath.toLowerCase();
+    const base = path.basename(lower);
+    if (base.includes('pwsh') || base.includes('powershell')) return 'powershell';
+    if (base.includes('bash') || base.includes('wsl')) return 'bash';
+    if (base.includes('cmd')) return 'cmd';
+    return 'unknown';
+  }
+
+  /**
+   * Resolve the shell-hooks directory.
+   * In development: relative to source tree.
+   * In production (packaged): extraResources in process.resourcesPath.
+   */
+  getShellHooksDir(): string {
+    // Check if running in packaged Electron app (asar)
+    const appPath = typeof globalThis.__dirname !== 'undefined' ? globalThis.__dirname : __dirname;
+    const isPackaged = appPath.includes('app.asar');
+
+    if (isPackaged) {
+      // Production: shell-hooks copied to resources via extraResource
+      return path.join(process.resourcesPath, 'shell-hooks');
+    }
+    // Development: resolve from source tree
+    // __dirname in Vite build is .vite/build, so navigate to project root
+    const candidates = [
+      path.join(appPath, '..', '..', 'src', 'main', 'pty', 'shell-hooks'),
+      path.join(appPath, 'src', 'main', 'pty', 'shell-hooks'),
+      path.resolve('src', 'main', 'pty', 'shell-hooks'),
+    ];
+    for (const dir of candidates) {
+      if (fs.existsSync(dir)) return dir;
+    }
+    return path.resolve('src', 'main', 'pty', 'shell-hooks');
+  }
+
+  /**
+   * Build shell args and env additions for hook injection.
+   */
+  buildHookInjection(
+    shellType: ShellType,
+    env: Record<string, string>,
+  ): { args: string[]; env: Record<string, string> } {
+    const hooksDir = this.getShellHooksDir();
+    const args: string[] = [];
+
+    switch (shellType) {
+      case 'powershell': {
+        const hookPath = path.join(hooksDir, 'pwsh.ps1');
+        if (fs.existsSync(hookPath)) {
+          env[ENV_KEYS.SHELL_HOOK] = hookPath;
+          // Use -NoExit -Command to dot-source the hook script
+          // Quoting with single quotes inside double quotes handles spaces in path
+          args.push('-NoExit', '-Command', `. '${hookPath}'`);
+        }
+        break;
+      }
+      case 'bash': {
+        const hookPath = path.join(hooksDir, 'bash.sh');
+        if (fs.existsSync(hookPath)) {
+          env[ENV_KEYS.SHELL_HOOK] = hookPath;
+          // --rcfile replaces the default .bashrc loading; our hook sources .bashrc itself
+          args.push('--rcfile', hookPath);
+        }
+        break;
+      }
+      case 'cmd': {
+        // CMD: set PROMPT with OSC 7 escape for CWD reporting
+        // $E = ESC, $P = current drive and path, $G = >
+        env['PROMPT'] = '$E]7;file://$COMPUTERNAME/$P$E\\$P$G';
+        env[ENV_KEYS.SHELL_HOOK_ACTIVE] = '1';
+        break;
+      }
+      default:
+        // Unknown shell — no hook injection
+        break;
+    }
+
+    return { args, env };
   }
 
   create(options?: {
@@ -52,22 +139,26 @@ export class PTYManager {
     // malicious child processes (e.g. npm packages) from accessing it.
     // CLI/MCP clients read the token directly from ~/.wmux-auth-token file.
 
-    const process = pty.spawn(shell, [], {
+    // Detect shell type and inject hook
+    const shellType = this.detectShellType(shell);
+    const hookInjection = this.buildHookInjection(shellType, env);
+
+    const ptyProcess = pty.spawn(shell, hookInjection.args, {
       name: 'xterm-256color',
       cols: options?.cols || 80,
       rows: options?.rows || 24,
       cwd,
-      env,
+      env: hookInjection.env,
       useConpty: true,
     });
 
-    const instance: PTYInstance = { id, process, shell };
+    const instance: PTYInstance = { id, process: ptyProcess, shell };
     this.instances.set(id, instance);
 
-    // Write PID→workspaceId mapping so MCP servers can resolve identity
+    // Write PID->workspaceId mapping so MCP servers can resolve identity
     // (Claude Code doesn't propagate env vars to MCP child processes)
     if (options?.workspaceId) {
-      this.writePidMap(process.pid, options.workspaceId);
+      this.writePidMap(ptyProcess.pid, options.workspaceId);
     }
 
     return instance;
@@ -145,9 +236,8 @@ export class PTYManager {
         'powershell.exe',
         'cmd.exe',
       ];
-      const fs = require('fs');
-      for (const shell of candidates) {
-        try { if (fs.existsSync(shell)) return shell; } catch { /* skip */ }
+      for (const s of candidates) {
+        try { if (fs.existsSync(s)) return s; } catch { /* skip */ }
       }
       return 'cmd.exe';
     }

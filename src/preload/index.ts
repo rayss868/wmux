@@ -84,6 +84,14 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener('daemon:connected', listener); };
     },
   },
+  token: {
+    onUpdate: (callback: (ptyId: string, event: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number; cost: number; totalCost: number; totalInputTokens: number; totalOutputTokens: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, ptyId: string, data: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number; cost: number; totalCost: number; totalInputTokens: number; totalOutputTokens: number }) =>
+        callback(ptyId, data);
+      ipcRenderer.on(IPC.TOKEN_UPDATE, listener);
+      return () => { ipcRenderer.removeListener(IPC.TOKEN_UPDATE, listener); };
+    },
+  },
   scrollback: {
     dump: (surfaceId: string, content: string) =>
       ipcRenderer.invoke(IPC.SCROLLBACK_DUMP, surfaceId, content),

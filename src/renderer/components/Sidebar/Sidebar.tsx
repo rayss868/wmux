@@ -1,5 +1,7 @@
+import { useState, useCallback } from 'react';
 import { useStore } from '../../stores';
 import WorkspaceItem from './WorkspaceItem';
+import PresetPicker from './PresetPicker';
 import type { Pane, PaneLeaf, Surface } from '../../../shared/types';
 import { useT } from '../../hooks/useT';
 
@@ -34,6 +36,10 @@ export default function Sidebar() {
   const multiviewIds = useStore((s) => s.multiviewIds);
   const toggleFileTree = useStore((s) => s.toggleFileTree);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
+
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
+  const closePicker = useCallback(() => setPickerOpen(false), []);
 
   const handleCtrlSelect = (wsId: string) => {
     toggleMultiviewWorkspace(wsId);
@@ -82,7 +88,7 @@ export default function Sidebar() {
   return (
     <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 240 }}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--bg-surface)]">
+      <div className="relative flex items-center justify-between px-4 py-3 border-b border-[var(--bg-surface)]">
         <span className="text-sm font-bold text-[var(--text-main)] tracking-widest font-mono">WMUX</span>
         <div className="flex items-center gap-1.5">
           {/* File tree button hidden - feature unstable
@@ -96,12 +102,13 @@ export default function Sidebar() {
           */}
           <button
             className="text-[var(--text-subtle)] hover:text-[var(--accent-green)] text-lg leading-none transition-colors"
-            onClick={() => addWorkspace()}
+            onClick={togglePicker}
             title={t('sidebar.newWorkspaceTooltip')}
           >
             +
           </button>
         </div>
+        {pickerOpen && <PresetPicker onClose={closePicker} />}
       </div>
 
       {/* Workspace list */}

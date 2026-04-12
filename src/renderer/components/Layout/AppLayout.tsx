@@ -319,40 +319,46 @@ export default function AppLayout() {
     return () => { clearInterval(interval); };
   }, []);
 
-  // Auto-create initial surface for empty leaf panes
+  // Auto-create initial surface for empty leaf panes (supports both single-leaf and preset branch roots)
   // 세션 복원된 경우: surfaces가 이미 있으므로 이 effect는 실행되지 않음
   // 브라우저 surface만 있는 pane: surfaceType이 'browser'이면 PTY 생성 스킵
   useEffect(() => {
     if (!activeWorkspace) return;
-    const root = activeWorkspace.rootPane;
-    if (root.type !== 'leaf') return;
 
-    // surfaces가 비어있을 때만 새 PTY 생성
-    if (root.surfaces.length === 0) {
-      let cancelled = false;
-      const paneId = root.id;
-      window.electronAPI.pty.create({ workspaceId: activeWorkspace.id }).then((result: { id: string; cwd?: string }) => {
+    // Collect all empty leaf panes from the tree
+    type LeafPane = import('../../../shared/types').PaneLeaf;
+    const collectEmptyLeaves = (pane: import('../../../shared/types').Pane): LeafPane[] => {
+      if (pane.type === 'leaf') {
+        return pane.surfaces.length === 0 ? [pane] : [];
+      }
+      return pane.children.flatMap(collectEmptyLeaves);
+    };
+
+    const emptyLeaves = collectEmptyLeaves(activeWorkspace.rootPane);
+    if (emptyLeaves.length === 0) return;
+
+    let cancelled = false;
+    const wsId = activeWorkspace.id;
+
+    for (const leaf of emptyLeaves) {
+      const paneId = leaf.id;
+      window.electronAPI.pty.create({ workspaceId: wsId }).then((result: { id: string; cwd?: string }) => {
         if (cancelled) {
           window.electronAPI.pty.dispose(result.id);
           return;
         }
         addSurface(paneId, result.id, 'Terminal', result.cwd || '');
-        // Set initial CWD in workspace metadata so FileTree can use it immediately
-        if (result.cwd && activeWorkspace) {
-          useStore.getState().updateWorkspaceMetadata(activeWorkspace.id, { cwd: result.cwd });
+        // Set initial CWD in workspace metadata from first pane
+        if (result.cwd) {
+          const currentMeta = useStore.getState().workspaces.find((w) => w.id === wsId)?.metadata;
+          if (!currentMeta?.cwd) {
+            useStore.getState().updateWorkspaceMetadata(wsId, { cwd: result.cwd });
+          }
         }
       });
-      return () => { cancelled = true; };
     }
 
-    // surfaces가 있지만 모두 browser 타입인 경우 PTY 생성 스킵
-    const hasTerminalSurface = root.surfaces.some(
-      (s) => !s.surfaceType || s.surfaceType === 'terminal'
-    );
-    if (!hasTerminalSurface) {
-      // 브라우저만 있는 pane — PTY 불필요, 아무것도 하지 않음
-      return;
-    }
+    return () => { cancelled = true; };
   }, [activeWorkspace?.id]);
 
   if (!activeWorkspace) return null;

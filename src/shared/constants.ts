@@ -13,6 +13,7 @@ export const IPC = {
   SESSION_LOAD: 'session:load',
   NOTIFICATION: 'notification:new',
   CWD_CHANGED: 'notification:cwd-changed',
+  GIT_BRANCH_CHANGED: 'notification:git-branch-changed',
   METADATA_UPDATE: 'metadata:update',
   METADATA_REQUEST: 'metadata:request',
   // Phase 3: RPC bridge (Main ↔ Renderer)
@@ -44,6 +45,8 @@ export const IPC = {
   // Scrollback persistence
   SCROLLBACK_DUMP: 'scrollback:dump',
   SCROLLBACK_LOAD: 'scrollback:load',
+  // Token tracking
+  TOKEN_UPDATE: 'token:update',
 } as const;
 
 // Named Pipe / Unix socket path for wmux API
@@ -65,6 +68,8 @@ export const ENV_KEYS = {
   SURFACE_ID: 'WMUX_SURFACE_ID',
   SOCKET_PATH: 'WMUX_SOCKET_PATH',
   AUTH_TOKEN: 'WMUX_AUTH_TOKEN',
+  SHELL_HOOK: 'WMUX_SHELL_HOOK',
+  SHELL_HOOK_ACTIVE: 'WMUX_SHELL_HOOK_ACTIVE',
 } as const;
 
 // Auth token file path — written by wmux main process, read by MCP server

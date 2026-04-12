@@ -1,13 +1,21 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, type Pane, type SessionData, type Workspace, type WorkspaceMetadata } from '../../../shared/types';
+import { createWorkspace, generateId, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata } from '../../../shared/types';
+import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId } from '../../themes';
+
+/** Collect all leaf panes from a pane tree */
+function collectLeafPanes(pane: Pane): PaneLeaf[] {
+  if (pane.type === 'leaf') return [pane];
+  return pane.children.flatMap(collectLeafPanes);
+}
 
 export interface WorkspaceSlice {
   workspaces: Workspace[];
   activeWorkspaceId: string;
   addWorkspace: (name?: string) => void;
+  addWorkspaceWithPreset: (presetId: string, name?: string) => void;
   removeWorkspace: (id: string) => void;
   setActiveWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
@@ -38,6 +46,37 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         wsName = `Workspace ${n}`;
       }
       const ws = createWorkspace(wsName);
+      state.workspaces.push(ws);
+      state.activeWorkspaceId = ws.id;
+    }),
+
+    addWorkspaceWithPreset: (presetId, name) => set((state: StoreState) => {
+      const preset = getPresetById(presetId);
+      if (!preset) return;
+
+      let wsName = name;
+      if (!wsName) {
+        const usedNumbers = new Set(
+          state.workspaces
+            .map((w: Workspace) => {
+              const m = w.name.match(/^Workspace (\d+)$/);
+              return m ? parseInt(m[1], 10) : null;
+            })
+            .filter((n): n is number => n !== null),
+        );
+        let n = 1;
+        while (usedNumbers.has(n)) n++;
+        wsName = `Workspace ${n}`;
+      }
+
+      const rootPane = preset.createRootPane();
+      const leaves = collectLeafPanes(rootPane);
+      const ws: Workspace = {
+        id: generateId('ws'),
+        name: wsName,
+        rootPane,
+        activePaneId: leaves[0]?.id || rootPane.id,
+      };
       state.workspaces.push(ws);
       state.activeWorkspaceId = ws.id;
     }),

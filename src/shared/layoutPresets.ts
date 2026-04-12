@@ -1,84 +1,82 @@
-import { createLeafPane, generateId } from './types';
-import type { Pane, PaneBranch } from './types';
+import { createLeafPane, type Pane, type PaneBranch } from './types';
 
 export interface LayoutPreset {
   id: string;
   name: string;
   description: string;
-  icon?: string;
+  /** Factory that creates a fresh pane tree each time */
   createRootPane: () => Pane;
+}
+
+function createBranchPane(
+  direction: 'horizontal' | 'vertical',
+  children: Pane[],
+  sizes?: number[],
+): PaneBranch {
+  return {
+    id: `pane-${crypto.randomUUID()}`,
+    type: 'branch',
+    direction,
+    children,
+    sizes,
+  };
 }
 
 export const LAYOUT_PRESETS: LayoutPreset[] = [
   {
-    id: 'two-agent',
-    name: '2-Agent 모드',
-    description: '좌우 수평 분할 (50:50)',
-    icon: 'columns',
-    createRootPane(): PaneBranch {
-      return {
-        id: generateId('pane'),
-        type: 'branch',
-        direction: 'horizontal',
-        children: [createLeafPane(), createLeafPane()],
-        sizes: [50, 50],
-      };
-    },
+    id: 'single',
+    name: 'Single Pane',
+    description: 'A single terminal pane',
+    createRootPane: () => createLeafPane(),
   },
   {
-    id: 'three-agent',
-    name: '3-Agent 모드',
-    description: '좌측 50% + 우측 상하 분할 (50:50)',
-    icon: 'layout',
-    createRootPane(): PaneBranch {
-      const rightBranch: PaneBranch = {
-        id: generateId('pane'),
-        type: 'branch',
-        direction: 'vertical',
-        children: [createLeafPane(), createLeafPane()],
-        sizes: [50, 50],
-      };
-      return {
-        id: generateId('pane'),
-        type: 'branch',
-        direction: 'horizontal',
-        children: [createLeafPane(), rightBranch],
-        sizes: [50, 50],
-      };
-    },
+    id: 'hsplit',
+    name: 'Horizontal Split',
+    description: 'Two panes side by side',
+    createRootPane: () =>
+      createBranchPane('horizontal', [createLeafPane(), createLeafPane()], [50, 50]),
   },
   {
-    id: 'code-review',
-    name: '코드리뷰 모드',
-    description: '좌측 60% 터미널 + 우측 40% 브라우저',
-    icon: 'code',
-    createRootPane(): PaneBranch {
-      return {
-        id: generateId('pane'),
-        type: 'branch',
-        direction: 'horizontal',
-        children: [createLeafPane(), createLeafPane()],
-        sizes: [60, 40],
-      };
-    },
+    id: 'vsplit',
+    name: 'Vertical Split',
+    description: 'Two panes stacked vertically',
+    createRootPane: () =>
+      createBranchPane('vertical', [createLeafPane(), createLeafPane()], [50, 50]),
   },
   {
-    id: 'browser-terminal',
-    name: '브라우저+터미널',
-    description: '상단 60% 브라우저 + 하단 40% 터미널',
-    icon: 'globe',
-    createRootPane(): PaneBranch {
-      return {
-        id: generateId('pane'),
-        type: 'branch',
-        direction: 'vertical',
-        children: [createLeafPane(), createLeafPane()],
-        sizes: [60, 40],
-      };
-    },
+    id: 'three-col',
+    name: 'Three Columns',
+    description: 'Three panes in a row',
+    createRootPane: () =>
+      createBranchPane(
+        'horizontal',
+        [createLeafPane(), createLeafPane(), createLeafPane()],
+        [33, 34, 33],
+      ),
+  },
+  {
+    id: 'main-side',
+    name: 'Main + Sidebar',
+    description: 'Large left pane with smaller right pane',
+    createRootPane: () =>
+      createBranchPane('horizontal', [createLeafPane(), createLeafPane()], [70, 30]),
+  },
+  {
+    id: 'grid-4',
+    name: '2x2 Grid',
+    description: 'Four panes in a grid',
+    createRootPane: () =>
+      createBranchPane(
+        'vertical',
+        [
+          createBranchPane('horizontal', [createLeafPane(), createLeafPane()], [50, 50]),
+          createBranchPane('horizontal', [createLeafPane(), createLeafPane()], [50, 50]),
+        ],
+        [50, 50],
+      ),
   },
 ];
 
 export function getPresetById(id: string): LayoutPreset | undefined {
-  return LAYOUT_PRESETS.find((preset) => preset.id === id);
+  return LAYOUT_PRESETS.find((p) => p.id === id);
 }
