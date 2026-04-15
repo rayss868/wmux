@@ -4,7 +4,7 @@ import type { Pane, PaneLeaf, PaneBranch, Workspace } from '../../../shared/type
 import { createLeafPane, generateId } from '../../../shared/types';
 
 export interface PaneSlice {
-  splitPane: (paneId: string, direction: 'horizontal' | 'vertical') => void;
+  splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string) => void;
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string) => void;
   focusPaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
@@ -43,8 +43,9 @@ function getLeafPanes(root: Pane): PaneLeaf[] {
 }
 
 export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]], [], PaneSlice> = (set, get) => ({
-  splitPane: (paneId, direction) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  splitPane: (paneId, direction, workspaceId) => set((state: StoreState) => {
+    const targetWsId = workspaceId || state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
 
     const targetPane = findPane(ws.rootPane, paneId);

@@ -369,7 +369,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // -------------------------------------------------------------------------
 
   if (method === 'browser.open') {
-    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+    const targetWsId = typeof params.workspaceId === 'string'
+      ? params.workspaceId
+      : store.activeWorkspaceId;
+    const ws = store.workspaces.find((w) => w.id === targetWsId);
     if (!ws) return { error: 'no active workspace' };
     const url = typeof params.url === 'string' ? params.url : undefined;
     const partition = typeof params.partition === 'string' ? params.partition : 'persist:wmux-default';
@@ -383,7 +386,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         const paneIdForBrowser = leaf.id;
         // Navigate existing browser to the new URL if provided — must go through setState (Immer)
         useStore.setState((state) => {
-          const w = state.workspaces.find((w2) => w2.id === state.activeWorkspaceId);
+          const w = state.workspaces.find((w2) => w2.id === targetWsId);
           if (!w) return;
           const p = findPaneById(w.rootPane, paneIdForBrowser);
           if (!p || p.type !== 'leaf') return;
@@ -405,21 +408,21 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // This uses PaneContainer's proven split mechanism instead of
     // trying to render terminal+browser in the same leaf pane.
     const paneId = ws.activePaneId;
-    store.splitPane(paneId, 'horizontal');
+    store.splitPane(paneId, 'horizontal', targetWsId);
 
     // After split, the new pane becomes active
     const afterSplit = useStore.getState();
-    const afterSplitWs = afterSplit.workspaces.find((w) => w.id === afterSplit.activeWorkspaceId);
+    const afterSplitWs = afterSplit.workspaces.find((w) => w.id === targetWsId);
     if (!afterSplitWs) return { ok: true };
 
     const newPaneId = afterSplitWs.activePaneId;
-    afterSplit.addBrowserSurface(newPaneId, url, partition);
+    afterSplit.addBrowserSurface(newPaneId, url, partition, targetWsId);
 
     // Focus back to the original terminal pane so user can keep typing
     afterSplit.setActivePane(paneId);
 
     const updated = useStore.getState();
-    const updatedWs = updated.workspaces.find((w) => w.id === updated.activeWorkspaceId);
+    const updatedWs = updated.workspaces.find((w) => w.id === targetWsId);
     if (!updatedWs) return { ok: true };
     const newPane = findPaneById(updatedWs.rootPane, newPaneId);
     if (!newPane || newPane.type !== 'leaf') return { ok: true };

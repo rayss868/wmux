@@ -5,7 +5,7 @@ import { createSurface, generateId } from '../../../shared/types';
 
 export interface SurfaceSlice {
   addSurface: (paneId: string, ptyId: string, shell: string, cwd: string) => void;
-  addBrowserSurface: (paneId: string, url?: string, partition?: string) => void;
+  addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
   closeSurface: (paneId: string, surfaceId: string) => void;
   setActiveSurface: (paneId: string, surfaceId: string) => void;
@@ -38,8 +38,9 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = surface.id;
   }),
 
-  addBrowserSurface: (paneId, url, partition) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  addBrowserSurface: (paneId, url, partition, workspaceId) => set((state: StoreState) => {
+    const targetWsId = workspaceId || state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;
