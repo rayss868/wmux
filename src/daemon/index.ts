@@ -14,9 +14,36 @@ import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, Dae
 // === Constants ===
 const wmuxDir = getWmuxDir();
 
-/** Get a unique identifier for the current OS boot session.
+/** Get a unique identifier for the current OS boot session (async).
  *  Changes after every reboot, enabling stale PID detection. */
-function getBootId(): string {
+async function getBootId(): Promise<string> {
+  try {
+    if (process.platform === 'win32') {
+      const { execFile } = require('child_process');
+      const { promisify } = require('util');
+      const execFileAsync = promisify(execFile);
+      const pathMod = require('path');
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const wmic = pathMod.join(systemRoot, 'System32', 'wbem', 'wmic.exe');
+      const { stdout } = await execFileAsync(
+        wmic,
+        ['os', 'get', 'LastBootUpTime', '/value'],
+        { encoding: 'utf-8', timeout: 5000, windowsHide: true },
+      );
+      const match = (stdout as string).match(/LastBootUpTime=(\S+)/);
+      return match ? match[1].trim() : `fallback-${os.uptime()}`;
+    } else {
+      // Linux: /proc/sys/kernel/random/boot_id
+      return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();
+    }
+  } catch {
+    // Fallback: use uptime (less precise but better than nothing)
+    return `uptime-${Math.floor(os.uptime())}`;
+  }
+}
+
+/** Synchronous getBootId for use in process 'exit' handler where async is not possible. */
+function getBootIdSync(): string {
   try {
     if (process.platform === 'win32') {
       const { execFileSync } = require('child_process');
@@ -31,11 +58,9 @@ function getBootId(): string {
       const match = result.match(/LastBootUpTime=(\S+)/);
       return match ? match[1].trim() : `fallback-${os.uptime()}`;
     } else {
-      // Linux: /proc/sys/kernel/random/boot_id
       return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();
     }
   } catch {
-    // Fallback: use uptime (less precise but better than nothing)
     return `uptime-${Math.floor(os.uptime())}`;
   }
 }
@@ -50,21 +75,22 @@ function log(level: string, msg: string, ...args: unknown[]): void {
 
 // === PID / Lock helpers ===
 
-function isProcessRunning(pid: number): boolean {
+async function isProcessRunning(pid: number): Promise<boolean> {
   if (process.platform === 'win32') {
     // process.kill(pid, 0) is unreliable on Windows — always succeeds for stale PIDs.
-    // Use wmic with full paths to avoid PATH issues in non-standard shells.
     try {
-      const { execFileSync } = require('child_process');
+      const { execFile } = require('child_process');
+      const { promisify } = require('util');
+      const execFileAsync = promisify(execFile);
       const pathMod = require('path');
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
       const tasklist = pathMod.join(systemRoot, 'System32', 'tasklist.exe');
-      const result = execFileSync(
+      const { stdout } = await execFileAsync(
         tasklist,
         ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
         { encoding: 'utf-8', timeout: 3000, windowsHide: true },
       );
-      return result.includes(`"${pid}"`);
+      return (stdout as string).includes(`"${pid}"`);
     } catch {
       return false;
     }
@@ -79,20 +105,22 @@ function isProcessRunning(pid: number): boolean {
 
 /** Check if a PID belongs to the shell process we originally spawned.
  *  Prevents killing unrelated processes after PID recycling (e.g. reboot). */
-function isOurShellProcess(pid: number, expectedCmd: string): boolean {
+async function isOurShellProcess(pid: number, expectedCmd: string): Promise<boolean> {
   try {
-    const { execFileSync } = require('child_process');
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileAsync = promisify(execFile);
     if (process.platform === 'win32') {
       const pathMod = require('path');
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
       const wmic = pathMod.join(systemRoot, 'System32', 'wbem', 'wmic.exe');
-      const result = execFileSync(
+      const { stdout } = await execFileAsync(
         wmic,
         ['process', 'where', `ProcessId=${pid}`, 'get', 'ExecutablePath', '/value'],
         { encoding: 'utf-8', timeout: 3000, windowsHide: true },
       );
       // WMIC output: "ExecutablePath=C:\Windows\...\powershell.exe\r\n"
-      const match = result.match(/ExecutablePath=(.+)/i);
+      const match = (stdout as string).match(/ExecutablePath=(.+)/i);
       if (!match) return false;
       const actualExe = match[1].trim().toLowerCase();
       const expectedExe = expectedCmd.toLowerCase();
@@ -101,10 +129,10 @@ function isOurShellProcess(pid: number, expectedCmd: string): boolean {
              actualExe === expectedExe;
     } else {
       // Unix: check /proc/<pid>/exe or use ps
-      const result = execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], {
+      const { stdout } = await execFileAsync('ps', ['-o', 'comm=', '-p', String(pid)], {
         encoding: 'utf-8', timeout: 3000,
       });
-      const actualCmd = result.trim();
+      const actualCmd = (stdout as string).trim();
       const expectedBase = path.basename(expectedCmd);
       return actualCmd === expectedBase || actualCmd.includes(expectedBase);
     }
@@ -114,7 +142,7 @@ function isOurShellProcess(pid: number, expectedCmd: string): boolean {
   }
 }
 
-function acquireLock(): boolean {
+async function acquireLock(): Promise<boolean> {
   const dir = getWmuxDir();
   if (!fs.existsSync(dir)) {
     // Note: mode is no-op on Windows; use icacls for NTFS ACLs
@@ -131,9 +159,22 @@ function acquireLock(): boolean {
       // Lock file exists — check if the owning process is still alive
       try {
         const existingPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf-8').trim(), 10);
-        if (!isNaN(existingPid) && isProcessRunning(existingPid)) {
-          log('error', `Another daemon is already running (PID ${existingPid})`);
-          return false;
+        if (!isNaN(existingPid)) {
+          const running = await isProcessRunning(existingPid);
+          if (running) {
+            log('error', `Another daemon is already running (PID ${existingPid})`);
+            return false;
+          }
+          // tasklist says not running — but could be a tasklist failure.
+          // Use bootId comparison as a fallback: if bootId matches the saved state,
+          // the lock is truly stale (same boot, process gone).
+          // If bootId differs, it's definitely stale (reboot happened).
+          const stateWriter = new StateWriter(wmuxDir);
+          const savedState = stateWriter.load();
+          const currentBoot = await getBootId();
+          if (savedState.bootId && savedState.bootId !== currentBoot) {
+            log('info', `Boot ID changed — lock is stale (reboot detected)`);
+          }
         }
         // Stale lock — owning process is dead, remove and retry
         log('warn', `Removing stale lock file (PID ${existingPid})`);
@@ -194,7 +235,7 @@ async function recoverSessions(
   const recoveredIds = new Set<string>();
 
   // Detect reboot: if bootId changed, all old PIDs are stale — skip kill attempts
-  const currentBootId = getBootId();
+  const currentBootId = await getBootId();
   const rebooted = state.bootId != null && state.bootId !== currentBootId;
   if (rebooted) {
     log('info', `Boot ID changed (${state.bootId} → ${currentBootId}) — reboot detected, skipping PID kills`);
@@ -253,7 +294,7 @@ async function recoverSessions(
       if (!rebooted && await ProcessMonitor.isAlive(session.pid)) {
         // Guard against PID recycling: verify the process is actually
         // the shell we spawned, not an unrelated system process.
-        if (isOurShellProcess(session.pid, session.cmd)) {
+        if (await isOurShellProcess(session.pid, session.cmd)) {
           try { process.kill(session.pid); } catch { /* ignore */ }
         } else {
           log('warn', `PID ${session.pid} is alive but not our shell (${session.cmd}) — skipping kill`);
@@ -600,11 +641,18 @@ function wireEvents(
 
 // === State builder ===
 
-/** Cached boot ID — computed once at startup */
+/** Cached boot ID — populated at startup via initBootId() */
 let cachedBootId: string | undefined;
 
+/** Initialize the cached boot ID (call once at startup). */
+async function initBootId(): Promise<void> {
+  cachedBootId = await getBootId();
+}
+
 function buildState(sessionManager: DaemonSessionManager): DaemonState {
-  if (!cachedBootId) cachedBootId = getBootId();
+  // cachedBootId is initialized in main() before any calls to buildState.
+  // Fallback to sync version only if somehow not initialized.
+  if (!cachedBootId) cachedBootId = getBootIdSync();
   return {
     version: 1,
     sessions: sessionManager.listSessions(),
@@ -673,7 +721,7 @@ async function shutdown(
   await Promise.all(dumpPromises);
 
   // Save suspended state BEFORE disposing
-  if (!cachedBootId) cachedBootId = getBootId();
+  if (!cachedBootId) cachedBootId = await getBootId();
   const suspendState: DaemonState = {
     version: 1,
     sessions: managedSessions.map((m) => ({ ...m.meta })),
@@ -701,9 +749,12 @@ async function main(): Promise<void> {
   log('info', `wmux-daemon starting (PID ${process.pid})`);
 
   // 1. Single-instance check
-  if (!acquireLock()) {
+  if (!(await acquireLock())) {
     process.exit(1);
   }
+
+  // Cache boot ID early (async) so buildState() never needs to block
+  await initBootId();
 
   // 2. Load configuration
   const config = loadConfig();
@@ -793,24 +844,32 @@ async function main(): Promise<void> {
   reapInterval.unref();
 
   // 8c. Periodic buffer snapshots (every 30s) — survives forced kills / power loss
-  // Also save sessions.json so recovery has up-to-date session metadata
+  // Also save sessions.json so recovery has up-to-date session metadata.
+  // Sequential dumps to avoid simultaneous memory peaks from all buffers at once.
+  let snapshotRunning = false;
   const snapshotInterval = setInterval(() => {
+    if (snapshotRunning) return; // skip if previous snapshot cycle still in progress
     const managed = sessionManager.listManagedSessions();
     const live = managed.filter((m) => m.meta.state !== 'dead');
     if (live.length === 0) return;
 
+    snapshotRunning = true;
     stateWriter.ensureBufferDir();
-    const dumps = live.map((m) => {
-      const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
-      return m.ringBuffer.dumpToFile(dumpPath).catch((err) => {
-        log('warn', `Snapshot dump failed for ${m.meta.id}:`, err);
-      });
-    });
 
-    // Save session metadata only after all buffer dumps complete (atomicity)
-    Promise.all(dumps).then(() => {
+    (async () => {
+      for (const m of live) {
+        const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
+        try {
+          await m.ringBuffer.dumpToFile(dumpPath);
+        } catch (err) {
+          log('warn', `Snapshot dump failed for ${m.meta.id}:`, err);
+        }
+      }
+      // Save session metadata after all buffer dumps complete
       const state = buildState(sessionManager);
       stateWriter.saveImmediate(state);
+    })().finally(() => {
+      snapshotRunning = false;
     });
   }, 30_000);
   snapshotInterval.unref();
@@ -842,7 +901,7 @@ async function main(): Promise<void> {
             m.meta.bufferDumpPath = dumpPath;
           } catch { /* best effort */ }
         }
-        if (!cachedBootId) cachedBootId = getBootId();
+        if (!cachedBootId) cachedBootId = getBootIdSync();
         const suspendState: DaemonState = {
           version: 1,
           sessions: managed.map((m) => ({ ...m.meta })),
@@ -853,10 +912,39 @@ async function main(): Promise<void> {
     });
   }
 
-  // 10. Uncaught error handlers
+  // 10. Uncaught error handlers — with resilience for recoverable errors
+  const FATAL_CODES = new Set(['ENOMEM', 'ENOSPC', 'ERR_OUT_OF_RANGE']);
+  const uncaughtErrors: { message: string; time: number }[] = [];
+  const UNCAUGHT_WINDOW_MS = 30_000; // 30-second sliding window
+  const UNCAUGHT_THRESHOLD = 3;      // shutdown after 3 same errors in window
+
   process.on('uncaughtException', (err) => {
     log('error', 'Uncaught exception:', err);
-    doShutdown('uncaughtException');
+
+    // Fatal system errors — shutdown immediately
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code && FATAL_CODES.has(code)) {
+      log('error', `Fatal error code ${code} — shutting down immediately`);
+      doShutdown('uncaughtException');
+      return;
+    }
+
+    // Track error occurrences within a sliding window
+    const now = Date.now();
+    const errKey = err.message || String(err);
+    uncaughtErrors.push({ message: errKey, time: now });
+
+    // Prune old entries outside the window
+    while (uncaughtErrors.length > 0 && uncaughtErrors[0].time < now - UNCAUGHT_WINDOW_MS) {
+      uncaughtErrors.shift();
+    }
+
+    // Count occurrences of this specific error
+    const count = uncaughtErrors.filter((e) => e.message === errKey).length;
+    if (count >= UNCAUGHT_THRESHOLD) {
+      log('error', `Same uncaught exception repeated ${count} times in ${UNCAUGHT_WINDOW_MS / 1000}s — shutting down`);
+      doShutdown('uncaughtException');
+    }
   });
   process.on('unhandledRejection', (reason) => {
     log('error', 'Unhandled rejection:', reason);

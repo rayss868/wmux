@@ -103,15 +103,15 @@ describe('ProcessMonitor', () => {
     }
   });
 
-  it('re-entrancy guard prevents overlapping checks', async () => {
+  it('re-entrancy guard prevents overlapping batch checks', async () => {
     monitor = new ProcessMonitor();
-    const isAliveSpy = vi.spyOn(ProcessMonitor, 'isAlive');
+    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAlive');
 
-    // Make isAlive slow to simulate overlapping
-    let resolveFirst: (() => void) | undefined;
-    isAliveSpy.mockImplementationOnce(() => {
-      return new Promise<boolean>((resolve) => {
-        resolveFirst = () => resolve(true);
+    // Make batchCheckAlive slow to simulate overlapping
+    let resolveFirst: ((value: Set<number>) => void) | undefined;
+    batchSpy.mockImplementationOnce(() => {
+      return new Promise<Set<number>>((resolve) => {
+        resolveFirst = (v) => resolve(v);
       });
     });
 
@@ -122,22 +122,22 @@ describe('ProcessMonitor', () => {
       const onDead = vi.fn();
       monitor.watch('sess-guard', process.pid, onDead);
 
-      // Wait for first check to start
+      // Wait for first batch check to start
       await vi.waitFor(() => {
-        expect(isAliveSpy).toHaveBeenCalledTimes(1);
+        expect(batchSpy).toHaveBeenCalledTimes(1);
       }, { timeout: 1000 });
 
-      // Wait another interval — second check should be skipped due to guard
+      // Wait another interval — second check should be skipped due to batchRunning guard
       await new Promise((r) => setTimeout(r, 100));
 
-      // isAlive should still only have been called once (second was skipped)
-      expect(isAliveSpy).toHaveBeenCalledTimes(1);
+      // batchCheckAlive should still only have been called once (second was skipped)
+      expect(batchSpy).toHaveBeenCalledTimes(1);
 
-      // Resolve the first check
-      resolveFirst!();
+      // Resolve the first check (report process as alive)
+      resolveFirst!(new Set([process.pid]));
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
-      isAliveSpy.mockRestore();
+      batchSpy.mockRestore();
     }
   });
 });
