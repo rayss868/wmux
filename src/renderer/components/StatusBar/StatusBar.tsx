@@ -35,26 +35,18 @@ export default function StatusBar() {
   const toggleSettingsPanel = useStore((s) => s.toggleSettingsPanel);
   const tokenDataByPty = useStore((s) => s.tokenDataByPty);
 
+  // Prefix mode (tmux-style Ctrl+B)
+  const prefixMode = useStore((s) => s.prefixMode);
+  const prefixError = useStore((s) => s.prefixError);
+
   // Company 모드 비용 정보
   const sidebarMode = useStore((s) => s.sidebarMode);
   const totalCost = useStore((s) => s.company?.totalCostEstimate ?? 0);
   const sessionStartTime = useStore((s) => s.sessionStartTime);
 
-  const [showHint, setShowHint] = useState(false);
   const [time, setTime] = useState(new Date());
   const [memUsage, setMemUsage] = useState('');
   const [sessionMin, setSessionMin] = useState(0);
-
-  // First-run keyboard shortcut hint
-  useEffect(() => {
-    const hasSeenHint = localStorage.getItem('wmux-hint-seen');
-    if (!hasSeenHint) {
-      setShowHint(true);
-      localStorage.setItem('wmux-hint-seen', '1');
-      const timer = setTimeout(() => setShowHint(false), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, []);
 
   // Update clock every second
   useEffect(() => {
@@ -96,15 +88,19 @@ export default function StatusBar() {
       {/* Left: workspace + branch */}
       <div className="flex items-center gap-3">
         <span className="text-[var(--text-main)] font-medium">{activeWs?.name || 'wmux'}</span>
+        {prefixMode && (
+          <span className="text-[var(--accent-red)] font-bold animate-pulse">
+            [PREFIX]
+          </span>
+        )}
+        {prefixError && (
+          <span className="text-[var(--accent-yellow)]">
+            {prefixError}
+          </span>
+        )}
         {branch && (
           <span>
             <span className="text-[var(--accent-yellow)]">⎇</span> {branch}
-          </span>
-        )}
-        {/* First-run keyboard shortcut hint */}
-        {showHint && (
-          <span className="text-[var(--accent-blue)] animate-pulse">
-            Ctrl+B for tmux mode &bull; Ctrl+D split
           </span>
         )}
         {/* Company 모드 배지 */}

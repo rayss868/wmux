@@ -162,6 +162,7 @@ export default function AppLayout() {
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
 
+  const prefixMode = useStore((s) => s.prefixMode);
   const onboardingActive = useStore((s) => s.onboardingActive);
   const onboardingCompleted = useStore((s) => s.onboardingCompleted);
   const startOnboarding = useStore((s) => s.startOnboarding);
@@ -397,7 +398,18 @@ export default function AppLayout() {
 
   return (
     <ErrorBoundary name="AppLayout">
-    <div className={`flex h-screen w-screen bg-[var(--bg-base)] overflow-hidden ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
+    <div
+      className={`flex h-screen w-screen bg-[var(--bg-base)] overflow-hidden ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}
+      style={{
+        ...(prefixMode ? {
+          boxShadow: 'inset 0 0 0 2px var(--accent-red)',
+          transition: 'box-shadow 0.15s ease-in-out',
+        } : {
+          boxShadow: 'none',
+          transition: 'box-shadow 0.15s ease-in-out',
+        }),
+      }}
+    >
       <ErrorBoundary name="Sidebar">
         {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
       </ErrorBoundary>
