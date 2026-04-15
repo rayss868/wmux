@@ -81,9 +81,10 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
 
   return (
     <div
-      className={`flex flex-col h-full w-full relative ${
-        isActive ? 'ring-1 ring-[rgba(var(--accent-blue-rgb),0.5)]' : ''
-      } ${hasUnread ? 'notification-ring' : ''} ${flashing ? 'pane-flash' : ''}`}
+      className={`flex flex-col h-full w-full relative box-border ${hasUnread ? 'notification-ring' : ''} ${flashing ? 'pane-flash' : ''}`}
+      style={{
+        border: `1px solid ${isActive ? 'var(--accent-cursor)' : 'var(--bg-surface)'}`,
+      }}
       onClick={handleClick}
       data-onboarding-target="pane-area"
     >
