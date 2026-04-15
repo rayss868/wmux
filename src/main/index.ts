@@ -22,13 +22,14 @@ import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
-import { registerCompanyRpc } from '../company/main/company.rpc';
+import { registerCompanyRpc } from './pipe/handlers/company.rpc';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { ensureDaemon } from './daemon/launcher';
+import { createTray, destroyTray } from './tray';
 
 // Force English for Chromium internal messages to avoid encoding corruption
 // on non-ASCII locales (e.g. Korean Windows where cp949 garbles console output).
@@ -140,6 +141,7 @@ if (!gotLock) {
   app.on('second-instance', () => {
     if (isQuitting) return;
     if (mainWindow) {
+      mainWindow.show();
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
@@ -233,8 +235,6 @@ ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, web
   return { ok: true };
 });
 
-app.setAppUserModelId('com.wmux.app');
-
 console.log('[DEBUG] registering app.on(ready)');
 app.on('ready', async () => {
   console.log('[Main] App ready, creating window...');
@@ -242,6 +242,17 @@ app.on('ready', async () => {
   console.log(`[Main] Window created: ${!!mainWindow}`);
 
   attachWindowRecovery(mainWindow);
+
+  // Intercept window close — hide to tray instead of destroying
+  mainWindow.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow!.hide();
+    }
+  });
+
+  // System tray — lets the app stay alive when window is closed
+  createTray(mainWindow, () => { isQuitting = true; });
 
   // Auto-start daemon and connect
   try {
@@ -322,7 +333,8 @@ app.on('ready', async () => {
 });
 
 app.on('window-all-closed', () => {
-  app.quit();
+  // Don't quit — stay alive in system tray.
+  // Actual quit is triggered from the tray "Quit" menu item.
 });
 
 app.on('before-quit', async (e) => {
@@ -345,13 +357,8 @@ app.on('before-quit', async (e) => {
   cleanupHandlers();
 
   if (daemonClient?.isConnected) {
-    // Daemon mode: shut down the daemon process together with the app
-    console.log('[Main] Daemon mode — sending shutdown RPC');
-    try {
-      await daemonClient.rpc('daemon.shutdown', {});
-    } catch {
-      // Daemon may already be gone — ignore
-    }
+    // Daemon mode: detach only — sessions persist in daemon
+    console.log('[Main] Daemon mode — detaching sessions (not killing)');
     await daemonClient.disconnect();
     daemonClient = null;
   } else {
@@ -364,6 +371,7 @@ app.on('before-quit', async (e) => {
   pipeServer.stop();
   mcpRegistrar.unregister();
   autoUpdater.stop();
+  destroyTray();
 
   app.quit(); // re-trigger quit — isQuitting flag skips preventDefault
 });
