@@ -36,8 +36,6 @@ export default function Sidebar() {
   const multiviewIds = useStore((s) => s.multiviewIds);
   const toggleFileTree = useStore((s) => s.toggleFileTree);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
-  const sidebarMode = useStore((s) => s.sidebarMode);
-  const setSidebarMode = useStore((s) => s.setSidebarMode);
   const company = useStore((s) => s.company);
 
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -138,65 +136,36 @@ export default function Sidebar() {
         {pickerOpen && <PresetPicker onClose={closePicker} />}
       </div>
 
-      {/* Tabs */}
-      <div className="flex border-b border-[var(--bg-surface)]">
-        <button
-          className={`flex-1 px-3 py-1.5 text-[10px] font-mono transition-colors ${
-            sidebarMode === 'workspaces'
-              ? 'text-[var(--text-main)] border-b-2 border-[var(--accent-green)]'
-              : 'text-[var(--text-muted)] hover:text-[var(--text-sub)]'
-          }`}
-          onClick={() => setSidebarMode('workspaces')}
-        >
-          {t('sidebar.workspaces').toUpperCase()}
-        </button>
-        <button
-          className={`flex-1 px-3 py-1.5 text-[10px] font-mono transition-colors ${
-            sidebarMode === 'company'
-              ? 'text-[var(--text-main)] border-b-2 border-[var(--accent-blue)]'
-              : 'text-[var(--text-muted)] hover:text-[var(--text-sub)]'
-          }`}
-          onClick={() => setSidebarMode('company')}
-        >
-          COMPANY
-        </button>
+      {/* Workspace list */}
+      <div className="flex-1 overflow-y-auto py-2 space-y-0.5">
+        {workspaces.map((ws, i) => (
+          <WorkspaceItem
+            key={ws.id}
+            workspace={ws}
+            isActive={ws.id === activeWorkspaceId}
+            isMultiview={multiviewIds.includes(ws.id)}
+            index={i}
+            onSelect={() => setActiveWorkspace(ws.id)}
+            onCtrlSelect={() => handleCtrlSelect(ws.id)}
+            onRename={(name) => renameWorkspace(ws.id, name)}
+            onClose={() => handleClose(ws.id)}
+            onCopyInfo={() => handleCopySessionInfo(ws.id)}
+            onReorder={reorderWorkspace}
+          />
+        ))}
       </div>
 
-      {/* Content */}
-      {sidebarMode === 'workspaces' ? (
-        <>
-          <div className="flex-1 overflow-y-auto py-2 space-y-0.5">
-            {workspaces.map((ws, i) => (
-              <WorkspaceItem
-                key={ws.id}
-                workspace={ws}
-                isActive={ws.id === activeWorkspaceId}
-                isMultiview={multiviewIds.includes(ws.id)}
-                index={i}
-                onSelect={() => setActiveWorkspace(ws.id)}
-                onCtrlSelect={() => handleCtrlSelect(ws.id)}
-                onRename={(name) => renameWorkspace(ws.id, name)}
-                onClose={() => handleClose(ws.id)}
-                onCopyInfo={() => handleCopySessionInfo(ws.id)}
-                onReorder={reorderWorkspace}
-              />
-            ))}
-          </div>
-
-          <div className="flex items-center justify-between px-4 py-2 border-t border-[var(--bg-surface)] text-[10px] font-mono text-[var(--text-muted)]">
-            <span>{workspaces.length} {t('sidebar.workspaces')}</span>
-            <button
-              className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"
-              onClick={() => useStore.getState().toggleSidebar()}
-              title={t('sidebar.hideTooltip')}
-            >
-              ◀
-            </button>
-          </div>
-        </>
-      ) : (
-        <CompanyPanel />
-      )}
+      {/* Footer */}
+      <div className="flex items-center justify-between px-4 py-2 border-t border-[var(--bg-surface)] text-[10px] font-mono text-[var(--text-muted)]">
+        <span>{workspaces.length} {t('sidebar.workspaces')}</span>
+        <button
+          className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"
+          onClick={() => useStore.getState().toggleSidebar()}
+          title={t('sidebar.hideTooltip')}
+        >
+          ◀
+        </button>
+      </div>
     </div>
   );
 }
