@@ -230,9 +230,25 @@ export async function quarantineFile(
   emitLog(entry);
 
   // Fire-and-forget cleanup so the caller resumes. Swallow any error
-  // so the unhandled rejection handler stays quiet.
-  void cleanupQuarantine(dir, opts).catch(() => {
-    // best-effort retention
+  // so the unhandled rejection handler stays quiet — but emit a
+  // structured log line first so the failure is observable rather
+  // than silently dropped (otherwise an accumulating quarantine dir
+  // would never surface on dashboards).
+  void cleanupQuarantine(dir, opts).catch((err) => {
+    try {
+      process.stderr.write(
+        `${JSON.stringify({
+          event: 'CORRUPT_CLEANUP_FAILED',
+          ts: clock(),
+          level: 'warn',
+          code: 'CORRUPT_CLEANUP_FAILED',
+          dir,
+          reason: err instanceof Error ? err.message : String(err),
+        })}\n`,
+      );
+    } catch {
+      // logging must never throw
+    }
   });
 
   return { quarantined_to: target };

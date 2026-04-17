@@ -167,4 +167,60 @@ describe('useIpc / createInvoke', () => {
       ).resolves.toBeDefined();
     });
   });
+
+  describe('message prefix fallback', () => {
+    // Electron's IPC serializer can drop own `code` property on Error
+    // instances. `wrapHandler` also stamps `[CODE] ` into the message,
+    // and `useIpc` must fall back to that prefix when the property is
+    // gone. These cases exercise that serialization-loss path.
+
+    it('classifies by `[CODE] ` message prefix when err.code is absent', async () => {
+      const invoke = createInvoke(undefined, toastSpy);
+      const stripped = new Error('[DAEMON_DISCONNECTED] daemon not connected');
+      // Deliberately no `code` property — simulates the serializer
+      // having dropped it between main and renderer.
+      const result = await invoke(async () => { throw stripped; });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('DAEMON_DISCONNECTED');
+    });
+
+    it('falls back to UNKNOWN when the prefix is not one of the known codes', async () => {
+      const invoke = createInvoke(undefined, toastSpy);
+      const stripped = new Error('[BOGUS_CODE] nothing sensible');
+      const result = await invoke(async () => { throw stripped; });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('UNKNOWN');
+    });
+
+    it('prefers explicit err.code over the message prefix', async () => {
+      const invoke = createInvoke(undefined, toastSpy);
+      // Both signals present — the explicit code must win so a
+      // handler-authored override cannot be subverted by a crafted
+      // message body.
+      const err = Object.assign(
+        new Error('[UNKNOWN] overridden message'),
+        { code: 'NOT_FOUND' as const },
+      );
+      const result = await invoke(async () => { throw err; });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('NOT_FOUND');
+    });
+
+    it('classifies each known code via the message-prefix path', async () => {
+      const invoke = createInvoke(undefined, toastSpy);
+      const codes: IpcErrorCode[] = [
+        'DAEMON_DISCONNECTED',
+        'VALIDATION_ERROR',
+        'NOT_FOUND',
+        'PERMISSION_DENIED',
+        'UNKNOWN',
+      ];
+      for (const code of codes) {
+        const stripped = new Error(`[${code}] stripped payload`);
+        const result = await invoke(async () => { throw stripped; });
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error.code).toBe(code);
+      }
+    });
+  });
 });

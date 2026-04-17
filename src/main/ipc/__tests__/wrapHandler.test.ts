@@ -177,4 +177,57 @@ describe('wrapHandler', () => {
     expect(summary).not.toContain('hunter2');
     expect(summary).toContain('alice');
   });
+
+  // 7. [CODE] message prefix — defensive against Electron IPC property drop
+  describe('message code prefix', () => {
+    it('stamps `[CODE] ` prefix onto thrown error messages', async () => {
+      const err = new Error('daemon not connected');
+      const wrapped = wrapHandler('pty:create', (_event: unknown) => {
+        throw err;
+      });
+      await expect(wrapped({} as never)).rejects.toBe(err);
+      expect(err.message).toBe('[DAEMON_DISCONNECTED] daemon not connected');
+    });
+
+    it('uses the classified code in the prefix when error.code is absent', async () => {
+      const err = new Error('something went wrong');
+      const wrapped = wrapHandler('test:ch', (_event: unknown) => {
+        throw err;
+      });
+      await expect(wrapped({} as never)).rejects.toBe(err);
+      expect(err.message).toBe('[UNKNOWN] something went wrong');
+    });
+
+    it('uses the explicit code in the prefix when provided', async () => {
+      const err = Object.assign(new Error('no such session'), {
+        code: 'NOT_FOUND' as const,
+      });
+      const wrapped = wrapHandler('pty:dispose', (_event: unknown) => {
+        throw err;
+      });
+      await expect(wrapped({} as never)).rejects.toBe(err);
+      expect(err.message).toBe('[NOT_FOUND] no such session');
+    });
+
+    it('does not double-prefix a message that already carries one', async () => {
+      // Recursive-wrap scenario — a handler that calls another wrapped
+      // function can re-enter the catch path. The message must stay
+      // stamped exactly once regardless of how many wraps see it.
+      const err = new Error('[DAEMON_DISCONNECTED] daemon not connected');
+      const wrapped = wrapHandler('pty:create', (_event: unknown) => {
+        throw err;
+      });
+      await expect(wrapped({} as never)).rejects.toBe(err);
+      expect(err.message).toBe('[DAEMON_DISCONNECTED] daemon not connected');
+    });
+
+    it('leaves non-Error rejection values untouched', async () => {
+      const wrapped = wrapHandler('test:ch', (_event: unknown) => {
+        // eslint-disable-next-line no-throw-literal
+        throw 'string-error';
+      });
+      await expect(wrapped({} as never)).rejects.toBe('string-error');
+      // Nothing to prefix — the thrown value is a primitive.
+    });
+  });
 });

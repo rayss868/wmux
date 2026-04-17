@@ -266,4 +266,84 @@ describe('StateWriter', () => {
     expect(fs.existsSync(path.join(bufDir, 'orphan.buf'))).toBe(false);
     expect(fs.existsSync(path.join(bufDir, 'other.txt'))).toBe(true);
   });
+
+  // Rotation wiring (Critical #1): repeat saves accumulate the .bak.N
+  // chain instead of collapsing to a single legacy `.bak` slot.
+  it('rotation chain: three saves populate .bak and .bak.1', () => {
+    writer.saveImmediate(makeState([makeSession({ id: 'g1' })]));
+    writer.saveImmediate(makeState([makeSession({ id: 'g2' })]));
+    writer.saveImmediate(makeState([makeSession({ id: 'g3' })]));
+
+    const primary = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'sessions.json'), 'utf-8'),
+    );
+    const bak = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'sessions.json.bak'), 'utf-8'),
+    );
+    const bak1Path = path.join(tmpDir, 'sessions.json.bak.1');
+    expect(fs.existsSync(bak1Path)).toBe(true);
+    const bak1 = JSON.parse(fs.readFileSync(bak1Path, 'utf-8'));
+
+    expect(primary.sessions[0].id).toBe('g3');
+    expect(bak.sessions[0].id).toBe('g2');
+    expect(bak1.sessions[0].id).toBe('g1');
+  });
+
+  it('rotation chain: five saves fill through .bak.3', () => {
+    for (let i = 1; i <= 5; i++) {
+      writer.saveImmediate(makeState([makeSession({ id: `g${i}` })]));
+    }
+    const readId = (suffix: '' | '.bak' | '.bak.1' | '.bak.2' | '.bak.3'): string => {
+      const raw = fs.readFileSync(
+        path.join(tmpDir, `sessions.json${suffix}`),
+        'utf-8',
+      );
+      return JSON.parse(raw).sessions[0].id;
+    };
+    expect(readId('')).toBe('g5');
+    expect(readId('.bak')).toBe('g4');
+    expect(readId('.bak.1')).toBe('g3');
+    expect(readId('.bak.2')).toBe('g2');
+    expect(readId('.bak.3')).toBe('g1');
+  });
+
+  // flushSync order (Critical #4): queue drain first, then inline write.
+  it('flushSync: with no queued task, writes pending state inline', () => {
+    vi.useFakeTimers();
+    try {
+      writer.saveDebounced(makeState([makeSession({ id: 'fsync-pending' })]));
+      // Debounce timer has NOT fired yet — nothing is in the queue.
+      writer.flushSync();
+
+      const filePath = path.join(tmpDir, 'sessions.json');
+      expect(fs.existsSync(filePath)).toBe(true);
+      const loaded = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      expect(loaded.sessions[0].id).toBe('fsync-pending');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('flushSync: drives queue.flushSync before any inline fallback', () => {
+    vi.useFakeTimers();
+    try {
+      // Stage pending state, let the timer fire to enqueue the async
+      // task. The queue has not yet run the async task (we never
+      // switch to real timers) — a flushSync call in this state MUST
+      // drive the queue's sync fallback rather than race the in-flight
+      // task against the inline write.
+      writer.saveDebounced(makeState([makeSession({ id: 'fsync-queue' })]));
+      vi.advanceTimersByTime(30_000);
+      // At this point: debounce timer has fired → queue has a pending
+      // task, pendingState is still 'fsync-queue'.
+      writer.flushSync();
+
+      const filePath = path.join(tmpDir, 'sessions.json');
+      expect(fs.existsSync(filePath)).toBe(true);
+      const loaded = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      expect(loaded.sessions[0].id).toBe('fsync-queue');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

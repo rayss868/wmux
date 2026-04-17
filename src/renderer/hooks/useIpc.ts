@@ -31,6 +31,18 @@ const KNOWN_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'UNKNOWN',
 ]);
 
+/**
+ * Matches a `[CODE] ` prefix written by `wrapHandler` in the main
+ * process. Electron's IPC serializer can drop own properties on
+ * `Error` instances (`err.code` included), so the main side also
+ * stamps the code into the message as a prefix. This regex is the
+ * fallback path when `err.code` did not survive the IPC boundary.
+ * Kept in sync with the main-side regex — if you change one, change
+ * the other.
+ */
+const MESSAGE_CODE_PREFIX =
+  /^\[(DAEMON_DISCONNECTED|VALIDATION_ERROR|NOT_FOUND|PERMISSION_DENIED|UNKNOWN)\] /;
+
 export interface IpcErrorShape {
   code: IpcErrorCode;
   message: string;
@@ -69,10 +81,26 @@ const CODE_TO_LEVEL: Record<IpcErrorCode, 'info' | 'warn' | 'error'> = {
 };
 
 function classifyCode(err: unknown): IpcErrorCode {
+  // Primary path — `wrapHandler` attaches `err.code` in the main
+  // process, and the renderer sees it here when Electron's IPC
+  // serializer preserves own properties.
   if (err && typeof err === 'object' && 'code' in err) {
     const raw = (err as { code?: unknown }).code;
     if (typeof raw === 'string' && KNOWN_CODES.has(raw as IpcErrorCode)) {
       return raw as IpcErrorCode;
+    }
+  }
+  // Fallback — if the own property was stripped during serialization
+  // we look for the `[CODE] ` prefix that `wrapHandler` also stamped
+  // into the message. This lets us still classify past a
+  // frozen/stripped error boundary.
+  if (err && typeof err === 'object' && 'message' in err) {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === 'string') {
+      const match = MESSAGE_CODE_PREFIX.exec(msg);
+      if (match && KNOWN_CODES.has(match[1] as IpcErrorCode)) {
+        return match[1] as IpcErrorCode;
+      }
     }
   }
   return 'UNKNOWN';

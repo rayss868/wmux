@@ -28,6 +28,15 @@ const KNOWN_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'UNKNOWN',
 ]);
 
+/**
+ * Matches a leading `[CODE] ` prefix written by the wrapper so we can
+ * detect that a message has already been stamped. Kept in sync with
+ * the renderer-side regex in `useIpc.ts` — if you change one, change
+ * the other.
+ */
+const MESSAGE_CODE_PREFIX =
+  /^\[(DAEMON_DISCONNECTED|VALIDATION_ERROR|NOT_FOUND|PERMISSION_DENIED|UNKNOWN)\] /;
+
 export interface StructuredLogEntry {
   ts: number;
   level: 'info' | 'warn' | 'error';
@@ -150,6 +159,25 @@ export function wrapHandler<Args extends unknown[], Ret>(
           (err as { code?: IpcErrorCode }).code = code;
         } catch {
           /* frozen / non-extensible error — ignore */
+        }
+      }
+
+      // Electron's IPC serializer occasionally drops own properties on
+      // Error instances (see https://github.com/electron/electron/issues/24427).
+      // The renderer needs the code to branch on — so we ALSO stamp it
+      // into the message as a `[CODE] ` prefix. `useIpc` reads the
+      // explicit `code` property first and falls back to parsing this
+      // prefix when serialization has eaten the property. We only
+      // prefix once; a recursive wrap (unusual but possible during
+      // handler composition) re-uses the existing prefix.
+      if (err instanceof Error) {
+        try {
+          const msg = err.message ?? '';
+          if (!MESSAGE_CODE_PREFIX.test(msg)) {
+            err.message = `[${code}] ${msg}`;
+          }
+        } catch {
+          /* frozen message — ignore */
         }
       }
 

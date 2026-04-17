@@ -5,6 +5,8 @@ import {
   atomicReadJSONSync,
   atomicWriteJSON,
   atomicWriteJSONSync,
+  createMigrator,
+  SESSION_DATA_REGISTRY,
 } from '../../daemon/util/atomicWrite';
 import { AsyncQueue } from '../../daemon/util/AsyncQueue';
 
@@ -24,7 +26,10 @@ export class SessionManager {
     // (Windows session-end, process crash handlers, etc.).
     this.queue.setSyncFallback(QUEUE_KEY, () => {
       if (this.pendingData !== null) {
-        atomicWriteJSONSync(this.filePath, this.pendingData);
+        atomicWriteJSONSync(this.filePath, this.pendingData, {
+          validate: SessionManager.isSessionData,
+          rotationEnabled: true,
+        });
         this.pendingData = null;
       }
     });
@@ -47,7 +52,10 @@ export class SessionManager {
     // older async payload to overwrite it on completion.
     this.queue.clear();
     try {
-      atomicWriteJSONSync(this.filePath, data);
+      atomicWriteJSONSync(this.filePath, data, {
+        validate: SessionManager.isSessionData,
+        rotationEnabled: true,
+      });
       this.pendingData = null;
     } catch (err) {
       console.error('[SessionManager] Failed to save session:', err);
@@ -76,7 +84,10 @@ export class SessionManager {
         const payload = this.pendingData;
         if (payload === null) return;
         try {
-          await atomicWriteJSON(this.filePath, payload);
+          await atomicWriteJSON(this.filePath, payload, {
+            validate: SessionManager.isSessionData,
+            rotationEnabled: true,
+          });
           if (this.pendingData === payload) {
             this.pendingData = null;
           }
@@ -102,27 +113,50 @@ export class SessionManager {
   /**
    * Process-exit friendly drain. Cancels the debounce timer and runs
    * any registered sync fallbacks for queued async writes.
+   *
+   * Order (T14 fix — matches StateWriter.flushSync):
+   *   1. Cancel the debounce timer.
+   *   2. Drive the queue's sync fallback first so a currently-running
+   *      async task does not race us on `pendingData`.
+   *   3. If `pendingData` is still staged after the drain, persist it
+   *      inline (normal case: debounce timer had not fired yet).
    */
   flushSync(): void {
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
-    if (this.pendingData !== null && this.queue.isIdle) {
+    this.queue.flushSync();
+
+    if (this.pendingData !== null) {
+      const data = this.pendingData;
+      this.pendingData = null;
       try {
-        atomicWriteJSONSync(this.filePath, this.pendingData);
-        this.pendingData = null;
+        atomicWriteJSONSync(this.filePath, data, {
+          validate: SessionManager.isSessionData,
+          rotationEnabled: true,
+        });
       } catch (err) {
         console.error('[SessionManager] flushSync immediate write failed:', err);
       }
     }
-    this.queue.flushSync();
   }
 
   load(): SessionData | null {
     try {
+      // T7: wire the lazy-migration hook. Production registry ships
+      // as identity (v1, no steps) and `createMigrator` safely
+      // short-circuits legacy payloads without a `version` marker
+      // (SessionData historically shipped without one). Wiring this
+      // here makes future schema revisions land without further
+      // call-site changes.
+      const migrator = createMigrator<SessionData>(
+        SESSION_DATA_REGISTRY,
+        this.filePath,
+      );
       return atomicReadJSONSync<SessionData>(this.filePath, {
         validate: SessionManager.isSessionData,
+        migrator,
       });
     } catch (err) {
       console.error('[SessionManager] Failed to load session:', err);

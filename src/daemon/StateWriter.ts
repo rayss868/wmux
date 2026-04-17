@@ -5,6 +5,8 @@ import {
   atomicReadJSONSync,
   atomicWriteJSON,
   atomicWriteJSONSync,
+  createMigrator,
+  DAEMON_STATE_REGISTRY,
 } from './util/atomicWrite';
 import { AsyncQueue } from './util/AsyncQueue';
 
@@ -44,7 +46,10 @@ export class StateWriter {
     // synchronous atomic-write helper.
     this.queue.setSyncFallback(QUEUE_KEY, () => {
       if (this.pendingState !== null) {
-        atomicWriteJSONSync(this.filePath, this.pendingState);
+        atomicWriteJSONSync(this.filePath, this.pendingState, {
+          validate: StateWriter.isDaemonState,
+          rotationEnabled: true,
+        });
         this.pendingState = null;
       }
     });
@@ -57,7 +62,10 @@ export class StateWriter {
     // payload to overwrite it after we return.
     this.queue.clear();
     try {
-      atomicWriteJSONSync(this.filePath, state);
+      atomicWriteJSONSync(this.filePath, state, {
+        validate: StateWriter.isDaemonState,
+        rotationEnabled: true,
+      });
 
       // Clear pending since we just saved
       this.pendingState = null;
@@ -89,7 +97,10 @@ export class StateWriter {
         const payload = this.pendingState;
         if (payload === null) return;
         try {
-          await atomicWriteJSON(this.filePath, payload);
+          await atomicWriteJSON(this.filePath, payload, {
+            validate: StateWriter.isDaemonState,
+            rotationEnabled: true,
+          });
           // Only clear pending if no newer snapshot arrived while we
           // were writing — otherwise we'd discard the newer data.
           if (this.pendingState === payload) {
@@ -108,8 +119,19 @@ export class StateWriter {
 
     let state: DaemonState | null = null;
     try {
+      // T7: wire the lazy-migration hook. Production registry ships as
+      // identity (v1, no steps) so this is behaviour-neutral today —
+      // the point is that future schema changes land without touching
+      // this call site. `createMigrator` also short-circuits legacy
+      // payloads missing a `version` marker so no spurious
+      // premigrate snapshot is written for routine v1 loads.
+      const migrator = createMigrator<DaemonState>(
+        DAEMON_STATE_REGISTRY,
+        this.filePath,
+      );
       state = atomicReadJSONSync<DaemonState>(this.filePath, {
         validate: StateWriter.isDaemonState,
+        migrator,
       });
     } catch (err) {
       console.error('[StateWriter] Failed to load state:', err);
@@ -145,27 +167,51 @@ export class StateWriter {
    * Process-exit friendly drain. Cancels the debounce timer and runs
    * any registered sync fallbacks for queued async writes. Safe to
    * call multiple times.
+   *
+   * Order (T14 fix):
+   *   1. Cancel the debounce timer so no new async task can be
+   *      enqueued behind our back.
+   *   2. Drive the queue's sync fallback first — this persists any
+   *      `pendingState` seen by previously enqueued (now-draining)
+   *      tasks, and is the authoritative path when a debounced
+   *      write was already in the queue.
+   *   3. If we still observe a `pendingState` after the drain (the
+   *      debounce timer fired but the queue never saw it, or the
+   *      caller staged a snapshot without ever enqueuing — e.g.
+   *      dispose on a freshly-debounced state), persist it inline.
+   *
+   * The previous order (idle-check → direct write → queue drain)
+   * raced against a running queue task: if we observed `running`
+   * (so `isIdle === false`) we skipped the inline write on the
+   * assumption that the queue would flush pendingState; but the
+   * in-flight task had already snapshotted `pendingState === null`
+   * before our caller mutated it, so the snapshot was lost.
    */
   flushSync(): void {
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
-    // If we have a pending snapshot that was never enqueued (timer
-    // hadn't fired yet), stage it so the queue's sync fallback can
-    // pick it up uniformly. We enqueue a no-op task keyed `state`
-    // that will be replaced by the fallback on drain.
-    if (this.pendingState !== null && this.queue.isIdle) {
-      // Side-stepping the async path: we invoke the fallback directly
-      // because nothing was enqueued for the queue to drain.
+    // 2. Drain the queue first — registered sync fallbacks get to
+    //    act on `pendingState` exactly once, and any pending
+    //    coalesced promise resolves cleanly.
+    this.queue.flushSync();
+
+    // 3. Anything still staged must be written inline. Typical case:
+    //    the debounce timer had not yet fired so nothing was enqueued
+    //    for the queue to drain.
+    if (this.pendingState !== null) {
+      const state = this.pendingState;
+      this.pendingState = null;
       try {
-        atomicWriteJSONSync(this.filePath, this.pendingState);
-        this.pendingState = null;
+        atomicWriteJSONSync(this.filePath, state, {
+          validate: StateWriter.isDaemonState,
+          rotationEnabled: true,
+        });
       } catch (err) {
         console.error('[StateWriter] flushSync immediate write failed:', err);
       }
     }
-    this.queue.flushSync();
   }
 
   /** Clean up timers (daemon shutdown). Flushes pending state first. */

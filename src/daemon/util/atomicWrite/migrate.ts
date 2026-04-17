@@ -88,6 +88,14 @@ function serialise(data: unknown): string {
  *   - If `fromVersion >= registry.currentVersion` the input is
  *     returned unchanged with the input version — this is the
  *     no-op/already-up-to-date path.
+ *   - Identity-registry short-circuit: when the registry has no
+ *     registered steps AND `fromVersion === 0` AND
+ *     `registry.currentVersion === 1` we treat this as an identity
+ *     no-op and return the payload with `version: currentVersion`.
+ *     This covers legacy on-disk payloads that predate the version
+ *     marker (SessionData shipped without a `version` field before
+ *     this release). Without this branch the call would throw at
+ *     step lookup because no v0→v1 step exists.
  *   - On any step throw we rethrow with context so the caller can
  *     attribute the failure.
  */
@@ -98,6 +106,21 @@ export function applyMigrations<T>(
 ): { data: T; version: number } {
   if (fromVersion >= registry.currentVersion) {
     return { data: data as T, version: fromVersion };
+  }
+
+  // Identity-registry short-circuit. An empty `steps` array combined
+  // with `currentVersion === 1` means the schema has never had a
+  // real migration attached — the registry is effectively identity.
+  // Legacy payloads that arrive here carry `fromVersion === 0` (no
+  // on-disk version marker); treating them as already-current keeps
+  // the load path working for upgraders without forcing the caller
+  // to special-case missing version fields upstream.
+  if (
+    registry.steps.length === 0 &&
+    registry.currentVersion === 1 &&
+    fromVersion === 0
+  ) {
+    return { data: data as T, version: registry.currentVersion };
   }
 
   let cursor = fromVersion;
@@ -233,6 +256,23 @@ export function createMigrator<T>(
     if (fromVersion >= registry.currentVersion) {
       // Already current — no snapshot, no-op migration.
       return { data: data as T, version: fromVersion };
+    }
+
+    // Identity-registry short-circuit (mirrors `applyMigrations`):
+    // legacy payloads without a version marker reach the migrator as
+    // `fromVersion = 0`. If the registry ships as identity
+    // (`currentVersion = 1`, no steps) there is nothing to
+    // preserve or apply — skip the premigrate snapshot and return the
+    // payload untouched with its notional upgraded version. This is
+    // the safe wiring that lets production load paths opt into the
+    // migrator hook without the snapshot-every-legacy-load side
+    // effect.
+    if (
+      registry.steps.length === 0 &&
+      registry.currentVersion === 1 &&
+      fromVersion === 0
+    ) {
+      return { data: data as T, version: registry.currentVersion };
     }
 
     writePremigrateSnapshotSync(snapshotPath, data, fromVersion);
