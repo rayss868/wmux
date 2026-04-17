@@ -1,0 +1,7 @@
+{
+  "version": 2,
+  "workspaceId": "ws-1",
+  "panes": [
+    { "id": "p1", "cwd": "/home/user/project-a", "scrollbackLimit": 1000 }
+  ]
+}
