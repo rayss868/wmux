@@ -5,3 +5,5 @@ export {
   atomicWriteJSONSync,
   atomicReadJSONSync,
 } from './core';
+export * from './rotation';
+export * from './migrate';
