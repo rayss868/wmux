@@ -29,6 +29,12 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
+import {
+  BACKUP_SUFFIXES,
+  rotateBackups,
+  rotateBackupsSync,
+} from './rotation';
+
 // ── Public types ─────────────────────────────────────────────────────
 
 export interface AtomicWriteOptions {
@@ -187,11 +193,6 @@ export async function atomicWriteJSON(
     }
   }
 
-  // TODO(T5): when opts.rotationEnabled is true, delegate to the
-  // rotation chain in ./rotation.ts. For T1a we keep the existing
-  // single-bak behaviour regardless of this flag.
-  void opts.rotationEnabled;
-
   const tmp = makeTmpPath(targetPath);
   const bak = bakPathFor(targetPath);
 
@@ -204,7 +205,16 @@ export async function atomicWriteJSON(
     //    matches the StateWriter's POSIX intent.
     await fsp.writeFile(tmp, json, { encoding: 'utf-8', mode: 0o600 });
 
-    // 2. Rotate current → .bak (best-effort).
+    // 2. When rotation is enabled we shift the existing numbered
+    //    slots BEFORE overwriting `.bak` so nothing is lost:
+    //      .bak.2 → .bak.3, .bak.1 → .bak.2, .bak → .bak.1.
+    //    With rotation off we keep the historical single-slot
+    //    behaviour (current `.bak` is overwritten by step 3).
+    if (opts.rotationEnabled) {
+      await rotateBackups(targetPath);
+    }
+
+    // 3. Rotate current → .bak (best-effort).
     try {
       await fsp.rename(targetPath, bak);
     } catch (err) {
@@ -215,7 +225,7 @@ export async function atomicWriteJSON(
       }
     }
 
-    // 3. Atomic rename tmp → target.
+    // 4. Atomic rename tmp → target.
     await fsp.rename(tmp, targetPath);
   } catch (err) {
     // Best-effort tmp cleanup so we don't leak partial files.
@@ -243,8 +253,6 @@ export async function atomicReadJSON<T>(
   targetPath: string,
   opts: AtomicReadOptions<T> = {},
 ): Promise<T | null> {
-  const bak = bakPathFor(targetPath);
-
   const attempt = async (p: string, label: 'primary' | 'backup'): Promise<T | null> => {
     let parsed: unknown;
     try {
@@ -256,11 +264,29 @@ export async function atomicReadJSON<T>(
     }
     if (parsed === null) return null;
 
-    // TODO(T7): apply opts.migrator here once migrations land.
-    // Version detection is wired in but the hook is ignored for T1a
-    // so we don't accidentally change today's payloads.
-    void detectVersion(parsed);
-    void opts.migrator;
+    // T7: lazy migration. If a migrator hook is supplied we run it
+    // against the detected schema version. A throwing hook is
+    // treated as a parse-level failure — we warn and return null so
+    // the fallback chain picks up a `.bak` (and, once T6 lands, a
+    // quarantine handoff). The migrator's `version` is informational;
+    // `atomicReadJSON` intentionally exposes only the payload to keep
+    // the public surface narrow. Persisting the upgraded payload is
+    // the caller's responsibility and normally happens on the next
+    // write.
+    if (opts.migrator) {
+      const fromVersion = detectVersion(parsed);
+      try {
+        const result = opts.migrator(parsed, fromVersion);
+        parsed = result.data;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[atomicRead] migrator failed for ${label} "${p}":`,
+          err,
+        );
+        return null;
+      }
+    }
 
     if (opts.validate && !opts.validate(parsed)) {
       // TODO(T6): route `parsed` + source path to the quarantine
@@ -274,11 +300,18 @@ export async function atomicReadJSON<T>(
     return parsed as T;
   };
 
+  // Fallback chain: primary → .bak → .bak.1 → .bak.2 → .bak.3. This
+  // is deliberately independent of `rotationEnabled`: a legacy
+  // single-`.bak` file still participates, and rotated archives
+  // added by T5 become usable without any call-site change.
   const primary = await attempt(targetPath, 'primary');
   if (primary !== null) return primary;
 
-  const backup = await attempt(bak, 'backup');
-  if (backup !== null) return backup;
+  for (const suffix of BACKUP_SUFFIXES) {
+    const candidate = `${targetPath}${suffix}`;
+    const backup = await attempt(candidate, 'backup');
+    if (backup !== null) return backup;
+  }
 
   return null;
 }
@@ -306,9 +339,6 @@ export function atomicWriteJSONSync(
     }
   }
 
-  // TODO(T5): rotation chain.
-  void opts.rotationEnabled;
-
   const tmp = makeTmpPath(targetPath);
   const bak = bakPathFor(targetPath);
 
@@ -318,6 +348,13 @@ export function atomicWriteJSONSync(
 
   try {
     fs.writeFileSync(tmp, json, { encoding: 'utf-8', mode: 0o600 });
+
+    // Shift the numbered slots up when rotation is enabled so the
+    // upcoming `.bak` overwrite does not drop a generation. See the
+    // async variant for the slot-order rationale.
+    if (opts.rotationEnabled) {
+      rotateBackupsSync(targetPath);
+    }
 
     if (fs.existsSync(targetPath)) {
       try {
@@ -348,8 +385,6 @@ export function atomicReadJSONSync<T>(
   targetPath: string,
   opts: AtomicReadOptions<T> = {},
 ): T | null {
-  const bak = bakPathFor(targetPath);
-
   const attempt = (p: string, label: 'primary' | 'backup'): T | null => {
     let parsed: unknown;
     try {
@@ -361,9 +396,22 @@ export function atomicReadJSONSync<T>(
     }
     if (parsed === null) return null;
 
-    // TODO(T7): apply opts.migrator.
-    void detectVersion(parsed);
-    void opts.migrator;
+    // T7: sync counterpart of the async migrator path above. See
+    // `atomicReadJSON` for the design rationale.
+    if (opts.migrator) {
+      const fromVersion = detectVersion(parsed);
+      try {
+        const result = opts.migrator(parsed, fromVersion);
+        parsed = result.data;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[atomicRead] migrator failed for ${label} "${p}":`,
+          err,
+        );
+        return null;
+      }
+    }
 
     if (opts.validate && !opts.validate(parsed)) {
       // TODO(T6): quarantine instead of warn+null.
@@ -375,11 +423,16 @@ export function atomicReadJSONSync<T>(
     return parsed as T;
   };
 
+  // Same fallback walk as the async variant; see there for the
+  // rationale on being rotation-agnostic.
   const primary = attempt(targetPath, 'primary');
   if (primary !== null) return primary;
 
-  const backup = attempt(bak, 'backup');
-  if (backup !== null) return backup;
+  for (const suffix of BACKUP_SUFFIXES) {
+    const candidate = `${targetPath}${suffix}`;
+    const backup = attempt(candidate, 'backup');
+    if (backup !== null) return backup;
+  }
 
   return null;
 }

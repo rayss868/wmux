@@ -154,25 +154,30 @@ describe('atomicWriteJSON / atomicReadJSON', () => {
     expect(leftover).toEqual([]);
   });
 
-  it('accepts the rotationEnabled flag as a no-op for T1a', async () => {
+  it('rotationEnabled shifts the numbered backup slots on each write', async () => {
+    // T5: with rotation on, successive writes populate the
+    // .bak → .bak.1 → .bak.2 → .bak.3 chain. Three writes are
+    // needed before `.bak.1` materialises — write 1 creates only
+    // the primary, write 2 creates `.bak`, write 3 shifts
+    // `.bak → .bak.1` and records the new `.bak`.
     await atomicWriteJSON(targetPath, { v: 1 }, { rotationEnabled: true });
     await atomicWriteJSON(targetPath, { v: 2 }, { rotationEnabled: true });
+    await atomicWriteJSON(targetPath, { v: 3 }, { rotationEnabled: true });
 
-    // Current behaviour: single-bak, no rotation chain yet.
     expect(fs.existsSync(bakPath)).toBe(true);
-    expect(fs.existsSync(`${bakPath}.1`)).toBe(false);
+    expect(fs.existsSync(`${bakPath}.1`)).toBe(true);
 
     const loaded = await atomicReadJSON<{ v: number }>(targetPath);
-    expect(loaded).toEqual({ v: 2 });
+    expect(loaded).toEqual({ v: 3 });
   });
 
-  it('migrator hook is accepted but ignored in T1a', async () => {
+  it('migrator hook receives detected version and replaces payload (T7)', async () => {
     await atomicWriteJSON(targetPath, { version: 1, value: 'original' });
 
     const migrator = vi.fn(
       (_data: unknown, _from: number) => ({
-        data: { version: 99, value: 'migrated' } as { version: number; value: string },
-        version: 99,
+        data: { version: 2, value: 'migrated' } as { version: number; value: string },
+        version: 2,
       }),
     );
 
@@ -181,8 +186,49 @@ describe('atomicWriteJSON / atomicReadJSON', () => {
       { migrator },
     );
 
-    // T1a is explicit: payload passes through untouched.
-    expect(loaded).toEqual({ version: 1, value: 'original' });
+    // T7: the hook is invoked with the detected on-disk version and
+    // its returned `data` replaces the parsed payload. The public
+    // read surface exposes only the payload — the new version is
+    // not propagated through the return value.
+    expect(migrator).toHaveBeenCalledTimes(1);
+    expect(migrator).toHaveBeenCalledWith(
+      { version: 1, value: 'original' },
+      1,
+    );
+    expect(loaded).toEqual({ version: 2, value: 'migrated' });
+  });
+
+  it('migrator failure falls through to the .bak chain (T7)', async () => {
+    // Write twice so a `.bak` exists with a known-good payload.
+    await atomicWriteJSON(targetPath, { version: 1, value: 'bak' });
+    await atomicWriteJSON(targetPath, { version: 1, value: 'primary' });
+
+    // A migrator that throws on the primary but lets `.bak` through
+    // proves the warn-and-return-null path feeds the fallback chain.
+    const migrator = vi.fn(
+      (data: unknown, _from: number): {
+        data: { version: number; value: string };
+        version: number;
+      } => {
+        const v = data as { version: number; value: string };
+        if (v.value === 'primary') {
+          throw new Error('synthetic migration failure');
+        }
+        return { data: v, version: 1 };
+      },
+    );
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const loaded = await atomicReadJSON<{ version: number; value: string }>(
+        targetPath,
+        { migrator },
+      );
+      expect(loaded).toEqual({ version: 1, value: 'bak' });
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

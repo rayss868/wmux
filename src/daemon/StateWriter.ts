@@ -1,63 +1,38 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DaemonState, DaemonSession } from './types';
+import type { DaemonState } from './types';
+import {
+  atomicReadJSONSync,
+  atomicWriteJSONSync,
+} from './util/atomicWrite';
 
 const DEBOUNCE_MS = 30_000;
 
 /**
- * Persists DaemonState (sessions.json) to disk using atomic write pattern.
- * Mirrors SessionManager's tmp → bak → rename strategy.
+ * Persists DaemonState (sessions.json) to disk using the shared
+ * atomic-write helpers in `./util/atomicWrite`. The public API
+ * (saveImmediate / saveDebounced / load / flush / dispose) is frozen
+ * so T2 can layer AsyncQueue onto the debounce path without changing
+ * call sites.
  */
 export class StateWriter {
   private filePath: string;
-  private tmpPath: string;
-  private bakPath: string;
   private debounceTimer: NodeJS.Timeout | null = null;
   private pendingState: DaemonState | null = null;
 
   constructor(baseDir: string) {
     this.filePath = path.join(baseDir, 'sessions.json');
-    this.tmpPath = this.filePath + '.tmp';
-    this.bakPath = this.filePath + '.bak';
   }
 
   /** Immediately write state to disk (session create/destroy/state change). */
   saveImmediate(state: DaemonState): void {
     try {
-      const dir = path.dirname(this.filePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-
-      const json = JSON.stringify(state, null, 2);
-
-      // 1. Write to temporary file
-      // Note: mode is no-op on Windows; use icacls for NTFS ACLs
-      fs.writeFileSync(this.tmpPath, json, { encoding: 'utf-8', mode: 0o600 });
-
-      // 2. Backup current file (if it exists)
-      if (fs.existsSync(this.filePath)) {
-        try {
-          fs.renameSync(this.filePath, this.bakPath);
-        } catch (bakErr) {
-          console.warn('[StateWriter] Failed to create backup:', bakErr);
-          // Continue — saving is more important than backing up
-        }
-      }
-
-      // 3. Atomic rename: tmp → sessions.json
-      fs.renameSync(this.tmpPath, this.filePath);
+      atomicWriteJSONSync(this.filePath, state);
 
       // Clear pending since we just saved
       this.pendingState = null;
     } catch (err) {
       console.error('[StateWriter] Failed to save state:', err);
-      // Clean up tmp file if it exists
-      try {
-        if (fs.existsSync(this.tmpPath)) fs.unlinkSync(this.tmpPath);
-      } catch {
-        // ignore cleanup errors
-      }
     }
   }
 
@@ -82,25 +57,12 @@ export class StateWriter {
     const empty: DaemonState = { version: 1, sessions: [] };
 
     let state: DaemonState | null = null;
-
-    // Try primary
     try {
-      state = this.parseStateFile(this.filePath);
+      state = atomicReadJSONSync<DaemonState>(this.filePath, {
+        validate: StateWriter.isDaemonState,
+      });
     } catch (err) {
-      console.error('[StateWriter] Failed to load primary state:', err);
-    }
-
-    // Fallback to backup
-    if (!state) {
-      try {
-        console.warn('[StateWriter] Trying backup...');
-        state = this.parseStateFile(this.bakPath);
-        if (state) {
-          console.warn('[StateWriter] Recovered state from backup.');
-        }
-      } catch (bakErr) {
-        console.error('[StateWriter] Backup recovery also failed:', bakErr);
-      }
+      console.error('[StateWriter] Failed to load state:', err);
     }
 
     if (!state) {
@@ -165,38 +127,25 @@ export class StateWriter {
 
   // ── Internal helpers ──────────────────────────────────────────────
 
-  private parseStateFile(filePath: string): DaemonState | null {
-    if (!fs.existsSync(filePath)) return null;
-
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    if (!raw) return null;
-
-    const parsed: unknown = JSON.parse(raw, (key, value) => {
-      // Prototype pollution guard
-      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
-        return undefined;
-      }
-      return value;
-    });
-
-    return this.validateState(parsed);
-  }
-
-  private validateState(parsed: unknown): DaemonState | null {
-    if (typeof parsed !== 'object' || parsed === null) return null;
+  /**
+   * Type guard used by the shared atomic-read helper. Validates the
+   * minimum required shape; full schema validation lives in Wave 3.
+   */
+  private static isDaemonState(parsed: unknown): parsed is DaemonState {
+    if (typeof parsed !== 'object' || parsed === null) return false;
     const obj = parsed as Record<string, unknown>;
 
-    if (typeof obj['version'] !== 'number') return null;
-    if (!Array.isArray(obj['sessions'])) return null;
+    if (typeof obj['version'] !== 'number') return false;
+    if (!Array.isArray(obj['sessions'])) return false;
 
     // Validate each session has minimum required fields
     for (const s of obj['sessions'] as unknown[]) {
-      if (typeof s !== 'object' || s === null) return null;
+      if (typeof s !== 'object' || s === null) return false;
       const sess = s as Record<string, unknown>;
-      if (typeof sess['id'] !== 'string') return null;
-      if (typeof sess['state'] !== 'string') return null;
+      if (typeof sess['id'] !== 'string') return false;
+      if (typeof sess['state'] !== 'string') return false;
     }
 
-    return parsed as DaemonState;
+    return true;
   }
 }
