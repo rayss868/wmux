@@ -26,8 +26,8 @@ export class ErrorBoundary extends Component<Props, State> {
       return (
         <div style={{
           padding: 16,
-          color: '#f38ba8',
-          backgroundColor: '#1e1e2e',
+          color: 'var(--accent-red)',
+          backgroundColor: 'var(--bg-base)',
           fontFamily: 'ui-monospace, monospace',
           fontSize: 12,
           height: '100%',
@@ -42,9 +42,9 @@ export class ErrorBoundary extends Component<Props, State> {
             onClick={() => this.setState({ hasError: false, error: null })}
             style={{
               padding: '4px 12px',
-              backgroundColor: '#313244',
-              color: '#cdd6f4',
-              border: '1px solid #45475a',
+              backgroundColor: 'var(--bg-surface)',
+              color: 'var(--text-main)',
+              border: '1px solid var(--bg-overlay)',
               borderRadius: 4,
               cursor: 'pointer',
               fontFamily: 'inherit',

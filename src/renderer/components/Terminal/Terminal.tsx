@@ -78,7 +78,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       try {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d')!;
-        ctx.font = `${fontSize}px '${fontFamily}', Consolas, 'Courier New', monospace`;
+        ctx.font = `${fontSize}px '${fontFamily}', Consolas, 'Courier New', 'Malgun Gothic', monospace`;
         charWidth = ctx.measureText('W').width;
         lineHeight = fontSize * 1.2;
       } catch {

@@ -458,7 +458,7 @@ export default function AppLayout() {
                   className="flex items-center gap-1.5 px-2 py-0.5 shrink-0 text-xs"
                   style={{
                     backgroundColor: ws.id === activeWorkspaceId ? 'var(--accent-blue)' : 'var(--bg-mantle)',
-                    color: ws.id === activeWorkspaceId ? '#fff' : 'var(--text-sub2)',
+                    color: ws.id === activeWorkspaceId ? 'var(--bg-base)' : 'var(--text-sub2)',
                     fontFamily: 'ui-monospace, monospace',
                   }}
                 >
@@ -562,7 +562,7 @@ export default function AppLayout() {
                   setShowAutoUpdatePrompt(false);
                 }}
                 className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                style={{ backgroundColor: 'var(--accent-blue)', color: '#1e1e2e' }}
+                style={{ backgroundColor: 'var(--accent-blue)', color: 'var(--bg-base)' }}
               >
                 {t('firstRun.enable')}
               </button>

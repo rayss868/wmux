@@ -229,7 +229,7 @@ export default function OnboardingOverlay({
                   onClick={handleNext}
                   style={{
                     backgroundColor: 'var(--accent-blue)',
-                    color: '#1e1e2e',
+                    color: 'var(--bg-base)',
                     border: 'none',
                     borderRadius: 6,
                     padding: '6px 14px',

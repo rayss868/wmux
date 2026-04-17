@@ -18,7 +18,7 @@ function showCopyToast() {
   if (!el) {
     el = document.createElement('div');
     el.id = 'wmux-copy-toast';
-    el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#a6e3a1;color:#1e1e2e;font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
+    el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:var(--accent-green);color:var(--bg-base);font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
     document.body.appendChild(el);
   }
   el.textContent = t('terminal.copied');
@@ -92,7 +92,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fontSize: terminalFontSize,
       scrollback: scrollbackLines,
       scrollOnUserInput: false,
-      fontFamily: `'${terminalFontFamily}', 'Consolas', 'Courier New', monospace`,
+      fontFamily: `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`,
       theme: xtermTheme,
       allowProposedApi: true,
     });
@@ -465,7 +465,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   useEffect(() => {
     if (!terminalRef.current) return;
     terminalRef.current.options.fontSize = terminalFontSize;
-    terminalRef.current.options.fontFamily = `'${terminalFontFamily}', 'Consolas', 'Courier New', monospace`;
+    terminalRef.current.options.fontFamily = `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`;
     terminalRef.current.options.theme = xtermTheme;
     fitAddonRef.current?.fit();
   }, [terminalFontSize, terminalFontFamily, xtermTheme]);
@@ -494,31 +494,25 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     }
   }, [isVisible, fit]);
 
-  const findNext = useCallback((text: string) => {
-    searchAddonRef.current?.findNext(text, {
-      decorations: {
-        matchBackground: '#f9e2af40',
-        matchBorder: '#f9e2af',
-        matchOverviewRuler: '#f9e2af',
-        activeMatchBackground: '#f9e2af80',
-        activeMatchBorder: '#f9e2af',
-        activeMatchColorOverviewRuler: '#f9e2af',
-      },
-    });
+  const getSearchDecorations = useCallback(() => {
+    const y = getComputedStyle(document.documentElement).getPropertyValue('--accent-yellow').trim();
+    return {
+      matchBackground: y + '40',
+      matchBorder: y,
+      matchOverviewRuler: y,
+      activeMatchBackground: y + '80',
+      activeMatchBorder: y,
+      activeMatchColorOverviewRuler: y,
+    };
   }, []);
 
+  const findNext = useCallback((text: string) => {
+    searchAddonRef.current?.findNext(text, { decorations: getSearchDecorations() });
+  }, [getSearchDecorations]);
+
   const findPrevious = useCallback((text: string) => {
-    searchAddonRef.current?.findPrevious(text, {
-      decorations: {
-        matchBackground: '#f9e2af40',
-        matchBorder: '#f9e2af',
-        matchOverviewRuler: '#f9e2af',
-        activeMatchBackground: '#f9e2af80',
-        activeMatchBorder: '#f9e2af',
-        activeMatchColorOverviewRuler: '#f9e2af',
-      },
-    });
-  }, []);
+    searchAddonRef.current?.findPrevious(text, { decorations: getSearchDecorations() });
+  }, [getSearchDecorations]);
 
   const clearSearch = useCallback(() => {
     searchAddonRef.current?.clearDecorations();

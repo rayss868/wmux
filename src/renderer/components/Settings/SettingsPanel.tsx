@@ -248,7 +248,7 @@ function ResetSection() {
             <button
               onClick={handleReset}
               className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-              style={{ backgroundColor: 'var(--accent-red)', color: '#fff' }}
+              style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
             >
               {t('settings.resetButton')}
             </button>
@@ -365,7 +365,7 @@ function UpdateStatus() {
           <button
             onClick={handleInstall}
             className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer"
-            style={{ backgroundColor: 'var(--accent-green, #a6e3a1)', color: '#1e1e2e', border: 'none' }}
+            style={{ backgroundColor: 'var(--accent-green)', color: 'var(--bg-base)', border: 'none' }}
           >
             {t('settings.updateReady')}
           </button>

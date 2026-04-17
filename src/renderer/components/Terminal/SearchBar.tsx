@@ -80,7 +80,7 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
         className="flex-1 bg-transparent outline-none text-xs"
         style={{
           color: 'var(--text-main)',
-          caretColor: '#f5e0dc',
+          caretColor: 'var(--accent-cursor)',
           minWidth: 0,
         }}
         spellCheck={false}

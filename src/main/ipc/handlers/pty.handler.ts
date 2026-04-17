@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
 import { DaemonClient } from '../../DaemonClient';
@@ -63,6 +64,17 @@ export function registerPTYHandlers(
   // Track daemon session:data listeners for cleanup
   const daemonSessionListeners: Array<(...args: unknown[]) => void> = [];
 
+  // Per-session StringDecoder to handle UTF-8 multi-byte sequences split across chunks
+  const sessionDecoders = new Map<string, StringDecoder>();
+  function decodeSessionData(sessionId: string, data: Buffer): string {
+    let decoder = sessionDecoders.get(sessionId);
+    if (!decoder) {
+      decoder = new StringDecoder('utf8');
+      sessionDecoders.set(sessionId, decoder);
+    }
+    return decoder.write(data);
+  }
+
   // pty:create
   ipcMain.removeHandler(IPC.PTY_CREATE);
   if (useDaemon && daemonClient) {
@@ -99,7 +111,8 @@ export function registerPTYHandlers(
         if (payload.sessionId !== sessionId) return;
         const win = getWindow?.();
         if (win && !win.isDestroyed()) {
-          win.webContents.send(IPC.PTY_DATA, sessionId, payload.data.toString());
+          const text = decodeSessionData(sessionId, payload.data);
+          if (text) win.webContents.send(IPC.PTY_DATA, sessionId, text);
         }
       };
       daemonClient.on('session:data', onSessionData as (...args: unknown[]) => void);
@@ -184,6 +197,7 @@ export function registerPTYHandlers(
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       await daemonClient.rpc('daemon.destroySession', { id });
       await daemonClient.disconnectSessionPipe(id);
+      sessionDecoders.delete(id);
     }));
   } else {
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, (_event: Electron.IpcMainInvokeEvent, id: string) => {
@@ -227,7 +241,8 @@ export function registerPTYHandlers(
           if (payload.sessionId !== id) return;
           const win = getWindow?.();
           if (win && !win.isDestroyed()) {
-            win.webContents.send(IPC.PTY_DATA, id, payload.data.toString());
+            const text = decodeSessionData(id, payload.data);
+            if (text) win.webContents.send(IPC.PTY_DATA, id, text);
           }
         };
         daemonClient.on('session:data', onSessionData as (...args: unknown[]) => void);
