@@ -1,6 +1,7 @@
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import { useTerminal } from '../../hooks/useTerminal';
 import { useStore } from '../../stores';
+import { useIpc } from '../../hooks/useIpc';
 import ViCopyMode from './ViCopyMode';
 import SearchBar from './SearchBar';
 import '@xterm/xterm/css/xterm.css';
@@ -25,11 +26,27 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   const containerRef = useRef<HTMLDivElement>(null);
   const [ptyId, setPtyId] = useState<string | null>(externalPtyId || null);
   const creatingRef = useRef(false);
+  const [restoring, setRestoring] = useState(!!scrollbackFile);
 
   const viCopyModeActive = useStore((s) => s.viCopyModeActive);
   const setViCopyModeActive = useStore((s) => s.setViCopyModeActive);
   const searchBarVisible = useStore((s) => s.searchBarVisible);
   const setSearchBarVisible = useStore((s) => s.setSearchBarVisible);
+  const { invoke: ipcInvoke } = useIpc();
+  // Keep the invoker stable across re-renders without re-triggering the PTY
+  // creation effect below.
+  const ipcInvokeRef = useRef(ipcInvoke);
+  ipcInvokeRef.current = ipcInvoke;
+
+  // Hide restoring overlay when first data arrives
+  const handleFirstData = useCallback(() => setRestoring(false), []);
+
+  // Fallback: hide restoring overlay after 3 seconds even if no data arrives
+  useEffect(() => {
+    if (!restoring) return;
+    const timer = setTimeout(() => setRestoring(false), 3000);
+    return () => clearTimeout(timer);
+  }, [restoring]);
 
   useEffect(() => {
     console.log(`[Terminal] useEffect: externalPtyId=${externalPtyId}, scrollbackFile=${scrollbackFile}`);
@@ -61,7 +78,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       try {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d')!;
-        ctx.font = `${fontSize}px '${fontFamily}', Consolas, 'Courier New', monospace`;
+        ctx.font = `${fontSize}px '${fontFamily}', Consolas, 'Courier New', 'Malgun Gothic', monospace`;
         charWidth = ctx.measureText('W').width;
         lineHeight = fontSize * 1.2;
       } catch {
@@ -75,16 +92,20 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
 
     const workspaceId = useStore.getState().activeWorkspaceId;
     console.log(`[Terminal] Creating new PTY: shell=${shell}, cwd=${cwd}, cols=${cols}, rows=${rows}, ws=${workspaceId}`);
-    window.electronAPI.pty.create({ shell, cwd, cols, rows, workspaceId }).then((result: { id: string }) => {
-      if (cancelled) {
-        // 이미 unmount됨 — PTY 정리
-        window.electronAPI.pty.dispose(result.id);
+    void ipcInvokeRef.current<{ id: string }>(() =>
+      window.electronAPI.pty.create({ shell, cwd, cols, rows, workspaceId })
+    ).then((result) => {
+      if (!result.ok) {
+        // Toast surfaced by useIpc (e.g. DAEMON_DISCONNECTED). Nothing to do.
         return;
       }
-      setPtyId(result.id);
-      onPtyCreated?.(result.id);
-    }).catch((err: unknown) => {
-      console.error('Failed to create PTY:', err);
+      if (cancelled) {
+        // 이미 unmount됨 — PTY 정리
+        window.electronAPI.pty.dispose(result.data.id);
+        return;
+      }
+      setPtyId(result.data.id);
+      onPtyCreated?.(result.data.id);
     });
 
     return () => { cancelled = true; };
@@ -93,7 +114,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   // isVisible = workspace is shown AND this surface tab is the active one.
   // useTerminal uses this to skip fit() when the container is display:none.
   const isVisible = isWorkspaceVisible && isActive;
-  const { terminal: terminalRef, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { ptyId, isVisible, scrollbackFile });
+  const { terminal: terminalRef, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined });
 
   const showViCopyMode = viCopyModeActive && isActive && terminalRef.current !== null;
   const showSearchBar = searchBarVisible && isActive;
@@ -113,6 +134,13 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         position: 'relative',
       }}
     >
+      {/* Session restore overlay */}
+      {restoring && (
+        <div className="absolute inset-0 flex items-center justify-center text-[var(--text-muted)] text-sm font-mono z-10 pointer-events-none">
+          Restoring session...
+        </div>
+      )}
+
       {/* xterm mount point */}
       <div
         ref={containerRef}

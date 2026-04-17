@@ -4,7 +4,7 @@ import type { Department, TeamMember } from '../../../shared/types';
 import CompanyMemberItem from '../../../company/renderer/components/CompanyMemberItem';
 import AddMemberDialog from '../../../company/renderer/components/AddMemberDialog';
 import CostDashboard from '../../../company/renderer/components/CostDashboard';
-import { spawnMember } from '../../../company/renderer/provisioner';
+import { spawnMember, destroyCompanyWithCleanup } from '../../../company/renderer/provisioner';
 
 // ─── Department section ──────────────────────────────────────────────────────
 
@@ -21,7 +21,6 @@ function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts:
   const handleSelect = (member: TeamMember) => {
     if (member.workspaceId) {
       setActiveWorkspace(member.workspaceId);
-      useStore.getState().setSidebarMode('workspaces');
     }
   };
 
@@ -153,8 +152,7 @@ function CeoRow({ ceoWorkspaceId }: { ceoWorkspaceId?: string }) {
       onClick={() => {
         if (isProvisioned) {
           setActiveWorkspace(ceoWorkspaceId);
-          useStore.getState().setSidebarMode('workspaces');
-        }
+            }
       }}
       disabled={!isProvisioned}
     >
@@ -235,21 +233,7 @@ export default function CompanyPanel() {
             <button
               onClick={() => {
                 if (confirm('Destroy company and all teams?')) {
-                  // Dispose PTYs — fire-and-forget but catch errors
-                  const disposePromises: Promise<void>[] = [];
-                  for (const dept of company.departments) {
-                    for (const m of dept.members) {
-                      if (m.ptyId) {
-                        disposePromises.push(
-                          window.electronAPI.pty.dispose(m.ptyId).catch((err: unknown) => {
-                            console.error(`Failed to dispose PTY ${m.ptyId}:`, err);
-                          }),
-                        );
-                      }
-                    }
-                  }
-                  void Promise.all(disposePromises);
-                  useStore.getState().destroyCompany();
+                  destroyCompanyWithCleanup();
                 }
               }}
               className="text-[9px] font-mono transition-colors"

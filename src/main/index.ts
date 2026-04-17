@@ -5,6 +5,7 @@ process.on('uncaughtException', (err) => {
   console.error('[Main] Uncaught exception:', err);
 });
 
+import * as crypto from 'crypto';
 import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron';
 import { createWindow } from './window/createWindow';
 import { PTYManager } from './pty/PTYManager';
@@ -21,13 +22,14 @@ import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
-import { registerCompanyRpc } from '../company/main/company.rpc';
+import { registerCompanyRpc } from './pipe/handlers/company.rpc';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { ensureDaemon } from './daemon/launcher';
+import { createTray, destroyTray } from './tray';
 
 // Force English for Chromium internal messages to avoid encoding corruption
 // on non-ASCII locales (e.g. Korean Windows where cp949 garbles console output).
@@ -39,7 +41,7 @@ if (process.env.WMUX_DISABLE_CDP !== 'true') {
   // Randomize port within range to prevent predictable scanning
   const basePort = 18800;
   const range = 100;
-  cdpPort = basePort + Math.floor(Math.random() * range);
+  cdpPort = basePort + crypto.randomInt(range);
   app.commandLine.appendSwitch('remote-debugging-port', cdpPort.toString());
   console.log(`[WinMux] CDP enabled on port ${cdpPort}`);
 }
@@ -139,6 +141,7 @@ if (!gotLock) {
   app.on('second-instance', () => {
     if (isQuitting) return;
     if (mainWindow) {
+      mainWindow.show();
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
@@ -218,7 +221,7 @@ function attachWindowRecovery(win: BrowserWindow): void {
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
 registerPaneRpc(rpcRouter, () => mainWindow);
-registerInputRpc(rpcRouter, ptyManager, () => mainWindow);
+registerInputRpc(rpcRouter, ptyManager, () => mainWindow, () => daemonClient);
 registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
@@ -239,6 +242,17 @@ app.on('ready', async () => {
   console.log(`[Main] Window created: ${!!mainWindow}`);
 
   attachWindowRecovery(mainWindow);
+
+  // Intercept window close — hide to tray instead of destroying
+  mainWindow.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow!.hide();
+    }
+  });
+
+  // System tray — lets the app stay alive when window is closed
+  createTray(mainWindow, () => { isQuitting = true; });
 
   // Auto-start daemon and connect
   try {
@@ -319,7 +333,8 @@ app.on('ready', async () => {
 });
 
 app.on('window-all-closed', () => {
-  app.quit();
+  // Don't quit — stay alive in system tray.
+  // Actual quit is triggered from the tray "Quit" menu item.
 });
 
 app.on('before-quit', async (e) => {
@@ -342,13 +357,8 @@ app.on('before-quit', async (e) => {
   cleanupHandlers();
 
   if (daemonClient?.isConnected) {
-    // Daemon mode: shut down the daemon process together with the app
-    console.log('[Main] Daemon mode — sending shutdown RPC');
-    try {
-      await daemonClient.rpc('daemon.shutdown', {});
-    } catch {
-      // Daemon may already be gone — ignore
-    }
+    // Daemon mode: detach only — sessions persist in daemon
+    console.log('[Main] Daemon mode — detaching sessions (not killing)');
     await daemonClient.disconnect();
     daemonClient = null;
   } else {
@@ -361,9 +371,40 @@ app.on('before-quit', async (e) => {
   pipeServer.stop();
   mcpRegistrar.unregister();
   autoUpdater.stop();
+  destroyTray();
 
   app.quit(); // re-trigger quit — isQuitting flag skips preventDefault
 });
+
+// Windows-specific: handle OS shutdown/logoff/restart.
+// Electron fires 'session-end' on WM_ENDSESSION, which is the last reliable
+// signal before Windows force-kills the process. The 'before-quit' async
+// handler may not complete in time, so we do a synchronous emergency save here.
+if (process.platform === 'win32') {
+  app.on('session-end' as any, () => {
+    console.log('[Main] session-end received — emergency sync save');
+    try {
+      // Import SessionManager lazily to avoid circular deps
+      const { SessionManager } = require('./session/SessionManager');
+      const sm = new SessionManager();
+      const existing = sm.load();
+      if (existing) {
+        sm.save(existing); // ensure last periodic save is flushed to disk
+      }
+    } catch (err) {
+      console.error('[Main] Emergency session save failed:', err);
+    }
+
+    // Detach daemon synchronously — don't kill sessions
+    if (daemonClient?.isConnected) {
+      try {
+        daemonClient.disconnectSync();
+      } catch {
+        // best effort — process is about to die
+      }
+    }
+  });
+}
 
 app.on('activate', () => {
   if (isQuitting) return;

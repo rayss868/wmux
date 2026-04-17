@@ -21,6 +21,7 @@ export default function MiniSidebar() {
         className="flex items-center justify-center h-10 text-[var(--text-subtle)] hover:text-[var(--accent-green)] transition-colors border-b border-[var(--bg-surface)] font-mono text-lg leading-none"
         onClick={() => addWorkspace()}
         title={t('sidebar.newWorkspaceTooltip')}
+        data-onboarding-target="add-workspace"
       >
         +
       </button>

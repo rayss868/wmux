@@ -3,11 +3,15 @@ import fs from 'node:fs';
 import { IPC } from '../../../shared/constants';
 import { MetadataCollector } from '../../metadata/MetadataCollector';
 import { PTYManager } from '../../pty/PTYManager';
+import { wrapHandler } from '../wrapHandler';
 
 const collector = new MetadataCollector();
 
 // Track CWD per ptyId (updated via OSC 7, prompt detection, or initial registration)
 const cwdMap = new Map<string, string>();
+
+// Track git branch per ptyId (updated via OSC 7727 shell integration hook)
+const branchMap = new Map<string, string>();
 
 export function registerMetadataHandlers(
   ptyManager: PTYManager,
@@ -15,10 +19,11 @@ export function registerMetadataHandlers(
 ): () => void {
   // Handle metadata request from renderer
   ipcMain.removeHandler(IPC.METADATA_REQUEST);
-  ipcMain.handle(IPC.METADATA_REQUEST, async (_event, ptyId: string) => {
+  ipcMain.handle(IPC.METADATA_REQUEST, wrapHandler(IPC.METADATA_REQUEST, async (_event: Electron.IpcMainInvokeEvent, ptyId: string) => {
     const cwd = cwdMap.get(ptyId);
-    return collector.collect(cwd);
-  });
+    const shellBranch = branchMap.get(ptyId);
+    return collector.collect(cwd, shellBranch);
+  }));
 
   // Periodic metadata polling (every 5 seconds)
   const pollingInterval = setInterval(async () => {
@@ -30,6 +35,7 @@ export function registerMetadataHandlers(
       const instance = ptyManager.get(ptyId);
       if (!instance) {
         cwdMap.delete(ptyId);
+        branchMap.delete(ptyId);
         continue;
       }
 
@@ -45,7 +51,9 @@ export function registerMetadataHandlers(
 
       const cwd = cwdMap.get(ptyId);
       if (cwd) {
-        const metadata = await collector.collect(cwd);
+        // If shell integration provided a branch via OSC 7727, skip git exec polling
+        const shellBranch = branchMap.get(ptyId);
+        const metadata = await collector.collect(cwd, shellBranch);
         win.webContents.send(IPC.METADATA_UPDATE, ptyId, metadata);
       }
     }
@@ -64,4 +72,20 @@ export function updateCwd(ptyId: string, cwd: string): void {
 
 export function removeCwd(ptyId: string): void {
   cwdMap.delete(ptyId);
+}
+
+export function updateBranch(ptyId: string, branch: string): void {
+  branchMap.set(ptyId, branch);
+}
+
+export function removeBranch(ptyId: string): void {
+  branchMap.delete(ptyId);
+}
+
+export function getCwd(ptyId: string): string | undefined {
+  return cwdMap.get(ptyId);
+}
+
+export function getBranch(ptyId: string): string | undefined {
+  return branchMap.get(ptyId);
 }

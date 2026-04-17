@@ -18,7 +18,7 @@ function showCopyToast() {
   if (!el) {
     el = document.createElement('div');
     el.id = 'wmux-copy-toast';
-    el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#a6e3a1;color:#1e1e2e;font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
+    el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:var(--accent-green);color:var(--bg-base);font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
     document.body.appendChild(el);
   }
   el.textContent = t('terminal.copied');
@@ -34,6 +34,8 @@ interface UseTerminalOptions {
   isVisible?: boolean;
   /** If set, load scrollback content from this file (surfaceId) before connecting PTY data */
   scrollbackFile?: string;
+  /** Called once when the first chunk of PTY data is received (useful for hiding restore overlays) */
+  onFirstData?: () => void;
 }
 
 export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>, options: UseTerminalOptions) {
@@ -45,9 +47,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const webglAddonRef = useRef<WebglAddon | null>(null);
   // loadWebgl closure ref — set by the main effect, called by visibility effect.
   const loadWebglRef = useRef<(() => void) | null>(null);
-  const { ptyId, isVisible = true, scrollbackFile } = options;
+  const { ptyId, isVisible = true, scrollbackFile, onFirstData } = options;
   const ptyIdRef = useRef(ptyId);
   ptyIdRef.current = ptyId;
+  const onFirstDataRef = useRef(onFirstData);
+  onFirstDataRef.current = onFirstData;
   const terminalFontSize = useStore((s) => s.terminalFontSize);
   const terminalFontFamily = useStore((s) => s.terminalFontFamily);
   const scrollbackLines = useStore((s) => s.scrollbackLines);
@@ -88,7 +92,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fontSize: terminalFontSize,
       scrollback: scrollbackLines,
       scrollOnUserInput: false,
-      fontFamily: `'${terminalFontFamily}', 'Consolas', 'Courier New', monospace`,
+      fontFamily: `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`,
       theme: xtermTheme,
       allowProposedApi: true,
     });
@@ -170,10 +174,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
 
       // Pass app shortcuts through to useKeyboard (don't let xterm consume them)
-      // Check both e.key and e.code for Korean IME compatibility
-      const shortcutKeys = [',', 'b', 'k', 'i', 'n', 't'];
-      const shortcutCodes = ['Comma', 'KeyB', 'KeyK', 'KeyI', 'KeyN', 'KeyT'];
-      if (e.ctrlKey && !e.shiftKey && (shortcutKeys.includes(e.key) || shortcutCodes.includes(e.code))) {
+      if (e.ctrlKey && !e.shiftKey && [',', 'b', 'k', 'i', 'n', 't'].includes(e.key)) {
         return false; // let DOM bubble to useKeyboard
       }
       if (e.ctrlKey && e.shiftKey) {
@@ -197,8 +198,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
 
       // Ctrl+C: copy if selection exists, otherwise send SIGINT
-      // Use e.code (layout-independent) so it works with Korean IME (e.key='ㅊ')
-      if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
+      if (e.ctrlKey && !e.shiftKey && e.key === 'c') {
         const sel = terminal.getSelection();
         if (sel) {
           void window.clipboardAPI.writeText(sel);
@@ -211,8 +211,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       // Ctrl+V: paste from clipboard (use our IPC clipboard, block event
       // so xterm doesn't also paste via browser's native paste event)
-      // Use e.code for IME compatibility (e.key='ㅍ' with Korean IME)
-      if (e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
+      if (e.ctrlKey && !e.shiftKey && e.key === 'v') {
         e.preventDefault();
         void (async () => {
           // Try text first
@@ -314,6 +313,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Deferred PTY listener references — connected after scrollback restore
     let removeDataListener: (() => void) | null = null;
     let removeExitListener: (() => void) | null = null;
+    let firstDataFired = false;
+    const fireFirstData = () => {
+      if (!firstDataFired) {
+        firstDataFired = true;
+        onFirstDataRef.current?.();
+      }
+    };
 
     // Restore scrollback from previous session, then connect PTY data listener.
     // Scrollback must be written BEFORE PTY data listener is connected so new
@@ -322,6 +328,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       removeDataListener = window.electronAPI.pty.onData((id, data) => {
         if (id === ptyId) {
           terminal.write(data);
+          fireFirstData();
         }
       });
 
@@ -347,6 +354,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           return;
         }
         terminal.write(data);
+        fireFirstData();
       });
 
       removeExitListener = window.electronAPI.pty.onExit((id, exitCode) => {
@@ -358,17 +366,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       window.electronAPI.scrollback.load(scrollbackFile).then((content) => {
         if (content && terminalRef.current === terminal) {
           terminal.write(content);
+          fireFirstData();
         }
         scrollbackLoaded = true;
         for (const data of pendingData) {
           terminal.write(data);
         }
+        if (pendingData.length > 0) fireFirstData();
         pendingData.length = 0;
       }).catch(() => {
         scrollbackLoaded = true;
         for (const data of pendingData) {
           terminal.write(data);
         }
+        if (pendingData.length > 0) fireFirstData();
         pendingData.length = 0;
       });
     } else {
@@ -454,7 +465,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   useEffect(() => {
     if (!terminalRef.current) return;
     terminalRef.current.options.fontSize = terminalFontSize;
-    terminalRef.current.options.fontFamily = `'${terminalFontFamily}', 'Consolas', 'Courier New', monospace`;
+    terminalRef.current.options.fontFamily = `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`;
     terminalRef.current.options.theme = xtermTheme;
     fitAddonRef.current?.fit();
   }, [terminalFontSize, terminalFontFamily, xtermTheme]);
@@ -483,31 +494,25 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     }
   }, [isVisible, fit]);
 
-  const findNext = useCallback((text: string) => {
-    searchAddonRef.current?.findNext(text, {
-      decorations: {
-        matchBackground: '#f9e2af40',
-        matchBorder: '#f9e2af',
-        matchOverviewRuler: '#f9e2af',
-        activeMatchBackground: '#f9e2af80',
-        activeMatchBorder: '#f9e2af',
-        activeMatchColorOverviewRuler: '#f9e2af',
-      },
-    });
+  const getSearchDecorations = useCallback(() => {
+    const y = getComputedStyle(document.documentElement).getPropertyValue('--accent-yellow').trim();
+    return {
+      matchBackground: y + '40',
+      matchBorder: y,
+      matchOverviewRuler: y,
+      activeMatchBackground: y + '80',
+      activeMatchBorder: y,
+      activeMatchColorOverviewRuler: y,
+    };
   }, []);
 
+  const findNext = useCallback((text: string) => {
+    searchAddonRef.current?.findNext(text, { decorations: getSearchDecorations() });
+  }, [getSearchDecorations]);
+
   const findPrevious = useCallback((text: string) => {
-    searchAddonRef.current?.findPrevious(text, {
-      decorations: {
-        matchBackground: '#f9e2af40',
-        matchBorder: '#f9e2af',
-        matchOverviewRuler: '#f9e2af',
-        activeMatchBackground: '#f9e2af80',
-        activeMatchBorder: '#f9e2af',
-        activeMatchColorOverviewRuler: '#f9e2af',
-      },
-    });
-  }, []);
+    searchAddonRef.current?.findPrevious(text, { decorations: getSearchDecorations() });
+  }, [getSearchDecorations]);
 
   const clearSearch = useCallback(() => {
     searchAddonRef.current?.clearDecorations();

@@ -43,9 +43,12 @@ export class MetadataCollector {
     }
   }
 
-  async collect(cwd?: string): Promise<{ gitBranch?: string; cwd?: string; listeningPorts?: number[] }> {
+  async collect(cwd?: string, shellBranch?: string): Promise<{ gitBranch?: string; cwd?: string; listeningPorts?: number[] }> {
     const [gitBranch, listeningPorts] = await Promise.all([
-      cwd ? this.getGitBranch(cwd) : Promise.resolve(undefined),
+      // If shell integration already provided a branch, skip the expensive git exec
+      shellBranch
+        ? Promise.resolve(shellBranch)
+        : cwd ? this.getGitBranch(cwd) : Promise.resolve(undefined),
       this.getListeningPorts(),
     ]);
 

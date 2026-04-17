@@ -17,7 +17,7 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build & Make
         run: npm run make
@@ -37,3 +37,38 @@ jobs:
             out/make/squirrel.windows/x64/RELEASES
           generate_release_notes: true
           draft: false
+
+      - name: Get version from package.json
+        id: pkg
+        run: |
+          $v = (Get-Content package.json | ConvertFrom-Json).version
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Compute Setup.exe checksum
+        id: checksum
+        run: |
+          $exe = Get-ChildItem "out/make/squirrel.windows/x64/*Setup.exe" | Select-Object -First 1
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          echo "sha256=$hash" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Build Chocolatey package
+        run: |
+          $version = "${{ steps.pkg.outputs.version }}"
+          $sha256  = "${{ steps.checksum.outputs.sha256 }}"
+          # Inject version into nuspec
+          (Get-Content chocolatey/wmux.nuspec) -replace '\$version\$', $version | Set-Content chocolatey/wmux.nuspec
+          # Inject checksum into install script
+          (Get-Content chocolatey/tools/chocolateyInstall.ps1) -replace '__CHECKSUM_SHA256__', $sha256 | Set-Content chocolatey/tools/chocolateyInstall.ps1
+          choco pack chocolatey/wmux.nuspec --output-directory out/choco
+          # Restore originals so git stays clean
+          git checkout -- chocolatey/
+        shell: pwsh
+
+      - name: Push to Chocolatey
+        if: env.CHOCO_API_KEY != ''
+        run: choco push out/choco/wmux.${{ steps.pkg.outputs.version }}.nupkg --source https://push.chocolatey.org --api-key ${{ secrets.CHOCO_API_KEY }}
+        shell: pwsh
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}

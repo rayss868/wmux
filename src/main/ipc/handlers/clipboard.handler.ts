@@ -2,6 +2,7 @@ import { ipcMain, clipboard, app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { IPC } from '../../../shared/constants';
+import { wrapHandler } from '../wrapHandler';
 
 // Track the last paste temp file so we can clean it up on the next paste
 let lastPasteFile: string | null = null;
@@ -15,17 +16,17 @@ export function registerClipboardHandlers(): void {
   ipcMain.removeHandler(IPC.CLIPBOARD_READ_IMAGE);
   ipcMain.removeHandler(IPC.CLIPBOARD_HAS_IMAGE);
 
-  ipcMain.handle(IPC.CLIPBOARD_WRITE, (_event, text: string) => {
+  ipcMain.handle(IPC.CLIPBOARD_WRITE, wrapHandler(IPC.CLIPBOARD_WRITE, (_event: Electron.IpcMainInvokeEvent, text: string) => {
     if (typeof text !== 'string') return;
     if (text.length > 1_000_000) return; // 1MB limit
     clipboard.writeText(text);
-  });
+  }));
 
-  ipcMain.handle(IPC.CLIPBOARD_READ, () => {
+  ipcMain.handle(IPC.CLIPBOARD_READ, wrapHandler(IPC.CLIPBOARD_READ, (_event: Electron.IpcMainInvokeEvent) => {
     return clipboard.readText();
-  });
+  }));
 
-  ipcMain.handle(IPC.CLIPBOARD_READ_IMAGE, () => {
+  ipcMain.handle(IPC.CLIPBOARD_READ_IMAGE, wrapHandler(IPC.CLIPBOARD_READ_IMAGE, (_event: Electron.IpcMainInvokeEvent) => {
     const image = clipboard.readImage();
     if (image.isEmpty()) return null;
 
@@ -39,9 +40,9 @@ export function registerClipboardHandlers(): void {
     fs.writeFileSync(filePath, image.toPNG());
     lastPasteFile = filePath;
     return filePath;
-  });
+  }));
 
-  ipcMain.handle(IPC.CLIPBOARD_HAS_IMAGE, () => {
+  ipcMain.handle(IPC.CLIPBOARD_HAS_IMAGE, wrapHandler(IPC.CLIPBOARD_HAS_IMAGE, (_event: Electron.IpcMainInvokeEvent) => {
     return clipboard.availableFormats().some(f => f.startsWith('image/'));
-  });
+  }));
 }

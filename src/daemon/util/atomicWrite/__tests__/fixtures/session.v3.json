@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "id": "ws-1",
+  "createdAt": 0,
+  "panes": [
+    { "id": "p1", "cwd": "/home/user/project-a", "scrollbackLimit": 1000 }
+  ]
+}

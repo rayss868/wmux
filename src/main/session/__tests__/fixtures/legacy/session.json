@@ -1,0 +1,27 @@
+{
+  "workspaces": [
+    {
+      "id": "ws-legacy-1",
+      "name": "Legacy Workspace",
+      "rootPane": {
+        "id": "pane-legacy-root",
+        "type": "leaf",
+        "surfaces": [
+          {
+            "id": "surface-legacy-1",
+            "ptyId": "pty-legacy-1",
+            "title": "bash",
+            "shell": "bash",
+            "cwd": "/home/user"
+          }
+        ],
+        "activeSurfaceId": "surface-legacy-1"
+      },
+      "activePaneId": "pane-legacy-root"
+    }
+  ],
+  "activeWorkspaceId": "ws-legacy-1",
+  "sidebarVisible": true,
+  "theme": "dark",
+  "terminalFontSize": 14
+}

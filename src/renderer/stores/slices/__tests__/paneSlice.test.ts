@@ -1,0 +1,150 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { create } from 'zustand';
+import { immer } from 'zustand/middleware/immer';
+import { createPaneSlice, type PaneSlice } from '../paneSlice';
+import { createWorkspace, type Workspace } from '../../../../shared/types';
+import { findPane, getLeafPanes } from '../../../../shared/paneUtils';
+
+// Minimal store that satisfies PaneSlice dependencies
+type TestState = PaneSlice & {
+  workspaces: Workspace[];
+  activeWorkspaceId: string;
+};
+
+function createTestStore() {
+  const ws = createWorkspace('Test');
+  return create<TestState>()(
+    immer((...args) => ({
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      // @ts-expect-error — minimal test store doesn't match full StoreState
+      ...createPaneSlice(...args),
+    }))
+  );
+}
+
+function getActiveWorkspace(store: ReturnType<typeof createTestStore>): Workspace {
+  const state = store.getState();
+  return state.workspaces.find((w) => w.id === state.activeWorkspaceId)!;
+}
+
+describe('PaneSlice', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+  });
+
+  describe('splitPane', () => {
+    it('creates a branch with 2 children from a leaf', () => {
+      const ws = getActiveWorkspace(store);
+      const rootId = ws.rootPane.id;
+
+      store.getState().splitPane(rootId, 'horizontal');
+
+      const wsAfter = getActiveWorkspace(store);
+      expect(wsAfter.rootPane.type).toBe('branch');
+      if (wsAfter.rootPane.type === 'branch') {
+        expect(wsAfter.rootPane.children).toHaveLength(2);
+        expect(wsAfter.rootPane.children[0].type).toBe('leaf');
+        expect(wsAfter.rootPane.children[1].type).toBe('leaf');
+      }
+    });
+
+    it('with horizontal creates a horizontal branch', () => {
+      const ws = getActiveWorkspace(store);
+      store.getState().splitPane(ws.rootPane.id, 'horizontal');
+
+      const wsAfter = getActiveWorkspace(store);
+      if (wsAfter.rootPane.type === 'branch') {
+        expect(wsAfter.rootPane.direction).toBe('horizontal');
+      }
+    });
+
+    it('with vertical creates a vertical branch', () => {
+      const ws = getActiveWorkspace(store);
+      store.getState().splitPane(ws.rootPane.id, 'vertical');
+
+      const wsAfter = getActiveWorkspace(store);
+      if (wsAfter.rootPane.type === 'branch') {
+        expect(wsAfter.rootPane.direction).toBe('vertical');
+      }
+    });
+  });
+
+  describe('closePane', () => {
+    it('removes a leaf and collapses the parent branch', () => {
+      const ws = getActiveWorkspace(store);
+      const originalLeafId = ws.rootPane.id;
+
+      // Split to create 2 panes
+      store.getState().splitPane(originalLeafId, 'horizontal');
+      const wsAfterSplit = getActiveWorkspace(store);
+      expect(wsAfterSplit.rootPane.type).toBe('branch');
+
+      // Close the first child (original leaf copy)
+      if (wsAfterSplit.rootPane.type === 'branch') {
+        const firstChildId = wsAfterSplit.rootPane.children[0].id;
+        store.getState().closePane(firstChildId);
+
+        const wsAfterClose = getActiveWorkspace(store);
+        // Parent branch should have been collapsed, leaving the remaining leaf as root
+        expect(wsAfterClose.rootPane.type).toBe('leaf');
+      }
+    });
+
+    it('on root pane does nothing (cannot close root)', () => {
+      const ws = getActiveWorkspace(store);
+      const rootId = ws.rootPane.id;
+
+      store.getState().closePane(rootId);
+
+      const wsAfter = getActiveWorkspace(store);
+      expect(wsAfter.rootPane.id).toBe(rootId);
+      expect(wsAfter.rootPane.type).toBe('leaf');
+    });
+  });
+
+  describe('focusPaneDirection', () => {
+    it('does nothing with only 1 pane', () => {
+      const ws = getActiveWorkspace(store);
+      const activeId = ws.activePaneId;
+
+      store.getState().focusPaneDirection('right');
+
+      const wsAfter = getActiveWorkspace(store);
+      expect(wsAfter.activePaneId).toBe(activeId);
+    });
+
+    it('moves to adjacent sibling in aligned direction', () => {
+      const ws = getActiveWorkspace(store);
+      store.getState().splitPane(ws.rootPane.id, 'horizontal');
+
+      const wsAfterSplit = getActiveWorkspace(store);
+      const leaves = getLeafPanes(wsAfterSplit.rootPane);
+      expect(leaves).toHaveLength(2);
+
+      // After split, active pane should be the new (second) pane
+      const activeBeforeMove = wsAfterSplit.activePaneId;
+      expect(activeBeforeMove).toBe(leaves[1].id);
+
+      // Move left should go to the first pane
+      store.getState().focusPaneDirection('left');
+      const wsAfterMove = getActiveWorkspace(store);
+      expect(wsAfterMove.activePaneId).toBe(leaves[0].id);
+    });
+
+    it('stays at current pane when no neighbor in direction (no wrap)', () => {
+      const ws = getActiveWorkspace(store);
+      store.getState().splitPane(ws.rootPane.id, 'vertical');
+
+      const wsAfterSplit = getActiveWorkspace(store);
+      const leaves = getLeafPanes(wsAfterSplit.rootPane);
+
+      // Active is leaves[1] (last pane). Move down should stay (no wrap-around)
+      store.getState().focusPaneDirection('down');
+      const wsAfterMove = getActiveWorkspace(store);
+      expect(wsAfterMove.activePaneId).toBe(leaves[1].id);
+    });
+  });
+});

@@ -168,7 +168,7 @@ export class PipeServer {
     this.tcpServer.listen(0, '127.0.0.1', () => {
       const addr = this.tcpServer!.address() as net.AddressInfo;
       const portFile = getTcpPortPath();
-      fs.writeFileSync(portFile, String(addr.port), 'utf8');
+      fs.writeFileSync(portFile, String(addr.port), { encoding: 'utf8', mode: 0o600 });
       console.log(`[PipeServer] TCP fallback listening on 127.0.0.1:${addr.port}`);
     });
   }
@@ -239,7 +239,9 @@ export class PipeServer {
 
     // Authenticate first: reject unauthenticated requests before consuming rate limit budget.
     // This prevents unauthenticated attackers from exhausting rate limits to DoS legitimate clients.
-    if (request.token !== this.authToken) {
+    const tokenBuf = Buffer.from(request.token || '');
+    const authBuf = Buffer.from(this.authToken);
+    if (tokenBuf.length !== authBuf.length || !crypto.timingSafeEqual(tokenBuf, authBuf)) {
       const unauthorizedResponse = JSON.stringify({
         id: request.id,
         ok: false,

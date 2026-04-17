@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useStore } from '../../stores';
 import PaletteItem, { type PaletteItemData, type PaletteCategory } from './PaletteItem';
 import { useT } from '../../hooks/useT';
+import { useIpc } from '../../hooks/useIpc';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -101,6 +102,7 @@ export default function CommandPalette() {
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const { invoke: ipcInvoke } = useIpc();
 
   // -------------------------------------------------------------------------
   // Build item list
@@ -181,8 +183,12 @@ export default function CommandPalette() {
           const state = useStore.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
           if (ws) {
-            window.electronAPI.pty.create({ workspaceId: ws.id }).then((result: { id: string }) => {
-              useStore.getState().addSurface(ws.activePaneId, result.id, 'Terminal', '');
+            void ipcInvoke<{ id: string }>(() =>
+              window.electronAPI.pty.create({ workspaceId: ws.id })
+            ).then((result) => {
+              if (result.ok) {
+                useStore.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', '');
+              }
             });
           }
           setVisible(false);
@@ -342,7 +348,7 @@ export default function CommandPalette() {
     }
 
     return items;
-  }, [workspaces, activeWorkspaceId, setVisible]);
+  }, [workspaces, activeWorkspaceId, setVisible, ipcInvoke]);
 
   // -------------------------------------------------------------------------
   // Filtered + scored results — useMemo to cache across renders

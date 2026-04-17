@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "sessions": [
+    {
+      "id": "sess-legacy-primary",
+      "state": "detached",
+      "createdAt": "2025-12-01T10:00:00.000Z",
+      "lastActivity": "2025-12-01T11:30:00.000Z",
+      "pid": 4242,
+      "cmd": "bash",
+      "cwd": "/home/user/project",
+      "env": {
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/home/user"
+      },
+      "cols": 120,
+      "rows": 30,
+      "deadTtlHours": 24
+    },
+    {
+      "id": "sess-legacy-attached",
+      "state": "attached",
+      "createdAt": "2025-12-02T09:15:00.000Z",
+      "lastActivity": "2025-12-02T12:00:00.000Z",
+      "pid": 7777,
+      "cmd": "pwsh",
+      "cwd": "C:\\Users\\user\\repo",
+      "env": {},
+      "cols": 160,
+      "rows": 40,
+      "agent": {
+        "role": "frontend",
+        "teamId": "team-alpha",
+        "displayName": "Alice"
+      },
+      "deadTtlHours": 48
+    }
+  ],
+  "bootId": "legacy-boot-id-abc123"
+}

@@ -88,7 +88,7 @@ async function resolveWorkspaceId(): Promise<string> {
 
 async function getParentPid(pid: number): Promise<number | null> {
   try {
-    const { execFileSync, execSync } = await import('child_process');
+    const { execFileSync } = await import('child_process');
     if (process.platform === 'win32') {
       const path = await import('path');
       const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -99,7 +99,7 @@ async function getParentPid(pid: number): Promise<number | null> {
       const parsed = parseInt(out.trim(), 10);
       return isNaN(parsed) ? null : parsed;
     } else {
-      const out = execSync(`ps -o ppid= -p ${pid}`, { encoding: 'utf8', timeout: 3000 });
+      const out = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 });
       return parseInt(out.trim(), 10) || null;
     }
   } catch {
@@ -130,8 +130,10 @@ server.tool(
   {
     url: z.string().optional().describe('Initial URL to load (defaults to google.com)'),
   },
-  async ({ url }) =>
-    callRpc('browser.open', url ? { url } : {}),
+  async ({ url }) => {
+    const workspaceId = await resolveWorkspaceId();
+    return callRpc('browser.open', { ...(url && { url }), ...(workspaceId && { workspaceId }) });
+  },
 );
 
 server.tool(
@@ -161,8 +163,10 @@ server.tool(
   {
     profile: z.string().optional().describe('Profile name to use (defaults to "default")'),
   },
-  async ({ profile }) =>
-    callRpc('browser.session.start', profile ? { profile } : {}),
+  async ({ profile }) => {
+    const workspaceId = await resolveWorkspaceId();
+    return callRpc('browser.session.start', { ...(profile && { profile }), ...(workspaceId && { workspaceId }) });
+  },
 );
 
 server.tool(
@@ -190,27 +194,33 @@ server.tool(
 
 server.tool(
   'terminal_read',
-  'Read the current visible text from the active terminal in wmux',
-  {},
-  async () => callRpc('input.readScreen'),
+  'Read the current visible text from a terminal. Omit ptyId to read the active terminal. Use surface_list() to discover available PTY IDs.',
+  {
+    ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
+  },
+  async ({ ptyId }) => callRpc('input.readScreen', ptyId ? { ptyId } : {}),
 );
 
 server.tool(
   'terminal_send',
-  'Send text to YOUR OWN active terminal only. To send messages to OTHER workspaces, use a2a_task_send or a2a_broadcast instead.',
-  { text: z.string().describe('Text to send to the terminal') },
-  async ({ text }) => callRpc('input.send', { text }),
+  'Send text to a terminal. Omit ptyId to target the active terminal. Use surface_list() to discover available PTY IDs. To send messages to OTHER workspaces, use a2a_task_send or a2a_broadcast instead.',
+  {
+    text: z.string().describe('Text to send to the terminal'),
+    ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
+  },
+  async ({ text, ptyId }) => callRpc('input.send', ptyId ? { text, ptyId } : { text }),
 );
 
 server.tool(
   'terminal_send_key',
-  'Send a named key to the active terminal (enter, tab, ctrl+c, ctrl+d, ctrl+z, ctrl+l, escape, up, down, right, left)',
+  'Send a named key to a terminal. Omit ptyId to target the active terminal. Use surface_list() to discover available PTY IDs.',
   {
     key: z.string().describe(
       'Key name: enter, tab, ctrl+c, ctrl+d, ctrl+z, ctrl+l, escape, up, down, right, left',
     ),
+    ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
   },
-  async ({ key }) => callRpc('input.sendKey', { key }),
+  async ({ key, ptyId }) => callRpc('input.sendKey', ptyId ? { key, ptyId } : { key }),
 );
 
 // === Workspace tools ===
@@ -224,16 +234,20 @@ server.tool(
 
 server.tool(
   'surface_list',
-  'List all surfaces (terminals and browsers) in the active workspace',
-  {},
-  async () => callRpc('surface.list'),
+  'List all surfaces (terminals and browsers) in a workspace. Returns surfaceId, ptyId, shell, CWD, git branch for each surface. Omit workspaceId to list the active workspace.',
+  {
+    workspaceId: z.string().optional().describe('Target a specific workspace by ID. Omit to use the active workspace.'),
+  },
+  async ({ workspaceId }) => callRpc('surface.list', workspaceId ? { workspaceId } : {}),
 );
 
 server.tool(
   'pane_list',
-  'List all panes in the current workspace',
-  {},
-  async () => callRpc('pane.list'),
+  'List all panes in a workspace with CWD and git branch info. Omit workspaceId to list the active workspace.',
+  {
+    workspaceId: z.string().optional().describe('Target a specific workspace by ID. Omit to use the active workspace.'),
+  },
+  async ({ workspaceId }) => callRpc('pane.list', workspaceId ? { workspaceId } : {}),
 );
 
 // === A2A (Agent-to-Agent) tools ===

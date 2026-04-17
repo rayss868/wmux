@@ -31,6 +31,14 @@ export function registerAllHandlers(
   ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
   ipcMain.on(IPC.TOAST_ENABLED, onToastEnabled);
 
+  // Window hide (prefix-d detach)
+  const onWindowHide = (): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.hide();
+  };
+  ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
+  ipcMain.on(IPC.WINDOW_HIDE, onWindowHide);
+
   return () => {
     cleanupPty();
     cleanupSession();
@@ -38,5 +46,6 @@ export function registerAllHandlers(
     cleanupMetadata();
     cleanupFs();
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
+    ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
   };
 }

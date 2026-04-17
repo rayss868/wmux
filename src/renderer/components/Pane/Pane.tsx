@@ -3,6 +3,7 @@ import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { useIpc } from '../../hooks/useIpc';
 import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
@@ -58,11 +59,16 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
   }, [pane.id, pane.surfaces, setActivePane, markRead]);
 
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  const handleAddSurface = useCallback(() => {
-    window.electronAPI.pty.create({ workspaceId: activeWorkspaceId }).then((result: { id: string }) => {
-      addSurface(pane.id, result.id, 'Terminal', '');
-    });
-  }, [pane.id, addSurface, activeWorkspaceId]);
+  const { invoke: ipcInvoke } = useIpc();
+  const handleAddSurface = useCallback(async () => {
+    const result = await ipcInvoke<{ id: string }>(() =>
+      window.electronAPI.pty.create({ workspaceId: activeWorkspaceId })
+    );
+    if (result.ok) {
+      addSurface(pane.id, result.data.id, 'Terminal', '');
+    }
+    // On failure, useIpc already surfaced a toast. No-op here.
+  }, [pane.id, addSurface, activeWorkspaceId, ipcInvoke]);
 
   const closePane = useStore((s) => s.closePane);
 
@@ -81,10 +87,12 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
 
   return (
     <div
-      className={`flex flex-col h-full w-full relative ${
-        isActive ? 'ring-1 ring-[rgba(var(--accent-blue-rgb),0.5)]' : ''
-      } ${hasUnread ? 'notification-ring' : ''} ${flashing ? 'pane-flash' : ''}`}
+      className={`flex flex-col h-full w-full relative box-border ${hasUnread ? 'notification-ring' : ''} ${flashing ? 'pane-flash' : ''}`}
+      style={{
+        border: `1px solid ${isActive ? 'var(--accent-cursor)' : 'var(--bg-surface)'}`,
+      }}
       onClick={handleClick}
+      data-onboarding-target="pane-area"
     >
       <ErrorBoundary name="pane">
       <SurfaceTabs

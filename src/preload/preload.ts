@@ -51,6 +51,12 @@ const electronAPI = {
       ipcRenderer.on(IPC.CWD_CHANGED, listener);
       return () => { ipcRenderer.removeListener(IPC.CWD_CHANGED, listener); };
     },
+    onGitBranchChanged: (callback: (ptyId: string, branch: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, ptyId: string, branch: string) =>
+        callback(ptyId, branch);
+      ipcRenderer.on(IPC.GIT_BRANCH_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.GIT_BRANCH_CHANGED, listener); };
+    },
   },
   metadata: {
     request: (ptyId: string) =>
@@ -99,6 +105,14 @@ const electronAPI = {
       const listener = () => callback();
       ipcRenderer.on('daemon:connected', listener);
       return () => { ipcRenderer.removeListener('daemon:connected', listener); };
+    },
+  },
+  token: {
+    onUpdate: (callback: (ptyId: string, event: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number; cost: number; totalCost: number; totalInputTokens: number; totalOutputTokens: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, ptyId: string, data: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number; cost: number; totalCost: number; totalInputTokens: number; totalOutputTokens: number }) =>
+        callback(ptyId, data);
+      ipcRenderer.on(IPC.TOKEN_UPDATE, listener);
+      return () => { ipcRenderer.removeListener(IPC.TOKEN_UPDATE, listener); };
     },
   },
   scrollback: {

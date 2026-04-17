@@ -38,10 +38,12 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    */
   router.register('browser.open', async (params) => {
     const url = typeof params['url'] === 'string' ? params['url'] : undefined;
+    const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
     if (url) await validateUrl(url, 'browser.open');
     return sendToRenderer(getWindow, 'browser.open', {
       partition: getActivePartition(),
       ...(url && { url }),
+      ...(workspaceId && { workspaceId }),
     });
   });
 

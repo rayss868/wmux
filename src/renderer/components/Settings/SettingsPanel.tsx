@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '../../stores';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
+import { useIpc } from '../../hooks/useIpc';
 import { THEME_OPTIONS, builtinToCustom, DEFAULT_CUSTOM_THEME, type BuiltinThemeId, type ThemeId } from '../../themes';
 import type { CustomThemeColors } from '../../../shared/types';
 
@@ -203,6 +204,7 @@ function ResetSection() {
   const addWorkspace = useStore((s) => s.addWorkspace);
   const setVisible = useStore((s) => s.setSettingsPanelVisible);
   const [confirming, setConfirming] = useState(false);
+  const { invoke: ipcInvoke } = useIpc();
 
   const handleReset = useCallback(async () => {
     // Dispose all PTYs across all workspaces
@@ -219,18 +221,16 @@ function ResetSection() {
       removeWorkspace(id);
     }
 
-    // Save the clean session
-    try {
-      const state = useStore.getState();
-      await window.electronAPI.session.save({
-        workspaces: state.workspaces,
-        activeWorkspaceId: state.activeWorkspaceId,
-      });
-    } catch { /* best-effort */ }
+    // Save the clean session — surface IPC errors via toast (daemon may be down).
+    const state = useStore.getState();
+    await ipcInvoke(() => window.electronAPI.session.save({
+      workspaces: state.workspaces,
+      activeWorkspaceId: state.activeWorkspaceId,
+    }));
 
     setConfirming(false);
     setVisible(false);
-  }, [workspaces, removeWorkspace, addWorkspace, setVisible]);
+  }, [workspaces, removeWorkspace, addWorkspace, setVisible, ipcInvoke]);
 
   return (
     <div>
@@ -248,7 +248,7 @@ function ResetSection() {
             <button
               onClick={handleReset}
               className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-              style={{ backgroundColor: 'var(--accent-red)', color: '#fff' }}
+              style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
             >
               {t('settings.resetButton')}
             </button>
@@ -294,6 +294,8 @@ function UpdateStatus() {
   const [state, setState] = useState<UpdateState>('idle');
   const [releaseName, setReleaseName] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
+  // Updater-not-configured in dev is expected; don't spam toasts for UNKNOWN.
+  const { invoke: ipcInvoke } = useIpc({ silent: ['UNKNOWN'] });
 
   useEffect(() => {
     const removeAvailable = window.electronAPI.updater.onUpdateAvailable((data) => {
@@ -314,9 +316,10 @@ function UpdateStatus() {
     return () => { removeAvailable(); removeNotAvailable(); removeError(); };
   }, []);
 
-  const handleCheck = () => {
+  const handleCheck = async () => {
     setState('checking');
-    window.electronAPI.updater.checkForUpdates().catch(() => setState('error'));
+    const result = await ipcInvoke(() => window.electronAPI.updater.checkForUpdates());
+    if (!result.ok) setState('error');
   };
 
   const handleInstall = () => {
@@ -362,7 +365,7 @@ function UpdateStatus() {
           <button
             onClick={handleInstall}
             className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer"
-            style={{ backgroundColor: 'var(--accent-green, #a6e3a1)', color: '#1e1e2e', border: 'none' }}
+            style={{ backgroundColor: 'var(--accent-green)', color: 'var(--bg-base)', border: 'none' }}
           >
             {t('settings.updateReady')}
           </button>
@@ -461,6 +464,23 @@ function TabGeneral() {
           />
         </SettingRow>
         <UpdateStatus />
+      </div>
+
+      {/* Tutorial */}
+      <div className="flex flex-col gap-2">
+        <SectionLabel label={t('settings.tutorial')} />
+        <SettingRow label={t('settings.restartTutorial')} description={t('settings.restartTutorialDesc')}>
+          <button
+            onClick={() => {
+              useStore.getState().startOnboarding();
+              useStore.getState().setSettingsPanelVisible(false);
+            }}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shrink-0"
+            style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)', border: '1px solid var(--bg-overlay)' }}
+          >
+            {t('settings.restartTutorial')}
+          </button>
+        </SettingRow>
       </div>
 
       {/* Reset */}

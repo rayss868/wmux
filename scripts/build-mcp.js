@@ -18,7 +18,7 @@ esbuild.build({
   platform: 'node',
   outfile,
   external: ['electron', 'chromium-bidi'],
-  logLevel: 'warning',
+  logLevel: 'error',
 }).then(() => {
   let code = fs.readFileSync(outfile, 'utf8');
 

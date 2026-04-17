@@ -157,6 +157,11 @@ export const en = {
   'settings.kb.delete': 'Delete',
   'settings.kb.noBindings': 'No custom keybindings yet',
 
+  // Tutorial
+  'settings.tutorial': 'Tutorial',
+  'settings.restartTutorial': 'Restart Tutorial',
+  'settings.restartTutorialDesc': 'Show the onboarding tutorial again.',
+
   // Reset
   'settings.reset': 'Reset',
   'settings.resetWorkspaces': 'Reset Workspaces',

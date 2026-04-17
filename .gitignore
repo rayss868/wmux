@@ -101,3 +101,4 @@ Thumbs.db
 
 # Windows debug symbols
 *.pdb
+.claude/worktrees/

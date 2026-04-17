@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { IPC } from '../../../shared/constants';
+import { wrapHandler } from '../wrapHandler';
 
 export interface FileEntry {
   name: string;
@@ -88,7 +89,7 @@ export function closeAllWatchers(): void {
 
 export function registerFsHandlers(): () => void {
   ipcMain.removeHandler(IPC.FS_READ_DIR);
-  ipcMain.handle(IPC.FS_READ_DIR, async (_event, dirPath: string): Promise<FileEntry[]> => {
+  ipcMain.handle(IPC.FS_READ_DIR, wrapHandler(IPC.FS_READ_DIR, async (_event: Electron.IpcMainInvokeEvent, dirPath: string): Promise<FileEntry[]> => {
     const resolved = await resolveAccessiblePath(dirPath);
     if (!resolved) return [];
 
@@ -118,10 +119,10 @@ export function registerFsHandlers(): () => void {
     } catch {
       return [];
     }
-  });
+  }));
 
   ipcMain.removeHandler(IPC.FS_READ_FILE);
-  ipcMain.handle(IPC.FS_READ_FILE, async (_event, filePath: string): Promise<string | null> => {
+  ipcMain.handle(IPC.FS_READ_FILE, wrapHandler(IPC.FS_READ_FILE, async (_event: Electron.IpcMainInvokeEvent, filePath: string): Promise<string | null> => {
     const resolved = await resolveAccessiblePath(filePath);
     if (!resolved) return null;
     try {
@@ -131,10 +132,10 @@ export function registerFsHandlers(): () => void {
     } catch {
       return null;
     }
-  });
+  }));
 
   ipcMain.removeHandler(IPC.FS_WRITE_FILE);
-  ipcMain.handle(IPC.FS_WRITE_FILE, async (_event, filePath: string, content: string): Promise<boolean> => {
+  ipcMain.handle(IPC.FS_WRITE_FILE, wrapHandler(IPC.FS_WRITE_FILE, async (_event: Electron.IpcMainInvokeEvent, filePath: string, content: string): Promise<boolean> => {
     if (typeof filePath !== 'string' || typeof content !== 'string') return false;
     const resolved = path.resolve(filePath);
     if (isSensitivePath(resolved)) return false;
@@ -148,10 +149,10 @@ export function registerFsHandlers(): () => void {
     } catch {
       return false;
     }
-  });
+  }));
 
   ipcMain.removeHandler(IPC.FS_WATCH);
-  ipcMain.handle(IPC.FS_WATCH, async (_event, dirPath: string) => {
+  ipcMain.handle(IPC.FS_WATCH, wrapHandler(IPC.FS_WATCH, async (_event: Electron.IpcMainInvokeEvent, dirPath: string) => {
     const resolved = await resolveAccessiblePath(dirPath);
     if (!resolved) return false;
 
@@ -191,10 +192,10 @@ export function registerFsHandlers(): () => void {
     } catch {
       return false;
     }
-  });
+  }));
 
   ipcMain.removeHandler(IPC.FS_UNWATCH);
-  ipcMain.handle(IPC.FS_UNWATCH, async (_event, dirPath: string) => {
+  ipcMain.handle(IPC.FS_UNWATCH, wrapHandler(IPC.FS_UNWATCH, async (_event: Electron.IpcMainInvokeEvent, dirPath: string) => {
     const resolved = await resolveAccessiblePath(dirPath);
     if (!resolved) return;
     const watcher = watchers.get(resolved);
@@ -207,7 +208,7 @@ export function registerFsHandlers(): () => void {
       clearTimeout(timer);
       debounceTimers.delete(resolved);
     }
-  });
+  }));
 
   return () => {
     ipcMain.removeHandler(IPC.FS_READ_DIR);

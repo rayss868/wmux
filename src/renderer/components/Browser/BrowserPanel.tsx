@@ -374,7 +374,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
           className="flex items-center gap-2 px-3 py-1.5 text-xs shrink-0"
           style={{
             backgroundColor: 'var(--accent-blue)',
-            color: '#fff',
+            color: 'var(--bg-base)',
             fontFamily: 'ui-monospace, monospace',
           }}
         >
@@ -385,7 +385,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
         <div
           className="flex items-center gap-2 px-3 py-1 text-xs shrink-0"
           style={{
-            backgroundColor: '#1e1e2e',
+            backgroundColor: 'var(--bg-base)',
             color: 'var(--accent-blue)',
             borderBottom: '1px solid var(--accent-blue)',
             fontFamily: 'ui-monospace, monospace',

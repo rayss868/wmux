@@ -157,6 +157,11 @@ export const ja = {
   'settings.kb.delete': '削除',
   'settings.kb.noBindings': 'カスタムキーバインドなし',
 
+  // Tutorial
+  'settings.tutorial': 'チュートリアル',
+  'settings.restartTutorial': 'チュートリアルを再開',
+  'settings.restartTutorialDesc': 'オンボーディングチュートリアルを再表示します。',
+
   // Reset
   'settings.reset': 'リセット',
   'settings.resetWorkspaces': 'ワークスペース初期化',

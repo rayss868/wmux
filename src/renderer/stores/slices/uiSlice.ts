@@ -109,6 +109,23 @@ export interface UISlice {
   autoUpdateEnabled: boolean;
   setAutoUpdateEnabled: (enabled: boolean) => void;
 
+  // ─── Onboarding ─────────────────────────────────────────────────────
+  onboardingActive: boolean;
+  onboardingCompleted: boolean;
+  startOnboarding: () => void;
+  completeOnboarding: () => void;
+  skipOnboarding: () => void;
+
+  // ─── Prefix mode (tmux-style) ─────────────────────────────────────
+  prefixMode: boolean;
+  prefixError: string | null;
+  setPrefixMode: (active: boolean) => void;
+  setPrefixError: (msg: string | null) => void;
+
+  // ─── Pane zoom ────────────────────────────────────────────────────
+  zoomedPaneId: string | null;
+  togglePaneZoom: (paneId: string) => void;
+
 }
 
 export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]], [], UISlice> = (set, get) => ({
@@ -234,7 +251,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   // ─── Theme ──────────────────────────────────────────────────────────────
-  theme: 'hinomaru',
+  theme: 'catppuccin-mocha',
 
   setTheme: (theme) => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -385,6 +402,44 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setAutoUpdateEnabled: (enabled) => set((state) => {
     state.autoUpdateEnabled = enabled;
+  }),
+
+  // ─── Onboarding ─────────────────────────────────────────────────────
+  onboardingActive: false,
+  onboardingCompleted: false,
+
+  startOnboarding: () => set((state) => {
+    state.onboardingActive = true;
+  }),
+
+  completeOnboarding: () => set((state) => {
+    state.onboardingActive = false;
+    state.onboardingCompleted = true;
+  }),
+
+  skipOnboarding: () => set((state) => {
+    state.onboardingActive = false;
+    state.onboardingCompleted = true;
+  }),
+
+  // ─── Prefix mode (tmux-style) ─────────────────────────────────────
+  prefixMode: false,
+  prefixError: null,
+
+  setPrefixMode: (active) => set((state) => {
+    state.prefixMode = active;
+    if (!active) state.prefixError = null;
+  }),
+
+  setPrefixError: (msg) => set((state) => {
+    state.prefixError = msg;
+  }),
+
+  // ─── Pane zoom ────────────────────────────────────────────────────
+  zoomedPaneId: null,
+
+  togglePaneZoom: (paneId) => set((state) => {
+    state.zoomedPaneId = state.zoomedPaneId === paneId ? null : paneId;
   }),
 
 });

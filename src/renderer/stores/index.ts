@@ -6,9 +6,11 @@ import { createSurfaceSlice, type SurfaceSlice } from './slices/surfaceSlice';
 import { createUISlice, type UISlice } from './slices/uiSlice';
 import { createNotificationSlice, type NotificationSlice } from './slices/notificationSlice';
 import { createA2aSlice, type A2aSlice } from './slices/a2aSlice';
-import { createCompanySlice, type CompanySlice } from '../../company/renderer/store';
+import { createCompanySlice, type CompanySlice } from './slices/companySlice';
+import { createTokenSlice, type TokenSlice } from './slices/tokenSlice';
+import { createToastSlice, type ToastSlice } from './slices/toastSlice';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & CompanySlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & CompanySlice & TokenSlice & ToastSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -19,5 +21,7 @@ export const useStore = create<StoreState>()(
     ...createNotificationSlice(...args),
     ...createA2aSlice(...args),
     ...createCompanySlice(...args),
+    ...createTokenSlice(...args),
+    ...createToastSlice(...args),
   }))
 );

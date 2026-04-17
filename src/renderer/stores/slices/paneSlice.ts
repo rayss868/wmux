@@ -4,7 +4,7 @@ import type { Pane, PaneLeaf, PaneBranch, Workspace } from '../../../shared/type
 import { createLeafPane, generateId } from '../../../shared/types';
 
 export interface PaneSlice {
-  splitPane: (paneId: string, direction: 'horizontal' | 'vertical') => void;
+  splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string) => void;
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string) => void;
   focusPaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
@@ -43,8 +43,9 @@ function getLeafPanes(root: Pane): PaneLeaf[] {
 }
 
 export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]], [], PaneSlice> = (set, get) => ({
-  splitPane: (paneId, direction) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  splitPane: (paneId, direction, workspaceId) => set((state: StoreState) => {
+    const targetWsId = workspaceId || state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
 
     const targetPane = findPane(ws.rootPane, paneId);
@@ -119,23 +120,53 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     }
   }),
 
-  focusPaneDirection: (_direction) => set((state: StoreState) => {
+  focusPaneDirection: (direction) => set((state: StoreState) => {
     const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
     if (!ws) return;
 
     const leaves = getLeafPanes(ws.rootPane);
     if (leaves.length <= 1) return;
 
-    const currentIdx = leaves.findIndex((l) => l.id === ws.activePaneId);
-    if (currentIdx === -1) return;
+    // Helper: get first leaf in a subtree (leftmost/topmost)
+    const firstLeaf = (pane: Pane): PaneLeaf => {
+      if (pane.type === 'leaf') return pane;
+      return firstLeaf(pane.children[0]);
+    };
 
-    // Simple round-robin navigation for now
-    let nextIdx: number;
-    if (_direction === 'right' || _direction === 'down') {
-      nextIdx = (currentIdx + 1) % leaves.length;
-    } else {
-      nextIdx = (currentIdx - 1 + leaves.length) % leaves.length;
+    // Helper: get last leaf in a subtree (rightmost/bottommost)
+    const lastLeaf = (pane: Pane): PaneLeaf => {
+      if (pane.type === 'leaf') return pane;
+      return lastLeaf(pane.children[pane.children.length - 1]);
+    };
+
+    // Tree-based spatial navigation
+    const navigate = (paneId: string, dir: 'up' | 'down' | 'left' | 'right'): string | null => {
+      const parent = findParent(ws.rootPane, paneId);
+      if (!parent) return null; // at root
+
+      const idx = parent.children.findIndex(c => c.id === paneId);
+      const isAligned =
+        (parent.direction === 'horizontal' && (dir === 'left' || dir === 'right')) ||
+        (parent.direction === 'vertical' && (dir === 'up' || dir === 'down'));
+
+      if (isAligned) {
+        const delta = (dir === 'right' || dir === 'down') ? 1 : -1;
+        const nextIdx = idx + delta;
+        if (nextIdx >= 0 && nextIdx < parent.children.length) {
+          // Move to adjacent sibling — descend to nearest leaf
+          const sibling = parent.children[nextIdx];
+          const leaf = delta > 0 ? firstLeaf(sibling) : lastLeaf(sibling);
+          return leaf.id;
+        }
+      }
+
+      // Direction not aligned or no sibling in that direction — go up
+      return navigate(parent.id, dir);
+    };
+
+    const targetId = navigate(ws.activePaneId, direction);
+    if (targetId) {
+      ws.activePaneId = targetId;
     }
-    ws.activePaneId = leaves[nextIdx].id;
   }),
 });

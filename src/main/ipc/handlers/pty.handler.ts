@@ -1,12 +1,14 @@
 import { ipcMain, BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
 import { DaemonClient } from '../../DaemonClient';
 import { IPC, getPidMapDir } from '../../../shared/constants';
 import { sanitizePtyText } from '../../../shared/types';
 import { updateCwd } from './metadata.handler';
+import { wrapHandler } from '../wrapHandler';
 
 /**
  * Allowed shell basenames (case-insensitive on Windows).
@@ -62,10 +64,21 @@ export function registerPTYHandlers(
   // Track daemon session:data listeners for cleanup
   const daemonSessionListeners: Array<(...args: unknown[]) => void> = [];
 
+  // Per-session StringDecoder to handle UTF-8 multi-byte sequences split across chunks
+  const sessionDecoders = new Map<string, StringDecoder>();
+  function decodeSessionData(sessionId: string, data: Buffer): string {
+    let decoder = sessionDecoders.get(sessionId);
+    if (!decoder) {
+      decoder = new StringDecoder('utf8');
+      sessionDecoders.set(sessionId, decoder);
+    }
+    return decoder.write(data);
+  }
+
   // pty:create
   ipcMain.removeHandler(IPC.PTY_CREATE);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_CREATE, async (_event, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string }) => {
+    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string }) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
@@ -98,7 +111,8 @@ export function registerPTYHandlers(
         if (payload.sessionId !== sessionId) return;
         const win = getWindow?.();
         if (win && !win.isDestroyed()) {
-          win.webContents.send(IPC.PTY_DATA, sessionId, payload.data.toString());
+          const text = decodeSessionData(sessionId, payload.data);
+          if (text) win.webContents.send(IPC.PTY_DATA, sessionId, text);
         }
       };
       daemonClient.on('session:data', onSessionData as (...args: unknown[]) => void);
@@ -115,9 +129,9 @@ export function registerPTYHandlers(
       }
 
       return { id: sessionId, shell, cwd: effectiveCwd };
-    });
+    }));
   } else {
-    ipcMain.handle(IPC.PTY_CREATE, (_event, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string }) => {
+    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string }) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
@@ -129,7 +143,7 @@ export function registerPTYHandlers(
       const actualCwd = effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);
       return { id: instance.id, shell: instance.shell, cwd: actualCwd };
-    });
+    }));
   }
 
   // pty:write
@@ -154,7 +168,7 @@ export function registerPTYHandlers(
   // pty:resize
   ipcMain.removeHandler(IPC.PTY_RESIZE);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_RESIZE, async (_event, id: string, cols: number, rows: number) => {
+    ipcMain.handle(IPC.PTY_RESIZE, wrapHandler(IPC.PTY_RESIZE, async (_event: Electron.IpcMainInvokeEvent, id: string, cols: number, rows: number) => {
       if (!Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) {
         throw new Error(`PTY_RESIZE: cols and rows must be positive integers (got cols=${cols}, rows=${rows})`);
       }
@@ -166,50 +180,51 @@ export function registerPTYHandlers(
         if (msg.includes('not found') || msg.includes('not exist')) return;
         throw err;
       }
-    });
+    }));
   } else {
-    ipcMain.handle(IPC.PTY_RESIZE, (_event, id: string, cols: number, rows: number) => {
+    ipcMain.handle(IPC.PTY_RESIZE, wrapHandler(IPC.PTY_RESIZE, (_event: Electron.IpcMainInvokeEvent, id: string, cols: number, rows: number) => {
       if (!Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) {
         throw new Error(`PTY_RESIZE: cols and rows must be positive integers (got cols=${cols}, rows=${rows})`);
       }
       if (!ptyManager.get(id)) return;
       ptyManager.resize(id, cols, rows);
-    });
+    }));
   }
 
   // pty:dispose
   ipcMain.removeHandler(IPC.PTY_DISPOSE);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_DISPOSE, async (_event, id: string) => {
+    ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       await daemonClient.rpc('daemon.destroySession', { id });
       await daemonClient.disconnectSessionPipe(id);
-    });
+      sessionDecoders.delete(id);
+    }));
   } else {
-    ipcMain.handle(IPC.PTY_DISPOSE, (_event, id: string) => {
+    ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, (_event: Electron.IpcMainInvokeEvent, id: string) => {
       ptyManager.dispose(id);
-    });
+    }));
   }
 
   // pty:list
   ipcMain.removeHandler(IPC.PTY_LIST);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_LIST, async () => {
+    ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, async () => {
       const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string }>;
       // Map to same shape as local PTYManager.getActiveInstances()
       return sessions
         .filter(s => s.state !== 'dead')
         .map(s => ({ id: s.id, shell: s.cmd }));
-    });
+    }));
   } else {
-    ipcMain.handle(IPC.PTY_LIST, () => {
+    ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, () => {
       return ptyManager.getActiveInstances();
-    });
+    }));
   }
 
   // pty:reconnect
   ipcMain.removeHandler(IPC.PTY_RECONNECT);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_RECONNECT, async (_event, id: string) => {
+    ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       try {
         const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string }>;
         const session = sessions.find(s => s.id === id);
@@ -226,7 +241,8 @@ export function registerPTYHandlers(
           if (payload.sessionId !== id) return;
           const win = getWindow?.();
           if (win && !win.isDestroyed()) {
-            win.webContents.send(IPC.PTY_DATA, id, payload.data.toString());
+            const text = decodeSessionData(id, payload.data);
+            if (text) win.webContents.send(IPC.PTY_DATA, id, text);
           }
         };
         daemonClient.on('session:data', onSessionData as (...args: unknown[]) => void);
@@ -236,15 +252,15 @@ export function registerPTYHandlers(
       } catch (err) {
         return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
-    });
+    }));
   } else {
-    ipcMain.handle(IPC.PTY_RECONNECT, (_event, id: string) => {
+    ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, (_event: Electron.IpcMainInvokeEvent, id: string) => {
       const instance = ptyManager.get(id);
       if (!instance) {
         return { success: false, error: 'PTY not found' };
       }
       return { success: true, id: instance.id, shell: instance.shell };
-    });
+    }));
   }
 
   // Listen for daemon session:died events and forward to renderer

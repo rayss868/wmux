@@ -46,6 +46,8 @@ export class PlaywrightEngine {
   private playwrightFailed = false;
   /** Prevents repeated auto-open attempts within the same getPage call chain. */
   private autoOpenAttempted = false;
+  /** Serializes getPage calls to prevent concurrent auto-open races. */
+  private getPageLock: Promise<Page | null> | null = null;
 
   private constructor() {}
 
@@ -82,9 +84,13 @@ export class PlaywrightEngine {
   }
 
   async disconnect(): Promise<void> {
-    if (this.browser) {
-      this.browser = null;
-      this.cdpPort = null;
+    const b = this.browser;
+    this.browser = null;
+    this.cdpPort = null;
+    if (b) {
+      try {
+        await b.close();
+      } catch { /* browser may already be gone */ }
       console.error('[PlaywrightEngine] Disconnected');
     }
   }
@@ -133,8 +139,21 @@ export class PlaywrightEngine {
    */
   async getPage(surfaceId?: string): Promise<Page | null> {
     // Fast-fail if Playwright has already failed to find webview pages.
-    // MCP tools with RPC fallbacks will skip directly to the fast RPC path.
     if (this.playwrightFailed) return null;
+
+    // Serialize concurrent calls to prevent multiple auto-open races
+    if (this.getPageLock) {
+      return this.getPageLock;
+    }
+    this.getPageLock = this._getPageImpl(surfaceId);
+    try {
+      return await this.getPageLock;
+    } finally {
+      this.getPageLock = null;
+    }
+  }
+
+  private async _getPageImpl(surfaceId?: string): Promise<Page | null> {
 
     await this.ensureConnected();
 

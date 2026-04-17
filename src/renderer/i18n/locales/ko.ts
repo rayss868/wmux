@@ -157,6 +157,11 @@ export const ko = {
   'settings.kb.delete': '삭제',
   'settings.kb.noBindings': '커스텀 키바인딩 없음',
 
+  // Tutorial
+  'settings.tutorial': '튜토리얼',
+  'settings.restartTutorial': '튜토리얼 다시 보기',
+  'settings.restartTutorialDesc': '온보딩 튜토리얼을 다시 표시합니다.',
+
   // Reset
   'settings.reset': '초기화',
   'settings.resetWorkspaces': '워크스페이스 초기화',

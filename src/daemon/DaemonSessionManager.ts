@@ -8,7 +8,7 @@ import { DaemonPTYBridge } from './DaemonPTYBridge';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
-const DEFAULT_BUFFER_SIZE = 1 * 1024 * 1024; // 1 MB
+const DEFAULT_BUFFER_SIZE = 512 * 1024; // 512 KB
 const DEFAULT_DEAD_TTL_HOURS = 24;
 
 /**

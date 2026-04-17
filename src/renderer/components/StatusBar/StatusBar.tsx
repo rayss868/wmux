@@ -1,6 +1,30 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import type { Pane, PaneLeaf } from '../../../shared/types';
+
+/** Resolve the ptyId of the active pane's active surface */
+function getActivePtyId(rootPane: Pane | undefined, activePaneId: string): string | null {
+  if (!rootPane) return null;
+  const findLeaf = (pane: Pane): PaneLeaf | null => {
+    if (pane.type === 'leaf') return pane.id === activePaneId ? pane : null;
+    for (const child of pane.children) {
+      const found = findLeaf(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const leaf = findLeaf(rootPane);
+  if (!leaf) return null;
+  const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+  return surface?.ptyId ?? null;
+}
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
 
 export default function StatusBar() {
   const t = useT();
@@ -9,6 +33,11 @@ export default function StatusBar() {
   const activeWs = workspaces.find((w) => w.id === activeWorkspaceId);
   const unreadCount = useStore((s) => s.notifications.filter((n) => !n.read).length);
   const toggleSettingsPanel = useStore((s) => s.toggleSettingsPanel);
+  const tokenDataByPty = useStore((s) => s.tokenDataByPty);
+
+  // Prefix mode (tmux-style Ctrl+B)
+  const prefixMode = useStore((s) => s.prefixMode);
+  const prefixError = useStore((s) => s.prefixError);
 
   // Company 모드 비용 정보
   const sidebarMode = useStore((s) => s.sidebarMode);
@@ -47,11 +76,28 @@ export default function StatusBar() {
   const branch = activeWs?.metadata?.gitBranch;
   const isCompanyMode = sidebarMode === 'company';
 
+  // Token/cost for the active pane
+  const activePtyId = useMemo(
+    () => getActivePtyId(activeWs?.rootPane, activeWs?.activePaneId ?? ''),
+    [activeWs?.rootPane, activeWs?.activePaneId],
+  );
+  const activeTokenData = activePtyId ? tokenDataByPty[activePtyId] : undefined;
+
   return (
-    <div className="flex items-center justify-between h-6 px-3 border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono" style={{ backgroundColor: 'var(--bg-mantle)' }}>
+    <div className="flex items-center justify-between h-6 px-3 border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono" style={{ backgroundColor: 'var(--bg-mantle)' }} data-onboarding-target="status-bar">
       {/* Left: workspace + branch */}
       <div className="flex items-center gap-3">
         <span className="text-[var(--text-main)] font-medium">{activeWs?.name || 'wmux'}</span>
+        {prefixMode && (
+          <span className="text-[var(--accent-red)] font-bold animate-pulse">
+            [PREFIX]
+          </span>
+        )}
+        {prefixError && (
+          <span className="text-[var(--accent-yellow)]">
+            {prefixError}
+          </span>
+        )}
         {branch && (
           <span>
             <span className="text-[var(--accent-yellow)]">⎇</span> {branch}
@@ -73,6 +119,11 @@ export default function StatusBar() {
             ~${totalCost.toFixed(2)}
           </span>
         )}
+        {activeTokenData && activeTokenData.totalCost > 0 && (
+          <span className="text-[var(--text-sub2)]" title={`Input: ${formatTokenCount(activeTokenData.inputTokens)} / Output: ${formatTokenCount(activeTokenData.outputTokens)}`}>
+            {'\u26A1'} {formatTokenCount(activeTokenData.totalTokens)} tokens {'\u00B7'} ${activeTokenData.totalCost.toFixed(2)}
+          </span>
+        )}
         {unreadCount > 0 && (
           <span className="text-[var(--accent-blue)]">
             ● {unreadCount}
@@ -84,6 +135,7 @@ export default function StatusBar() {
           onClick={toggleSettingsPanel}
           className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors ml-1"
           title={t('statusBar.settingsTooltip')}
+          data-onboarding-target="settings-button"
         >
           ⚙
         </button>

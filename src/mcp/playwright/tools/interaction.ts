@@ -32,10 +32,17 @@ async function rpcEval(expression: string, surfaceId?: string): Promise<string> 
   return result.value;
 }
 
+/** Sanitize ref to prevent injection in CSS selectors / JS template literals. */
+function sanitizeRef(ref: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw new Error(`Invalid ref: "${ref}"`);
+  return ref;
+}
+
 async function rpcClick(ref: string, surfaceId?: string, _double?: boolean): Promise<void> {
   // Use CDP click: first get element coordinates via JS, then dispatch mouse events
+  const safeRef = sanitizeRef(ref);
   await sendRpc('browser.click.cdp', {
-    selector: `[data-wmux-ref="${ref}"]`,
+    selector: `[data-wmux-ref="${safeRef}"]`,
     ...(surfaceId && { surfaceId }),
   });
 }
@@ -319,8 +326,9 @@ export function registerInteractionTools(server: McpServer): void {
           await el.hover();
         } else {
           // RPC fallback: dispatch mouseover event
+          const safeRef = sanitizeRef(ref);
           const val = await rpcEval(`(() => {
-            const el = document.querySelector('[data-wmux-ref="${ref}"]');
+            const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
             if (!el) return 'not_found';
             el.scrollIntoView({ block: 'center', behavior: 'instant' });
             el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
@@ -383,9 +391,11 @@ export function registerInteractionTools(server: McpServer): void {
           await page.mouse.up();
         } else {
           // RPC fallback: simplified drag via JS events
+          const safeSrc = sanitizeRef(sourceRef);
+          const safeTgt = sanitizeRef(targetRef);
           const val = await rpcEval(`(() => {
-            const src = document.querySelector('[data-wmux-ref="${sourceRef}"]');
-            const tgt = document.querySelector('[data-wmux-ref="${targetRef}"]');
+            const src = document.querySelector('[data-wmux-ref="${safeSrc}"]');
+            const tgt = document.querySelector('[data-wmux-ref="${safeTgt}"]');
             if (!src) return 'source_not_found';
             if (!tgt) return 'target_not_found';
             const dt = new DataTransfer();
@@ -434,9 +444,10 @@ export function registerInteractionTools(server: McpServer): void {
           if (!el) throw new Error(refNotFound(ref));
           await el.selectOption(values);
         } else {
+          const safeRef = sanitizeRef(ref);
           const escapedValues = JSON.stringify(values);
           const val = await rpcEval(`(() => {
-            const el = document.querySelector('[data-wmux-ref="${ref}"]');
+            const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
             if (!el || el.tagName !== 'SELECT') return 'not_found';
             const vals = ${escapedValues};
             [...el.options].forEach(o => { o.selected = vals.includes(o.value); });
@@ -478,8 +489,9 @@ export function registerInteractionTools(server: McpServer): void {
           if (!el) throw new Error(refNotFound(ref));
           await el.scrollIntoViewIfNeeded();
         } else {
+          const safeRef = sanitizeRef(ref);
           const val = await rpcEval(`(() => {
-            const el = document.querySelector('[data-wmux-ref="${ref}"]');
+            const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
             if (!el) return 'not_found';
             el.scrollIntoView({ block: 'center', behavior: 'smooth' });
             return 'ok';

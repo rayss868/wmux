@@ -1,5 +1,6 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useStore } from '../stores';
+import { findLeaf } from '../../shared/paneUtils';
 
 /**
  * Convert a KeyboardEvent into a normalized key combo string.
@@ -17,15 +18,134 @@ function formatKeyCombo(ctrl: boolean, shift: boolean, alt: boolean, key: string
   return parts.join('+');
 }
 
+/** Prefix mode timeout duration in ms */
+const PREFIX_TIMEOUT_MS = 2000;
+/** How long to show "Unknown: [key]" error */
+const PREFIX_ERROR_DISPLAY_MS = 500;
+
+/** Dispose all PTYs inside a pane tree */
+function disposePanePtys(pane: import('../../shared/types').Pane): void {
+  if (pane.type === 'leaf') {
+    for (const s of pane.surfaces) {
+      if (s.ptyId) window.electronAPI.pty.dispose(s.ptyId);
+    }
+  } else {
+    for (const child of pane.children) disposePanePtys(child);
+  }
+}
+
 export function useKeyboard() {
   const store = useStore;
+  const prefixTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    // Prefix mode command map — real implementations
+    const prefixCommands: Record<string, () => void> = {
+      '%': () => {
+        const state = store.getState();
+        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+        if (ws) state.splitPane(ws.activePaneId, 'horizontal');
+      },
+      '"': () => {
+        const state = store.getState();
+        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+        if (ws) state.splitPane(ws.activePaneId, 'vertical');
+      },
+      'x': () => {
+        const state = store.getState();
+        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+        if (!ws) return;
+        const activeLeaf = findLeaf(ws.rootPane, ws.activePaneId);
+        if (activeLeaf) disposePanePtys(activeLeaf);
+        state.closePane(ws.activePaneId);
+      },
+      'c': () => { store.getState().addWorkspace(); },
+      'n': () => {
+        const { workspaces, activeWorkspaceId } = store.getState();
+        if (workspaces.length <= 1) return;
+        const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
+        const nextIdx = (currentIdx + 1) % workspaces.length;
+        store.getState().setActiveWorkspace(workspaces[nextIdx].id);
+      },
+      'p': () => {
+        const { workspaces, activeWorkspaceId } = store.getState();
+        if (workspaces.length <= 1) return;
+        const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
+        const prevIdx = (currentIdx - 1 + workspaces.length) % workspaces.length;
+        store.getState().setActiveWorkspace(workspaces[prevIdx].id);
+      },
+      'd': () => { window.electronAPI.window.hide(); },
+      'z': () => {
+        const state = store.getState();
+        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+        if (ws) state.togglePaneZoom(ws.activePaneId);
+      },
+      ':': () => { store.getState().toggleCommandPalette(); },
+      'ArrowUp': () => { store.getState().focusPaneDirection('up'); },
+      'ArrowDown': () => { store.getState().focusPaneDirection('down'); },
+      'ArrowLeft': () => { store.getState().focusPaneDirection('left'); },
+      'ArrowRight': () => { store.getState().focusPaneDirection('right'); },
+    };
+    /** Clear the prefix timeout if running */
+    const clearPrefixTimeout = () => {
+      if (prefixTimeoutRef.current !== null) {
+        clearTimeout(prefixTimeoutRef.current);
+        prefixTimeoutRef.current = null;
+      }
+    };
+
+    /** Exit prefix mode and clear timeout */
+    const exitPrefixMode = () => {
+      clearPrefixTimeout();
+      store.getState().setPrefixMode(false);
+    };
+
     const handler = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey;
       const shift = e.shiftKey;
       const alt = e.altKey;
       const key = e.key;
+      const code = e.code;
+
+      // Read prefix mode from store (fresh, no stale closure)
+      const prefixMode = store.getState().prefixMode;
+
+      // ─── Prefix mode: intercept the next key ───────────────────────
+      if (prefixMode) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        clearPrefixTimeout();
+
+        // Escape → just exit
+        if (key === 'Escape') {
+          exitPrefixMode();
+          return;
+        }
+
+        // Ignore bare modifier keys (Shift, Control, Alt, Meta)
+        if (['Shift', 'Control', 'Alt', 'Meta'].includes(key)) {
+          return;
+        }
+
+        // Check if this is a known prefix command
+        const cmd = prefixCommands[key];
+        if (cmd) {
+          cmd();
+          exitPrefixMode();
+          return;
+        }
+
+        // Unknown key → show error briefly, then exit
+        const displayKey = key.length === 1 ? key : key;
+        store.getState().setPrefixError(`Unknown: ${displayKey}`);
+        store.getState().setPrefixMode(false);
+        setTimeout(() => {
+          store.getState().setPrefixError(null);
+        }, PREFIX_ERROR_DISPLAY_MS);
+        return;
+      }
+
+      // ─── Normal mode shortcuts below ───────────────────────────────
 
       // Skip shortcuts when typing in input/textarea/contenteditable
       // Exception: function keys (F1-F12) and custom keybindings should always work
@@ -34,8 +154,22 @@ export function useKeyboard() {
       const isFunctionKey = key.length > 1 && /^F\d{1,2}$/.test(key);
       if (isEditable && !ctrl && !alt && !isFunctionKey) return;
 
-      // Ctrl+B: Toggle sidebar
-      if (ctrl && !shift && !alt && key === 'b') {
+      // Ctrl+B (without shift): Enter prefix mode
+      // Use e.code for Korean IME compatibility (see commit 60e39b0)
+      if (ctrl && !shift && !alt && code === 'KeyB') {
+        e.preventDefault();
+        store.getState().setPrefixMode(true);
+        // Start timeout — auto-exit prefix mode after 2s
+        clearPrefixTimeout();
+        prefixTimeoutRef.current = setTimeout(() => {
+          store.getState().setPrefixMode(false);
+          prefixTimeoutRef.current = null;
+        }, PREFIX_TIMEOUT_MS);
+        return;
+      }
+
+      // Ctrl+Shift+B: Toggle sidebar (moved from Ctrl+B)
+      if (ctrl && shift && !alt && code === 'KeyB') {
         e.preventDefault();
         store.getState().toggleSidebar();
         return;
@@ -122,17 +256,7 @@ export function useKeyboard() {
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
         if (!ws) return;
-        const findLeaf = (pane: import('../../shared/types').Pane): import('../../shared/types').PaneLeaf | null => {
-          if (pane.type === 'leaf' && pane.id === ws.activePaneId) return pane;
-          if (pane.type === 'branch') {
-            for (const c of pane.children) {
-              const found = findLeaf(c);
-              if (found) return found;
-            }
-          }
-          return null;
-        };
-        const activePane = findLeaf(ws.rootPane);
+        const activePane = findLeaf(ws.rootPane, ws.activePaneId);
         if (activePane && activePane.activeSurfaceId) {
           const surface = activePane.surfaces.find((s) => s.id === activePane.activeSurfaceId);
           if (surface?.ptyId) {
@@ -286,17 +410,7 @@ export function useKeyboard() {
           const state = store.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
           if (ws) {
-            const findLeaf = (pane: import('../../shared/types').Pane): import('../../shared/types').PaneLeaf | null => {
-              if (pane.type === 'leaf' && pane.id === ws.activePaneId) return pane;
-              if (pane.type === 'branch') {
-                for (const c of pane.children) {
-                  const found = findLeaf(c);
-                  if (found) return found;
-                }
-              }
-              return null;
-            };
-            const leaf = findLeaf(ws.rootPane);
+            const leaf = findLeaf(ws.rootPane, ws.activePaneId);
             if (leaf) {
               const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
               if (surface?.ptyId) {
@@ -312,6 +426,13 @@ export function useKeyboard() {
 
     // Use capture phase so we run BEFORE xterm's stopPropagation
     window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
+    return () => {
+      window.removeEventListener('keydown', handler, true);
+      // Clean up prefix timeout on unmount
+      if (prefixTimeoutRef.current !== null) {
+        clearTimeout(prefixTimeoutRef.current);
+        prefixTimeoutRef.current = null;
+      }
+    };
   }, []);
 }

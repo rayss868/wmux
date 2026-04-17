@@ -157,6 +157,11 @@ export const zh = {
   'settings.kb.delete': '删除',
   'settings.kb.noBindings': '暂无自定义快捷键',
 
+  // Tutorial
+  'settings.tutorial': '教程',
+  'settings.restartTutorial': '重新开始教程',
+  'settings.restartTutorialDesc': '再次显示新手引导教程。',
+
   // Reset
   'settings.reset': '重置',
   'settings.resetWorkspaces': '重置工作区',

@@ -82,9 +82,8 @@ async function resolveWorkspaceId(): Promise<string> {
 
 async function getParentPid(pid: number): Promise<number | null> {
   try {
-    const { execSync } = await import('child_process');
+    const { execFileSync } = await import('child_process');
     if (process.platform === 'win32') {
-      const { execFileSync } = await import('child_process');
       const path = await import('path');
       const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
       const out = execFileSync(ps, [
@@ -94,7 +93,7 @@ async function getParentPid(pid: number): Promise<number | null> {
       const parsed = parseInt(out.trim(), 10);
       return isNaN(parsed) ? null : parsed;
     } else {
-      const out = execSync(`ps -o ppid= -p ${pid}`, { encoding: 'utf8', timeout: 3000 });
+      const out = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 });
       return parseInt(out.trim(), 10) || null;
     }
   } catch {
