@@ -26,3 +26,73 @@ export function detectDangerousPatterns(code: string): string[] {
     .filter(({ pattern }) => pattern.test(code))
     .map(({ label }) => label);
 }
+
+// ---------------------------------------------------------------------------
+// Sensitive-domain blocklist for browser_cookies / browser_storage
+// ---------------------------------------------------------------------------
+
+const SENSITIVE_DOMAIN_PATTERNS: RegExp[] = [
+  // Email
+  /(^|\.)gmail\.com$/i,
+  /(^|\.)googlemail\.com$/i,
+  /(^|\.)outlook\.com$/i,
+  /(^|\.)outlook\.live\.com$/i,
+  /(^|\.)hotmail\.com$/i,
+  /(^|\.)mail\.naver\.com$/i,
+  /(^|\.)mail\.daum\.net$/i,
+  /(^|\.)mail\.kakao\.com$/i,
+  /(^|\.)mail\.yahoo\.com$/i,
+  /(^|\.)proton\.me$/i,
+  /(^|\.)icloud\.com$/i,
+  // Banking / payments
+  /(^|\.)paypal\.com$/i,
+  /(^|\.)stripe\.com$/i,
+  /(^|\.)chase\.com$/i,
+  /(^|\.)bankofamerica\.com$/i,
+  /(^|\.)wellsfargo\.com$/i,
+  /(^|\.)kbstar\.com$/i,
+  /(^|\.)shinhan\.com$/i,
+  /(^|\.)wooribank\.com$/i,
+  /(^|\.)hanabank\.com$/i,
+  /(^|\.)ibk\.co\.kr$/i,
+  /(^|\.)nonghyup\.com$/i,
+  /(^|\.)tossbank\.com$/i,
+  /(^|\.)toss\.im$/i,
+  /(^|\.)tosspayments\.com$/i,
+  /(^|\.)kakaopay\.com$/i,
+  /(^|\.)naverpay\.com$/i,
+  // Auth / identity / secrets
+  /(^|\.)accounts\.google\.com$/i,
+  /(^|\.)login\.microsoftonline\.com$/i,
+  /(^|\.)login\.live\.com$/i,
+  /(^|\.)github\.com$/i,
+  /(^|\.)gitlab\.com$/i,
+  /(^|\.)bitbucket\.org$/i,
+  /(^|\.)atlassian\.com$/i,
+  /(^|\.)okta\.com$/i,
+  /(^|\.)auth0\.com$/i,
+  /(^|\.)1password\.com$/i,
+  /(^|\.)lastpass\.com$/i,
+  /(^|\.)bitwarden\.com$/i,
+];
+
+/**
+ * Return the matched hostname if the URL (or bare hostname) falls on the
+ * sensitive-domain blocklist, else null. Used by browser_cookies /
+ * browser_storage to require explicit allowSensitiveDomains:true before
+ * leaking session material for email / banking / auth surfaces.
+ */
+export function matchSensitiveDomain(urlOrHost: string): string | null {
+  if (!urlOrHost) return null;
+  let host = '';
+  try {
+    host = new URL(urlOrHost).hostname;
+  } catch {
+    host = urlOrHost.trim().toLowerCase().replace(/^\.+/, '');
+  }
+  if (!host) return null;
+  for (const pattern of SENSITIVE_DOMAIN_PATTERNS) {
+    if (pattern.test(host)) return host;
+  }
+  return null;
+}

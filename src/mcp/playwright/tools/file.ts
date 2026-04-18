@@ -1,7 +1,10 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { resolveRef } from '../snapshot';
+import { getWmuxDir } from '../../../daemon/config';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -9,11 +12,49 @@ const optionalSurfaceId = z
   .optional()
   .describe('Target a specific surface by ID. Omit to use the active surface.');
 
+// ---------------------------------------------------------------------------
+// Upload sandbox: restrict browser_file_upload to ~/.wmux/uploads
+// ---------------------------------------------------------------------------
+
+function getUploadRoot(): string {
+  const root = path.join(getWmuxDir(), 'uploads');
+  if (!fs.existsSync(root)) {
+    fs.mkdirSync(root, { recursive: true });
+  }
+  try {
+    return fs.realpathSync(root);
+  } catch {
+    return root;
+  }
+}
+
+function validateUploadPath(input: string): string {
+  if (typeof input !== 'string' || input.length === 0) {
+    throw new Error('browser_file_upload blocked: empty path');
+  }
+  const root = getUploadRoot();
+  const abs = path.resolve(input);
+  let resolved = abs;
+  try {
+    if (fs.existsSync(abs)) resolved = fs.realpathSync(abs);
+  } catch {
+    // fall through with abs; the relative check below will still catch traversal
+  }
+  const rel = path.relative(root, resolved);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(
+      `browser_file_upload blocked: "${input}" is outside the allowed upload root (${root}). ` +
+      `Move the file under ~/.wmux/uploads/ before uploading.`,
+    );
+  }
+  return resolved;
+}
+
 /**
  * Register file-related MCP tools on the given server.
  *
  * Tools:
- *  - browser_file_upload        — upload files to a file input
+ *  - browser_file_upload        — upload files to a file input (sandboxed to ~/.wmux/uploads)
  *  - browser_download           — click an element and capture the download
  *  - browser_wait_for_download  — wait for a download event
  *  - browser_dialog             — pre-register a dialog accept/dismiss handler
@@ -26,11 +67,11 @@ export function registerFileTools(server: McpServer): void {
   // -----------------------------------------------------------------------
   server.tool(
     'browser_file_upload',
-    'Upload files to a file input element. Specify a ref to target a specific input, or omit to use the first file input on the page.',
+    'Upload files to a file input element. Paths MUST live under ~/.wmux/uploads/ — arbitrary filesystem paths are rejected to prevent exfiltration of credentials or SSH keys via malicious pages.',
     {
       paths: z
         .array(z.string())
-        .describe('Array of absolute file paths to upload.'),
+        .describe('Array of file paths to upload. Each path must resolve under ~/.wmux/uploads/.'),
       ref: z
         .string()
         .optional()
@@ -44,26 +85,28 @@ export function registerFileTools(server: McpServer): void {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
+        const safePaths = paths.map(validateUploadPath);
+
         if (ref) {
           const el = await resolveRef(page, ref);
           if (!el) {
             throw new Error(`Could not resolve ref="${ref}" to an element.`);
           }
-          await el.setInputFiles(paths);
+          await el.setInputFiles(safePaths);
         } else {
           // Find the first file input on the page
           const fileInput = await page.$('input[type="file"]');
           if (!fileInput) {
             throw new Error('No file input element found on the page.');
           }
-          await fileInput.setInputFiles(paths);
+          await fileInput.setInputFiles(safePaths);
         }
 
         return {
           content: [
             {
               type: 'text' as const,
-              text: `Uploaded ${paths.length} file(s)`,
+              text: `Uploaded ${safePaths.length} file(s) from ~/.wmux/uploads/`,
             },
           ],
         };
@@ -113,9 +156,9 @@ export function registerFileTools(server: McpServer): void {
 
         let filePath: string;
         if (filename) {
-          const path = await import('path');
+          const pathMod = await import('path');
           const os = await import('os');
-          const savePath = path.join(os.tmpdir(), filename);
+          const savePath = pathMod.join(os.tmpdir(), filename);
           await download.saveAs(savePath);
           filePath = savePath;
         } else {

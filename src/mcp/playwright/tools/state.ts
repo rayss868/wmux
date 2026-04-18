@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { devices } from 'playwright-core';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { matchSensitiveDomain } from '../security';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -30,7 +31,7 @@ export function registerStateTools(server: McpServer): void {
   // -----------------------------------------------------------------------
   server.tool(
     'browser_cookies',
-    'Manage browser cookies: get, set, or clear cookies for the current browser context.',
+    'Manage browser cookies: get, set, or clear. Reads from sensitive domains (email, banking, auth) are blocked and values from such domains are redacted unless allowSensitiveDomains:true is set.',
     {
       action: z
         .enum(['get', 'set', 'clear'])
@@ -50,9 +51,13 @@ export function registerStateTools(server: McpServer): void {
         )
         .optional()
         .describe('Cookies to set (for "set" action).'),
+      allowSensitiveDomains: z
+        .boolean()
+        .optional()
+        .describe('Allow reading cookies from sensitive domains (email, banking, auth). Default false.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ action, url, cookies, surfaceId }) => {
+    async ({ action, url, cookies, allowSensitiveDomains, surfaceId }) => {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
@@ -63,12 +68,28 @@ export function registerStateTools(server: McpServer): void {
 
         switch (action) {
           case 'get': {
+            if (url) {
+              const sensitive = matchSensitiveDomain(url);
+              if (sensitive && !allowSensitiveDomains) {
+                throw new Error(
+                  `browser_cookies get blocked: "${sensitive}" is on the sensitive-domain blocklist (email / banking / auth). ` +
+                  `Pass allowSensitiveDomains:true if the caller has user consent.`,
+                );
+              }
+            }
             const allCookies = await context.cookies(url ? [url] : []);
+            const safe = allCookies.map((c) => {
+              const hit = matchSensitiveDomain(c.domain ?? '');
+              if (hit && !allowSensitiveDomains) {
+                return { ...c, value: '<REDACTED sensitive-domain>' };
+              }
+              return c;
+            });
             return {
               content: [
                 {
                   type: 'text' as const,
-                  text: JSON.stringify(allCookies, null, 2),
+                  text: JSON.stringify(safe, null, 2),
                 },
               ],
             };
@@ -125,7 +146,7 @@ export function registerStateTools(server: McpServer): void {
   // -----------------------------------------------------------------------
   server.tool(
     'browser_storage',
-    'Manage localStorage or sessionStorage: get, set, or clear values.',
+    'Manage localStorage or sessionStorage: get, set, or clear. Reads on sensitive pages (email, banking, auth) are blocked unless allowSensitiveDomains:true is set.',
     {
       type: z
         .enum(['local', 'session'])
@@ -141,9 +162,13 @@ export function registerStateTools(server: McpServer): void {
         .string()
         .optional()
         .describe('Value to set (for "set" action).'),
+      allowSensitiveDomains: z
+        .boolean()
+        .optional()
+        .describe('Allow reading storage on sensitive domains. Default false.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ type, action, key, value, surfaceId }) => {
+    async ({ type, action, key, value, allowSensitiveDomains, surfaceId }) => {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
@@ -154,6 +179,15 @@ export function registerStateTools(server: McpServer): void {
 
         switch (action) {
           case 'get': {
+            if (!allowSensitiveDomains) {
+              const sensitive = matchSensitiveDomain(page.url());
+              if (sensitive) {
+                throw new Error(
+                  `browser_storage get blocked: current page "${sensitive}" is on the sensitive-domain blocklist (email / banking / auth). ` +
+                  `Pass allowSensitiveDomains:true if the caller has user consent.`,
+                );
+              }
+            }
             const result = await page.evaluate(
               ([sName, sKey]: [string, string | undefined]) => {
                 const storage = (window as any)[sName] as Storage;

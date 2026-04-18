@@ -290,16 +290,29 @@ export function registerInspectionTools(server: McpServer): void {
   // -----------------------------------------------------------------------
   server.tool(
     'browser_evaluate',
-    'Evaluate a JavaScript expression in the browser page context. Uses userGesture mode for actions requiring user activation.',
+    'Evaluate a JavaScript expression in the browser page context. Dangerous patterns (fetch, XHR, cookies, storage, eval, Function) are BLOCKED by default to mitigate prompt injection; pass allowDangerous:true to override when the caller has verified the expression is trusted.',
     {
       expression: z.string().describe('The JavaScript expression to evaluate.'),
+      allowDangerous: z
+        .boolean()
+        .optional()
+        .describe('Allow execution even if the expression contains dangerous patterns (fetch, cookies, storage, eval). Default false. Use only with trusted input.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ expression, surfaceId }) => {
+    async ({ expression, allowDangerous, surfaceId }) => {
       try {
         const warnings = detectDangerousPatterns(expression);
+        if (warnings.length > 0 && !allowDangerous) {
+          const blockedMsg =
+            `browser_evaluate blocked: expression contains dangerous patterns (${warnings.join(', ')}). ` +
+            `Pass allowDangerous:true to execute anyway.`;
+          return {
+            content: [{ type: 'text' as const, text: blockedMsg }],
+            isError: true,
+          };
+        }
         if (warnings.length > 0) {
-          console.warn(`[browser_evaluate] Dangerous patterns detected: ${warnings.join(', ')}`);
+          console.warn(`[browser_evaluate] allowDangerous override for: ${warnings.join(', ')}`);
         }
 
         let result: unknown;
@@ -319,13 +332,6 @@ export function registerInspectionTools(server: McpServer): void {
 
         const text =
           typeof result === 'string' ? result : (JSON.stringify(result, null, 2) ?? 'undefined');
-
-        if (warnings.length > 0) {
-          const warningText = `\u26A0 Security warning: expression contains potentially dangerous patterns: ${warnings.join(', ')}. Exercise caution with untrusted input.\n\n`;
-          return {
-            content: [{ type: 'text' as const, text: warningText + text }],
-          };
-        }
 
         return {
           content: [{ type: 'text' as const, text: text ?? 'undefined' }],
