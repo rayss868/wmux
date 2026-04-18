@@ -136,8 +136,49 @@ export function registerInputRpc(
    * input.readScreen — delegates to the renderer to capture the current
    * terminal viewport text of the active surface.
    * Returns { ptyId: string, text: string }
+   * Accepts optional { ptyId?, tail_lines? } params that the renderer honors.
    */
-  router.register('input.readScreen', (_params) =>
-    sendToRenderer(getWindow, 'input.readScreen'),
+  router.register('input.readScreen', (params) =>
+    sendToRenderer(getWindow, 'input.readScreen', params ?? {}),
   );
+
+  /**
+   * terminal.readEvents — return structured OSC 133 prompt/command events
+   * from the daemon's per-session PromptEventLog. This is the canonical
+   * "AI-readable" terminal read path — unlike input.readScreen which
+   * returns a flat viewport string.
+   *
+   * params: { ptyId?, limit?, sinceOffset?, lastCommandOnly? }
+   */
+  router.register('terminal.readEvents', async (params) => {
+    let ptyId: string;
+    if (typeof params['ptyId'] === 'string' && params['ptyId'].length > 0) {
+      ptyId = params['ptyId'];
+    } else {
+      ptyId = await resolveActivePtyId(getWindow);
+    }
+
+    const dc = getDaemonClient?.();
+    if (!dc?.isConnected) {
+      // Local-only PTYs (spawned by main before daemon adoption) don't have
+      // a PromptEventLog. Return a structured empty response so the caller
+      // gets a consistent shape.
+      return {
+        ptyId,
+        events: [],
+        lastCompletedRange: null,
+        totalBytesWritten: 0,
+        sessionFound: false,
+        note: 'daemon not connected — prompt events unavailable for this PTY',
+      };
+    }
+
+    const opts: { limit?: number; sinceOffset?: number; lastCommandOnly?: boolean } = {};
+    if (typeof params['limit'] === 'number') opts.limit = params['limit'];
+    if (typeof params['sinceOffset'] === 'number') opts.sinceOffset = params['sinceOffset'];
+    if (params['lastCommandOnly'] === true) opts.lastCommandOnly = true;
+
+    const result = await dc.readPromptEvents(ptyId, opts);
+    return { ptyId, ...result };
+  });
 }

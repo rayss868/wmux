@@ -334,6 +334,17 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
 
+    // Optional tail_lines cap — return only the last N non-empty lines.
+    // Useful for AI agents that don't need the full viewport and want to
+    // bound token cost per read.
+    const rawTail = (params as Record<string, unknown>).tail_lines;
+    if (typeof rawTail === 'number' && Number.isFinite(rawTail) && rawTail > 0) {
+      const cap = Math.floor(rawTail);
+      if (lines.length > cap) {
+        return { ptyId, text: lines.slice(-cap).join('\n') };
+      }
+    }
+
     return { ptyId, text: lines.join('\n') };
   }
 

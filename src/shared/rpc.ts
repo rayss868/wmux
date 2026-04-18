@@ -28,6 +28,7 @@ export type RpcMethod =
   | 'input.send'
   | 'input.sendKey'
   | 'input.readScreen'
+  | 'terminal.readEvents'
   | 'notify'
   | 'meta.setStatus'
   | 'meta.setProgress'
@@ -55,6 +56,7 @@ export type RpcMethod =
   | 'daemon.detachSession'
   | 'daemon.resizeSession'
   | 'daemon.listSessions'
+  | 'daemon.readPromptEvents'
   | 'daemon.ping'
   | 'daemon.shutdown'
   | 'daemon.compact'
@@ -110,6 +112,7 @@ export const ALL_RPC_METHODS = [
   'input.send',
   'input.sendKey',
   'input.readScreen',
+  'terminal.readEvents',
   'notify',
   'meta.setStatus',
   'meta.setProgress',
@@ -137,6 +140,7 @@ export const ALL_RPC_METHODS = [
   'daemon.detachSession',
   'daemon.resizeSession',
   'daemon.listSessions',
+  'daemon.readPromptEvents',
   'daemon.ping',
   'daemon.shutdown',
   'daemon.compact',

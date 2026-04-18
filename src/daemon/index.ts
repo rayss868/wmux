@@ -566,6 +566,52 @@ function registerRpcHandlers(
     return sessionManager.listSessions();
   });
 
+  // daemon.readPromptEvents — read structured OSC 133 prompt/command events
+  // from a session's PromptEventLog. Falls back to an empty response when the
+  // session doesn't exist so callers can degrade gracefully.
+  pipeServer.onRpc('daemon.readPromptEvents', async (params) => {
+    const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : '';
+    if (!sessionId) {
+      throw new Error('daemon.readPromptEvents: sessionId is required');
+    }
+    const managed = sessionManager.getSession(sessionId);
+    if (!managed) {
+      return {
+        events: [],
+        lastCompletedRange: null,
+        totalBytesWritten: 0,
+        sessionFound: false,
+      };
+    }
+
+    const limit = typeof params['limit'] === 'number' ? Math.max(0, Math.floor(params['limit'])) : 32;
+    const sinceOffset = typeof params['sinceOffset'] === 'number' ? params['sinceOffset'] : null;
+    const lastCommandOnly = params['lastCommandOnly'] === true;
+
+    const lastCompletedRange = managed.promptLog.lastCompletedCommandRange();
+    const totalBytesWritten = managed.ringBuffer.totalBytesWritten;
+
+    if (lastCommandOnly) {
+      return {
+        events: [],
+        lastCompletedRange,
+        totalBytesWritten,
+        sessionFound: true,
+      };
+    }
+
+    const events = sinceOffset !== null
+      ? managed.promptLog.since(sinceOffset)
+      : managed.promptLog.recent(limit);
+
+    return {
+      events,
+      lastCompletedRange,
+      totalBytesWritten,
+      sessionFound: true,
+    };
+  });
+
   // daemon.ping
   pipeServer.onRpc('daemon.ping', async () => {
     const sessions = sessionManager.listSessions();

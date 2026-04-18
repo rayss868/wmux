@@ -194,11 +194,36 @@ server.tool(
 
 server.tool(
   'terminal_read',
-  'Read the current visible text from a terminal. Omit ptyId to read the active terminal. Use surface_list() to discover available PTY IDs.',
+  'Read the current visible text from a terminal. Omit ptyId to read the active terminal. Pass tail_lines to cap the response to the last N non-empty lines (saves tokens when the full viewport is not needed). For structured command boundaries / exit codes, use terminal_read_events instead.',
   {
     ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
+    tail_lines: z.number().int().positive().optional().describe('Return only the last N non-empty lines of the viewport. Omit to return everything the terminal buffer knows about.'),
   },
-  async ({ ptyId }) => callRpc('input.readScreen', ptyId ? { ptyId } : {}),
+  async ({ ptyId, tail_lines }) => {
+    const params: Record<string, unknown> = {};
+    if (ptyId) params.ptyId = ptyId;
+    if (tail_lines !== undefined) params.tail_lines = tail_lines;
+    return callRpc('input.readScreen', params);
+  },
+);
+
+server.tool(
+  'terminal_read_events',
+  'Return structured OSC 133 prompt/command events (prompt_start, prompt_end, command_start, command_end with exit code) from a terminal. Requires shell integration — wmux auto-injects for pwsh and bash; cmd.exe is unsupported. Use this instead of terminal_read when you need command boundaries, exit codes, or byte offsets for diff-style reads.',
+  {
+    ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal.'),
+    limit: z.number().int().positive().optional().describe('Return the N most recent events (default 32). Ignored when sinceOffset or lastCommandOnly is set.'),
+    sinceOffset: z.number().int().nonnegative().optional().describe('Return only events whose byteOffset is strictly greater than this value — for diff-style polling.'),
+    lastCommandOnly: z.boolean().optional().describe('Skip the events list and only return lastCompletedRange (the byte-offset range + exit code of the most recently finished command).'),
+  },
+  async ({ ptyId, limit, sinceOffset, lastCommandOnly }) => {
+    const params: Record<string, unknown> = {};
+    if (ptyId) params.ptyId = ptyId;
+    if (limit !== undefined) params.limit = limit;
+    if (sinceOffset !== undefined) params.sinceOffset = sinceOffset;
+    if (lastCommandOnly) params.lastCommandOnly = true;
+    return callRpc('terminal.readEvents', params);
+  },
 );
 
 server.tool(

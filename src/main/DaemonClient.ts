@@ -180,6 +180,33 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
+  /**
+   * Read structured OSC 133 prompt/command events from a daemon session.
+   * Returns an empty payload with sessionFound=false when the session does
+   * not exist, so callers can degrade without throwing.
+   */
+  async readPromptEvents(
+    sessionId: string,
+    opts: { limit?: number; sinceOffset?: number; lastCommandOnly?: boolean } = {},
+  ): Promise<{
+    events: Array<{ type: string; ts: number; byteOffset: number; exitCode?: number }>;
+    lastCompletedRange: { startOffset: number; endOffset: number; exitCode: number | null } | null;
+    totalBytesWritten: number;
+    sessionFound: boolean;
+  }> {
+    const params: Record<string, unknown> = { sessionId };
+    if (opts.limit !== undefined) params.limit = opts.limit;
+    if (opts.sinceOffset !== undefined) params.sinceOffset = opts.sinceOffset;
+    if (opts.lastCommandOnly) params.lastCommandOnly = true;
+    const result = await this.rpc('daemon.readPromptEvents', params);
+    return result as {
+      events: Array<{ type: string; ts: number; byteOffset: number; exitCode?: number }>;
+      lastCompletedRange: { startOffset: number; endOffset: number; exitCode: number | null } | null;
+      totalBytesWritten: number;
+      sessionFound: boolean;
+    };
+  }
+
   /** Whether the daemon control pipe is connected. */
   get isConnected(): boolean {
     return this.connected;
