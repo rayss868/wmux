@@ -1,7 +1,7 @@
-# wmux — AI Agent Terminal for Windows
+# wmux — cmux for Windows
 
 > **Run Claude Code + Codex + Gemini CLI side by side.**
-> Split terminals, browser automation, MCP integration — the only proper way to use AI agents on Windows.
+> Windows-native terminal multiplexer with an MCP bridge and browser automation — the fastest way to run multiple AI CLI agents in one window.
 
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
 [![Electron 41](https://img.shields.io/badge/Electron-41-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
