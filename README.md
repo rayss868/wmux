@@ -1,22 +1,22 @@
-# wmux — cmux for Windows
+# wmux — Windows Terminal Multiplexer for AI Agents (tmux alternative)
 
-> **Run Claude Code + Codex + Gemini CLI side by side.**
-> Windows-native terminal multiplexer with an MCP bridge and browser automation — the fastest way to run multiple AI CLI agents in one window.
+> **Run Claude Code + Codex + Gemini CLI side by side on Windows.**
+> Native Windows terminal multiplexer with split panes, MCP bridge, and browser automation — the fastest way to run multiple AI CLI coding agents in a single window. A modern tmux alternative for Windows, no WSL required.
 
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
 [![Electron 41](https://img.shields.io/badge/Electron-41-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/openwong2kim/wmux?style=social)](https://github.com/openwong2kim/wmux)
 
+**Keywords:** Windows tmux, tmux for Windows, terminal multiplexer Windows, AI agent terminal, Claude Code Windows, Codex CLI, Gemini CLI, MCP server, Chrome DevTools Protocol, split terminal, multi-agent terminal, browser automation, ConPTY, xterm.js, Electron terminal.
+
 ---
 
-## Still using one terminal for your AI coding agents on Windows?
+## Still running one terminal for your AI coding agents on Windows?
 
-macOS has [cmux](https://github.com/manaflow-ai/cmux) — a tmux-based terminal multiplexer for AI agents.
+**Windows has no native tmux.** Without WSL, there was no clean way to run multiple AI coding agents side by side.
 
-**Windows has no tmux.** Without WSL, there was no way.
-
-wmux fixes this. Native Windows terminal multiplexer + browser automation + MCP server. Your AI agent reads the terminal, controls the browser, and works autonomously.
+**wmux fixes this.** A native Windows terminal multiplexer + browser automation + MCP server, purpose-built for AI coding agents like Claude Code, Codex CLI, and Gemini CLI. Your AI agent reads the terminal, controls the browser, and works autonomously — all in one window.
 
 ```
 Claude Code writes the backend on the left
@@ -39,9 +39,7 @@ winget install openwong2kim.wmux
 choco install wmux
 ```
 
-**Installer:**
-
-[Download wmux Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
+**Installer:** [Download wmux Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
 
 **One-liner (PowerShell):**
 ```powershell
@@ -54,9 +52,7 @@ irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 
 ### 1. Your AI agent controls the browser — for real
 
-Tell Claude Code "search Google for this" and it actually does it.
-
-wmux's built-in browser connects via Chrome DevTools Protocol. Click, type, screenshot, execute JS — all done by the AI directly. Works perfectly with React controlled inputs and CJK text.
+Tell Claude Code "search Google for this" and it actually does it. wmux's built-in browser connects via Chrome DevTools Protocol (CDP). Click, type, screenshot, execute JS — all done by the AI directly. Works perfectly with React controlled inputs and CJK text (Korean, Japanese, Chinese).
 
 ```
 You: "Search for wmux on Google"
@@ -68,11 +64,11 @@ Claude: browser_open → browser_snapshot → browser_fill(ref=13, "wmux") → b
 
 `Ctrl+D` to split, `Ctrl+N` for new workspace. Place multiple terminals and browsers in each workspace. `Ctrl+click` for multiview — see multiple workspaces at once.
 
-ConPTY-based native Windows terminal. xterm.js + WebGL hardware-accelerated rendering. 999K lines of scrollback. Terminal content persists even after restart.
+ConPTY-based native Windows pseudo-terminal. xterm.js + WebGL hardware-accelerated rendering. 999K lines of scrollback. Terminal content persists even after app restart.
 
 **Tmux-style prefix mode** — `Ctrl+B` then a single action key (split, focus, new workspace…) for muscle-memory terminal navigation. 13 actions, fully rebindable.
 
-**Floating pane** — `Ctrl+\`` for a Quake-style dropdown terminal that lives outside your main layout. Stays alive across toggles.
+**Floating pane** — `` Ctrl+` `` for a Quake-style dropdown terminal that lives outside your main layout. Stays alive across toggles.
 
 **Scroll bookmarks** — `Ctrl+M` marks the current scroll position, `Ctrl+Up/Down` jumps between marks. Indicators render on the gutter.
 
@@ -88,7 +84,7 @@ wmux tells you when your AI agent finishes.
 
 Not pattern matching — output throughput-based detection. Works with any agent.
 
-### 4. Automatic Claude Code integration
+### 4. Automatic Claude Code (MCP) integration
 
 Launch wmux and the MCP server registers automatically. Claude Code just works:
 
@@ -110,9 +106,9 @@ Launch wmux and the MCP server registers automatically. Claude Code just works:
 | Delegate tasks across agents | `a2a_task_send` / `a2a_task_query` / `a2a_task_cancel` |
 | Company mode coordination | `company_a2a_send` / `company_a2a_inbox` / `company_a2a_status` |
 
-**Multi-agent:** Every browser tool accepts `surfaceId` — each Claude Code session controls its own browser independently. A2A tools route messages between sibling agents in the same wmux instance.
+**Multi-agent:** Every browser tool accepts `surfaceId` — each Claude Code session controls its own browser independently. A2A (agent-to-agent) tools route messages between sibling agents in the same wmux instance.
 
-### 5. Session persistence — like tmux
+### 5. Session persistence — survives restart and reboot
 
 Terminal sessions survive app restarts. Close wmux and reopen — your sessions are still there, scrollback intact.
 
@@ -139,7 +135,7 @@ Terminal sessions survive app restarts. Close wmux and reopen — your sessions 
 - Unicode 11 width tables — correct CJK / emoji rendering for cursor-positioning TUIs (Claude Code, vim)
 - Split panes — `Ctrl+D` horizontal, `Ctrl+Shift+D` vertical
 - Tabs — multiple surfaces per pane
-- **Floating pane** — Quake-style dropdown terminal, dedicated PTY, `Ctrl+\``
+- **Floating pane** — Quake-style dropdown terminal, dedicated PTY, `` Ctrl+` ``
 - **Smart right-click** — selection → instant copy, empty area → instant paste, link → Open / Copy Link menu
 - **Scroll bookmarks** — `Ctrl+M` mark, `Ctrl+Up/Down` jump, gutter indicators
 - Vi copy mode — `Ctrl+Shift+X`
@@ -212,7 +208,7 @@ English, Korean, Japanese, Chinese
 | `Ctrl+Shift+L` | Open browser |
 | `Ctrl+B` then `<key>` | Tmux-style prefix mode (13 actions) |
 | `Ctrl+Shift+B` | Toggle sidebar |
-| `Ctrl+\`` | Toggle floating pane (Quake-style) |
+| `` Ctrl+` `` | Toggle floating pane (Quake-style) |
 | `Ctrl+K` | Command palette |
 | `Ctrl+I` | Notifications |
 | `Ctrl+,` | Settings |
@@ -231,8 +227,8 @@ English, Korean, Japanese, Chinese
 git clone https://github.com/openwong2kim/wmux.git
 cd wmux
 npm install
-npm start           # Dev mode
-npm run make        # Build installer
+npm start          # Dev mode
+npm run make       # Build installer
 ```
 
 ### Requirements (dev only)
@@ -284,9 +280,24 @@ MCP Server (stdio)
 
 ---
 
+## FAQ
+
+**Is wmux a tmux port for Windows?**
+No. wmux is a native Windows terminal multiplexer built on ConPTY and Electron, offering tmux-style split panes, prefix keys, and session persistence — without requiring WSL or Cygwin.
+
+**Does wmux work with Claude Code, Codex CLI, and Gemini CLI?**
+Yes. wmux automatically detects these AI coding agents and registers an MCP server so Claude Code can drive the built-in browser and read terminal output.
+
+**Can I run multiple AI agents at the same time?**
+Yes. Each pane runs an independent PTY. Agents can communicate via the A2A (agent-to-agent) MCP tools for multi-agent workflows.
+
+**Does it require WSL?**
+No. wmux is fully native Windows (ConPTY + Electron). No WSL, Cygwin, or MSYS2 needed.
+
+---
+
 ## Acknowledgments
 
-- [cmux](https://github.com/manaflow-ai/cmux) — The macOS AI agent terminal that inspired wmux
 - [xterm.js](https://xtermjs.org/) — Terminal rendering
 - [node-pty](https://github.com/microsoft/node-pty) — Pseudo-terminal
 - [Electron](https://www.electronjs.org/) — Desktop framework
