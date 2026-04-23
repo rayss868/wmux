@@ -3,6 +3,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
+import { buildSafeChildEnv } from '../../shared/envFilter';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
 
@@ -122,22 +123,19 @@ export class PTYManager {
     const shell = options?.shell || this.getDefaultShell();
     const cwd = options?.cwd || os.homedir();
 
-    // Filter out sensitive and build-only variables to prevent leaking internal state to child processes
-    const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(globalThis.process.env)) {
-      if (value === undefined) continue;
-      if (key.startsWith('ELECTRON_')) continue;
-      if (key.startsWith('VITE_')) continue;
-      if (key === 'NODE_OPTIONS') continue;
-      if (key === 'ELECTRON_RUN_AS_NODE') continue;
-      env[key] = value;
-    }
+    // Filter out sensitive and build-only variables to prevent leaking
+    // internal state to child processes. Shared with DaemonSessionManager
+    // via src/shared/envFilter so both spawn paths evolve in lockstep —
+    // previously this filter was laxer than the daemon's and would leak
+    // WMUX_AUTH_TOKEN, GITHUB_TOKEN, ANTHROPIC_API_KEY, etc. to shells.
+    const env = buildSafeChildEnv(globalThis.process.env);
     env[ENV_KEYS.SOCKET_PATH] = getPipeName();
     if (options?.workspaceId) env[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
     if (options?.surfaceId) env[ENV_KEYS.SURFACE_ID] = options.surfaceId;
-    // Security: auth token is NOT passed via environment variable to prevent
-    // malicious child processes (e.g. npm packages) from accessing it.
-    // CLI/MCP clients read the token directly from ~/.wmux-auth-token file.
+    // Security: auth token is NEVER passed via environment variable to child
+    // shells — buildSafeChildEnv strips WMUX_AUTH* so any inherited token
+    // from the main process's own env is dropped. CLI/MCP clients read the
+    // token directly from ~/.wmux-auth-token file instead.
 
     // Detect shell type and inject hook
     const shellType = this.detectShellType(shell);

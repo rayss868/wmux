@@ -158,7 +158,14 @@ export function registerFileTools(server: McpServer): void {
         if (filename) {
           const pathMod = await import('path');
           const os = await import('os');
-          const savePath = pathMod.join(os.tmpdir(), filename);
+          // path.basename strips any directory components — a malicious
+          // page could otherwise pass `../../etc/passwd` and overwrite
+          // arbitrary files via download.saveAs which doesn't sanitize.
+          const safeName = pathMod.basename(filename);
+          if (!safeName || safeName === '.' || safeName === '..') {
+            throw new Error('filename must be a non-empty plain file name');
+          }
+          const savePath = pathMod.join(os.tmpdir(), safeName);
           await download.saveAs(savePath);
           filePath = savePath;
         } else {

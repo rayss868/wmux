@@ -12,7 +12,18 @@ const optionalSurfaceId = z
   .describe('Target a specific surface by ID. Omit to use the active surface.');
 
 function getExportRoot(): string {
-  return path.join(os.homedir(), '.wmux', 'exports');
+  const root = path.join(os.homedir(), '.wmux', 'exports');
+  if (!fs.existsSync(root)) {
+    fs.mkdirSync(root, { recursive: true });
+  }
+  // Resolve symlinks so a malicious symlink at the root itself can't
+  // redirect writes elsewhere. realpath only works on existing paths,
+  // hence the mkdirSync above.
+  try {
+    return fs.realpathSync(root);
+  } catch {
+    return root;
+  }
 }
 
 export function resolveBrowserExportPath(requestedPath: string | undefined, defaultFileName: string): string {
@@ -26,6 +37,32 @@ export function resolveBrowserExportPath(requestedPath: string | undefined, defa
   const relative = path.relative(exportRoot, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error(`Output path escapes the export root. Use a relative path under ${exportRoot}`);
+  }
+
+  // Walk up the resolved path looking for any existing component that
+  // resolves (via realpath) outside the export root — catches symlinks
+  // planted at intermediate directories. A non-existent leaf is fine; we
+  // only care about already-materialised filesystem entries. Without
+  // this, an attacker who can write a symlink under ~/.wmux/exports/
+  // could redirect a `browser_pdf` write to anywhere on disk.
+  let probe = resolved;
+  while (probe !== exportRoot && probe !== path.dirname(probe)) {
+    if (fs.existsSync(probe)) {
+      try {
+        const real = fs.realpathSync(probe);
+        const realRel = path.relative(exportRoot, real);
+        if (realRel.startsWith('..') || path.isAbsolute(realRel)) {
+          throw new Error(`Output path escapes the export root via symlink at ${probe}`);
+        }
+        break;
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith('Output path escapes')) throw err;
+        // realpath failure on an existing entry — fall through, the
+        // string-level check above already passed.
+        break;
+      }
+    }
+    probe = path.dirname(probe);
   }
 
   return resolved;
