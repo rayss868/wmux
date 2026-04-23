@@ -28,7 +28,7 @@ export interface CompanySlice {
   destroyCompany: () => void;
 
   // Department
-  addDepartment: (name: string, leadName: string) => void;
+  addDepartment: (name: string, leadName: string, leadPreset?: AgentPreset) => void;
   removeDepartment: (deptId: string) => void;
 
   // Member
@@ -170,13 +170,18 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
 
   // ─── Department ──────────────────────────────────────────────────────────
 
-  addDepartment: (name, leadName) => set((state) => {
+  addDepartment: (name, leadName, leadPreset) => set((state) => {
     if (!state.company) return;
 
     const lead: TeamMember = {
       id: generateId('member'),
       name: leadName,
-      preset: 'project-manager',
+      // Fall back to 'project-manager' only when the caller did not
+      // supply a preset. Templates that know the lead's role (CTO,
+      // CISO, Software Architect, …) should pass `leadPreset` so the
+      // SOUL injection matches the persona instead of defaulting
+      // every lead to the product-manager persona.
+      preset: leadPreset ?? 'project-manager',
       workspaceId: '',
       status: 'idle',
     };

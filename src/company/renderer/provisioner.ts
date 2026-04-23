@@ -5,7 +5,7 @@
 import { useStore } from '../../renderer/stores';
 import { createSurface, createLeafPane, generateId, sanitizePtyText } from '../../shared/types';
 import type { AgentPreset } from '../types';
-import { hasSoul, prefetchSouls, getSoulWriteCommand } from '../core/SoulLoader';
+import { hasSoul, prefetchSouls, writeSoulToFile } from '../core/SoulLoader';
 
 // ─── Wait for Claude CLI ready ───────────────────────────────────────────────
 
@@ -26,10 +26,17 @@ function waitForClaudeReady(ptyId: string, timeoutMs = 30000): Promise<void> {
     cleanup = window.electronAPI.pty.onData((id, data) => {
       if (id !== ptyId || resolved) return;
       dataReceived++;
-      // Skip first few data chunks (shell startup, PS1 prompt containing ">")
-      // Claude's ready indicator appears after the CLI banner/loading
+      // Match only Claude's input prompt marker (U+276F, ❯). The older
+      // substring list ('>', 'Claude', 'claude') matched the PowerShell
+      // prompt `PS C:\…>`, the `claude …` command echo, and the CLI
+      // banner — all of which appear BEFORE the TUI enters raw mode,
+      // so the 500 ms grace was not enough to keep the injected role
+      // prompt from racing Claude's startup. The `dataReceived <= 2`
+      // throttle is kept as a belt-and-braces guard against ConPTY
+      // chunking producing a stray ❯ in shell output before Claude
+      // starts (rare, but cheap to gate).
       if (dataReceived <= 2) return;
-      if (data.includes('\u276F') || data.includes('Claude') || data.includes('claude') || data.includes('>')) {
+      if (data.includes('\u276F')) {
         finish();
         setTimeout(resolve, 500);
       }
@@ -81,7 +88,7 @@ export async function spawnAgentWorkspace(
 
   // 5. Write SOUL as .claude/CLAUDE.md BEFORE launching Claude Code
   if (presetId && cwd) {
-    await writeSoulToPty(ptyId, presetId, cwd);
+    await writeSoulToFile(presetId, cwd);
   }
 
   // 6. Send startup command (launches Claude Code)
@@ -108,20 +115,6 @@ export async function spawnAgentWorkspace(
   }
 
   return { workspaceId, ptyId, paneId: rootPane.id };
-}
-
-// ─── Soul file writer ────────────────────────────────────────────────────────
-
-/**
- * Write SOUL as .claude/CLAUDE.md via PTY shell command BEFORE launching Claude.
- * Claude Code reads CLAUDE.md automatically — no prompt injection needed.
- */
-async function writeSoulToPty(ptyId: string, presetId: string, workDir: string): Promise<void> {
-  const cmd = await getSoulWriteCommand(presetId, workDir);
-  if (!cmd) return;
-  await window.electronAPI.pty.write(ptyId, cmd + '\r');
-  // Wait for file write to complete
-  await new Promise((r) => setTimeout(r, 1000));
 }
 
 // ─── Spawn entire company from template ──────────────────────────────────────

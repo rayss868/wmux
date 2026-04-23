@@ -30,7 +30,7 @@ export interface CompanySlice {
   waitGraph: Record<string, string>; // memberId -> waiting-on memberId
 
   // Department
-  addDepartment: (name: string, leadName: string) => void;
+  addDepartment: (name: string, leadName: string, leadPreset?: AgentPreset) => void;
   removeDepartment: (deptId: string) => void;
 
   // Member
@@ -134,13 +134,15 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
 
   // ─── Department ──────────────────────────────────────────────────────────
 
-  addDepartment: (name, leadName) => set((state) => {
+  addDepartment: (name, leadName, leadPreset) => set((state) => {
     if (!state.company) return;
 
     const lead: TeamMember = {
       id: generateId('member'),
       name: leadName,
-      preset: 'project-manager',
+      // See src/company/renderer/store.ts — leadPreset ?? 'project-manager'
+      // keeps the historical default when templates don't supply a preset.
+      preset: leadPreset ?? 'project-manager',
       workspaceId: '',
       status: 'idle',
     };

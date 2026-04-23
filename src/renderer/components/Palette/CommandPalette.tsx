@@ -274,7 +274,7 @@ export default function CommandPalette() {
               const s = useStore.getState();
               s.createCompany(tpl.name);
               for (const dept of template.departments) {
-                s.addDepartment(dept.name, dept.leadName);
+                s.addDepartment(dept.name, dept.leadName, dept.leadPreset);
                 const fresh = useStore.getState();
                 const lastDept = fresh.company?.departments[fresh.company.departments.length - 1];
                 if (lastDept) {

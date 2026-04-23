@@ -155,22 +155,24 @@ export function condenseSoul(raw: string): string {
 }
 
 /**
- * Generate a shell command that writes the SOUL as .claude/CLAUDE.md.
- * The command is injected into the PTY BEFORE launching Claude Code,
- * so Claude Code reads it automatically on startup.
- * Returns the shell command string, or null if no soul available.
+ * Write the SOUL as .claude/CLAUDE.md via the main-process fs IPC.
+ *
+ * Previously this built a POSIX shell heredoc and piped it through the PTY,
+ * which introduced three defects: (1) supply-chain RCE via the fixed heredoc
+ * delimiter when upstream markdown contained `WMUX_SOUL_EOF`, (2) silent
+ * failure on Windows PowerShell (no `mkdir -p`, `&&`, or heredoc), and
+ * (3) corruption of every apostrophe into `'\''` because the inline-quote
+ * escape was applied inside a quoted heredoc where no expansion happens.
+ *
+ * Writing via the main process eliminates the shell round-trip entirely.
+ * Returns true on success, false otherwise.
  */
-export async function getSoulWriteCommand(presetId: string, workDir: string): Promise<string | null> {
-  if (!hasSoul(presetId)) return null;
+export async function writeSoulToFile(presetId: string, workDir: string): Promise<boolean> {
+  if (!hasSoul(presetId)) return false;
   const raw = await loadSoul(presetId);
-  if (!raw) return null;
-
-  // Escape single quotes for shell safety
-  const escaped = raw.replace(/'/g, "'\\''");
-  const dir = workDir.replace(/\\/g, '/');
-
-  // mkdir -p + write file in one command, then clear screen
-  return `mkdir -p '${dir}/.claude' && cat > '${dir}/.claude/CLAUDE.md' << 'WMUX_SOUL_EOF'\n${escaped}\nWMUX_SOUL_EOF\nclear`;
+  if (!raw) return false;
+  const filePath = `${workDir}/.claude/CLAUDE.md`;
+  return window.electronAPI.fs.writeFile(filePath, raw);
 }
 
 /**

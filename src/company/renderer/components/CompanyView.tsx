@@ -257,7 +257,7 @@ export default function CompanyView({ onClose }: CompanyViewProps) {
 
     // 2. Populate departments + members in store BEFORE anything else
     for (const d of result.template.departments) {
-      g().addDepartment(d.name, d.leadName);
+      g().addDepartment(d.name, d.leadName, d.leadPreset);
       const co = g().company;
       if (!co) continue;
       const dept = co.departments.find((dep) => dep.name === d.name);

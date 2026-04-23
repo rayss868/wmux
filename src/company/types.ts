@@ -111,6 +111,14 @@ export interface CompanyTemplateMember {
 export interface CompanyTemplateDepartment {
   name: string;
   leadName: string;
+  /**
+   * Preset for the department lead. When omitted, the store falls
+   * back to `'project-manager'` — the historical default before
+   * lead-preset threading landed. Templates should set this explicitly
+   * so a CTO gets an engineering persona, a CISO gets a security
+   * persona, etc., instead of every lead silently running the PM SOUL.
+   */
+  leadPreset?: AgentPreset;
   leadPrompt?: string;
   worktreeBranch?: string;
   members: CompanyTemplateMember[];

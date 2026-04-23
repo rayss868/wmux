@@ -144,6 +144,7 @@ export function registerFsHandlers(): () => void {
     // Size limit: 100KB
     if (content.length > 100 * 1024) return false;
     try {
+      await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
       await fs.promises.writeFile(resolved, content, 'utf-8');
       return true;
     } catch {

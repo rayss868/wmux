@@ -7,6 +7,7 @@ export const BUILTIN_TEMPLATES: CompanyTemplate[] = [
       {
         name: 'Engineering',
         leadName: 'CTO',
+        leadPreset: 'backend-architect',
         members: [
           { name: 'FE Dev', preset: 'frontend-developer' },
           { name: 'BE Dev', preset: 'backend-architect' },
@@ -16,6 +17,7 @@ export const BUILTIN_TEMPLATES: CompanyTemplate[] = [
       {
         name: 'Security',
         leadName: 'CISO',
+        leadPreset: 'security-auditor',
         members: [
           { name: 'Auditor', preset: 'security-auditor' },
         ],
@@ -28,6 +30,7 @@ export const BUILTIN_TEMPLATES: CompanyTemplate[] = [
       {
         name: 'Product',
         leadName: 'PM',
+        leadPreset: 'project-manager',
         members: [
           { name: 'Full-Stack', preset: 'frontend-developer' },
           { name: 'Designer', preset: 'ui-designer' },
@@ -41,6 +44,7 @@ export const BUILTIN_TEMPLATES: CompanyTemplate[] = [
       {
         name: 'Review',
         leadName: 'Lead Reviewer',
+        leadPreset: 'code-reviewer',
         members: [
           { name: 'Security', preset: 'security-auditor' },
           { name: 'Quality', preset: 'test-automator' },

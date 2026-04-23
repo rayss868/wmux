@@ -8,6 +8,16 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import * as fs from 'fs';
 import * as path from 'path';
 
+// Read version from package.json so MakerSquirrel.setupExe emits a
+// deterministic filename that matches chocolateyInstall.ps1's download
+// URL and the winget-releaser regex in .github/workflows/release.yml.
+// Without this override electron-winstaller defaults to
+// `wmux-{version} Setup.exe` (space), which 404s the Choco install and
+// fails the `\.Setup\.exe$` regex — silently, because winget-releaser
+// runs with continue-on-error.
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8')) as { version: string };
+const SQUIRREL_SETUP_EXE = `wmux-${pkg.version}.Setup.exe`;
+
 function copyDirSync(src: string, dest: string): void {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -92,6 +102,7 @@ const config: ForgeConfig = {
   makers: [
     new MakerSquirrel({
       name: 'wmux',
+      setupExe: SQUIRREL_SETUP_EXE,
       setupIcon: './assets/icon.ico',
       iconUrl: 'https://raw.githubusercontent.com/openwong2kim/wmux/main/assets/icon.ico',
     }),

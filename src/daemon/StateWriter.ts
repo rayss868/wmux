@@ -37,6 +37,14 @@ export class StateWriter {
   private debounceTimer: NodeJS.Timeout | null = null;
   private pendingState: DaemonState | null = null;
   private readonly queue = new AsyncQueue();
+  // Epoch bumped by every saveImmediate() call. A debounced async write
+  // captures this on entry and re-checks it after its final rename so a
+  // saveImmediate that fired mid-flight can restore its payload. Fixes
+  // the race where AsyncQueue.clear() cannot interrupt a running task
+  // (see AsyncQueue.ts:188) and the async task's tail rename silently
+  // overwrites the emergency save.
+  private immediateEpoch = 0;
+  private lastImmediateState: DaemonState | null = null;
 
   constructor(baseDir: string) {
     this.filePath = path.join(baseDir, 'sessions.json');
@@ -57,9 +65,16 @@ export class StateWriter {
 
   /** Immediately write state to disk (session create/destroy/state change). */
   saveImmediate(state: DaemonState): void {
+    // Bump the epoch BEFORE the sync write so any debounced async task
+    // already past its first await observes a newer epoch and can
+    // restore this payload if its tail rename races us.
+    this.immediateEpoch++;
+    this.lastImmediateState = state;
     // Drop any queued async write — we are about to persist a newer
     // snapshot synchronously, and we don't want the older in-flight
-    // payload to overwrite it after we return.
+    // payload to overwrite it after we return. (queue.clear() cannot
+    // interrupt a running task; the epoch check in saveDebounced
+    // handles that case.)
     this.queue.clear();
     try {
       atomicWriteJSONSync(this.filePath, state, {
@@ -96,11 +111,34 @@ export class StateWriter {
         // microtask running will have updated it.
         const payload = this.pendingState;
         if (payload === null) return;
+        // Snapshot the immediate epoch so we can detect a saveImmediate
+        // that fires while atomicWriteJSON is mid-flight.
+        const epochAtStart = this.immediateEpoch;
         try {
           await atomicWriteJSON(this.filePath, payload, {
             validate: StateWriter.isDaemonState,
             rotationEnabled: true,
           });
+          // Race recovery: if saveImmediate() bumped the epoch while
+          // we were between awaits, our final rename just clobbered
+          // the emergency payload. Restore it synchronously so the
+          // on-disk primary matches the latest immediate save.
+          if (
+            this.immediateEpoch !== epochAtStart &&
+            this.lastImmediateState !== null
+          ) {
+            try {
+              atomicWriteJSONSync(this.filePath, this.lastImmediateState, {
+                validate: StateWriter.isDaemonState,
+                rotationEnabled: true,
+              });
+            } catch (err) {
+              console.error(
+                '[StateWriter] Failed to restore superseded immediate save:',
+                err,
+              );
+            }
+          }
           // Only clear pending if no newer snapshot arrived while we
           // were writing — otherwise we'd discard the newer data.
           if (this.pendingState === payload) {
