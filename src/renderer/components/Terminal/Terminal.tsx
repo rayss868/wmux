@@ -148,12 +148,20 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       const terminal = terminalRef.current;
       const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } })?.modes;
 
-      // Try image first, then text
+      // Try image first, then text. readImage saves a PNG temp file and
+      // returns the path — must be quoted on spaces and wrapped in
+      // bracketed-paste sequences so apps like Claude Code see it as a
+      // single paste rather than streamed input.
       const hasImg = await window.clipboardAPI.hasImage();
       if (hasImg) {
-        const imageData = await window.clipboardAPI.readImage();
-        if (imageData) {
-          window.electronAPI.pty.write(ptyId, imageData);
+        const imagePath = await window.clipboardAPI.readImage();
+        if (imagePath) {
+          const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
+          if (modes?.bracketedPasteMode) {
+            window.electronAPI.pty.write(ptyId, `\x1b[200~${quoted}\x1b[201~`);
+          } else {
+            window.electronAPI.pty.write(ptyId, quoted);
+          }
           return;
         }
       }

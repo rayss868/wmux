@@ -344,20 +344,30 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       // No selection, no link → paste immediately (text or image)
       void (async () => {
-        // Try image first, then text
+        const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+
+        // Try image first, then text. clipboardAPI.readImage saves the bitmap
+        // to a PNG temp file and returns the path — NOT a data URI. Quote it
+        // when it contains spaces, and wrap in bracketed-paste sequences when
+        // the foreground app (Claude Code, fish, modern bash) has enabled
+        // them so the path is recognized as a single paste rather than
+        // streamed character-by-character.
         const hasImg = await window.clipboardAPI.hasImage();
         if (hasImg) {
-          const imageData = await window.clipboardAPI.readImage();
-          if (imageData) {
-            // Image as data URI: paste it as raw data to clipboard for shell commands
-            window.electronAPI.pty.write(ptyId, imageData);
+          const imagePath = await window.clipboardAPI.readImage();
+          if (imagePath) {
+            const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
+            if (modes?.bracketedPasteMode) {
+              window.electronAPI.pty.write(ptyId, `\x1b[200~${quoted}\x1b[201~`);
+            } else {
+              window.electronAPI.pty.write(ptyId, quoted);
+            }
             return;
           }
         }
 
         const text = await window.clipboardAPI.readText();
         if (text) {
-          const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
           // Split large text into chunks to avoid PTY buffer overflow
           const maxChunkSize = 4096;
           if (text.length > maxChunkSize && modes?.bracketedPasteMode) {
