@@ -149,15 +149,45 @@ export class ProcessMonitor {
     const entries = Array.from(this.watchedPids.entries());
     const pids = entries.map(([, v]) => v.pid);
 
-    ProcessMonitor.batchCheckAlive(pids)
-      .then((aliveSet) => {
-        for (const [sessionId, { pid, onDead }] of entries) {
-          // Only fire callback if still being watched (could have been unwatched during check)
+    void ProcessMonitor.batchCheckAlive(pids)
+      .then(async (aliveSet) => {
+        // Collect every session the batch reports dead, then re-verify each one
+        // via a second, independent `tasklist /fi PID eq <pid>` call. The batch
+        // path uses the unfiltered process list (`tasklist /fo csv /nh`); any
+        // truncation, locale mismatch, or transient empty stdout in that single
+        // call would otherwise mark every watched PID dead in one cycle and
+        // cascade-fire onDead for every session simultaneously. The per-PID
+        // re-verify uses different command arguments and an independent
+        // execFile invocation, so a parse failure in one is highly unlikely
+        // to repeat in the other.
+        const apparentlyDead: Array<[string, { pid: number; onDead: () => void }]> = [];
+        for (const entry of entries) {
+          const [sessionId, info] = entry;
           if (!this.watchedPids.has(sessionId)) continue;
-          if (!aliveSet.has(pid)) {
-            this.unwatch(sessionId);
-            onDead();
+          if (!aliveSet.has(info.pid)) apparentlyDead.push(entry);
+        }
+
+        if (apparentlyDead.length === 0) return;
+
+        for (const [sessionId, { pid, onDead }] of apparentlyDead) {
+          // Skip if unwatched during async re-verification
+          if (!this.watchedPids.has(sessionId)) continue;
+
+          let confirmedDead = false;
+          try {
+            confirmedDead = !(await ProcessMonitor.isAlive(pid));
+          } catch {
+            // If the per-PID check itself errors, defer the decision to the
+            // next batch cycle rather than firing onDead. Better to leave a
+            // watcher in place for one extra tick than to mass-kill live
+            // sessions when the OS is having a bad five seconds.
+            confirmedDead = false;
           }
+
+          if (!confirmedDead) continue;
+          if (!this.watchedPids.has(sessionId)) continue;
+          this.unwatch(sessionId);
+          onDead();
         }
       })
       .catch(() => {

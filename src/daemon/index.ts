@@ -638,39 +638,70 @@ function wireEvents(
   processMonitor: ProcessMonitor,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
 ): void {
-  // session:died → broadcast DaemonEvent + save state + cleanup
+  // session:died → broadcast DaemonEvent + save state + cleanup.
+  //
+  // Each side-effect runs inside its own try/catch. A single broken pipe,
+  // file-system EBUSY, or transient broadcast error must NEVER turn into an
+  // uncaughtException — the daemon's uncaughtException handler treats three
+  // repeats as fatal and shuts the whole daemon down, killing every other
+  // session as collateral damage. Per-step isolation ensures one session's
+  // exit can't cascade into a mass kill.
   sessionManager.on('session:died', (payload: { id: string; exitCode: number | null }) => {
-    const event: DaemonEvent = {
-      type: 'session.died',
-      sessionId: payload.id,
-      data: { exitCode: payload.exitCode },
-    };
-    pipeServer.broadcast(event);
+    try {
+      const event: DaemonEvent = {
+        type: 'session.died',
+        sessionId: payload.id,
+        data: { exitCode: payload.exitCode },
+      };
+      pipeServer.broadcast(event);
+    } catch (err) {
+      log('warn', `session:died broadcast failed for ${payload.id}:`, err);
+    }
 
     // Remove data listener to prevent leak
-    const tracked = sessionDataListeners.get(payload.id);
-    if (tracked) {
-      tracked.bridge.removeListener('data', tracked.listener);
-      sessionDataListeners.delete(payload.id);
+    try {
+      const tracked = sessionDataListeners.get(payload.id);
+      if (tracked) {
+        tracked.bridge.removeListener('data', tracked.listener);
+        sessionDataListeners.delete(payload.id);
+      }
+    } catch (err) {
+      log('warn', `session:died data-listener cleanup failed for ${payload.id}:`, err);
     }
 
     // Clean up session pipe
-    const pipe = sessionPipes.get(payload.id);
-    if (pipe) {
-      pipe.stop().catch(() => {});
-      sessionPipes.delete(payload.id);
+    try {
+      const pipe = sessionPipes.get(payload.id);
+      if (pipe) {
+        pipe.stop().catch(() => {});
+        sessionPipes.delete(payload.id);
+      }
+    } catch (err) {
+      log('warn', `session:died pipe stop failed for ${payload.id}:`, err);
     }
 
     // Stop process monitoring
-    processMonitor.unwatch(payload.id);
+    try {
+      processMonitor.unwatch(payload.id);
+    } catch (err) {
+      log('warn', `session:died unwatch failed for ${payload.id}:`, err);
+    }
 
     // Clean up buffer dump file — dead sessions don't need snapshots
-    const bufPath = stateWriter.getBufferDumpPath(payload.id);
-    try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
+    try {
+      const bufPath = stateWriter.getBufferDumpPath(payload.id);
+      if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath);
+    } catch { /* ignore */ }
 
-    // Save state
-    const state = buildState(sessionManager);
-    stateWriter.saveImmediate(state);
+    // Save state. This is the persistence anchor: even if every other step
+    // failed above, the dead-state record still lands on disk so recovery
+    // doesn't try to resurrect a process that's gone.
+    try {
+      const state = buildState(sessionManager);
+      stateWriter.saveImmediate(state);
+    } catch (err) {
+      log('error', `session:died state save failed for ${payload.id}:`, err);
+    }
   });
 
   // session:created → save state (debounced since saveImmediate is called in RPC handler)

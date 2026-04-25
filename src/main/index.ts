@@ -30,6 +30,7 @@ import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { ensureDaemon } from './daemon/launcher';
 import { createTray, destroyTray } from './tray';
+import { ProcessMonitor } from '../daemon/ProcessMonitor';
 
 // Force English for Chromium internal messages to avoid encoding corruption
 // on non-ASCII locales (e.g. Korean Windows where cp949 garbles console output).
@@ -291,24 +292,72 @@ app.on('ready', async () => {
     console.warn('[Main] Daemon auto-start failed, using local PTY:', err);
   }
 
-  // Handle system sleep/wake — verify PTY processes survived
-  powerMonitor.on('resume', () => {
+  // Handle system sleep/wake — verify PTY processes survived.
+  //
+  // The previous implementation relied on `process.kill(pid, 0)`, which is
+  // documented as unreliable on Windows (always returns success even for
+  // stale PIDs). That made the post-wake health check a no-op on the very
+  // platform we ship most. We now use ProcessMonitor.isAlive (`tasklist`)
+  // which is reliable on Windows and consistent with the daemon's own
+  // liveness checks.
+  //
+  // Defense-in-depth: if the FIRST tasklist call after wake reports every
+  // PTY dead at once, that's almost always the OS still settling rather
+  // than actual mass death. Wait briefly and re-verify each PID before
+  // sending pty:exit so the renderer can never be told "all your terminals
+  // exploded" because the OS hadn't finished waking up.
+  powerMonitor.on('resume', async () => {
     console.log('[Main] System resumed from sleep — checking PTY health');
     const active = ptyManager.getActiveInstances();
+    if (active.length === 0) return;
+
+    const checks: Array<{ id: string; pid: number }> = [];
     for (const { id } of active) {
       const instance = ptyManager.get(id);
       if (!instance) continue;
+      checks.push({ id, pid: instance.process.pid });
+    }
+    if (checks.length === 0) return;
+
+    const apparentlyDead: Array<{ id: string; pid: number }> = [];
+    for (const c of checks) {
+      let alive = true;
       try {
-        // Check if process is still alive (signal 0 = no signal, just check)
-        process.kill(instance.process.pid, 0);
+        alive = await ProcessMonitor.isAlive(c.pid);
       } catch {
-        // Process is dead — clean up
-        console.warn(`[Main] PTY ${id} (pid ${instance.process.pid}) died during sleep`);
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('pty:exit', id, -1);
-        }
-        ptyBridge.cleanupInstance(id);
+        alive = true; // on error, assume alive — defer to next signal
       }
+      if (!alive) apparentlyDead.push(c);
+    }
+    if (apparentlyDead.length === 0) return;
+
+    const massDeath = apparentlyDead.length === checks.length && checks.length >= 2;
+    if (massDeath) {
+      // Suspicious — wait for the OS to settle, then re-verify each PID.
+      // Mass-dead-on-wake is a known false-positive class on Windows.
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    for (const { id, pid } of apparentlyDead) {
+      // Skip if already cleaned up by another path
+      if (!ptyManager.get(id)) continue;
+
+      let confirmedDead = !massDeath;
+      if (massDeath) {
+        try {
+          confirmedDead = !(await ProcessMonitor.isAlive(pid));
+        } catch {
+          confirmedDead = false;
+        }
+      }
+      if (!confirmedDead) continue;
+      if (!ptyManager.get(id)) continue;
+
+      console.warn(`[Main] PTY ${id} (pid ${pid}) died during sleep`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('pty:exit', id, -1);
+      }
+      ptyBridge.cleanupInstance(id);
     }
   });
 
