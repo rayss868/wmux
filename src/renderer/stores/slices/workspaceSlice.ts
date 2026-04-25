@@ -93,8 +93,17 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     }),
 
     setActiveWorkspace: (id) => set((state: StoreState) => {
-      if (state.workspaces.some((w: Workspace) => w.id === id)) {
-        state.activeWorkspaceId = id;
+      if (!state.workspaces.some((w: Workspace) => w.id === id)) return;
+      state.activeWorkspaceId = id;
+      // If multiview is active and the user is switching to a workspace that
+      // isn't part of it, exit multiview. Without this, the active ID updates
+      // silently but the layout keeps rendering the multiview grid — the
+      // visible "다른 탭 눌러도 화면 안 바뀜" bug. Clicking a tab that IS in
+      // multiview leaves it intact (just updates focus). All callers benefit:
+      // sidebar plain-click, Ctrl+1..9, notification jump, command palette,
+      // external RPC routing — they all converge through this setter.
+      if (state.multiviewIds.length >= 2 && !state.multiviewIds.includes(id)) {
+        state.multiviewIds = [];
       }
     }),
 
