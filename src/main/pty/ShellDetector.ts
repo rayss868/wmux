@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isMac, isLinux, platformChoice } from '../../shared/platform';
 
 export interface ShellInfo {
   name: string;
@@ -9,6 +10,15 @@ export interface ShellInfo {
 
 export class ShellDetector {
   detect(): ShellInfo[] {
+    return platformChoice<ShellInfo[]>({
+      win: this.detectWindows(),
+      mac: this.detectMac(),
+      linux: this.detectLinux(),
+      default: this.detectUnix(),
+    });
+  }
+
+  private detectWindows(): ShellInfo[] {
     const shells: ShellInfo[] = [];
 
     // PowerShell 7+ (pwsh)
@@ -56,8 +66,107 @@ export class ShellDetector {
     return shells;
   }
 
+  private detectMac(): ShellInfo[] {
+    const shells: ShellInfo[] = [];
+    const seen = new Set<string>();
+
+    const push = (name: string, p: string, args?: string[]): void => {
+      if (!p || seen.has(p)) return;
+      try {
+        if (fs.existsSync(p)) {
+          shells.push(args ? { name, path: p, args } : { name, path: p });
+          seen.add(p);
+        }
+      } catch {
+        /* skip */
+      }
+    };
+
+    // $SHELL takes precedence — most users want their configured login shell.
+    const envShell = process.env.SHELL;
+    if (envShell) {
+      const base = path.basename(envShell);
+      const friendly =
+        base === 'zsh' ? 'Zsh'
+        : base === 'bash' ? 'Bash'
+        : base === 'fish' ? 'Fish'
+        : base === 'pwsh' ? 'PowerShell 7'
+        : base.charAt(0).toUpperCase() + base.slice(1);
+      push(friendly, envShell);
+    }
+
+    // macOS Catalina+ default
+    push('Zsh', '/bin/zsh');
+    push('Bash', '/bin/bash');
+    // Homebrew (Apple Silicon) and legacy Intel locations
+    push('PowerShell 7', '/opt/homebrew/bin/pwsh');
+    push('PowerShell 7', '/usr/local/bin/pwsh');
+    push('Fish', '/opt/homebrew/bin/fish');
+
+    return shells;
+  }
+
+  private detectLinux(): ShellInfo[] {
+    const shells: ShellInfo[] = [];
+    const seen = new Set<string>();
+
+    const push = (name: string, p: string, args?: string[]): void => {
+      if (!p || seen.has(p)) return;
+      try {
+        if (fs.existsSync(p)) {
+          shells.push(args ? { name, path: p, args } : { name, path: p });
+          seen.add(p);
+        }
+      } catch {
+        /* skip */
+      }
+    };
+
+    const envShell = process.env.SHELL;
+    if (envShell) {
+      const base = path.basename(envShell);
+      const friendly =
+        base === 'bash' ? 'Bash'
+        : base === 'zsh' ? 'Zsh'
+        : base === 'fish' ? 'Fish'
+        : base === 'pwsh' ? 'PowerShell 7'
+        : base.charAt(0).toUpperCase() + base.slice(1);
+      push(friendly, envShell);
+    }
+
+    push('Bash', '/bin/bash');
+    push('Zsh', '/bin/zsh');
+    push('Fish', '/usr/bin/fish');
+    push('PowerShell 7', '/usr/bin/pwsh');
+    push('PowerShell 7', '/snap/bin/pwsh');
+
+    return shells;
+  }
+
+  private detectUnix(): ShellInfo[] {
+    // Fallback for unknown unix-likes — try $SHELL then /bin/sh.
+    const shells: ShellInfo[] = [];
+    const envShell = process.env.SHELL;
+    if (envShell) {
+      try {
+        if (fs.existsSync(envShell)) {
+          shells.push({ name: path.basename(envShell), path: envShell });
+        }
+      } catch { /* skip */ }
+    }
+    try {
+      if (fs.existsSync('/bin/sh')) {
+        shells.push({ name: 'sh', path: '/bin/sh' });
+      }
+    } catch { /* skip */ }
+    return shells;
+  }
+
   getDefault(): string {
     const shells = this.detect();
-    return shells.length > 0 ? shells[0].path : 'powershell.exe';
+    if (shells.length > 0) return shells[0].path;
+    if (isMac) return process.env.SHELL || '/bin/zsh';
+    if (isLinux) return process.env.SHELL || '/bin/bash';
+    return 'powershell.exe';
   }
 }

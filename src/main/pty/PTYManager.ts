@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { buildSafeChildEnv } from '../../shared/envFilter';
+import { isWindows } from '../../shared/platform';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
 
@@ -94,7 +95,10 @@ export class PTYManager {
         break;
       }
       case 'cmd': {
-        // CMD: set PROMPT with OSC 7 escape for CWD reporting
+        // CMD: set PROMPT with OSC 7 escape for CWD reporting.
+        // Windows-only — cmd.exe does not exist on macOS/Linux, and the
+        // PROMPT env var has different semantics on Unix shells.
+        if (!isWindows) break;
         // $E = ESC, $P = current drive and path, $G = >
         env['PROMPT'] = '$E]7;file://$COMPUTERNAME/$P$E\\$P$G';
         env[ENV_KEYS.SHELL_HOOK_ACTIVE] = '1';

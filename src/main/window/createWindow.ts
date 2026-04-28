@@ -1,5 +1,11 @@
 import { BrowserWindow, shell } from 'electron';
 import path from 'node:path';
+import { platformChoice } from '../../shared/platform';
+
+// OS-aware window-icon extension. Mirrors tray.ts so the same generated asset
+// set (icon.ico / icon.icns / icon.png) is used in both places.
+const iconExt = platformChoice<string>({ win: 'ico', mac: 'icns', linux: 'png', default: 'png' });
+const iconFile = `icon.${iconExt}`;
 
 export function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
@@ -9,8 +15,8 @@ export function createWindow(): BrowserWindow {
     minHeight: 600,
     title: 'wmux',
     icon: process.env.NODE_ENV === 'development'
-      ? path.join(__dirname, '../../assets/icon.ico')
-      : path.join(process.resourcesPath, 'icon.ico'),
+      ? path.join(__dirname, '../../assets', iconFile)
+      : path.join(process.resourcesPath, iconFile),
     backgroundColor: '#1e1e2e',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

@@ -8,6 +8,7 @@ import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection } from './shell-integration';
 import { buildSafeChildEnv } from '../shared/envFilter';
+import { isMac } from '../shared/platform';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -275,6 +276,32 @@ export class DaemonSessionManager extends EventEmitter {
       for (const c of candidates) {
         try { if (fs.existsSync(c)) return c; } catch {}
       }
+    } else if (process.platform === 'darwin') {
+      // mac: common shell names → absolute paths.
+      const lookup: Record<string, string[]> = {
+        'zsh': ['/bin/zsh'],
+        'bash': ['/bin/bash'],
+        'pwsh': ['/opt/homebrew/bin/pwsh', '/usr/local/bin/pwsh'],
+        'fish': ['/opt/homebrew/bin/fish', '/usr/local/bin/fish'],
+      };
+      const basename = path.basename(cmd).toLowerCase();
+      const candidates = lookup[basename] || [];
+      for (const c of candidates) {
+        try { if (fs.existsSync(c)) return c; } catch {}
+      }
+    } else if (process.platform === 'linux') {
+      // linux: common shell names → absolute paths.
+      const lookup: Record<string, string[]> = {
+        'bash': ['/bin/bash'],
+        'zsh': ['/usr/bin/zsh', '/bin/zsh'],
+        'pwsh': ['/usr/bin/pwsh', '/snap/bin/pwsh'],
+        'fish': ['/usr/bin/fish'],
+      };
+      const basename = path.basename(cmd).toLowerCase();
+      const candidates = lookup[basename] || [];
+      for (const c of candidates) {
+        try { if (fs.existsSync(c)) return c; } catch {}
+      }
     }
     return cmd; // fallback to original (let pty.spawn try PATH)
   }
@@ -297,6 +324,7 @@ export class DaemonSessionManager extends EventEmitter {
       }
       return 'cmd.exe';
     }
+    if (isMac) return process.env.SHELL || '/bin/zsh';
     return process.env.SHELL || '/bin/bash';
   }
 }

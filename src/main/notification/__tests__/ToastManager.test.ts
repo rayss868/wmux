@@ -1,0 +1,196 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// ----- electron mock -----------------------------------------------------
+//
+// We need to control:
+//   - Notification (constructor + .show + .on + isSupported)
+//   - BrowserWindow.getFocusedWindow / .getAllWindows (the "window" returned
+//     exposes flashFrame / on / removeListener / isMinimized / restore / focus)
+//   - app.dock?.bounce (only used on macOS branch)
+//
+// `vi.hoisted` lets the mock factory below reference the same mocks the tests
+// poke at, despite vi.mock being hoisted above all imports.
+const electronMocks = vi.hoisted(() => {
+  const notificationInstances: Array<{
+    on: ReturnType<typeof vi.fn>;
+    show: ReturnType<typeof vi.fn>;
+  }> = [];
+
+  // Use a real `class` so `new Notification(...)` works inside production code.
+  // Each instance records itself for assertion in tests.
+  class NotificationMock {
+    on = vi.fn();
+    show = vi.fn();
+    constructor(...args: unknown[]) {
+      void args;
+      notificationInstances.push(this);
+    }
+    static isSupported = vi.fn().mockReturnValue(true);
+  }
+
+  const flashFrame = vi.fn();
+  const on = vi.fn();
+  const removeListener = vi.fn();
+  const win = {
+    flashFrame,
+    on,
+    removeListener,
+    isMinimized: vi.fn().mockReturnValue(false),
+    restore: vi.fn(),
+    focus: vi.fn(),
+  };
+
+  const BrowserWindow = {
+    getFocusedWindow: vi.fn().mockReturnValue(null),
+    getAllWindows: vi.fn().mockReturnValue([win]),
+  };
+
+  const dockBounce = vi.fn();
+  const app = {
+    dock: { bounce: dockBounce },
+  };
+
+  return { NotificationMock, BrowserWindow, app, win, dockBounce, notificationInstances };
+});
+
+vi.mock('electron', () => ({
+  Notification: electronMocks.NotificationMock,
+  BrowserWindow: electronMocks.BrowserWindow,
+  app: electronMocks.app,
+}));
+
+// ----- platform mock -----------------------------------------------------
+//
+// Default state is Windows. Per-OS suites below call vi.resetModules() and
+// vi.doMock to flip isWindows/isMac/isLinux before re-importing the SUT.
+vi.mock('../../../shared/platform', () => ({
+  isWindows: true,
+  isMac: false,
+  isLinux: false,
+}));
+
+describe('ToastManager (OS-aware notifications)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Drain any instances retained from the previous test.
+    electronMocks.notificationInstances.length = 0;
+    // Default: app unfocused, one window available, Notification supported.
+    electronMocks.BrowserWindow.getFocusedWindow.mockReturnValue(null);
+    electronMocks.BrowserWindow.getAllWindows.mockReturnValue([electronMocks.win]);
+    electronMocks.NotificationMock.isSupported.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it('skips entirely when disabled', async () => {
+    const { ToastManager } = await import('../ToastManager');
+    const mgr = new ToastManager();
+    mgr.enabled = false;
+    mgr.show('t', 'b');
+    expect(electronMocks.notificationInstances).toHaveLength(0);
+  });
+
+  it('skips when a window is currently focused', async () => {
+    electronMocks.BrowserWindow.getFocusedWindow.mockReturnValue(electronMocks.win);
+    const { ToastManager } = await import('../ToastManager');
+    new ToastManager().show('t', 'b');
+    expect(electronMocks.notificationInstances).toHaveLength(0);
+  });
+
+  it('skips when Notification.isSupported() is false', async () => {
+    electronMocks.NotificationMock.isSupported.mockReturnValue(false);
+    const { ToastManager } = await import('../ToastManager');
+    new ToastManager().show('t', 'b');
+    expect(electronMocks.notificationInstances).toHaveLength(0);
+    expect(electronMocks.win.flashFrame).not.toHaveBeenCalled();
+    expect(electronMocks.dockBounce).not.toHaveBeenCalled();
+  });
+
+  describe('on Windows', () => {
+    // The top-level vi.mock already sets isWindows: true. No re-mock needed.
+
+    it('flashes the taskbar and registers a focus listener to clear the flash', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().show('hello', 'world');
+
+      // Notification was constructed and shown.
+      expect(electronMocks.notificationInstances).toHaveLength(1);
+      expect(electronMocks.notificationInstances[0].show).toHaveBeenCalledTimes(1);
+
+      // Windows-specific: flashFrame(true) + focus listener.
+      expect(electronMocks.win.flashFrame).toHaveBeenCalledWith(true);
+      expect(electronMocks.win.on).toHaveBeenCalledWith('focus', expect.any(Function));
+
+      // macOS dock bounce must NOT have fired.
+      expect(electronMocks.dockBounce).not.toHaveBeenCalled();
+    });
+
+    it('does not stack focus listeners when called repeatedly on the same window', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      const mgr = new ToastManager();
+      mgr.show('a', 'b');
+      mgr.show('a', 'b');
+      mgr.show('a', 'b');
+      // First call registers; subsequent calls hit the `flashingWindow !== win`
+      // guard and do not re-register.
+      expect(electronMocks.win.on).toHaveBeenCalledTimes(1);
+      expect(electronMocks.win.flashFrame).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('on macOS', () => {
+    beforeEach(() => {
+      vi.resetModules();
+      vi.doMock('../../../shared/platform', () => ({
+        isWindows: false,
+        isMac: true,
+        isLinux: false,
+      }));
+    });
+
+    it('bounces the dock once and never touches flashFrame', async () => {
+      const platform = await import('../../../shared/platform');
+      // Sanity: confirm the mac mock actually took effect for this test.
+      expect(platform.isMac).toBe(true);
+      expect(platform.isWindows).toBe(false);
+
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().show('hello', 'world');
+
+      expect(electronMocks.dockBounce).toHaveBeenCalledTimes(1);
+      expect(electronMocks.dockBounce).toHaveBeenCalledWith('informational');
+      expect(electronMocks.win.flashFrame).not.toHaveBeenCalled();
+      expect(electronMocks.win.on).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('on Linux', () => {
+    beforeEach(() => {
+      vi.resetModules();
+      vi.doMock('../../../shared/platform', () => ({
+        isWindows: false,
+        isMac: false,
+        isLinux: true,
+      }));
+    });
+
+    it('only shows the Notification — no flashFrame, no dock bounce', async () => {
+      const platform = await import('../../../shared/platform');
+      // Sanity: confirm the linux mock actually took effect for this test.
+      expect(platform.isLinux).toBe(true);
+      expect(platform.isWindows).toBe(false);
+      expect(platform.isMac).toBe(false);
+
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().show('hello', 'world');
+
+      expect(electronMocks.notificationInstances).toHaveLength(1);
+      expect(electronMocks.notificationInstances[0].show).toHaveBeenCalledTimes(1);
+      expect(electronMocks.win.flashFrame).not.toHaveBeenCalled();
+      expect(electronMocks.win.on).not.toHaveBeenCalled();
+      expect(electronMocks.dockBounce).not.toHaveBeenCalled();
+    });
+  });
+});

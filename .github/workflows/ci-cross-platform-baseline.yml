@@ -1,0 +1,77 @@
+name: CI Cross-Platform Baseline
+
+# Baseline workflow exercising the unix branches of the codebase that have
+# never been run in CI. Result is informational — this is NOT a release gate
+# and no other workflow should `needs:` it. First runs are expected to fail
+# on macOS/Linux (45 known `process.platform === 'win32'` branches, of which
+# the unix sides have never been executed). Failures get triaged via the
+# cross-platform fix budget, not by blocking merges.
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'feat/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  baseline:
+    name: Baseline (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Per DX/Eng review T1 (per-OS independent publish policy): keep all
+      # matrix legs running so we can see the full cross-platform picture
+      # even if one OS regresses.
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest   # regression baseline (the only OS that works today)
+          - macos-14         # Apple Silicon
+          - ubuntu-22.04     # Linux baseline
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # node-pty builds from source on Linux (no prebuilt for Electron's ABI).
+      # build-essential pulls in gcc/g++/make; libxss1 is required by Electron
+      # at runtime/link-time on headless Linux runners.
+      - name: Install Linux native build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libxss1
+
+      # macos-14 (Apple Silicon) ships with Xcode Command Line Tools preinstalled.
+      # We only verify presence — do NOT attempt to install, that would burn
+      # ~10 minutes and is unnecessary on GitHub-hosted runners.
+      - name: Verify macOS Xcode CLT
+        if: runner.os == 'macOS'
+        run: |
+          xcode-select -p
+          clang --version
+          make --version | head -n 1
+
+      # postinstall runs scripts/fix-node-pty.js, which now early-exits on
+      # non-Windows platforms (process.platform !== 'win32' guard, v2.7.3+).
+      - name: Install dependencies (cross-platform)
+        run: npm ci
+
+      - name: Typecheck (cross-platform)
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: ESLint (cross-platform)
+        run: npx eslint --ext .ts,.tsx .
+
+      - name: Vitest (cross-platform)
+        run: npx vitest run
