@@ -4,7 +4,11 @@ import { IPC } from '../../../shared/constants';
 
 type GetWindow = () => BrowserWindow | null;
 
-const TIMEOUT_MS = 5000;
+const DEFAULT_TIMEOUT_MS = 5000;
+
+interface SendToRendererOptions {
+  timeoutMs?: number;
+}
 
 /**
  * Sends a RPC command to the renderer via IPC and waits for the response.
@@ -14,6 +18,7 @@ export function sendToRenderer(
   getWindow: GetWindow,
   method: string,
   params: Record<string, unknown> = {},
+  options: SendToRendererOptions = {},
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const win = getWindow();
@@ -24,11 +29,12 @@ export function sendToRenderer(
 
     const requestId = `rpc-${randomUUID()}`;
     const responseChannel = `${IPC.RPC_RESPONSE}:${requestId}`;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     const timer = setTimeout(() => {
       ipcMain.removeAllListeners(responseChannel);
-      reject(new Error(`RPC timeout: ${method} (${TIMEOUT_MS}ms)`));
-    }, TIMEOUT_MS);
+      reject(new Error(`RPC timeout: ${method} (${timeoutMs}ms)`));
+    }, timeoutMs);
 
     ipcMain.once(responseChannel, (_event, result: unknown) => {
       clearTimeout(timer);

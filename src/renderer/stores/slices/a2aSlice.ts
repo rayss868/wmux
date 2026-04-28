@@ -10,12 +10,26 @@ function isoNow(): string {
   return new Date().toISOString();
 }
 
+/** Pending approval prompt for an A2A `execute:true` request. */
+export interface PendingExecuteApproval {
+  taskId: string;
+  senderWorkspaceId: string;
+  receiverWorkspaceId: string;
+  messagePreview: string;
+  cwd: string | null;
+  /** Epoch ms when the prompt auto-denies. */
+  expiresAt: number;
+}
+
 export interface A2aSlice {
   // Task store: taskId -> Task
   a2aTasks: Record<string, Task>;
 
   // Agent skills: workspaceId -> AgentSkill[]
   a2aAgentSkills: Record<string, AgentSkill[] | null>;
+
+  /** Currently displayed execute-approval prompt, or null if none. */
+  pendingExecuteApproval: PendingExecuteApproval | null;
 
   // Actions
   createA2aTask: (task: {
@@ -33,6 +47,7 @@ export interface A2aSlice {
   getTask: (taskId: string) => Task | undefined;
   setAgentSkills: (workspaceId: string, skills: AgentSkill[]) => void;
   getAgentSkills: (workspaceId: string) => AgentSkill[] | null;
+  setPendingExecuteApproval: (approval: PendingExecuteApproval | null) => void;
 
   // GC
   gcTerminalTasks: () => void;
@@ -41,6 +56,11 @@ export interface A2aSlice {
 export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]], [], A2aSlice> = (set, get) => ({
   a2aTasks: {},
   a2aAgentSkills: {},
+  pendingExecuteApproval: null,
+
+  setPendingExecuteApproval: (approval) => set((state: StoreState) => {
+    state.pendingExecuteApproval = approval;
+  }),
 
   createA2aTask: (input) => {
     const id = generateId('task');
@@ -108,9 +128,11 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     if (!task) {
       return { ok: false, error: `Task not found: ${taskId}` };
     }
-    // Permission: only sender can cancel
-    if (task.metadata.from.workspaceId !== callerWorkspaceId) {
-      return { ok: false, error: `Permission denied: caller ${callerWorkspaceId} is not the sender` };
+    // Permission: sender (cancel own task) or receiver (deny incoming task) can cancel
+    const isSender = task.metadata.from.workspaceId === callerWorkspaceId;
+    const isReceiver = task.metadata.to.workspaceId === callerWorkspaceId;
+    if (!isSender && !isReceiver) {
+      return { ok: false, error: `Permission denied: caller ${callerWorkspaceId} is not sender or receiver` };
     }
     // Validate state transition
     if (!validateTransition(task.status.state, 'canceled')) {

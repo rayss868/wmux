@@ -10,6 +10,7 @@ import CommandPalette from '../Palette/CommandPalette';
 import SettingsPanel from '../Settings/SettingsPanel';
 import FileTreePanel from '../FileTree/FileTreePanel';
 import ApprovalDialog from '../Company/ApprovalDialog';
+import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
 import CompanyView from '../Company/CompanyView';
 import MessageFeedPanel from '../Company/MessageFeedPanel';
 import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
@@ -520,6 +521,7 @@ export default function AppLayout() {
       <CommandPalette />
       <SettingsPanel />
       <ApprovalDialog />
+      <ExecuteApprovalDialog />
 
       {onboardingActive && (
         <OnboardingOverlay onComplete={() => { completeOnboarding(); }} />

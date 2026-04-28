@@ -7,6 +7,7 @@ import { generateId } from '../../shared/types';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
+import { setExecuteApprovalResolver } from '../utils/executeApproval';
 import { terminalRegistry } from './useTerminal';
 
 // ---------------------------------------------------------------------------
@@ -563,6 +564,42 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // -------------------------------------------------------------------------
   // a2a.*
   // -------------------------------------------------------------------------
+
+  if (method === 'a2a.confirmExecute') {
+    // Main process is asking the user whether to spawn a bypassPermissions
+    // Claude CLI for this incoming task. We park the prompt in zustand so the
+    // <ExecuteApprovalDialog/> can render it, and resolve once the user clicks
+    // Approve/Deny — or after a 30s timeout (auto-deny).
+    const taskId = typeof params.taskId === 'string' ? params.taskId : '';
+    if (!taskId) return { approved: false };
+
+    const senderWorkspaceId = typeof params.senderWorkspaceId === 'string' ? params.senderWorkspaceId : '';
+    const receiverWorkspaceId = typeof params.receiverWorkspaceId === 'string' ? params.receiverWorkspaceId : '';
+    const messagePreview = typeof params.messagePreview === 'string' ? params.messagePreview : '';
+    const cwd = typeof params.cwd === 'string' ? params.cwd : null;
+    const expiresAt = Date.now() + 30_000;
+
+    return new Promise<{ approved: boolean }>((resolve) => {
+      let settled = false;
+      const settle = (approved: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        useStore.getState().setPendingExecuteApproval(null);
+        resolve({ approved });
+      };
+      const timer = setTimeout(() => settle(false), 30_000);
+      setExecuteApprovalResolver(settle);
+      useStore.getState().setPendingExecuteApproval({
+        taskId,
+        senderWorkspaceId,
+        receiverWorkspaceId,
+        messagePreview,
+        cwd,
+        expiresAt,
+      });
+    });
+  }
 
   if (method === 'a2a.resolve.identity') {
     // Resolve workspace from PTY workspace ID passed via env var
