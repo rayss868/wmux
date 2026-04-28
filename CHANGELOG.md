@@ -5,6 +5,36 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.3] — 2026-04-28 — A2A Execute Approval Gate
+
+외부 MCP 호출자가 `a2a_task_send` 의 `execute:true` 한 줄로 사용자의
+워크스페이스에서 `--permission-mode bypassPermissions` 모드의 Claude
+CLI 를 무인 실행할 수 있던 표면을 차단한 보안 patch. 단일 항목이지만
+RCE 급 표면이라 즉시 출하한다. 데이터 마이그레이션 없음.
+
+### Security
+
+- **A2A `execute:true` 사용자 승인 게이트** — 1cd5ab3. 신규 task 가
+  `execute:true` 로 들어오면 ClaudeWorker spawn 직전에 사용자에게
+  확인 다이얼로그를 띄운다 — 발신/수신 워크스페이스, 작업 cwd, 메시지
+  500 자 미리보기, 30 초 자동 거부 카운트다운. 거부 또는 타임아웃 시
+  task 가 `canceled` 로 마크되어 발신자가 `a2a_task_query` 로 거부를
+  확인할 수 있다. `cancelTask` 권한이 발신자에서 발신자/수신자로
+  완화돼, 수신자가 들어오는 task 를 deny 할 수 있다.
+  구현: `src/main/pipe/handlers/a2a.rpc.ts`,
+  `src/main/pipe/handlers/_bridge.ts`,
+  `src/renderer/components/A2a/ExecuteApprovalDialog.tsx`,
+  `src/renderer/utils/executeApproval.ts`,
+  `src/renderer/hooks/useRpcBridge.ts`,
+  `src/renderer/stores/slices/a2aSlice.ts`.
+
+### Migration Notes
+
+스키마 변경 없음. 자동 마이그레이션 없음. `execute:true` 를 사용하는
+기존 자동화는 이제 사람의 승인 없이는 실행되지 않으므로, 신뢰된
+caller 가 무인 실행을 기대했다면 향후 도입될 `autoApproveExecute`
+설정 토글을 기다리거나 `execute` 없이 호출하도록 조정한다.
+
 ## [2.7.2] — 2026-04-25 — Stability & MCP Hardening
 
 v2.7.1 이후 누적된 안정성·보안 하드닝을 묶은 patch 릴리스다. 신규
