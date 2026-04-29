@@ -14,6 +14,8 @@ import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
 import CompanyView from '../Company/CompanyView';
 import MessageFeedPanel from '../Company/MessageFeedPanel';
 import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
+import FirstRunWizard from '../FirstRunWizard';
+import KeyboardCheatSheet from '../KeyboardCheatSheet';
 import ToastContainer from '../Toast/ToastContainer';
 import FloatingPane from '../Terminal/FloatingPane';
 import { ErrorBoundary } from '../ErrorBoundary';
@@ -147,6 +149,10 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     autoUpdateEnabled: state.autoUpdateEnabled,
     customThemeColors: state.customThemeColors ?? undefined,
     onboardingCompleted: state.onboardingCompleted,
+    // T8a: persist first-run wizard + cheat sheet flags alongside onboardingCompleted.
+    // workspaceSlice.loadSession (T5) reads these back, defaulting to false.
+    firstRunCompleted: state.firstRunCompleted,
+    cheatSheetDismissed: state.cheatSheetDismissed,
     floatingPanePtyId: state.floatingPanePtyId ?? undefined,
     prefixConfig: state.prefixConfig,
   };
@@ -174,6 +180,17 @@ export default function AppLayout() {
   const onboardingCompleted = useStore((s) => s.onboardingCompleted);
   const startOnboarding = useStore((s) => s.startOnboarding);
   const completeOnboarding = useStore((s) => s.completeOnboarding);
+
+  // ─── First-run wizard + cheat sheet (T8a) ───────────────────────────────
+  // Local visibility state for the wizard (null = hidden, otherwise mode).
+  // The cheat sheet has its own permanent-dismissal flag in uiSlice; we use
+  // local state to gate post-wizard reveal so the sheet only appears as part
+  // of the magical-moment flow (not on every session restore).
+  const firstRunCompleted = useStore((s) => s.firstRunCompleted);
+  const cheatSheetDismissed = useStore((s) => s.cheatSheetDismissed);
+  const setFirstRunCompleted = useStore((s) => s.setFirstRunCompleted);
+  const [showFirstRunWizard, setShowFirstRunWizard] = useState<'firstRun' | 'reopen' | null>(null);
+  const [showCheatSheet, setShowCheatSheet] = useState(false);
 
   const [showAutoUpdatePrompt, setShowAutoUpdatePrompt] = useState(false);
   const t = useT();
@@ -325,13 +342,58 @@ export default function AppLayout() {
     });
   }, []);
 
-  // ─── First-run onboarding detection ─────────────────────────────────
+  // ─── First-run wizard: probe marker on mount (T8a) ────────────────────
+  // Calls firstRun:check; if no marker exists yet, mount the wizard. If a
+  // marker already exists we mirror that into uiSlice so the spotlight guard
+  // (D8) sees firstRunCompleted=true even before SessionData loads.
+  // TODO(T8a-tests): AppLayout has no existing test fixture. Adding a
+  // mounting integration suite (mocking useStore, useResizeGuard, useIpc,
+  // electronAPI surfaces) is its own task. Smoke-test target:
+  //   - firstRun.check called once on mount
+  //   - shown=false flips showFirstRunWizard to 'firstRun'
+  //   - shown=true triggers setFirstRunCompleted(true)
+  //   - 'wmux:firstrun-reopen' event flips mode to 'reopen'
+  useEffect(() => {
+    let cancelled = false;
+    const api = window.electronAPI.firstRun;
+    if (!api) return; // preload may not yet expose firstRun in non-Electron contexts (tests)
+    void api.check().then((result) => {
+      if (cancelled) return;
+      if (!result.shown) {
+        setShowFirstRunWizard('firstRun');
+      } else {
+        setFirstRunCompleted(true);
+      }
+    }).catch(() => {
+      // Best-effort. If main is unreachable, fall back to "completed" so
+      // the user is not blocked by a missing wizard channel.
+      if (!cancelled) setFirstRunCompleted(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [setFirstRunCompleted]);
+
+  // ─── First-run wizard: reopen contract for SettingsPanel (T8b) ───────
+  // T8b's "Open setup wizard" button dispatches `wmux:firstrun-reopen` on
+  // window. No payload. AppLayout listens here and switches the wizard into
+  // mode='reopen' (D9: sample task disabled).
+  useEffect(() => {
+    const handler = () => setShowFirstRunWizard('reopen');
+    window.addEventListener('wmux:firstrun-reopen', handler);
+    return () => window.removeEventListener('wmux:firstrun-reopen', handler);
+  }, []);
+
+  // ─── First-run onboarding (spotlight) detection ─────────────────────
+  // D8: spotlight stays gated behind firstRunCompleted so the wizard always
+  // wins the first impression. Once the wizard completes/dismisses, the
+  // spotlight tutorial picks up the UI tour for single-workspace users.
   useEffect(() => {
     if (!sessionLoadedRef.current) return;
-    if (!onboardingCompleted && workspaces.length === 1) {
+    if (firstRunCompleted && !onboardingCompleted && workspaces.length === 1) {
       startOnboarding();
     }
-  }, [onboardingCompleted, workspaces.length, startOnboarding]);
+  }, [firstRunCompleted, onboardingCompleted, workspaces.length, startOnboarding]);
 
   // Re-reconcile when daemon connects late (race condition:
   // renderer may have already reconciled with empty pty list
@@ -413,6 +475,15 @@ export default function AppLayout() {
 
     return () => { cancelled = true; };
   }, [activeWorkspace?.id]);
+
+  // Wizard close handler (T8a). Mirrors firstRunCompleted into uiSlice (main
+  // already wrote the marker via firstRun:complete or :dismiss) and reveals
+  // the cheat sheet unless the user previously opted out (D11).
+  const handleWizardClose = useCallback(() => {
+    setShowFirstRunWizard(null);
+    setFirstRunCompleted(true);
+    if (!cheatSheetDismissed) setShowCheatSheet(true);
+  }, [cheatSheetDismissed, setFirstRunCompleted]);
 
   if (!activeWorkspace) return null;
 
@@ -580,6 +651,20 @@ export default function AppLayout() {
           </div>
         </div>
       )}
+
+      {/* First-run wizard (T8a). Sits at z-[70] (declared inside the
+          component) so it stacks above the auto-update prompt. T8b's
+          SettingsPanel triggers a `wmux:firstrun-reopen` window event to
+          set mode='reopen' (D9). */}
+      {showFirstRunWizard !== null && (
+        <FirstRunWizard mode={showFirstRunWizard} onClose={handleWizardClose} />
+      )}
+
+      {/* Keyboard cheat sheet (T8a / Plan 1.18). Mounts after the wizard
+          completes or is dismissed. The component renders null when
+          cheatSheetDismissed=true (D11), so this gate just controls the
+          post-wizard reveal. */}
+      {showCheatSheet && <KeyboardCheatSheet />}
 
       {companyViewVisible && (
         <CompanyView onClose={() => setCompanyViewVisible(false)} />
