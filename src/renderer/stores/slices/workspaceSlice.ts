@@ -196,6 +196,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (data.sessionStartTime != null) state.sessionStartTime = data.sessionStartTime;
       if (data.tokenDataByPty) state.tokenDataByPty = data.tokenDataByPty;
       if (data.onboardingCompleted != null) state.onboardingCompleted = data.onboardingCompleted;
+      // First-run wizard + cheat sheet (Plan 1.15 + 1.18). Mirrors onboardingCompleted
+      // pattern: only overwrite when the saved field is present, otherwise leave the
+      // uiSlice default (false). AppLayout.buildSessionData (T8a) writes the outbound
+      // payload.
+      if (data.firstRunCompleted != null) state.firstRunCompleted = data.firstRunCompleted;
+      if (data.cheatSheetDismissed != null) state.cheatSheetDismissed = data.cheatSheetDismissed;
       if (data.floatingPanePtyId !== undefined) state.floatingPanePtyId = data.floatingPanePtyId ?? null;
       if (data.layoutTemplates) {
         // Restore user-saved templates merged with current builtins

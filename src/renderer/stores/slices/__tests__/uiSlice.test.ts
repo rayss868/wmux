@@ -92,3 +92,62 @@ describe('UISlice — pane zoom', () => {
     expect(store.getState().zoomedPaneId).toBeNull();
   });
 });
+
+// First-run wizard (Plan 1.15) + cheat sheet (Plan 1.18) persistence flags.
+// Mirrors the onboardingCompleted pattern: simple boolean flags backed by
+// SessionData. Test the setters in isolation here; the load-back path is
+// exercised via workspaceSlice.loadSession (covered separately when that
+// path gets test coverage — see T5 report).
+describe('UISlice — first-run + cheat sheet flags', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+  });
+
+  it('initial state defaults firstRunCompleted and cheatSheetDismissed to false', () => {
+    expect(store.getState().firstRunCompleted).toBe(false);
+    expect(store.getState().cheatSheetDismissed).toBe(false);
+  });
+
+  it('setFirstRunCompleted(true) flips firstRunCompleted to true', () => {
+    store.getState().setFirstRunCompleted(true);
+    expect(store.getState().firstRunCompleted).toBe(true);
+  });
+
+  it('setCheatSheetDismissed(true) flips cheatSheetDismissed to true', () => {
+    store.getState().setCheatSheetDismissed(true);
+    expect(store.getState().cheatSheetDismissed).toBe(true);
+  });
+
+  // Settings reset path (D11 / T8b "Show keyboard cheat sheet" + Settings
+  // "First-run setup" reset). The setters must accept false to undo a prior
+  // dismiss/complete — otherwise the user can't reopen the cheat sheet or
+  // restart the wizard.
+  it('setFirstRunCompleted(false) resets firstRunCompleted after a true flip', () => {
+    store.getState().setFirstRunCompleted(true);
+    expect(store.getState().firstRunCompleted).toBe(true);
+
+    store.getState().setFirstRunCompleted(false);
+    expect(store.getState().firstRunCompleted).toBe(false);
+  });
+
+  it('setCheatSheetDismissed(false) resets cheatSheetDismissed after a true flip', () => {
+    store.getState().setCheatSheetDismissed(true);
+    expect(store.getState().cheatSheetDismissed).toBe(true);
+
+    store.getState().setCheatSheetDismissed(false);
+    expect(store.getState().cheatSheetDismissed).toBe(false);
+  });
+
+  it('flags are independent — setting one does not change the other', () => {
+    store.getState().setCheatSheetDismissed(true);
+    expect(store.getState().cheatSheetDismissed).toBe(true);
+    expect(store.getState().firstRunCompleted).toBe(false);
+
+    store.getState().setFirstRunCompleted(true);
+    expect(store.getState().firstRunCompleted).toBe(true);
+    // cheatSheetDismissed unchanged from earlier
+    expect(store.getState().cheatSheetDismissed).toBe(true);
+  });
+});

@@ -129,6 +129,12 @@ export interface UISlice {
   completeOnboarding: () => void;
   skipOnboarding: () => void;
 
+  // ─── First-run wizard / cheat sheet (Plan 1.15 + 1.18) ────────────────
+  firstRunCompleted: boolean;
+  cheatSheetDismissed: boolean;
+  setFirstRunCompleted: (value: boolean) => void;
+  setCheatSheetDismissed: (value: boolean) => void;
+
   // ─── Prefix mode (tmux-style) ─────────────────────────────────────
   prefixMode: boolean;
   prefixError: string | null;
@@ -490,6 +496,21 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   skipOnboarding: () => set((state) => {
     state.onboardingActive = false;
     state.onboardingCompleted = true;
+  }),
+
+  // ─── First-run wizard / cheat sheet (Plan 1.15 + 1.18) ────────────────
+  // Mirrors onboardingCompleted: simple boolean flags persisted via SessionData.
+  // workspaceSlice.loadSession reads these back; AppLayout.buildSessionData
+  // (T8a) writes them out alongside other UI prefs.
+  firstRunCompleted: false,
+  cheatSheetDismissed: false,
+
+  setFirstRunCompleted: (value) => set((state) => {
+    state.firstRunCompleted = value;
+  }),
+
+  setCheatSheetDismissed: (value) => set((state) => {
+    state.cheatSheetDismissed = value;
   }),
 
   // ─── Prefix mode (tmux-style) ─────────────────────────────────────
