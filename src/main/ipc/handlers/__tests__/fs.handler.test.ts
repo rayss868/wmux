@@ -16,7 +16,14 @@ vi.mock('electron', () => ({
 }));
 
 describe('fs.handler security helpers', () => {
-  const home = path.join('C:', 'Users', 'tester');
+  // Use an OS-native absolute home path. The previous Windows-only hardcode
+  // (`path.join('C:', 'Users', 'tester')`) produced "C:/Users/tester" on
+  // Unix, which path.resolve treats as a relative segment under cwd. The
+  // resulting absolute path no longer prefix-matches `home`, so
+  // isSensitivePath returned false and realpath was unexpectedly called.
+  const home = process.platform === 'win32'
+    ? path.join('C:', 'Users', 'tester')
+    : path.join('/home', 'tester');
   let realpathSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
