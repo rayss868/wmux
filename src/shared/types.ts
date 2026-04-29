@@ -226,6 +226,11 @@ export interface SessionData {
   sessionStartTime?: number;
   tokenDataByPty?: Record<string, { totalTokens: number; inputTokens: number; outputTokens: number; totalCost: number; lastUpdate: number }>;
   onboardingCompleted?: boolean;
+  // First-run wizard (Plan 1.15) — magical-moment onboarding marker.
+  // Optional so older saved sessions deserialize cleanly (default: false on read).
+  firstRunCompleted?: boolean;
+  // Cheat sheet "Don't show again" toggle (Plan 1.18, D11). Persisted via uiSlice.
+  cheatSheetDismissed?: boolean;
   floatingPanePtyId?: string | null;
   layoutTemplates?: LayoutTemplate[];
   recentCommands?: string[];

@@ -56,6 +56,16 @@ export const IPC = {
   MCP_CHECK: 'mcp:check',
   MCP_REREGISTER: 'mcp:reregister',
   MCP_UNREGISTER: 'mcp:unregister',
+  // First-run wizard (Plan 1.15) — magical-moment onboarding flow
+  FIRST_RUN_CHECK: 'first-run:check',
+  FIRST_RUN_COMPLETE: 'first-run:complete',
+  FIRST_RUN_DISMISS: 'first-run:dismiss',
+  FIRST_RUN_REOPEN: 'first-run:reopen',
+  FIRST_RUN_REGISTER_MCP: 'first-run:register-mcp',
+  FIRST_RUN_START_SAMPLE_TASK: 'first-run:start-sample-task',
+  // First-run wizard event channels (renderer-side `on()` listeners)
+  FIRST_RUN_SAMPLE_TASK_READY: 'first-run:sample-task-ready',
+  FIRST_RUN_SAMPLE_TASK_TIMEOUT: 'first-run:sample-task-timeout',
 } as const;
 
 // Named Pipe / Unix socket path for wmux API

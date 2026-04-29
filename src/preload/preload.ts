@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
+import type {
+  FirstRunCheckResult,
+  RegisterMcpResult,
+  SampleTaskStartPayload,
+} from '../shared/firstRun';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 interface McpStatusPayload {
@@ -125,6 +130,25 @@ const electronAPI = {
     check: () => ipcRenderer.invoke(IPC.MCP_CHECK) as Promise<McpStatusPayload>,
     reregister: () => ipcRenderer.invoke(IPC.MCP_REREGISTER) as Promise<McpStatusPayload>,
     unregister: () => ipcRenderer.invoke(IPC.MCP_UNREGISTER) as Promise<McpStatusPayload>,
+  },
+  firstRun: {
+    check: () => ipcRenderer.invoke(IPC.FIRST_RUN_CHECK) as Promise<FirstRunCheckResult>,
+    complete: () => ipcRenderer.invoke(IPC.FIRST_RUN_COMPLETE) as Promise<void>,
+    dismiss: () => ipcRenderer.invoke(IPC.FIRST_RUN_DISMISS) as Promise<void>,
+    reopen: () => ipcRenderer.invoke(IPC.FIRST_RUN_REOPEN) as Promise<FirstRunCheckResult>,
+    registerMcp: () => ipcRenderer.invoke(IPC.FIRST_RUN_REGISTER_MCP) as Promise<RegisterMcpResult>,
+    startSampleTask: (payload: SampleTaskStartPayload) =>
+      ipcRenderer.invoke(IPC.FIRST_RUN_START_SAMPLE_TASK, payload) as Promise<void>,
+    onSampleTaskReady: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC.FIRST_RUN_SAMPLE_TASK_READY, listener);
+      return () => { ipcRenderer.removeListener(IPC.FIRST_RUN_SAMPLE_TASK_READY, listener); };
+    },
+    onSampleTaskTimeout: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC.FIRST_RUN_SAMPLE_TASK_TIMEOUT, listener);
+      return () => { ipcRenderer.removeListener(IPC.FIRST_RUN_SAMPLE_TASK_TIMEOUT, listener); };
+    },
   },
   token: {
     onUpdate: (callback: (ptyId: string, event: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number; cost: number; totalCost: number; totalInputTokens: number; totalOutputTokens: number }) => void) => {

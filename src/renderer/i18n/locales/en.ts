@@ -220,6 +220,63 @@ export const en = {
   'firstRun.autoUpdateMessage': 'Would you like WMUX to automatically check for updates? You can change this later in Settings.',
   'firstRun.enable': 'Enable',
   'firstRun.disable': 'No thanks',
+
+  // First-run wizard (Plan 1.15) — magical-moment onboarding
+  'firstRunWizard.title': 'Welcome to wmux',
+  'firstRunWizard.subtitle': 'Let\'s set up your first magical moment.',
+  'firstRunWizard.claudeDetected': 'Claude Code detected',
+  'firstRunWizard.claudeNotDetected': 'Claude Code not detected',
+  'firstRunWizard.claudeInstallHint': 'Install Claude Code first to try the sample task.',
+  'firstRunWizard.mcpRegistered': 'wmux MCP server: registered',
+  'firstRunWizard.mcpNotRegistered': 'wmux MCP server: not registered',
+  'firstRunWizard.registerMcpButton': 'Register',
+  'firstRunWizard.sampleTaskHeading': 'Try a sample task',
+  'firstRunWizard.sampleTaskDescription': 'Open a 2x2 split and let Claude search the web for you.',
+  'firstRunWizard.tryItButton': 'Try sample task',
+  'firstRunWizard.skipButton': 'Skip for now',
+  'firstRunWizard.closeButton': 'Close',
+  'firstRunWizard.alreadyCompleted': 'Already completed on {date}',
+  'firstRunWizard.fallbackPressEnter': 'Press Enter to continue',
+  'firstRunWizard.fallbackButton': 'Continue',
+
+  // First-run wizard — registerMcp Tier 2 errors (D10, problem / cause / fix)
+  'firstRunWizard.error.PERM.problem': 'wmux could not write to ~/.claude.json.',
+  'firstRunWizard.error.PERM.cause': 'The file is owned by another user, or has restrictive permissions.',
+  'firstRunWizard.error.PERM.fix': 'Run `chmod 600 ~/.claude.json` and try again, or register manually with `wmux mcp register`.',
+  'firstRunWizard.error.PARSE.problem': 'Your ~/.claude.json file is malformed.',
+  'firstRunWizard.error.PARSE.cause': 'A previous edit left the JSON invalid (missing comma, unmatched brace, etc.).',
+  'firstRunWizard.error.PARSE.fix': 'Fix the JSON manually, or back it up and let Claude Code recreate it.',
+  'firstRunWizard.error.IO.problem': 'wmux could not read or write the Claude config.',
+  'firstRunWizard.error.IO.cause': 'Disk error, missing home directory, or filesystem read-only.',
+  'firstRunWizard.error.IO.fix': 'Check disk space and home directory permissions, then retry.',
+  'firstRunWizard.error.UNKNOWN.problem': 'Registration failed.',
+  'firstRunWizard.error.UNKNOWN.cause': 'An unexpected error occurred.',
+  'firstRunWizard.error.UNKNOWN.fix': 'Try again, or run `wmux mcp register` from the terminal.',
+
+  // Keyboard cheat sheet (Plan 1.18, D11)
+  'cheatSheet.title': 'Keyboard shortcuts',
+  'cheatSheet.splitHorizontal': 'Split horizontal',
+  'cheatSheet.splitVertical': 'Split vertical',
+  'cheatSheet.newWorkspace': 'New workspace',
+  'cheatSheet.openSettings': 'Open settings',
+  'cheatSheet.toggleSidebar': 'Toggle sidebar',
+  'cheatSheet.commandPalette': 'Command palette',
+  'cheatSheet.dontShowAgain': 'Don\'t show again',
+  'cheatSheet.dismiss': 'Dismiss',
+
+  // Settings — First-run setup section (D7-C4)
+  'settings.firstRunSetup': 'First-run setup',
+  'settings.firstRunSetupDesc': 'Re-open the welcome wizard or show the keyboard cheat sheet again.',
+  'settings.firstRunSetup.lastCompleted': 'Last completed: {date}',
+  'settings.firstRunSetup.notCompleted': 'Not completed yet',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'detected',
+  'settings.firstRunSetup.statusNotDetected': 'not detected',
+  'settings.firstRunSetup.statusRegistered': 'registered',
+  'settings.firstRunSetup.statusNotRegistered': 'not registered',
+  'settings.firstRunSetup.openWizard': 'Open setup wizard',
+  'settings.firstRunSetup.showCheatSheet': 'Show keyboard cheat sheet',
 } as const;
 
 export type TranslationKey = keyof typeof en;
