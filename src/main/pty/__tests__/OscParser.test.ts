@@ -231,4 +231,82 @@ describe('OscParser', () => {
       });
     });
   });
+
+  // ───────────────────────────────────────────────
+  // Slice-based extraction (perf refactor) regression coverage
+  // ───────────────────────────────────────────────
+
+  describe('slice-based extraction behaviour', () => {
+    it('returns large non-OSC payloads byte-for-byte unchanged', () => {
+      // 64 KB of varied content with no OSC sequences — must round-trip
+      const lines: string[] = [];
+      for (let i = 0; i < 1024; i++) {
+        lines.push(`line ${i} of streaming output \x1b[1m highlighted \x1b[0m end\n`);
+      }
+      const input = lines.join('');
+      const out = parser.process(input);
+      expect(out).toBe(input);
+      expect(events).toHaveLength(0);
+    });
+
+    it('extracts an OSC embedded in the middle of a large non-OSC payload', () => {
+      const prefix = 'A'.repeat(10_000);
+      const suffix = 'B'.repeat(10_000);
+      const input = `${prefix}\x1b]7;/var/log\x07${suffix}`;
+      const out = parser.process(input);
+      expect(out).toBe(prefix + suffix);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ code: 7, data: '/var/log' });
+    });
+
+    it('handles many tiny chunks of an OSC payload reassembled across calls', () => {
+      // Send the OSC start (ESC ]) together (parser requires the 2-byte
+      // introducer in the same chunk — same as upstream contract), then
+      // drip-feed the payload one char at a time, then terminate.
+      parser.process('\x1b]');
+      const payload = '7727;feature/very/deep/branch/name';
+      for (const ch of payload) parser.process(ch);
+      expect(events).toHaveLength(0);
+      parser.process('\x07');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ code: 7727, data: 'feature/very/deep/branch/name' });
+    });
+
+    it('preserves order: non-OSC, OSC, non-OSC, OSC, non-OSC', () => {
+      const out = parser.process(
+        'one\x1b]7;/a\x07two\x1b]7727;branch\x07three',
+      );
+      expect(out).toBe('onetwothree');
+      expect(events).toHaveLength(2);
+      expect(events[0]).toEqual({ code: 7, data: '/a' });
+      expect(events[1]).toEqual({ code: 7727, data: 'branch' });
+    });
+
+    it('OSC ESC \\ terminator returns clean tail segment', () => {
+      const out = parser.process('head\x1b]7;/p\x1b\\tail');
+      expect(out).toBe('headtail');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ code: 7, data: '/p' });
+    });
+
+    it('preserves a lone ESC byte that is not followed by ] or non-terminator', () => {
+      // A bare ESC followed by 'X' should pass through unchanged
+      const out = parser.process('a\x1bXb');
+      expect(out).toBe('a\x1bXb');
+      expect(events).toHaveLength(0);
+    });
+
+    it('overflow inside OSC discards the OSC payload but resumes parsing afterwards', () => {
+      // Start a huge OSC payload that exceeds MAX_BUFFER (64KB), then a clean OSC follows
+      const huge = 'x'.repeat(70 * 1024);
+      parser.process(`\x1b]7;${huge}`);
+      // Try to terminate the overflowed OSC — should be silently ignored
+      parser.process('\x07');
+      expect(events).toHaveLength(0);
+      // Subsequent valid OSC must still be detected
+      parser.process('\x1b]7727;main\x07');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toEqual({ code: 7727, data: 'main' });
+    });
+  });
 });

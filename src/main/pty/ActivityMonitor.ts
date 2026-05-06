@@ -18,6 +18,7 @@ interface PtyState {
   active: boolean;
   notified: boolean;     // already fired — waiting for new active cycle
   idleTimer: ReturnType<typeof setTimeout> | null;
+  lastReschedule: number; // last time we (re)scheduled the idle timer
 }
 
 export class ActivityMonitor {
@@ -27,6 +28,10 @@ export class ActivityMonitor {
 
   // Must be idle for 5 seconds after active period
   private static IDLE_DELAY_MS = 5000;
+
+  // Throttle reschedule of the idle timer in the active hot path. Worst-case
+  // skew is bounded by IDLE_DELAY_MS + RESCHEDULE_THROTTLE_MS (≈5.1s).
+  private static RESCHEDULE_THROTTLE_MS = 100;
 
   private states = new Map<string, PtyState>();
   private callbacks: ((ptyId: string) => void)[] = [];
@@ -46,6 +51,7 @@ export class ActivityMonitor {
       active: false,
       notified: false,
       idleTimer: null,
+      lastReschedule: 0,
     });
   }
 
@@ -74,16 +80,25 @@ export class ActivityMonitor {
       s.active = true;
     }
 
-    // If active, reset the idle countdown
+    // If active, reset the idle countdown — but throttle the reschedule
+    // to avoid clearTimeout/setTimeout churn on every chunk under heavy
+    // output. Skew on the active→idle detection is bounded by IDLE_DELAY_MS
+    // + RESCHEDULE_THROTTLE_MS, which is acceptable for the 5s idle window.
     if (s.active) {
-      if (s.idleTimer) clearTimeout(s.idleTimer);
-      s.idleTimer = setTimeout(() => {
-        if (!s.active) return;
-        s.active = false;
-        s.notified = true;  // prevent re-firing until new active cycle
-        s.idleTimer = null;
-        this.callbacks.forEach((cb) => cb(ptyId));
-      }, ActivityMonitor.IDLE_DELAY_MS);
+      if (
+        !s.idleTimer ||
+        now - s.lastReschedule >= ActivityMonitor.RESCHEDULE_THROTTLE_MS
+      ) {
+        if (s.idleTimer) clearTimeout(s.idleTimer);
+        s.lastReschedule = now;
+        s.idleTimer = setTimeout(() => {
+          if (!s.active) return;
+          s.active = false;
+          s.notified = true;  // prevent re-firing until new active cycle
+          s.idleTimer = null;
+          this.callbacks.forEach((cb) => cb(ptyId));
+        }, ActivityMonitor.IDLE_DELAY_MS);
+      }
     }
   }
 
