@@ -65,6 +65,7 @@ export const en = {
   'terminal.exited': 'Process exited with code {code}',
   'terminal.exitedBracket': '[Process exited with code {code}]',
   'terminal.copied': 'Copied!',
+  'terminal.copyFailed': 'Copy failed — selection kept',
   'terminal.bookmarkAdded': 'Bookmark added',
 
   // Context menu
