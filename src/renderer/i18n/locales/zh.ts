@@ -65,6 +65,7 @@ export const zh = {
   'terminal.exited': '进程已退出，代码 {code}',
   'terminal.exitedBracket': '[进程已退出，代码 {code}]',
   'terminal.copied': '已复制!',
+  'terminal.copyFailed': '复制失败 — 已保留选区',
   'terminal.bookmarkAdded': '已添加书签',
 
   // Context menu

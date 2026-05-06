@@ -8,6 +8,9 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { t } from '../i18n';
 import { XTERM_THEMES, extractXtermColors, type ThemeId, type BuiltinThemeId } from '../themes';
+import { pastePtyChunked } from '../utils/clipboardChunk';
+import { runCopyWithFeedback } from '../utils/copyWithFeedback';
+import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 
 // Module-level terminal registry for scrollback persistence
 const terminalRegistry = new Map<string, Terminal>();
@@ -27,6 +30,46 @@ function showCopyToast() {
   el.style.opacity = '1';
   if (copyToastTimer) clearTimeout(copyToastTimer);
   copyToastTimer = setTimeout(() => { el!.style.opacity = '0'; }, 1200);
+}
+
+// Error variant — surfaced when clipboardAPI.writeText rejects so the user
+// learns the copy failed instead of silently believing it succeeded.
+// Shares no DOM with the success toast so the two can briefly overlap.
+let copyErrorToastTimer: ReturnType<typeof setTimeout> | null = null;
+function showCopyErrorToast() {
+  let el = document.getElementById('wmux-copy-error-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'wmux-copy-error-toast';
+    el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:var(--accent-red);color:var(--bg-base);font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
+    document.body.appendChild(el);
+  }
+  el.textContent = t('terminal.copyFailed');
+  el.style.opacity = '1';
+  if (copyErrorToastTimer) clearTimeout(copyErrorToastTimer);
+  copyErrorToastTimer = setTimeout(() => { el!.style.opacity = '0'; }, 1800);
+}
+
+/**
+ * Centralized async copy helper. main may now `throw` on validation/size/lock
+ * failures (clipboard.handler), so renderer must await + catch to surface the
+ * error rather than silently dropping it. On failure we keep the selection
+ * so the user can retry without re-dragging.
+ *
+ * Forgiving about a missing terminal — callers may pass `null` during
+ * teardown. Pure branching logic lives in `runCopyWithFeedback` so tests
+ * don't need a DOM.
+ */
+export function copySelectionWithFeedback(
+  terminal: { clearSelection(): void } | null,
+  selection: string,
+): Promise<void> {
+  return runCopyWithFeedback(selection, {
+    write: (text) => window.clipboardAPI.writeText(text),
+    clearSelection: () => terminal?.clearSelection(),
+    onSuccess: showCopyToast,
+    onError: showCopyErrorToast,
+  });
 }
 
 export interface ContextMenuEvent {
@@ -109,6 +152,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fontFamily: `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`,
       theme: xtermTheme,
       allowProposedApi: true,
+      // Enable xterm 6's Windows-aware ConPTY reflow path. ConPTY emits
+      // spurious row-change events on resize; the dedicated reflow logic
+      // suppresses them, which in turn keeps SelectionService from
+      // unconditionally clearing the user's selection mid-drag.
+      windowsPty: { backend: 'conpty', buildNumber: 21376 },
     });
 
     const fitAddon = new FitAddon();
@@ -229,9 +277,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (e.ctrlKey && !e.shiftKey && e.key === 'c') {
         const sel = terminal.getSelection();
         if (sel) {
-          void window.clipboardAPI.writeText(sel);
-          terminal.clearSelection();
-          showCopyToast();
+          // main now throws on clipboard failure — await + catch so the
+          // user sees an error toast and the selection stays put for retry.
+          void copySelectionWithFeedback(terminal, sel);
           return false;
         }
         return true; // no selection → SIGINT
@@ -245,16 +293,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // Try text first
           const text = await window.clipboardAPI.readText();
           if (text) {
-            // Wrap in bracketed paste sequences when the terminal app
-            // has enabled bracketed paste mode (e.g. Claude Code, bash).
-            // This lets the app distinguish typed input from pasted text
-            // and show confirmations like "[N lines]" for long pastes.
+            // Chunk into 4096-byte writes to evade main's 100KB silent
+            // backstop on pty.write. Bracketed paste markers (when the
+            // foreground app enabled them) wrap the entire stream so apps
+            // still see one logical paste regardless of chunk count.
             const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
-            if (modes?.bracketedPasteMode) {
-              window.electronAPI.pty.write(ptyId, `\x1b[200~${text}\x1b[201~`);
-            } else {
-              window.electronAPI.pty.write(ptyId, text);
-            }
+            pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
             return;
           }
           // No text — check for image, save to temp file, paste path
@@ -273,8 +317,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (e.ctrlKey && e.shiftKey && e.key === 'C') {
         const sel = terminal.getSelection();
         if (sel) {
-          void window.clipboardAPI.writeText(sel);
-          showCopyToast();
+          // Note: original handler did NOT clearSelection here. Preserve that
+          // behavior — the helper's clearSelection runs on success only,
+          // matching the Ctrl+C path; users wanting to keep selection used
+          // Ctrl+Shift+C historically without an explicit "keep" toggle. We
+          // intentionally still pass the terminal so a successful copy ends
+          // up consistent with Ctrl+C.
+          void copySelectionWithFeedback(terminal, sel);
         }
         return false;
       }
@@ -285,11 +334,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           const text = await window.clipboardAPI.readText();
           if (text) {
             const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
-            if (modes?.bracketedPasteMode) {
-              window.electronAPI.pty.write(ptyId, `\x1b[200~${text}\x1b[201~`);
-            } else {
-              window.electronAPI.pty.write(ptyId, text);
-            }
+            pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
             return;
           }
           if (window.clipboardAPI.readImage) {
@@ -337,8 +382,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       // Selection → copy + clear (no menu)
       if (sel) {
-        void window.clipboardAPI.writeText(sel);
-        terminal.clearSelection();
+        void copySelectionWithFeedback(terminal, sel);
         return;
       }
 
@@ -368,23 +412,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
         const text = await window.clipboardAPI.readText();
         if (text) {
-          // Split large text into chunks to avoid PTY buffer overflow
-          const maxChunkSize = 4096;
-          if (text.length > maxChunkSize && modes?.bracketedPasteMode) {
-            window.electronAPI.pty.write(ptyId, '\x1b[200~');
-            for (let i = 0; i < text.length; i += maxChunkSize) {
-              window.electronAPI.pty.write(ptyId, text.slice(i, i + maxChunkSize));
-            }
-            window.electronAPI.pty.write(ptyId, '\x1b[201~');
-          } else if (text.length > maxChunkSize) {
-            for (let i = 0; i < text.length; i += maxChunkSize) {
-              window.electronAPI.pty.write(ptyId, text.slice(i, i + maxChunkSize));
-            }
-          } else if (modes?.bracketedPasteMode) {
-            window.electronAPI.pty.write(ptyId, `\x1b[200~${text}\x1b[201~`);
-          } else {
-            window.electronAPI.pty.write(ptyId, text);
-          }
+          // Centralized 4096-byte chunking — keeps us under the main
+          // process's 100KB silent backstop on pty.write.
+          pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
         }
       })().catch((err) => console.error('[wmux:clipboard] right-click error:', err));
     });
@@ -520,6 +550,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
             if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
 
+            // Selection-preservation guard: xterm's SelectionService clears
+            // the active selection on any rowsChanged event from fit().
+            // While the user is dragging out a selection (or while a
+            // selection is live waiting to be copied) skip this fit and let
+            // the next ResizeObserver tick handle the resize once the
+            // selection is released.
+            if (!shouldFitWhilePreservingSelection(term)) {
+              console.debug('[Terminal] resize fit skipped — active selection');
+              return;
+            }
+
             const prevYBase = term.buffer.active.baseY;
             const prevYDisp = term.buffer.active.viewportY;
             const wasScrolledUp = prevYDisp < prevYBase;
@@ -571,6 +612,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminalRef.current.options.fontSize = terminalFontSize;
     terminalRef.current.options.fontFamily = `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`;
     terminalRef.current.options.theme = xtermTheme;
+    // Selection-preservation guard — see ResizeObserver above.
+    if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
+      console.debug('[Terminal] font/theme fit skipped — active selection');
+      return;
+    }
     fitAddonRef.current?.fit();
   }, [terminalFontSize, terminalFontFamily, xtermTheme]);
 
