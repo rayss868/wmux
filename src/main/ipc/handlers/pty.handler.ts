@@ -11,10 +11,13 @@ import { updateCwd } from './metadata.handler';
 import { wrapHandler } from '../wrapHandler';
 
 /**
- * Allowed shell basenames (case-insensitive on Windows).
+ * Allowed shell basenames (compared case-insensitively).
  * Only these executables may be spawned via IPC.
+ * Windows entries keep `.exe`; Unix entries (mac/linux) are bare basenames
+ * so that detector paths like `/bin/zsh` or `/opt/homebrew/bin/pwsh` resolve.
  */
 const ALLOWED_SHELLS = new Set([
+  // Windows
   'powershell.exe',
   'pwsh.exe',
   'cmd.exe',
@@ -22,6 +25,12 @@ const ALLOWED_SHELLS = new Set([
   'wsl.exe',
   'git-bash.exe',
   'sh.exe',
+  // Unix (mac/linux)
+  'zsh',
+  'bash',
+  'fish',
+  'pwsh',
+  'sh',
 ]);
 
 function isAllowedShell(shell: string): boolean {
