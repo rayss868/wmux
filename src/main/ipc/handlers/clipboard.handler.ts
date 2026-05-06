@@ -17,9 +17,22 @@ export function registerClipboardHandlers(): void {
   ipcMain.removeHandler(IPC.CLIPBOARD_HAS_IMAGE);
 
   ipcMain.handle(IPC.CLIPBOARD_WRITE, wrapHandler(IPC.CLIPBOARD_WRITE, (_event: Electron.IpcMainInvokeEvent, text: string) => {
-    if (typeof text !== 'string') return;
-    if (text.length > 1_000_000) return; // 1MB limit
-    clipboard.writeText(text);
+    // Surface validation failures so renderer can react instead of silently
+    // showing "copied" toasts when nothing actually reached the clipboard.
+    if (typeof text !== 'string') {
+      throw new Error('CLIPBOARD_INVALID_TYPE');
+    }
+    if (text.length > 1_000_000) {
+      throw new Error('CLIPBOARD_TOO_LARGE');
+    }
+    try {
+      clipboard.writeText(text);
+    } catch (err) {
+      // Win32 clipboard can fail under lock contention with other apps —
+      // surface the underlying message so renderer can retry/notify.
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`CLIPBOARD_WRITE_FAILED: ${msg}`);
+    }
   }));
 
   ipcMain.handle(IPC.CLIPBOARD_READ, wrapHandler(IPC.CLIPBOARD_READ, (_event: Electron.IpcMainInvokeEvent) => {

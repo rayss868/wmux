@@ -56,6 +56,17 @@ declare global {
       };
     };
     clipboardAPI: {
+      /**
+       * Write `text` to the system clipboard.
+       *
+       * IMPORTANT: REJECTS with a coded Error on failure. Possible codes:
+       *   - `CLIPBOARD_TOO_LARGE` — payload exceeds the configured size cap
+       *   - `CLIPBOARD_INVALID_TYPE` — non-string argument
+       *   - `CLIPBOARD_WRITE_FAILED` — OS clipboard lock / write error
+       *
+       * Callers MUST await and try/catch so the user can be notified and
+       * the source selection preserved for retry.
+       */
       writeText: (text: string) => Promise<void>;
       readText: () => Promise<string>;
       readImage: () => Promise<string | null>;

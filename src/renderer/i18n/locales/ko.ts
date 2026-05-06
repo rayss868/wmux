@@ -65,6 +65,7 @@ export const ko = {
   'terminal.exited': '프로세스가 코드 {code}로 종료됨',
   'terminal.exitedBracket': '[프로세스가 코드 {code}로 종료됨]',
   'terminal.copied': '복사됨!',
+  'terminal.copyFailed': '복사 실패 — 선택 영역 유지됨',
   'terminal.bookmarkAdded': '북마크 추가됨',
 
   // Context menu

@@ -65,6 +65,7 @@ export const ja = {
   'terminal.exited': 'プロセスがコード {code} で終了しました',
   'terminal.exitedBracket': '[プロセスがコード {code} で終了しました]',
   'terminal.copied': 'コピーしました!',
+  'terminal.copyFailed': 'コピーに失敗しました — 選択を維持',
   'terminal.bookmarkAdded': 'ブックマークを追加',
 
   // Context menu

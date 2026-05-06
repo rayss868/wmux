@@ -1,8 +1,9 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { useTerminal, type ContextMenuEvent } from '../../hooks/useTerminal';
+import { useTerminal, copySelectionWithFeedback, type ContextMenuEvent } from '../../hooks/useTerminal';
 import { useStore } from '../../stores';
 import { useIpc } from '../../hooks/useIpc';
 import { withDefaultShell } from '../../utils/ptyCreateOptions';
+import { pastePtyChunked } from '../../utils/clipboardChunk';
 import ViCopyMode from './ViCopyMode';
 import SearchBar from './SearchBar';
 import BookmarkIndicator from './BookmarkIndicator';
@@ -139,8 +140,10 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
 
   const handleCopy = useCallback(() => {
     if (ctxMenu?.selectedText) {
-      void window.clipboardAPI.writeText(ctxMenu.selectedText);
-      terminalRef.current?.clearSelection();
+      // main may throw on failure (size / lock / invalid type); the helper
+      // surfaces an error toast and keeps the selection so the user can
+      // retry rather than silently losing the copy attempt.
+      void copySelectionWithFeedback(terminalRef.current, ctxMenu.selectedText);
     }
   }, [ctxMenu, terminalRef]);
 
@@ -170,23 +173,9 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
 
       const text = await window.clipboardAPI.readText();
       if (text) {
-        // Split large text into chunks to avoid PTY buffer overflow
-        const maxChunkSize = 4096;
-        if (text.length > maxChunkSize && modes?.bracketedPasteMode) {
-          window.electronAPI.pty.write(ptyId, '\x1b[200~');
-          for (let i = 0; i < text.length; i += maxChunkSize) {
-            window.electronAPI.pty.write(ptyId, text.slice(i, i + maxChunkSize));
-          }
-          window.electronAPI.pty.write(ptyId, '\x1b[201~');
-        } else if (text.length > maxChunkSize) {
-          for (let i = 0; i < text.length; i += maxChunkSize) {
-            window.electronAPI.pty.write(ptyId, text.slice(i, i + maxChunkSize));
-          }
-        } else if (modes?.bracketedPasteMode) {
-          window.electronAPI.pty.write(ptyId, `\x1b[200~${text}\x1b[201~`);
-        } else {
-          window.electronAPI.pty.write(ptyId, text);
-        }
+        // Centralized 4096-byte chunking helper avoids the main process's
+        // 100KB pty.write silent backstop when pasting large blobs.
+        pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes ?? null);
       }
     })();
   }, [ptyId, terminalRef]);

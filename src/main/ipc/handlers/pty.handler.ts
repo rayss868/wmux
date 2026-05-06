@@ -151,7 +151,10 @@ export function registerPTYHandlers(
   if (useDaemon && daemonClient) {
     const onPtyWrite = (_event: Electron.IpcMainEvent, id: string, data: string): void => {
       if (typeof data !== 'string') return;
-      if (data.length > 100_000) return; // prevent mega-writes
+      if (data.length > 100_000) {
+        console.warn(`[PTY_WRITE] dropped oversize write: ${data.length} chars (limit 100_000). This is a backstop; renderer should chunk.`);
+        return; // prevent mega-writes
+      }
       daemonClient.writeToSession(id, sanitizePtyText(data));
     };
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
@@ -159,7 +162,10 @@ export function registerPTYHandlers(
     const onPtyWrite = (_event: Electron.IpcMainEvent, id: string, data: string): void => {
       if (!ptyManager.get(id)) return;
       if (typeof data !== 'string') return;
-      if (data.length > 100_000) return;
+      if (data.length > 100_000) {
+        console.warn(`[PTY_WRITE] dropped oversize write: ${data.length} chars (limit 100_000). This is a backstop; renderer should chunk.`);
+        return;
+      }
       ptyManager.write(id, sanitizePtyText(data));
     };
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);

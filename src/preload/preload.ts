@@ -223,8 +223,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 
+/**
+ * clipboardAPI — bridge to Electron's clipboard module.
+ *
+ * IMPORTANT (renderer contract):
+ *   `writeText` MAY throw. The main-process handler validates input, enforces
+ *   a size cap, and surfaces clipboard-lock failures via thrown errors with
+ *   one of these codes attached: CLIPBOARD_TOO_LARGE, CLIPBOARD_INVALID_TYPE,
+ *   CLIPBOARD_WRITE_FAILED. Callers MUST `await` and `try/catch` so the user
+ *   can be notified and the source selection preserved for retry.
+ */
 contextBridge.exposeInMainWorld('clipboardAPI', {
-  writeText: (text: string) => ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text),
+  /**
+   * Write `text` to the system clipboard. Resolves on success, REJECTS with a
+   * coded Error on validation/size/lock failure (see header above).
+   */
+  writeText: (text: string) => ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text) as Promise<void>,
   readText: () => ipcRenderer.invoke(IPC.CLIPBOARD_READ) as Promise<string>,
   readImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_READ_IMAGE) as Promise<string | null>,
   hasImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_HAS_IMAGE) as Promise<boolean>,

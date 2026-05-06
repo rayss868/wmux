@@ -23,6 +23,14 @@ export class PTYBridge {
   private ptyCreatedAt = new Map<string, number>();
   private middlewareStacks = new Map<string, PTYDataMiddleware[]>();
 
+  // Micro-batch buffers for the data hot-path. Chunks are accumulated and
+  // flushed every BATCH_INTERVAL_MS so middlewares + IPC send each fire once
+  // per flush instead of once per chunk. Pending buffers are drained on
+  // dispose to avoid losing trailing output.
+  private pendingData = new Map<string, string[]>();
+  private pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private static BATCH_INTERVAL_MS = 8;
+
   constructor(
     private ptyManager: PTYManager,
     private getWindow: () => BrowserWindow | null,
@@ -77,6 +85,14 @@ export class PTYBridge {
    * (e.g. from PTYManager.dispose()) to ensure cleanup when onExit is not fired.
    */
   cleanupInstance(ptyId: string): void {
+    // Drain any buffered data before tearing down — preserves trailing output
+    // (e.g. final exit lines) that arrived between the last flush and dispose.
+    this.flushPending(ptyId);
+    const timer = this.pendingTimers.get(ptyId);
+    if (timer) clearTimeout(timer);
+    this.pendingTimers.delete(ptyId);
+    this.pendingData.delete(ptyId);
+
     this.oscParsers.delete(ptyId);
     this.agentDetectors.delete(ptyId);
     this.tokenTrackers.delete(ptyId);
@@ -86,6 +102,27 @@ export class PTYBridge {
     removeCwd(ptyId);
     removeBranch(ptyId);
     this.ptyManager.remove(ptyId);
+  }
+
+  /**
+   * Flush all pending chunks for `ptyId`: run middlewares once and send a
+   * single IPC frame to the renderer. Safe to call when there is nothing
+   * pending.
+   */
+  private flushPending(ptyId: string): void {
+    const chunks = this.pendingData.get(ptyId);
+    if (!chunks || chunks.length === 0) return;
+    const joined = chunks.length === 1 ? chunks[0] : chunks.join('');
+    chunks.length = 0;
+
+    try {
+      this.runMiddlewares(ptyId, joined);
+    } finally {
+      const win = this.getWindow();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(IPC.PTY_DATA, ptyId, joined);
+      }
+    }
   }
 
   setupDataForwarding(ptyId: string): void {
@@ -214,26 +251,46 @@ export class PTYBridge {
     });
 
     instance.process.onData((data: string) => {
-      try {
-        // Run all registered middlewares (each individually try-caught)
-        this.runMiddlewares(ptyId, data);
+      // Micro-batch: enqueue this chunk and (re)arm a short flush timer.
+      // Middlewares + IPC send are deferred to the flush so a torrent of
+      // small chunks collapses into one pass. Backpressure here is what
+      // breaks the previous "5 sync middlewares per chunk" hot loop.
+      let chunks = this.pendingData.get(ptyId);
+      if (!chunks) {
+        chunks = [];
+        this.pendingData.set(ptyId, chunks);
+      }
+      chunks.push(data);
 
-        // Always send data to renderer last
-        const win = this.getWindow();
-        if (win && !win.isDestroyed()) {
-          win.webContents.send(IPC.PTY_DATA, ptyId, data);
-        }
-      } catch (err) {
-        console.error('[PTYBridge] Error processing data:', err);
-        // Still forward raw data to renderer even if parsing failed
-        const win = this.getWindow();
-        if (win && !win.isDestroyed()) {
-          win.webContents.send(IPC.PTY_DATA, ptyId, data);
-        }
+      if (!this.pendingTimers.has(ptyId)) {
+        const timer = setTimeout(() => {
+          this.pendingTimers.delete(ptyId);
+          try {
+            this.flushPending(ptyId);
+          } catch (err) {
+            console.error('[PTYBridge] Error processing data:', err);
+            // Best-effort: drain any remaining bytes raw to the renderer so
+            // we never lose user-visible output even if a middleware threw.
+            const remaining = this.pendingData.get(ptyId);
+            if (remaining && remaining.length > 0) {
+              const joined = remaining.length === 1 ? remaining[0] : remaining.join('');
+              remaining.length = 0;
+              const win = this.getWindow();
+              if (win && !win.isDestroyed()) {
+                win.webContents.send(IPC.PTY_DATA, ptyId, joined);
+              }
+            }
+          }
+        }, PTYBridge.BATCH_INTERVAL_MS);
+        this.pendingTimers.set(ptyId, timer);
       }
     });
 
     instance.process.onExit(({ exitCode }) => {
+      // Drain any buffered output before signalling exit so the renderer
+      // sees the final lines (e.g. exit banner) before PTY_EXIT.
+      this.flushPending(ptyId);
+
       const win = this.getWindow();
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.PTY_EXIT, ptyId, exitCode);
