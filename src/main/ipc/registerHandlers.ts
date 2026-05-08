@@ -12,6 +12,10 @@ import { registerFsHandlers } from './handlers/fs.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
+import { eventBus } from '../events/EventBus';
+import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
+
+const EVENT_TYPE_SET = new Set<WmuxEventType>(WMUX_EVENT_TYPES);
 
 export interface RegisterHandlersOptions {
   /** McpRegistrar instance shared with main/index — exposes Settings MCP IPC. */
@@ -51,6 +55,25 @@ export function registerAllHandlers(
   };
   ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
   ipcMain.on(IPC.WINDOW_HIDE, onWindowHide);
+
+  // EventBus publish from renderer (one-way). Validates the event type and
+  // workspaceId at the trust boundary so a misbehaving renderer can't poison
+  // the ring with arbitrary shapes; type-specific fields ride through as-is.
+  const onEventsPublish = (_event: Electron.IpcMainEvent, input: unknown): void => {
+    if (!input || typeof input !== 'object') return;
+    const obj = input as Record<string, unknown>;
+    const type = obj['type'];
+    const workspaceId = obj['workspaceId'];
+    if (typeof type !== 'string' || !EVENT_TYPE_SET.has(type as WmuxEventType)) return;
+    if (typeof workspaceId !== 'string' || workspaceId.length === 0) return;
+    try {
+      eventBus.emit({ ...obj, type: type as WmuxEventType, workspaceId });
+    } catch {
+      // Telemetry must not crash the IPC channel — swallow and move on.
+    }
+  };
+  ipcMain.removeAllListeners(IPC.EVENTS_PUBLISH);
+  ipcMain.on(IPC.EVENTS_PUBLISH, onEventsPublish);
 
   return () => {
     cleanupPty();

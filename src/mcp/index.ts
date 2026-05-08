@@ -328,6 +328,27 @@ server.tool(
   },
 );
 
+server.tool(
+  'wmux_events_poll',
+  'Poll the wmux EventBus for pane and process lifecycle events. Cursor-based: pass `cursor` = the last `seq` you saw (start with 0 to replay from oldest in the ring). Returns { events, nextCursor, resync? }. `resync: true` means your cursor drifted past the in-memory ring (1024 events) and you should reconcile via pane_list. Events are auto-scoped to the calling workspace.',
+  {
+    cursor: z.number().int().nonnegative().optional().describe('Last seen seq number. Default 0 = replay all events still in the ring.'),
+    types: z
+      .array(z.enum(['pane.created', 'pane.closed', 'pane.focused', 'pane.metadata.changed', 'process.started', 'process.exited']))
+      .optional()
+      .describe('Filter to specific event types. Omit to receive all types.'),
+    max: z.number().int().positive().max(1024).optional().describe('Max events to return per poll. Default 256.'),
+  },
+  async ({ cursor, types, max }) => {
+    const workspaceId = await requireWorkspaceId();
+    const params: Record<string, unknown> = { workspaceId };
+    if (cursor !== undefined) params['cursor'] = cursor;
+    if (types !== undefined) params['types'] = types;
+    if (max !== undefined) params['max'] = max;
+    return callRpc('events.poll', params);
+  },
+);
+
 // === A2A (Agent-to-Agent) tools ===
 
 // 1. a2a_whoami — Identify this workspace

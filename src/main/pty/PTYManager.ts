@@ -12,6 +12,13 @@ export interface PTYInstance {
   id: string;
   process: pty.IPty;
   shell: string;
+  /**
+   * Workspace this PTY belongs to. Captured at create time so the EventBus
+   * can scope process.* events without consulting the renderer state.
+   * Optional — undefined when the PTY was created without a workspace context
+   * (CLI tools, tests). Used only for EventBus scoping; absence skips emission.
+   */
+  workspaceId?: string;
 }
 
 const MAX_PTY_INSTANCES = 20;
@@ -154,7 +161,12 @@ export class PTYManager {
       useConpty: true,
     });
 
-    const instance: PTYInstance = { id, process: ptyProcess, shell };
+    const instance: PTYInstance = {
+      id,
+      process: ptyProcess,
+      shell,
+      ...(options?.workspaceId ? { workspaceId: options.workspaceId } : {}),
+    };
     this.instances.set(id, instance);
 
     // Write PID->workspaceId mapping so MCP servers can resolve identity

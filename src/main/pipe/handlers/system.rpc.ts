@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { ALL_RPC_METHODS } from '../../../shared/rpc';
+import { WMUX_EVENT_TYPES, RING_CAPACITY } from '../../../shared/events';
 
 /**
  * Shape returned by system.identify.
@@ -36,6 +37,10 @@ export function registerSystemRpc(router: RpcRouter): void {
       methods: ALL_RPC_METHODS,
       features: {
         paneMetadata: true,
+        events: {
+          types: WMUX_EVENT_TYPES,
+          maxRingSize: RING_CAPACITY,
+        },
       },
     });
   });
