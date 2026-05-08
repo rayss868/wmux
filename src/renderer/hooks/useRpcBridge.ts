@@ -339,6 +339,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         active: l.id === ws.activePaneId,
         cwd: liveCwd || firstSurface?.cwd,
         gitBranch: liveGitBranch,
+        metadata: l.metadata,
       };
     });
   }
@@ -356,6 +357,65 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       params.direction === 'vertical' ? 'vertical' : 'horizontal';
     store.splitPane(ws.activePaneId, direction);
     return { ok: true };
+  }
+
+  if (method === 'pane.setMetadata') {
+    // Workspace scoping: external MCP callers MUST pass workspaceId so writes
+    // can't be hijacked into whichever workspace the user happens to focus.
+    // Internal callers may omit it and fall back to the active workspace.
+    const wsId = typeof params.workspaceId === 'string' && params.workspaceId.length > 0
+      ? params.workspaceId
+      : store.activeWorkspaceId;
+    const ws = store.workspaces.find((w) => w.id === wsId);
+    if (!ws) return { error: `pane.setMetadata: workspace "${wsId}" not found` };
+    const paneId = typeof params.paneId === 'string' && params.paneId.length > 0
+      ? params.paneId
+      : ws.activePaneId;
+    const target = findPaneById(ws.rootPane, paneId);
+    if (!target || target.type !== 'leaf') {
+      return { error: `pane.setMetadata: leaf pane "${paneId}" not found in workspace "${wsId}"` };
+    }
+    const patch = (params.patch && typeof params.patch === 'object' ? params.patch : {}) as Partial<import('../../shared/types').PaneMetadata>;
+    const merge = params.merge !== false;
+    try {
+      store.setPaneMetadata(paneId, patch, { merge, workspaceId: wsId });
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+    return { ok: true, paneId, metadata: useStore.getState().getPaneMetadata(paneId, { workspaceId: wsId }) };
+  }
+
+  if (method === 'pane.getMetadata') {
+    const wsId = typeof params.workspaceId === 'string' && params.workspaceId.length > 0
+      ? params.workspaceId
+      : store.activeWorkspaceId;
+    const ws = store.workspaces.find((w) => w.id === wsId);
+    if (!ws) return { error: `pane.getMetadata: workspace "${wsId}" not found` };
+    const paneId = typeof params.paneId === 'string' && params.paneId.length > 0
+      ? params.paneId
+      : ws.activePaneId;
+    const target = findPaneById(ws.rootPane, paneId);
+    if (!target || target.type !== 'leaf') {
+      return { error: `pane.getMetadata: leaf pane "${paneId}" not found in workspace "${wsId}"` };
+    }
+    return { paneId, metadata: target.metadata };
+  }
+
+  if (method === 'pane.clearMetadata') {
+    const wsId = typeof params.workspaceId === 'string' && params.workspaceId.length > 0
+      ? params.workspaceId
+      : store.activeWorkspaceId;
+    const ws = store.workspaces.find((w) => w.id === wsId);
+    if (!ws) return { error: `pane.clearMetadata: workspace "${wsId}" not found` };
+    const paneId = typeof params.paneId === 'string' && params.paneId.length > 0
+      ? params.paneId
+      : ws.activePaneId;
+    const target = findPaneById(ws.rootPane, paneId);
+    if (!target || target.type !== 'leaf') {
+      return { error: `pane.clearMetadata: leaf pane "${paneId}" not found in workspace "${wsId}"` };
+    }
+    store.clearPaneMetadata(paneId, { workspaceId: wsId });
+    return { ok: true, paneId };
   }
 
   // -------------------------------------------------------------------------

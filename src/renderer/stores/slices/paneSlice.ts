@@ -1,7 +1,11 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import type { Pane, PaneLeaf, PaneBranch, Workspace } from '../../../shared/types';
-import { createLeafPane, generateId } from '../../../shared/types';
+import type { Pane, PaneLeaf, PaneBranch, PaneMetadata, Workspace } from '../../../shared/types';
+import {
+  createLeafPane,
+  generateId,
+  PANE_METADATA_MAX_BYTES,
+} from '../../../shared/types';
 
 export interface PaneSlice {
   splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string) => void;
@@ -11,6 +15,9 @@ export interface PaneSlice {
   updatePaneSizes: (branchId: string, sizes: number[]) => void;
   resizeActivePane: (direction: 'left' | 'right' | 'up' | 'down', amount: number) => void;
   equalizePaneSizes: () => void;
+  setPaneMetadata: (paneId: string, patch: Partial<PaneMetadata>, opts?: { merge?: boolean; workspaceId?: string }) => void;
+  getPaneMetadata: (paneId: string, opts?: { workspaceId?: string }) => PaneMetadata | undefined;
+  clearPaneMetadata: (paneId: string, opts?: { workspaceId?: string }) => void;
 }
 
 function findPane(root: Pane, id: string): Pane | null {
@@ -177,6 +184,62 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     if (!parent || parent.type !== 'branch') return;
     const equal = 100 / parent.children.length;
     parent.sizes = parent.children.map(() => equal);
+  }),
+
+  setPaneMetadata: (paneId, patch, opts) => {
+    const merge = opts?.merge !== false;
+    // Compute next metadata outside set() so we can validate size before mutating.
+    const state = get();
+    const targetWsId = opts?.workspaceId ?? state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
+    if (!ws) return;
+    const target = findPane(ws.rootPane, paneId);
+    if (!target || target.type !== 'leaf') return;
+
+    let next: PaneMetadata;
+    if (merge) {
+      next = { ...(target.metadata ?? {}), ...patch };
+      // Deep-merge `custom` one level so cooperating callers don't clobber each
+      // other's keys when both write to the same pane. Caller can still drop a
+      // key by setting it to "" or by using merge:false.
+      if (patch.custom !== undefined) {
+        next.custom = { ...(target.metadata?.custom ?? {}), ...patch.custom };
+      }
+    } else {
+      next = { ...patch };
+    }
+    next.updatedAt = Date.now();
+
+    if (JSON.stringify(next).length > PANE_METADATA_MAX_BYTES) {
+      throw new Error(`setPaneMetadata: metadata exceeds ${PANE_METADATA_MAX_BYTES} bytes`);
+    }
+
+    set((draft: StoreState) => {
+      const draftWs = draft.workspaces.find((w: Workspace) => w.id === targetWsId);
+      if (!draftWs) return;
+      const draftTarget = findPane(draftWs.rootPane, paneId);
+      if (!draftTarget || draftTarget.type !== 'leaf') return;
+      draftTarget.metadata = next;
+    });
+  },
+
+  getPaneMetadata: (paneId, opts) => {
+    const state = get();
+    const targetWsId = opts?.workspaceId ?? state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
+    if (!ws) return undefined;
+    const target = findPane(ws.rootPane, paneId);
+    if (!target || target.type !== 'leaf') return undefined;
+    return target.metadata;
+  },
+
+  clearPaneMetadata: (paneId, opts) => set((state: StoreState) => {
+    const targetWsId = opts?.workspaceId ?? state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
+    if (!ws) return;
+    const target = findPane(ws.rootPane, paneId);
+    if (!target || target.type !== 'leaf') return;
+    target.metadata = undefined;
   }),
 
   focusPaneDirection: (direction) => set((state: StoreState) => {

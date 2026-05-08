@@ -27,10 +27,16 @@ export function registerSystemRpc(router: RpcRouter): void {
   });
 
   /**
-   * system.capabilities — returns the full list of registered RPC method names.
-   * Sourced from the single-source-of-truth array in shared/rpc.ts.
+   * system.capabilities — returns the full list of registered RPC method names
+   * plus a feature flag map so external tooling can detect optional surfaces
+   * (pane metadata, future event bus, etc.) without inferring from method names.
    */
   router.register('system.capabilities', (_params) => {
-    return Promise.resolve({ methods: ALL_RPC_METHODS });
+    return Promise.resolve({
+      methods: ALL_RPC_METHODS,
+      features: {
+        paneMetadata: true,
+      },
+    });
   });
 }

@@ -52,7 +52,26 @@ export interface PaneLeaf {
   type: 'leaf';
   surfaces: Surface[];
   activeSurfaceId: string;
+  metadata?: PaneMetadata;
 }
+
+// === Pane Metadata: optional descriptive labels for external tooling ===
+// Total serialized size capped at PANE_METADATA_MAX_BYTES so a misbehaving
+// caller can't bloat session.json. Branches never carry metadata — only leaves.
+export interface PaneMetadata {
+  label?: string;
+  role?: string;
+  status?: string;
+  custom?: Record<string, string>;
+  updatedAt?: number;
+}
+
+export const PANE_METADATA_MAX_BYTES = 8 * 1024;
+export const PANE_METADATA_LABEL_MAX = 64;
+export const PANE_METADATA_ROLE_MAX = 64;
+export const PANE_METADATA_STATUS_MAX = 128;
+export const PANE_METADATA_CUSTOM_KEY_MAX = 64;
+export const PANE_METADATA_CUSTOM_MAX_ENTRIES = 32;
 
 export interface PaneBranch {
   id: string;
