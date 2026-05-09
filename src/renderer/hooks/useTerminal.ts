@@ -224,6 +224,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         webglAddonRef.current = null;
         loadWebgl();
       }
+      // Selection-preservation guard — this is mostly defensive (fonts.ready
+      // resolves on mount before the user can select anything), but pinning
+      // the contract here prevents future regressions if anything triggers
+      // a font load mid-session.
+      if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
+        console.debug('[Terminal] fonts.ready fit skipped — active selection');
+        return;
+      }
       fitAddon.fit();
       terminal.refresh(0, terminal.rows - 1);
     });
@@ -232,6 +240,32 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     let lastSentCols = 0;
     let lastSentRows = 0;
     let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // Auto-copy on selection (debounced) — selection survives just long enough
+    // for the user to release the mouse, then we push it to the clipboard.
+    // Without this, the only path is the explicit Ctrl+C / right-click flow,
+    // which loses selections that get wiped by PTY data, focus changes, or
+    // any fit() that slipped past the guards. Debounce coalesces the storm
+    // of onSelectionChange events that fire during a drag (one per cell).
+    //
+    // We deliberately do NOT show the success toast here — the user didn't
+    // press a key, so a flashing "Copied!" would be UI noise. Errors are
+    // also swallowed: the explicit Ctrl+C path will surface them properly
+    // when the user actually presses the keybind.
+    let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
+    const SELECTION_COPY_DEBOUNCE_MS = 150;
+    const selectionDisposable = terminal.onSelectionChange(() => {
+      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+      selectionCopyTimer = setTimeout(() => {
+        selectionCopyTimer = null;
+        const sel = terminal.getSelection();
+        if (!sel || sel.length === 0) return;
+        void window.clipboardAPI.writeText(sel).catch(() => {
+          // Silent — Ctrl+C / right-click paths still show error toasts
+          // when the user explicitly retries.
+        });
+      }, SELECTION_COPY_DEBOUNCE_MS);
+    });
 
     // Clipboard + shortcut handling
     terminal.attachCustomKeyEventHandler((e) => {
@@ -591,6 +625,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     return () => {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
+      selectionDisposable.dispose();
       resizeObserver.disconnect();
       removeDataListener?.();
       removeExitListener?.();
@@ -630,8 +666,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (!webglAddonRef.current && loadWebglRef.current) {
         loadWebglRef.current();
       }
-      // Defer fit to allow CSS display change to take effect before measuring
+      // Defer fit to allow CSS display change to take effect before measuring.
+      // Selection-preservation guard — workspace/tab switch then immediate
+      // selection + Ctrl+C used to wipe the selection because this fit had
+      // no guard (unlike ResizeObserver and font/theme paths). The next
+      // ResizeObserver tick (after selection is released) handles the
+      // deferred resize naturally.
       const id = requestAnimationFrame(() => {
+        if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
+          console.debug('[Terminal] visibility fit skipped — active selection');
+          return;
+        }
         fit();
       });
       return () => cancelAnimationFrame(id);
