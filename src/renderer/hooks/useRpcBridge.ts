@@ -4,12 +4,14 @@ import { withDefaultShell } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface } from '../../shared/types';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill } from '../../shared/types';
+import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
 import { setExecuteApprovalResolver } from '../utils/executeApproval';
 import { terminalRegistry } from './useTerminal';
+import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 
 // ---------------------------------------------------------------------------
 // Pane tree utilities
@@ -73,6 +75,15 @@ export function useRpcBridge(): void {
       },
     );
 
+    // ── In-renderer entry point for searchSlice ─────────────────────────────
+    // The search engine reads from xterm.js Terminal instances which only
+    // exist in the renderer. Exposing a thin global lets the zustand slice
+    // invoke `pane.search` directly without a useless renderer→main→renderer
+    // IPC round trip.
+    (window as unknown as { __wmuxRunPaneSearch: (q: string, r: boolean) => Promise<RpcResult> })
+      .__wmuxRunPaneSearch = (query: string, regex: boolean) =>
+        handleRpcMethod('pane.search', { query, regex });
+
     // A2A task garbage collection timer — prune terminal-state tasks every 5 min
     const gcTimer = setInterval(() => {
       useStore.getState().gcTerminalTasks();
@@ -81,6 +92,7 @@ export function useRpcBridge(): void {
     return () => {
       cleanupRpc();
       clearInterval(gcTimer);
+      delete (window as unknown as { __wmuxRunPaneSearch?: unknown }).__wmuxRunPaneSearch;
     };
   }, []);
 }
@@ -356,6 +368,90 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       params.direction === 'vertical' ? 'vertical' : 'horizontal';
     store.splitPane(ws.activePaneId, direction);
     return { ok: true };
+  }
+
+  if (method === 'pane.search') {
+    const query = String(params['query'] ?? '');
+    const regex = params['regex'] === true;
+    if (query.length === 0) return { error: 'pane.search: empty query' };
+
+    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+    if (!ws) return { error: 'pane.search: no active workspace' };
+
+    // Build ptyId → workspaceId reverse map (current ws only — D9, v1 scope='workspace')
+    // and ptyId → paneId map for result tagging.
+    const ptyToPaneId = new Map<string, string>();
+    const ptyToSurfaceId = new Map<string, string>();
+    const ptyToPaneLabel = new Map<string, string | undefined>();
+    const leaves = findLeafPanes(ws.rootPane);
+    for (const leaf of leaves) {
+      // PR #16 may add `metadata.label` to PaneLeaf — read defensively so we
+      // neither depend on the field's existence nor throw if it's missing.
+      const leafMeta = (leaf as PaneLeaf & { metadata?: { label?: string } }).metadata;
+      const leafLabel = leafMeta?.label;
+      for (const s of leaf.surfaces) {
+        if (s.ptyId) {
+          ptyToPaneId.set(s.ptyId, leaf.id);
+          ptyToSurfaceId.set(s.ptyId, s.id);
+          ptyToPaneLabel.set(s.ptyId, leafLabel);
+        }
+      }
+    }
+
+    const TOTAL_BUDGET = 200;
+    let remainingBudget = TOTAL_BUDGET;
+    const results: PaneSearchResult[] = [];
+    let totalMatches = 0;
+
+    // Snapshot registry keys to make mutation during iteration safe (N2).
+    const ptyIds = Array.from(terminalRegistry.keys());
+    for (const ptyId of ptyIds) {
+      if (remainingBudget <= 0) break;
+      const paneId = ptyToPaneId.get(ptyId);
+      if (!paneId) continue; // pty not in current workspace
+      const term = terminalRegistry.get(ptyId);
+      if (!term) continue; // unmounted between snapshot and read
+      try {
+        // Adapt xterm Buffer to SearchableBuffer (it already conforms structurally)
+        const matches = searchInBuffer(
+          term.buffer.active as unknown as SearchableBuffer,
+          query,
+          { regex, contextLines: 2, perBufferLineCap: 20_000, remainingBudget },
+        );
+        totalMatches += matches.length;
+        for (const m of matches) {
+          const label = ptyToPaneLabel.get(ptyId);
+          const result: PaneSearchResult = {
+            paneId,
+            surfaceId: ptyToSurfaceId.get(ptyId)!,
+            ptyId,
+            lineIdx: m.lineIdx,
+            text: m.text,
+            contextBefore: m.contextBefore,
+            contextAfter: m.contextAfter,
+            ...(label !== undefined && { paneLabel: label }),
+          };
+          results.push(result);
+          remainingBudget--;
+          if (remainingBudget <= 0) break;
+        }
+      } catch (err) {
+        // SyntaxError from invalid regex — propagate as RPC error
+        if (err instanceof SyntaxError) {
+          return { error: `pane.search: invalid regex: ${err.message}` };
+        }
+        // Per-pane errors (e.g., disposed terminal): skip silently (N2)
+      }
+    }
+
+    const response: PaneSearchResponse = {
+      resultShapeVersion: 1,
+      results,
+      truncated: totalMatches > TOTAL_BUDGET,
+      totalMatches,
+      workspaceId: ws.id,
+    };
+    return response;
   }
 
   // -------------------------------------------------------------------------

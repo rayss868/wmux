@@ -8,7 +8,7 @@
 - **Size**: Large (Full Path)
 - **Effort**: 1.5-2일 (code-reviewer 산정)
 - **Teammates**: 7 tasks (병렬 가능 4개 동시 max, opus, worktree)
-- **Done**: 0/7 | In Progress: 0 | Waiting: 7 | Blocked: 0
+- **Done**: 3/7 (T-A `eb0b6fe`, T-B `4c45aca`, integrated `03f47d7`, T-C this commit) | In Progress: 0 | Waiting: 4 | Blocked: 0
 
 ## Keyboard
 
@@ -189,12 +189,12 @@ T-G (tests for T-B/T-C/T-D/T-F): [T-B, T-C, T-D, T-F]
 ## By Module
 
 ### Backend (RPC layer + engine)
-- [ ] T-A types + main handler
-- [ ] T-B search engine util
+- [x] T-A types + main handler (commit eb0b6fe)
+- [x] T-B search engine util (commit 4c45aca)
 - [ ] T-D MCP tool
 
 ### Frontend (UI + handler + state)
-- [ ] T-C renderer handler + searchSlice skeleton
+- [x] T-C renderer handler + searchSlice skeleton (this commit)
 - [ ] T-E search bar + i18n
 - [ ] T-F panel + hysteresis
 
