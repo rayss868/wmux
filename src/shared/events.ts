@@ -7,10 +7,23 @@
 //
 // The ring is in-memory only and lives for the lifetime of the main process.
 // Daemon restarts clear the ring; clients that drift past the ring window get
-// a `resync: true` flag and should reconcile via `pane.list`.
+// a `resync: true` flag and should reconcile via `pane.list`. Each main-process
+// run also gets a `bootId` (UUIDv4) so clients can distinguish "we drifted
+// past the window" from "the daemon restarted under us" — the latter
+// invalidates the entire seq space, not just the events you missed.
 //
 // Workspace scoping: each event carries a `workspaceId`; `events.poll` filters
 // by the caller's claimed workspace by default so workspaces stay isolated.
+//
+// === Ordering caveat ===
+//
+// `seq` is monotonic in **arrival order**, not in **causal order**. Two
+// independent producers (PTYBridge emits in-process from main; paneSlice
+// publishes through preload IPC) write to the bus on different paths. Within
+// one producer the order is preserved, but across producers a same-tick
+// `pane.created` (renderer-published) and `process.started` (main-published)
+// can land in the bus in either order. Clients must not assume seq order
+// implies causal order across producer boundaries.
 
 import type { PaneMetadata } from './types';
 

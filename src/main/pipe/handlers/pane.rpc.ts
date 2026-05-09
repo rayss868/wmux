@@ -9,6 +9,7 @@ import {
   PANE_METADATA_CUSTOM_KEY_MAX,
   PANE_METADATA_CUSTOM_MAX_ENTRIES,
 } from '../../../shared/types';
+import { eventBus } from '../../events/EventBus';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -87,11 +88,22 @@ function sanitizeMetadataPatch(input: MetadataPatchInput): SanitizedPatch | { er
 
 export function registerPaneRpc(router: RpcRouter, getWindow: GetWindow): void {
   /**
-   * pane.list — returns all panes (leaf nodes) of the current workspace
+   * pane.list — returns all panes (leaf nodes) of the current workspace,
+   * wrapped in a snapshot envelope. `asOfSeq` is the EventBus seq at the
+   * moment of the snapshot — clients reconciling after a `resync` should
+   * drain events with `seq > asOfSeq`. `bootId` invalidates cached state
+   * across daemon restarts (mismatch ⇒ drop ALL caches, including pane ids).
+   *
+   * Wire shape: `{ asOfSeq: number, bootId: string, panes: PaneListEntry[] }`.
    */
-  router.register('pane.list', (_params) =>
-    sendToRenderer(getWindow, 'pane.list'),
-  );
+  router.register('pane.list', async (params) => {
+    const panes = await sendToRenderer(getWindow, 'pane.list', params);
+    return {
+      asOfSeq: eventBus.latestSeq(),
+      bootId: eventBus.bootId,
+      panes,
+    };
+  });
 
   /**
    * pane.focus — focuses a specific pane

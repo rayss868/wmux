@@ -109,4 +109,22 @@ describe('events.rpc — events.poll', () => {
       expect(result.events).toHaveLength(2);
     }
   });
+
+  it('exposes bootId + priorCursor on every response (review fixes 5a, 2a)', async () => {
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+
+    const router = setupRouter();
+    const res = await router.dispatch({
+      id: 'fix-1',
+      method: 'events.poll',
+      params: { cursor: 7 },
+    });
+
+    if (res.ok) {
+      const result = res.result as { bootId: string; priorCursor: number };
+      expect(typeof result.bootId).toBe('string');
+      expect(result.bootId.length).toBeGreaterThan(0);
+      expect(result.priorCursor).toBe(7);
+    }
+  });
 });

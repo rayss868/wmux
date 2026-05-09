@@ -298,7 +298,7 @@ server.tool(
     label: z.string().max(64).optional().describe('Short human label, e.g. "Backend".'),
     role: z.string().max(64).optional().describe('Free-form role tag, e.g. "service" or "test-runner".'),
     status: z.string().max(128).optional().describe('Current status, e.g. "running-tests".'),
-    custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when merge=true.'),
+    custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when merge=true. Recommended convention: namespace your keys with a tool prefix (e.g. "orchestrator.taskId", "qa.status") to avoid semantic collisions with other cooperating tools.'),
     merge: z.boolean().optional().describe('Default true (patch + deep-merge custom). Set false to replace the entire metadata object.'),
   },
   async ({ paneId, label, role, status, custom, merge }) => {

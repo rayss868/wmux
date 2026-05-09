@@ -2,6 +2,10 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { EventBus } from '../EventBus';
 import { RING_CAPACITY } from '../../../shared/events';
 
+// Note: existing tests that check `nextCursor` semantics remain valid. The
+// review fixes (5a bootId, 5a cursor>latest resync, 1a cursor advance under
+// filter, 2a priorCursor+droppedCount) add new behavior on top.
+
 describe('EventBus', () => {
   let bus: EventBus;
   beforeEach(() => {
@@ -137,6 +141,95 @@ describe('EventBus', () => {
       bus.reset();
       expect(bus.latestSeq()).toBe(0);
       expect(bus.poll(0).events).toEqual([]);
+    });
+  });
+
+  describe('bootId (review fix 5a)', () => {
+    it('exposes a stable bootId on every poll response', () => {
+      const r1 = bus.poll(0);
+      const r2 = bus.poll(0);
+      expect(r1.bootId).toBe(r2.bootId);
+      expect(typeof r1.bootId).toBe('string');
+      expect(r1.bootId.length).toBeGreaterThan(0);
+    });
+
+    it('two EventBus instances have different bootIds', () => {
+      const a = new EventBus();
+      const b = new EventBus();
+      expect(a.bootId).not.toBe(b.bootId);
+    });
+  });
+
+  describe('priorCursor + droppedCount (review fix 2a)', () => {
+    it('echoes priorCursor regardless of cursor validity', () => {
+      const r = bus.poll(42);
+      expect(r.priorCursor).toBe(42);
+    });
+
+    it('reports droppedCount when cursor drifted past the ring', () => {
+      for (let i = 0; i < RING_CAPACITY + 10; i++) {
+        bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: `p${i}` });
+      }
+      // oldest = 11. Caller cursor = 5 → missed 5..10 (6 events).
+      const r = bus.poll(5);
+      expect(r.resync).toBe(true);
+      expect(r.droppedCount).toBe(5); // oldest - cursor - 1 = 11 - 5 - 1
+    });
+
+    it('omits droppedCount when no drift', () => {
+      bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+      const r = bus.poll(0);
+      expect(r.droppedCount).toBeUndefined();
+      expect(r.resync).toBeUndefined();
+    });
+  });
+
+  describe('cursor ahead of latest (review fix 5a)', () => {
+    it('triggers resync when cursor > latestSeq (daemon-restart smell)', () => {
+      bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+      // latestSeq=1; caller is 999 ahead — only possible after a daemon restart.
+      const r = bus.poll(999);
+      expect(r.resync).toBe(true);
+      // After resync we serve from oldest forward.
+      expect(r.events).toHaveLength(1);
+    });
+  });
+
+  describe('cursor advances under filter (review fix 1a)', () => {
+    it('does not re-scan filter no-matches on subsequent polls', () => {
+      // 50 pane events, then 5 process events.
+      for (let i = 0; i < 50; i++) {
+        bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: `p${i}` });
+      }
+      for (let i = 0; i < 5; i++) {
+        bus.emit({ type: 'process.started', workspaceId: 'ws-1', ptyId: `t${i}`, shell: 'pwsh' });
+      }
+
+      // First poll for process.* — gets 5 matches but cursor must advance
+      // past the 50 pane events too, otherwise next poll re-scans them.
+      const r1 = bus.poll(0, { types: ['process.started'] });
+      expect(r1.events).toHaveLength(5);
+      expect(r1.nextCursor).toBe(55); // last scanned (or latest), NOT 55 vs 5
+
+      // No new events. Second poll should return empty without re-scanning
+      // the 50 pane.created entries.
+      const r2 = bus.poll(r1.nextCursor, { types: ['process.started'] });
+      expect(r2.events).toEqual([]);
+      expect(r2.nextCursor).toBe(55);
+    });
+
+    it('preserves catch-up semantics when max truncates the page', () => {
+      for (let i = 0; i < 10; i++) {
+        bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: `p${i}` });
+      }
+      // max=3 — caller still has 7 events to pick up. Cursor must be the
+      // last DELIVERED seq, not latest, so the next poll catches up.
+      const r1 = bus.poll(0, { max: 3 });
+      expect(r1.events).toHaveLength(3);
+      expect(r1.nextCursor).toBe(3);
+
+      const r2 = bus.poll(r1.nextCursor, { max: 3 });
+      expect(r2.events.map((e) => e.seq)).toEqual([4, 5, 6]);
     });
   });
 });

@@ -12,6 +12,7 @@
 //     filter, plus the new cursor and a `resync` flag if the caller drifted
 //     past the ring window.
 
+import { randomUUID } from 'node:crypto';
 import type {
   WmuxEvent,
   WmuxEventType,
@@ -34,6 +35,17 @@ export interface PollOptions {
 export interface PollResult {
   events: WmuxEvent[];
   nextCursor: number;
+  /** Caller's cursor as received — echoes back so clients can log drops. */
+  priorCursor: number;
+  /**
+   * Stable identifier for this main-process run. Mismatch across polls means
+   * the daemon restarted under the caller and ALL cached state (pane ids,
+   * pty ids, cursors) must be discarded. Always present.
+   */
+  bootId: string;
+  /** Number of events the caller missed before this poll, when known. */
+  droppedCount?: number;
+  /** True when the caller's cursor drifted past the ring (or jumped ahead). */
   resync?: true;
 }
 
@@ -42,6 +54,8 @@ export class EventBus {
   private head = 0;        // next write index
   private nextSeq = 1;     // monotonic
   private size = 0;        // number of valid entries
+  /** UUID stamped at construction. Invalidates client caches on daemon restart. */
+  readonly bootId: string = randomUUID();
 
   emit(input: EmitInput): WmuxEvent {
     const event = {
@@ -81,14 +95,26 @@ export class EventBus {
     const wsFilter = opts?.workspaceId;
 
     const oldest = this.oldestSeq();
-    // The caller's next-expected event has seq = cursor + 1. If that's lower
-    // than the oldest event still in the ring, they've drifted and lost
-    // events — flag resync so the caller can reconcile via pane.list.
-    const resync = oldest > 0 && cursor + 1 < oldest ? true : undefined;
-    const effectiveCursor = resync ? oldest - 1 : cursor;
+    const latest = this.latestSeq();
+    // Resync triggers when:
+    //  (a) caller drifted past the ring window (cursor + 1 < oldest), OR
+    //  (b) caller's cursor is in the future (cursor > latest) — daemon
+    //      restarted under them OR client crafted a bogus cursor.
+    // Either way, every cached pane/seq is suspect; bootId comparison gives
+    // the client a clean recovery signal.
+    const drifted = oldest > 0 && cursor + 1 < oldest;
+    const ahead = cursor > latest;
+    const resync = drifted || ahead ? true : undefined;
+    const effectiveCursor = resync ? Math.max(0, oldest - 1) : cursor;
+    const droppedCount = drifted ? oldest - cursor - 1 : undefined;
 
-    // Walk from oldest to newest in seq order.
+    // Walk from oldest to newest in seq order. Track the last *scanned* seq
+    // (regardless of filter match) so subsequent polls don't re-scan events
+    // that simply didn't match the filter — otherwise a filtered subscriber
+    // pays O(N) per poll for events it never wants.
     const out: WmuxEvent[] = [];
+    let lastScannedSeq = effectiveCursor;
+    let reachedMax = false;
     if (this.size > 0) {
       const start = (this.head - this.size + RING_CAPACITY) % RING_CAPACITY;
       for (let i = 0; i < this.size; i++) {
@@ -96,18 +122,36 @@ export class EventBus {
         const ev = this.buf[idx];
         if (!ev) continue;
         if (ev.seq <= effectiveCursor) continue;
+        lastScannedSeq = ev.seq;
         if (typeFilter && !typeFilter.has(ev.type)) continue;
         if (wsFilter && ev.workspaceId !== wsFilter) continue;
         out.push(ev);
-        if (out.length >= max) break;
+        if (out.length >= max) {
+          reachedMax = true;
+          break;
+        }
       }
     }
 
-    const nextCursor = out.length > 0
+    // Cursor advancement:
+    //  - If max truncated the page, the caller still has matching events to
+    //    pick up — advance only to the last delivered event.
+    //  - Otherwise, the loop drained everything in the ring; jump cursor to
+    //    `lastScannedSeq` (covers filter no-matches) clamped to `latest` so
+    //    a filtered subscriber doesn't re-scan the same N entries each poll.
+    const nextCursor = reachedMax
       ? out[out.length - 1].seq
-      : Math.max(effectiveCursor, this.latestSeq());
+      : Math.max(lastScannedSeq, latest);
 
-    return resync ? { events: out, nextCursor, resync } : { events: out, nextCursor };
+    const result: PollResult = {
+      events: out,
+      nextCursor,
+      priorCursor: cursor,
+      bootId: this.bootId,
+    };
+    if (resync) result.resync = true;
+    if (droppedCount !== undefined && droppedCount > 0) result.droppedCount = droppedCount;
+    return result;
   }
 
   /** Clear all events. Test-only; not exposed to RPC. */
