@@ -150,6 +150,67 @@ describe('pane.rpc — search', () => {
     expect(sendToRendererMock).not.toHaveBeenCalled();
   });
 
+  // C1 — workspaceId forwarding. The main handler must thread the caller's
+  // workspaceId through so the renderer scopes the search to that workspace
+  // (not whichever the user happens to be viewing).
+  it('forwards workspaceId when caller provides it (C1)', async () => {
+    const router = register();
+    const response = await router.dispatch({
+      id: '10',
+      method: 'pane.search',
+      params: { query: 'foo', workspaceId: 'ws-caller' },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      'pane.search',
+      { query: 'foo', workspaceId: 'ws-caller' },
+    );
+  });
+
+  it('forwards workspaceId together with regex when both are provided (C1)', async () => {
+    const router = register();
+    await router.dispatch({
+      id: '11',
+      method: 'pane.search',
+      params: { query: 'foo', regex: true, workspaceId: 'ws-caller' },
+    });
+
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      'pane.search',
+      { query: 'foo', regex: true, workspaceId: 'ws-caller' },
+    );
+  });
+
+  it('omits workspaceId from forwarded payload when caller did not provide it (C1)', async () => {
+    const router = register();
+    await router.dispatch({
+      id: '12',
+      method: 'pane.search',
+      params: { query: 'foo' },
+    });
+
+    const forwardedPayload = sendToRendererMock.mock.calls[0][2] as Record<string, unknown>;
+    expect('workspaceId' in forwardedPayload).toBe(false);
+  });
+
+  it('rejects a non-string workspaceId (C1)', async () => {
+    const router = register();
+    const response = await router.dispatch({
+      id: '13',
+      method: 'pane.search',
+      params: { query: 'foo', workspaceId: 42 as unknown as string },
+    });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error).toMatch(/string/);
+    }
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
   it('returns the renderer response payload to the caller', async () => {
     const router = register();
     const fakeResponse = {
@@ -160,6 +221,7 @@ describe('pane.rpc — search', () => {
           surfaceId: 's1',
           ptyId: 'pty1',
           lineIdx: 5,
+          physicalBaseY: 5,
           text: 'matched line',
           contextBefore: [],
           contextAfter: [],

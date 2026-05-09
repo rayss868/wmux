@@ -292,10 +292,10 @@ server.tool(
 
 server.tool(
   'wmux_search_panes',
-  'Search across all live terminal panes in the calling workspace for a query string. Returns matches with paneId + matched line text + 2 lines of surrounding context, plus an optional pane label when one has been set. Use this when you want to autonomously locate which pane has the JWT error, the failing test, the build warning, the dev-server crash, etc. — instead of polling each pane individually with terminal_read. Scope is the caller\'s own workspace only (cross-workspace search is not exposed in v1). Searches live panes only — i.e. terminal panes currently mounted in the UI; dead-session scrollback dumps are out of scope for v1. Returns up to 200 matches; truncated=true indicates more were found. For substring search pass query alone; for regex set regex=true (invalid regex returns an error).',
+  'Search across all live terminal panes in the caller\'s workspace. Returns up to 200 matches with paneId + matched line + 2-line context (truncated=true means more were found). Use to find which pane has the JWT error, failing test, or build warning instead of polling each pane individually. Live panes only (v1); regex uses JS RegExp with default flags (case-sensitive, no inline `(?i)` — use `[Ee]rror` for case-insensitive).',
   {
     query: z.string().min(1).describe('The text to search for. Required, non-empty. Treated as a literal substring unless regex=true.'),
-    regex: z.boolean().optional().describe('If true, treat query as a JavaScript regex pattern (e.g. "ERROR|WARN", "\\\\bTODO\\\\b"). Invalid pattern returns an error. Default false (substring match).'),
+    regex: z.boolean().optional().describe('If true, treat query as a JavaScript regex pattern (e.g. "ERROR|WARN", "\\\\bTODO\\\\b"). Default flags only — case-sensitive, no inline `(?i)`. Invalid pattern returns an error. Default false.'),
   },
   async ({ query, regex }) => {
     const workspaceId = await requireWorkspaceId();

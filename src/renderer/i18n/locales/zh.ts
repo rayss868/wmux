@@ -38,6 +38,10 @@ export const zh = {
   'search.showInPanel': '{count}个结果 — 打开面板',
   'search.matchedLine': '第{line}行',
   'search.invalidRegex': '无效正则: {message}',
+  'search.panelTitle': '搜索结果',
+  'search.matchesCount': '{count}个结果',
+  'search.matchesCountTruncated': '200+个结果',
+  'search.unlabeled': '(未命名)',
 
   // Notification
   'notification.title': '通知',

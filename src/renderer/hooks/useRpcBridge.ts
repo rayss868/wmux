@@ -375,8 +375,24 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const regex = params['regex'] === true;
     if (query.length === 0) return { error: 'pane.search: empty query' };
 
-    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
-    if (!ws) return { error: 'pane.search: no active workspace' };
+    // ─── Workspace scope (C1, decisions D9) ──────────────────────────────
+    // External MCP callers pass `workspaceId` via T-D so the search is
+    // scoped to the CALLING workspace, not whichever the user is currently
+    // viewing in the UI. Internal renderer callers (SearchBar) omit
+    // `workspaceId` and fall back to the active workspace.
+    const requestedWsId =
+      typeof params['workspaceId'] === 'string' && (params['workspaceId'] as string).length > 0
+        ? (params['workspaceId'] as string)
+        : store.activeWorkspaceId;
+    const ws = store.workspaces.find((w) => w.id === requestedWsId);
+    if (!ws) {
+      // Validate explicitly so an external caller passing a stale/invalid
+      // workspaceId gets a clear error instead of silently empty results.
+      if (typeof params['workspaceId'] === 'string' && (params['workspaceId'] as string).length > 0) {
+        return { error: `pane.search: workspace "${requestedWsId}" not found` };
+      }
+      return { error: 'pane.search: no active workspace' };
+    }
 
     // Build ptyId → workspaceId reverse map (current ws only — D9, v1 scope='workspace')
     // and ptyId → paneId map for result tagging.
@@ -402,17 +418,33 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     let remainingBudget = TOTAL_BUDGET;
     const results: PaneSearchResult[] = [];
     let totalMatches = 0;
+    // ─── Truncation tracking (I1) ────────────────────────────────────────
+    // We can't know "true total" without re-scanning post-cap, so semantics
+    // are: truncated=true iff the budget hit zero AND there were panes left
+    // to scan (or the per-pane engine returned exactly `remainingBudget`
+    // matches, signalling more were available). This is the closest honest
+    // approximation without a second-pass scan.
+    let truncated = false;
 
     // Snapshot registry keys to make mutation during iteration safe (N2).
     const ptyIds = Array.from(terminalRegistry.keys());
-    for (const ptyId of ptyIds) {
-      if (remainingBudget <= 0) break;
+    // Keep only ptyIds that belong to the resolved workspace so the
+    // "panes-left" check below is meaningful.
+    const scannablePtyIds = ptyIds.filter((id) => ptyToPaneId.has(id));
+    for (let pIdx = 0; pIdx < scannablePtyIds.length; pIdx++) {
+      const ptyId = scannablePtyIds[pIdx];
+      if (remainingBudget <= 0) {
+        // Budget exhausted before we got to this pane → more matches likely.
+        truncated = true;
+        break;
+      }
       const paneId = ptyToPaneId.get(ptyId);
-      if (!paneId) continue; // pty not in current workspace
+      if (!paneId) continue; // belt-and-braces; filtered above already
       const term = terminalRegistry.get(ptyId);
       if (!term) continue; // unmounted between snapshot and read
       try {
         // Adapt xterm Buffer to SearchableBuffer (it already conforms structurally)
+        const requestedBudget = remainingBudget;
         const matches = searchInBuffer(
           term.buffer.active as unknown as SearchableBuffer,
           query,
@@ -426,6 +458,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
             surfaceId: ptyToSurfaceId.get(ptyId)!,
             ptyId,
             lineIdx: m.lineIdx,
+            physicalBaseY: m.physicalBaseY,
             text: m.text,
             contextBefore: m.contextBefore,
             contextAfter: m.contextAfter,
@@ -434,6 +467,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           results.push(result);
           remainingBudget--;
           if (remainingBudget <= 0) break;
+        }
+        // If the engine returned EXACTLY the budget we gave it, more matches
+        // may exist in this same buffer that were cut off — truncated.
+        if (matches.length === requestedBudget && remainingBudget <= 0) {
+          // There may also be unscanned panes after this — both flag as truncated.
+          truncated = true;
         }
       } catch (err) {
         // SyntaxError from invalid regex — propagate as RPC error
@@ -447,9 +486,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const response: PaneSearchResponse = {
       resultShapeVersion: 1,
       results,
-      truncated: totalMatches > TOTAL_BUDGET,
+      truncated,
       totalMatches,
-      workspaceId: ws.id,
+      workspaceId: ws.id, // C1: echo the RESOLVED workspace, not the active one.
     };
     return response;
   }

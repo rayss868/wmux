@@ -38,6 +38,10 @@ export const en = {
   'search.showInPanel': '{count} results — open panel',
   'search.matchedLine': 'Line {line}',
   'search.invalidRegex': 'Invalid regex: {message}',
+  'search.panelTitle': 'Search Results',
+  'search.matchesCount': '{count} matches',
+  'search.matchesCountTruncated': '200+ matches',
+  'search.unlabeled': '(unlabeled)',
 
   // Notification
   'notification.title': 'Notifications',

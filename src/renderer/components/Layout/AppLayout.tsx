@@ -178,6 +178,9 @@ export default function AppLayout() {
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
 
   const prefixMode = useStore((s) => s.prefixMode);
+  // Gate the cross-pane SearchResultsPanel mount at the layout level so its
+  // 6-field zustand subscription doesn't run when the panel is closed (I3).
+  const searchPanelOpen = useStore((s) => s.searchPanelOpen);
   const onboardingActive = useStore((s) => s.onboardingActive);
   const onboardingCompleted = useStore((s) => s.onboardingCompleted);
   const startOnboarding = useStore((s) => s.startOnboarding);
@@ -597,11 +600,14 @@ export default function AppLayout() {
       )}
       <NotificationPanel />
       <MessageFeedPanel />
-      {/* Cross-pane search results panel (T-F). Self-gates on
-          searchPanelOpen — no cost when closed. */}
-      <ErrorBoundary name="SearchResultsPanel">
-        <SearchResultsPanel />
-      </ErrorBoundary>
+      {/* Cross-pane search results panel (T-F). Mount-gated on
+          searchPanelOpen at this level (I3) so the panel's 6-field zustand
+          subscriptions don't run when closed. */}
+      {searchPanelOpen && (
+        <ErrorBoundary name="SearchResultsPanel">
+          <SearchResultsPanel />
+        </ErrorBoundary>
+      )}
       <CommandPalette />
       <SettingsPanel />
       <ApprovalDialog />

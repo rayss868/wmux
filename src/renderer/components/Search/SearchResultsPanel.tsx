@@ -7,9 +7,10 @@ import type { PaneSearchResult } from '../../../shared/types';
 /**
  * Cross-pane search results panel (T-F, see decisions D8).
  *
- * Mounts at the workspace layout level and is conditionally rendered when
- * `searchPanelOpen === true`. The hysteresis machine that flips that flag
- * lives in `searchSlice.runSearch` — this component is a pure consumer.
+ * Mount-gated by AppLayout on `searchPanelOpen` (I3) — when closed, this
+ * component is unmounted and its zustand subscriptions don't run. The
+ * hysteresis machine that flips `searchPanelOpen` lives in
+ * `searchSlice.runSearch`; this component is a pure consumer.
  *
  * Layout: docked along the bottom of the viewport (16rem tall). The right
  * side is reserved for `NotificationPanel` (also `fixed right-0`), so a
@@ -18,21 +19,14 @@ import type { PaneSearchResult } from '../../../shared/types';
  * future iterations may switch to a sibling flex-row in AppLayout if we
  * want true layout reflow.
  *
- * NOTE on scroll-to-line precision: PaneSearchResult only exposes the
- * post-wrap-coalescing `lineIdx` (logical line). The original physical
- * row (`physicalBaseY` from the engine's MatchInBuffer) is intentionally
- * not part of the public PaneSearchResult shape — that contract was
- * frozen by T-A. We therefore use `lineIdx` as a best-effort scroll
- * target. The discrepancy only matters when a logical line spans many
- * wrapped rows and the user expects an exact landing row.
- *
- * TODO(v2): thread `physicalBaseY` through PaneSearchResult as a separate
- * optional field (NOT replacing lineIdx — clients downstream of T-A may
- * already depend on lineIdx semantics) so click-to-scroll is exact.
+ * Scroll precision: result clicks call `xterm.scrollToLine(physicalBaseY)`
+ * (I6) — the physical buffer row of the first wrapped row composing the
+ * matched logical line. This lands exactly on the start of the matched
+ * line even when wrap-coalescing combined multiple physical rows into one
+ * logical line.
  */
 export default function SearchResultsPanel() {
   const t = useT();
-  const open = useStore((s) => s.searchPanelOpen);
   const query = useStore((s) => s.searchQuery);
   const results = useStore((s) => s.searchResults);
   const truncated = useStore((s) => s.searchTruncated);
@@ -51,16 +45,18 @@ export default function SearchResultsPanel() {
     });
   }, [results]);
 
-  if (!open) return null;
+  // Note: open-gating is done at the AppLayout mount boundary (I3). No
+  // local `if (!open) return null;` — by the time this component renders
+  // the panel is open by construction.
 
   const onResultClick = (r: PaneSearchResult) => {
     setActivePane(r.paneId);
-    // Best-effort scroll-to-line — see file header for the
-    // physicalBaseY-vs-lineIdx caveat.
+    // Use physicalBaseY (I6) — xterm's scrollToLine expects a physical row
+    // index, not a logical (post-wrap-coalesce) line index.
     const term = terminalRegistry.get(r.ptyId);
     if (term) {
       try {
-        term.scrollToLine(r.lineIdx);
+        term.scrollToLine(r.physicalBaseY);
       } catch {
         // xterm.scrollToLine may throw if the line index is out of range
         // (e.g. buffer rotated since the search ran). Swallow — the pane
@@ -92,7 +88,7 @@ export default function SearchResultsPanel() {
       >
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-sm font-bold text-[var(--text-main)]">
-            Search Results
+            {t('search.panelTitle')}
           </span>
           <span
             className="text-xs truncate"
@@ -108,7 +104,9 @@ export default function SearchResultsPanel() {
               color: 'var(--bg-base)',
             }}
           >
-            {truncated ? `${totalMatches}+ matches` : `${totalMatches} matches`}
+            {truncated
+              ? t('search.matchesCountTruncated')
+              : t('search.matchesCount', { count: totalMatches })}
           </span>
         </div>
         <button
@@ -140,7 +138,7 @@ export default function SearchResultsPanel() {
         ) : (
           <ul className="divide-y" style={{ borderColor: 'var(--bg-surface)' }}>
             {orderedResults.map((r, idx) => {
-              const label = r.paneLabel ?? '(unlabeled)';
+              const label = r.paneLabel ?? t('search.unlabeled');
               return (
                 <li
                   key={`${r.paneId}-${r.lineIdx}-${idx}`}

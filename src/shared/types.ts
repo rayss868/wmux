@@ -81,6 +81,13 @@ export interface PaneSearchResult {
   surfaceId: string;
   ptyId: string;
   lineIdx: number;             // logical line idx (post wrap-coalesce — see T-B)
+  /**
+   * Physical row index of the FIRST row composing the matched logical line.
+   * This is the value to feed into `xterm.scrollToLine(...)` — feeding
+   * `lineIdx` instead would land on the wrong row when wrap-coalescing
+   * collapsed multiple physical rows into one logical line. (I6 fix.)
+   */
+  physicalBaseY: number;
   text: string;                // matched logical line, ≤500 chars
   contextBefore: string[];     // up to N (default 2) lines, each ≤500 chars
   contextAfter: string[];

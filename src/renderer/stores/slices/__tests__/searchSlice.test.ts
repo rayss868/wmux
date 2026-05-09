@@ -24,6 +24,7 @@ function makeResult(idx: number): PaneSearchResult {
     surfaceId: `surface-${idx}`,
     ptyId: `pty-${idx}`,
     lineIdx: idx,
+    physicalBaseY: idx,
     text: `match ${idx}`,
     contextBefore: [],
     contextAfter: [],
@@ -292,14 +293,21 @@ describe('searchSlice — truncation echo', () => {
 });
 
 describe('searchSlice — bridge missing', () => {
-  it('runSearch silently bails when window.__wmuxRunPaneSearch is not defined', async () => {
+  it('runSearch bails (no state change) and logs a warn when window.__wmuxRunPaneSearch is not defined', async () => {
     // Window present but bridge not set — slice's no-op branch must trigger.
     g.window = {};
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const store = createTestStore();
 
     // No throw, no state change.
     await expect(store.getState().runSearch('foo', false)).resolves.toBeUndefined();
     expect(store.getState().searchQuery).toBe('');
     expect(store.getState().searchResults).toEqual([]);
+    // I7: bridge-missing condition is logged so DevTools surfaces the
+    // timing edge case (without sentinel-erroring the user-visible state).
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('runSearch invoked before bridge mounted'),
+    );
+    warnSpy.mockRestore();
   });
 });

@@ -38,6 +38,10 @@ export const ja = {
   'search.showInPanel': '{count}件の結果 — パネルを開く',
   'search.matchedLine': '{line}行目',
   'search.invalidRegex': '無効な正規表現: {message}',
+  'search.panelTitle': '検索結果',
+  'search.matchesCount': '{count}件の結果',
+  'search.matchesCountTruncated': '200件以上の結果',
+  'search.unlabeled': '(無題)',
 
   // Notification
   'notification.title': '通知',

@@ -38,12 +38,14 @@ export function registerPaneRpc(router: RpcRouter, getWindow: GetWindow): void {
   });
 
   /**
-   * pane.search — cross-pane search across the current workspace's live panes
-   * params: { query: string, regex?: boolean }
+   * pane.search — cross-pane search across a workspace's live panes
+   * params: { query: string, regex?: boolean, workspaceId?: string }
    *
-   * Validation only happens here; workspace scope is enforced in the renderer
-   * (T-C) since `terminalRegistry` only contains currently-rendered terminals
-   * scoped to workspaces. Cross-workspace search is deferred to v2 (D9).
+   * The `workspaceId` (when present) is forwarded so the renderer handler
+   * (C1 fix) can scope the search to the CALLING workspace rather than
+   * whichever workspace the user happens to be viewing in the UI. Internal
+   * renderer callers omit it and the handler falls back to the active
+   * workspace. Cross-workspace search is deferred to v2 (D9).
    */
   router.register('pane.search', (params) => {
     if (typeof params['query'] !== 'string' || params['query'].length === 0) {
@@ -53,9 +55,16 @@ export function registerPaneRpc(router: RpcRouter, getWindow: GetWindow): void {
     if (regex !== undefined && typeof regex !== 'boolean') {
       return Promise.reject(new Error('pane.search: "regex" must be a boolean if provided'));
     }
+    const workspaceId = params['workspaceId'];
+    if (workspaceId !== undefined && typeof workspaceId !== 'string') {
+      return Promise.reject(
+        new Error('pane.search: "workspaceId" must be a string if provided'),
+      );
+    }
     return sendToRenderer(getWindow, 'pane.search', {
       query: params['query'],
       ...(regex !== undefined && { regex }),
+      ...(workspaceId !== undefined && { workspaceId }),
     });
   });
 }

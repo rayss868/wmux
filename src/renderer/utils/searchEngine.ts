@@ -33,7 +33,14 @@ const DEFAULT_CONTEXT_LINES = 2;
 const DEFAULT_BUFFER_LINE_CAP = 20_000;
 
 export interface SearchOpts {
-  /** Treat `query` as a JS RegExp pattern. Invalid patterns throw `SyntaxError`. */
+  /**
+   * Treat `query` as a JS RegExp pattern. Invalid patterns throw `SyntaxError`.
+   *
+   * Regex semantics: the pattern is fed to `new RegExp(query)` with NO flags.
+   * That means matching is case-sensitive, unicode mode is off, and inline
+   * flag groups like `(?i)` are NOT supported by JavaScript's RegExp — use
+   * character classes for case-insensitivity (e.g. `[Ee]rror`) instead.
+   */
   regex?: boolean;
   /** Logical lines kept on each side of a match. Defaults to 2. */
   contextLines?: number;
@@ -166,6 +173,11 @@ function capLine(s: string): string {
  * - Stops early once `remainingBudget` matches are produced.
  * - Returns `[]` for an empty `query` rather than throwing — the RPC layer
  *   (T-A) is responsible for rejecting empty queries before this is called.
+ *
+ * Regex flags: `new RegExp(query)` is invoked with NO flags — case-sensitive,
+ * unicode off. JavaScript's RegExp does NOT honor inline flag groups like
+ * `(?i)`; that syntax raises a SyntaxError. To do case-insensitive matching
+ * use a character class (e.g. `[Ee]rror`).
  *
  * @throws SyntaxError when `opts.regex` is true and `query` is not a valid
  *   JS regex pattern. The native `RegExp` constructor's error is allowed to

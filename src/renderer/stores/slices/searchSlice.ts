@@ -114,12 +114,20 @@ export const createSearchSlice: StateCreator<
     const sessionReset = !prev || lengthDeltaTooBig || notPrefixExtension;
 
     // The bridge global is wired up by `useRpcBridge`'s useEffect. If this
-    // slice is consulted before that hook mounts (e.g. tests, SSR-ish flows)
-    // we silently bail — T-E will handle the empty-result UI.
+    // slice is consulted before that hook mounts (e.g. tests, SSR-ish flows,
+    // very early load) we bail without mutating state. We log a warning
+    // (I7) so this timing edge case is visible in DevTools when debugging
+    // — sentinel error in user-visible state would be wrong here since the
+    // condition resolves itself within a tick of the bridge mounting.
     const fn = (window as unknown as {
       __wmuxRunPaneSearch?: (q: string, r: boolean) => Promise<unknown>;
     }).__wmuxRunPaneSearch;
-    if (!fn) return;
+    if (!fn) {
+      console.warn(
+        '[searchSlice] runSearch invoked before bridge mounted — query ignored',
+      );
+      return;
+    }
 
     const result = await fn(query, regex);
     if (result && typeof result === 'object' && !('error' in result)) {

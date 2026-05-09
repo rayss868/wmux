@@ -71,16 +71,11 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  // When the bar unmounts (close) or the user toggles back to single-pane
-  // mode, clear any leftover cross-pane state so a stale dropdown doesn't
-  // appear next time the bar opens or T-F's panel doesn't resurrect.
-  useEffect(() => {
-    return () => {
-      // Defensive: only clear cross-pane state we authored. The single-pane
-      // SearchAddon `clearSearch` is wired via Terminal.tsx → useTerminal.
-      clearCrossPaneSearch();
-    };
-  }, [clearCrossPaneSearch]);
+  // I5: do NOT clear cross-pane state on unmount. The results panel (T-F)
+  // is meant to be independently dismissable per D8 — wiping panel state
+  // every time the user toggles Ctrl+F closed would defeat the sticky
+  // model. Cross-pane state is cleared explicitly when the user leaves
+  // All-Panes mode via `toggleAllPanes` (below).
 
   const runCrossPaneSearch = useCallback(
     (q: string) => {
@@ -190,12 +185,15 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
       }
       const term = terminalRegistry.get(r.ptyId);
       if (term) {
-        // NOTE: we use lineIdx (logical line, post-wrap-coalesce) for the
-        // scroll target. The handler does not currently surface
-        // physicalBaseY in the public PaneSearchResult shape — see
-        // src/shared/types.ts. xterm's scrollToLine accepts any in-range
-        // value and clamps internally, so this is best-effort.
-        term.scrollToLine(r.lineIdx);
+        // I6: use physicalBaseY (xterm expects a physical row index, not a
+        // post-wrap-coalesce logical line index). M3: wrap in try/catch —
+        // scrollToLine can throw if the buffer has rotated since the search
+        // executed.
+        try {
+          term.scrollToLine(r.physicalBaseY);
+        } catch {
+          // pane is at least focused; user can re-search to refresh.
+        }
       }
     },
     [],
@@ -372,7 +370,7 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
                 className="shrink-0 font-medium"
                 style={{ color: 'var(--text-sub2)', minWidth: '40px' }}
               >
-                {r.paneLabel ?? '(unlabeled)'}
+                {r.paneLabel ?? t('search.unlabeled')}
               </span>
               <span className="shrink-0" style={{ color: 'var(--text-subtle)' }}>
                 {t('search.matchedLine', { line: r.lineIdx + 1 })}
