@@ -32,6 +32,12 @@ export const ko = {
   'search.nextTooltip': '다음 결과 (Enter)',
   'search.closeTooltip': '닫기 (ESC)',
   'search.regexTooltip': '정규식 사용',
+  'search.allPanes': '모든 팬',
+  'search.regexMode': '정규식',
+  'search.noResults': '결과 없음',
+  'search.showInPanel': '{count}개 결과 — 패널 열기',
+  'search.matchedLine': '{line}행',
+  'search.invalidRegex': '유효하지 않은 정규식: {message}',
 
   // Notification
   'notification.title': '알림',

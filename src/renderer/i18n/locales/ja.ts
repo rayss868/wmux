@@ -32,6 +32,12 @@ export const ja = {
   'search.nextTooltip': '次の結果 (Enter)',
   'search.closeTooltip': '閉じる (ESC)',
   'search.regexTooltip': '正規表現を使用',
+  'search.allPanes': '全パネル',
+  'search.regexMode': '正規表現',
+  'search.noResults': '結果なし',
+  'search.showInPanel': '{count}件の結果 — パネルを開く',
+  'search.matchedLine': '{line}行目',
+  'search.invalidRegex': '無効な正規表現: {message}',
 
   // Notification
   'notification.title': '通知',

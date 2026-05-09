@@ -32,6 +32,12 @@ export const en = {
   'search.nextTooltip': 'Next result (Enter)',
   'search.closeTooltip': 'Close (ESC)',
   'search.regexTooltip': 'Use regular expression',
+  'search.allPanes': 'All Panes',
+  'search.regexMode': 'Regex',
+  'search.noResults': 'No results',
+  'search.showInPanel': '{count} results — open panel',
+  'search.matchedLine': 'Line {line}',
+  'search.invalidRegex': 'Invalid regex: {message}',
 
   // Notification
   'notification.title': 'Notifications',

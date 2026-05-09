@@ -32,6 +32,12 @@ export const zh = {
   'search.nextTooltip': '下一个结果 (Enter)',
   'search.closeTooltip': '关闭 (ESC)',
   'search.regexTooltip': '使用正则表达式',
+  'search.allPanes': '全部分屏',
+  'search.regexMode': '正则',
+  'search.noResults': '无结果',
+  'search.showInPanel': '{count}个结果 — 打开面板',
+  'search.matchedLine': '第{line}行',
+  'search.invalidRegex': '无效正则: {message}',
 
   // Notification
   'notification.title': '通知',
