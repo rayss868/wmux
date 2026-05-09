@@ -51,6 +51,18 @@ export interface SearchSlice {
   runSearch: (query: string, regex: boolean) => Promise<void>;
   /** Reset all search state, including the panel sticky bit. */
   clearSearch: () => void;
+  /**
+   * User explicitly closed the results panel. Sets the sticky bit so the
+   * hysteresis machine in `runSearch` does not auto-reopen for this query
+   * session (cleared on session reset — see D8).
+   */
+  closeSearchPanel: () => void;
+  /**
+   * User explicitly opened the panel (e.g. "Show in panel" affordance in
+   * the search bar). Clears the sticky bit since this is an explicit intent
+   * to keep the panel open.
+   */
+  openSearchPanel: () => void;
 }
 
 export const createSearchSlice: StateCreator<
@@ -58,7 +70,7 @@ export const createSearchSlice: StateCreator<
   [['zustand/immer', never]],
   [],
   SearchSlice
-> = (set) => ({
+> = (set, get) => ({
   searchQuery: '',
   searchResults: [],
   searchTruncated: false,
@@ -67,17 +79,39 @@ export const createSearchSlice: StateCreator<
   searchPanelStickyClosed: false,
 
   runSearch: async (query, regex) => {
+    // Capture prev query BEFORE the new search runs so we can compute the
+    // session-reset metric below (G4). Reading via `get()` is required —
+    // immer's draft inside `set` would observe the post-update value.
+    const prev = get().searchQuery;
+
     if (!query) {
+      // Empty query is treated as a clear: zero results AND fully reset
+      // panel state (closed + sticky cleared). T-F (D8) — empty-query is
+      // an explicit session reset, so the next non-empty query starts the
+      // hysteresis machine in a clean state.
       set((state: StoreState) => {
         state.searchQuery = '';
         state.searchResults = [];
         state.searchTruncated = false;
         state.searchTotalMatches = 0;
-        // Panel reset on empty query is T-F's responsibility (session reset
-        // logic). T-C only zeros the result data here.
+        state.searchPanelOpen = false;
+        state.searchPanelStickyClosed = false;
       });
       return;
     }
+
+    // ─── Session-reset metric (D8 / G4) ────────────────────────────────
+    // The sticky-closed bit only persists within a "search session". A
+    // session resets when:
+    //   - prev query is empty (we were idle), OR
+    //   - the length delta is > 2 chars (likely a wholly new query, not
+    //     incremental typing/backspacing), OR
+    //   - neither the old nor new query is a prefix of the other (the
+    //     user retyped, not extended).
+    const lengthDeltaTooBig = Math.abs(query.length - prev.length) > 2;
+    const notPrefixExtension =
+      prev.length > 0 && !query.startsWith(prev) && !prev.startsWith(query);
+    const sessionReset = !prev || lengthDeltaTooBig || notPrefixExtension;
 
     // The bridge global is wired up by `useRpcBridge`'s useEffect. If this
     // slice is consulted before that hook mounts (e.g. tests, SSR-ish flows)
@@ -99,6 +133,27 @@ export const createSearchSlice: StateCreator<
         state.searchResults = r.results;
         state.searchTruncated = r.truncated;
         state.searchTotalMatches = r.totalMatches;
+
+        // ─── Hysteresis state machine (D8) ─────────────────────────────
+        //   - >10 results → open
+        //   - ≤5 results  → close
+        //   - 6-10 results (dead zone) → keep current visibility
+        //   - sticky-closed bit blocks auto-open within the same session;
+        //     a session reset clears it before applying the rule above.
+        if (sessionReset) {
+          state.searchPanelStickyClosed = false;
+        }
+        const wasOpen = state.searchPanelOpen;
+        if (!state.searchPanelStickyClosed) {
+          if (r.results.length > 10) {
+            state.searchPanelOpen = true;
+          } else if (r.results.length <= 5) {
+            state.searchPanelOpen = false;
+          } else {
+            // 6-10 hysteresis dead zone — preserve current visibility.
+            state.searchPanelOpen = wasOpen;
+          }
+        }
       });
     }
   },
@@ -109,7 +164,25 @@ export const createSearchSlice: StateCreator<
       state.searchResults = [];
       state.searchTruncated = false;
       state.searchTotalMatches = 0;
+      // clearSearch is a session reset by definition — drop the sticky bit
+      // so the next runSearch starts in a clean hysteresis state (D8).
       state.searchPanelOpen = false;
+      state.searchPanelStickyClosed = false;
+    }),
+
+  closeSearchPanel: () =>
+    set((state: StoreState) => {
+      state.searchPanelOpen = false;
+      // Sticky until the next session reset (empty query / length jump /
+      // non-prefix retype). See `runSearch` above.
+      state.searchPanelStickyClosed = true;
+    }),
+
+  openSearchPanel: () =>
+    set((state: StoreState) => {
+      state.searchPanelOpen = true;
+      // Explicit user intent to open — clear sticky so subsequent edits
+      // within the dead zone don't re-close it on the user.
       state.searchPanelStickyClosed = false;
     }),
 });

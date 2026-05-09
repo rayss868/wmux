@@ -18,6 +18,7 @@ import FirstRunWizard from '../FirstRunWizard';
 import KeyboardCheatSheet from '../KeyboardCheatSheet';
 import ToastContainer from '../Toast/ToastContainer';
 import FloatingPane from '../Terminal/FloatingPane';
+import SearchResultsPanel from '../Search/SearchResultsPanel';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
@@ -596,6 +597,11 @@ export default function AppLayout() {
       )}
       <NotificationPanel />
       <MessageFeedPanel />
+      {/* Cross-pane search results panel (T-F). Self-gates on
+          searchPanelOpen — no cost when closed. */}
+      <ErrorBoundary name="SearchResultsPanel">
+        <SearchResultsPanel />
+      </ErrorBoundary>
       <CommandPalette />
       <SettingsPanel />
       <ApprovalDialog />
