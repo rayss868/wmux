@@ -298,7 +298,7 @@ server.tool(
     label: z.string().max(64).optional().describe('Short human label, e.g. "Backend".'),
     role: z.string().max(64).optional().describe('Free-form role tag, e.g. "service" or "test-runner".'),
     status: z.string().max(128).optional().describe('Current status, e.g. "running-tests".'),
-    custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when merge=true.'),
+    custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when merge=true. Recommended convention: namespace your keys with a tool prefix (e.g. "orchestrator.taskId", "qa.status") to avoid semantic collisions with other cooperating tools.'),
     merge: z.boolean().optional().describe('Default true (patch + deep-merge custom). Set false to replace the entire metadata object.'),
   },
   async ({ paneId, label, role, status, custom, merge }) => {
@@ -325,6 +325,27 @@ server.tool(
     const params: Record<string, unknown> = { workspaceId };
     if (paneId !== undefined) params['paneId'] = paneId;
     return callRpc('pane.getMetadata', params);
+  },
+);
+
+server.tool(
+  'wmux_events_poll',
+  'Poll the wmux EventBus for pane and process lifecycle events. Cursor-based: pass `cursor` = the last `seq` you saw (start with 0 to replay from oldest in the ring). Returns { events, nextCursor, resync? }. `resync: true` means your cursor drifted past the in-memory ring (1024 events) and you should reconcile via pane_list. Events are auto-scoped to the calling workspace.',
+  {
+    cursor: z.number().int().nonnegative().optional().describe('Last seen seq number. Default 0 = replay all events still in the ring.'),
+    types: z
+      .array(z.enum(['pane.created', 'pane.closed', 'pane.focused', 'pane.metadata.changed', 'process.started', 'process.exited']))
+      .optional()
+      .describe('Filter to specific event types. Omit to receive all types.'),
+    max: z.number().int().positive().max(1024).optional().describe('Max events to return per poll. Default 256.'),
+  },
+  async ({ cursor, types, max }) => {
+    const workspaceId = await requireWorkspaceId();
+    const params: Record<string, unknown> = { workspaceId };
+    if (cursor !== undefined) params['cursor'] = cursor;
+    if (types !== undefined) params['types'] = types;
+    if (max !== undefined) params['max'] = max;
+    return callRpc('events.poll', params);
   },
 );
 

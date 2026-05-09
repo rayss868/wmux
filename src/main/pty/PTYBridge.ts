@@ -7,6 +7,7 @@ import { ActivityMonitor } from './ActivityMonitor';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { IPC } from '../../shared/constants';
 import { updateCwd, removeCwd, updateBranch, removeBranch } from '../ipc/handlers/metadata.handler';
+import { eventBus } from '../events/EventBus';
 
 /**
  * A middleware handler receives raw data from a PTY process.
@@ -135,6 +136,19 @@ export class PTYBridge {
 
     this.ptyCreatedAt.set(ptyId, Date.now());
     this.activityMonitor.start(ptyId);
+
+    // Surface process lifecycle to the EventBus for external tooling. Skip
+    // PTYs that were created without a workspace context (CLI/tests) — those
+    // can't be polled by workspace-scoped clients anyway.
+    if (instance.workspaceId) {
+      eventBus.emit({
+        type: 'process.started',
+        workspaceId: instance.workspaceId,
+        ptyId,
+        pid: instance.process.pid,
+        shell: instance.shell,
+      });
+    }
 
     const oscParser = new OscParser();
     this.oscParsers.set(ptyId, oscParser);
@@ -286,10 +300,21 @@ export class PTYBridge {
       }
     });
 
-    instance.process.onExit(({ exitCode }) => {
+    instance.process.onExit(({ exitCode, signal }) => {
       // Drain any buffered output before signalling exit so the renderer
       // sees the final lines (e.g. exit banner) before PTY_EXIT.
       this.flushPending(ptyId);
+
+      // Surface process exit to the EventBus before cleanup wipes our state.
+      if (instance.workspaceId) {
+        eventBus.emit({
+          type: 'process.exited',
+          workspaceId: instance.workspaceId,
+          ptyId,
+          exitCode: typeof exitCode === 'number' ? exitCode : null,
+          ...(typeof signal === 'number' ? { signal: String(signal) } : {}),
+        });
+      }
 
       const win = this.getWindow();
       if (win && !win.isDestroyed()) {

@@ -1,6 +1,8 @@
 import { app } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { ALL_RPC_METHODS } from '../../../shared/rpc';
+import { WMUX_EVENT_TYPES, RING_CAPACITY } from '../../../shared/events';
+import { eventBus } from '../../events/EventBus';
 
 /**
  * Shape returned by system.identify.
@@ -36,6 +38,14 @@ export function registerSystemRpc(router: RpcRouter): void {
       methods: ALL_RPC_METHODS,
       features: {
         paneMetadata: true,
+        events: {
+          types: WMUX_EVENT_TYPES,
+          maxRingSize: RING_CAPACITY,
+          // Stable for the lifetime of this main-process run. Clients that
+          // see bootId change between calls must drop all cached state —
+          // pane ids, pty ids, and event cursors are all invalidated.
+          bootId: eventBus.bootId,
+        },
       },
     });
   });

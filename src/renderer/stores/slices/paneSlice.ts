@@ -6,6 +6,12 @@ import {
   generateId,
   PANE_METADATA_MAX_BYTES,
 } from '../../../shared/types';
+import {
+  publishPaneCreated,
+  publishPaneClosed,
+  publishPaneFocused,
+  publishPaneMetadataChanged,
+} from '../../events/publisher';
 
 export interface PaneSlice {
   splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string) => void;
@@ -53,82 +59,126 @@ function getLeafPanes(root: Pane): PaneLeaf[] {
 }
 
 export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]], [], PaneSlice> = (set, get) => ({
-  splitPane: (paneId, direction, workspaceId) => set((state: StoreState) => {
-    const targetWsId = workspaceId || state.activeWorkspaceId;
-    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
-    if (!ws) return;
+  splitPane: (paneId, direction, workspaceId) => {
+    let event: { wsId: string; newPaneId: string; branchId: string; previousActiveId: string } | null = null;
+    set((state: StoreState) => {
+      const targetWsId = workspaceId || state.activeWorkspaceId;
+      const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
+      if (!ws) return;
 
-    const targetPane = findPane(ws.rootPane, paneId);
-    if (!targetPane || targetPane.type !== 'leaf') return;
+      const targetPane = findPane(ws.rootPane, paneId);
+      if (!targetPane || targetPane.type !== 'leaf') return;
 
-    const newPane = createLeafPane();
-    const branch: PaneBranch = {
-      id: generateId('pane'),
-      type: 'branch',
-      direction,
-      children: [{ ...targetPane }, newPane],
-      sizes: [50, 50],
-    };
+      const newPane = createLeafPane();
+      const branch: PaneBranch = {
+        id: generateId('pane'),
+        type: 'branch',
+        direction,
+        children: [{ ...targetPane }, newPane],
+        sizes: [50, 50],
+      };
 
-    // Replace target with branch
-    const parent = findParent(ws.rootPane, paneId);
-    if (parent) {
-      const idx = parent.children.findIndex((c) => c.id === paneId);
-      if (idx !== -1) {
-        parent.children[idx] = branch;
-      }
-    } else {
-      // Target is the root
-      ws.rootPane = branch;
-    }
-
-    ws.activePaneId = newPane.id;
-  }),
-
-  closePane: (paneId) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
-    if (!ws) return;
-
-    const parent = findParent(ws.rootPane, paneId);
-    if (!parent) {
-      // Can't close root pane, but can clear its surfaces
-      return;
-    }
-
-    const idx = parent.children.findIndex((c) => c.id === paneId);
-    if (idx === -1) return;
-
-    parent.children.splice(idx, 1);
-
-    if (parent.children.length === 1) {
-      // Collapse: replace parent with the remaining child
-      const remaining = parent.children[0];
-      const grandParent = findParent(ws.rootPane, parent.id);
-      if (grandParent) {
-        const parentIdx = grandParent.children.findIndex((c) => c.id === parent.id);
-        if (parentIdx !== -1) {
-          grandParent.children[parentIdx] = remaining;
+      // Replace target with branch
+      const parent = findParent(ws.rootPane, paneId);
+      if (parent) {
+        const idx = parent.children.findIndex((c) => c.id === paneId);
+        if (idx !== -1) {
+          parent.children[idx] = branch;
         }
       } else {
-        // Parent was root
-        ws.rootPane = remaining;
+        // Target is the root
+        ws.rootPane = branch;
+      }
+
+      const previousActiveId = ws.activePaneId;
+      ws.activePaneId = newPane.id;
+
+      event = {
+        wsId: targetWsId,
+        newPaneId: newPane.id,
+        branchId: branch.id,
+        previousActiveId,
+      };
+    });
+    if (event) {
+      const e = event as { wsId: string; newPaneId: string; branchId: string; previousActiveId: string };
+      publishPaneCreated(e.wsId, e.newPaneId, e.branchId);
+      if (e.previousActiveId !== e.newPaneId) {
+        publishPaneFocused(e.wsId, e.newPaneId, e.previousActiveId);
       }
     }
+  },
 
-    // Update active pane
-    const leaves = getLeafPanes(ws.rootPane);
-    if (leaves.length > 0 && !leaves.some((l) => l.id === ws.activePaneId)) {
-      ws.activePaneId = leaves[0].id;
+  closePane: (paneId) => {
+    let event: { wsId: string; closedPaneId: string; previousActiveId: string; newActiveId: string | null } | null = null;
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+      if (!ws) return;
+
+      const parent = findParent(ws.rootPane, paneId);
+      if (!parent) {
+        // Can't close root pane, but can clear its surfaces
+        return;
+      }
+
+      const idx = parent.children.findIndex((c) => c.id === paneId);
+      if (idx === -1) return;
+
+      const previousActiveId = ws.activePaneId;
+      parent.children.splice(idx, 1);
+
+      if (parent.children.length === 1) {
+        // Collapse: replace parent with the remaining child
+        const remaining = parent.children[0];
+        const grandParent = findParent(ws.rootPane, parent.id);
+        if (grandParent) {
+          const parentIdx = grandParent.children.findIndex((c) => c.id === parent.id);
+          if (parentIdx !== -1) {
+            grandParent.children[parentIdx] = remaining;
+          }
+        } else {
+          // Parent was root
+          ws.rootPane = remaining;
+        }
+      }
+
+      // Update active pane
+      const leaves = getLeafPanes(ws.rootPane);
+      if (leaves.length > 0 && !leaves.some((l) => l.id === ws.activePaneId)) {
+        ws.activePaneId = leaves[0].id;
+      }
+
+      event = {
+        wsId: ws.id,
+        closedPaneId: paneId,
+        previousActiveId,
+        newActiveId: ws.activePaneId !== previousActiveId ? ws.activePaneId : null,
+      };
+    });
+    if (event) {
+      const e = event as { wsId: string; closedPaneId: string; previousActiveId: string; newActiveId: string | null };
+      publishPaneClosed(e.wsId, e.closedPaneId);
+      if (e.newActiveId) {
+        publishPaneFocused(e.wsId, e.newActiveId, e.previousActiveId);
+      }
     }
-  }),
+  },
 
-  setActivePane: (paneId) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
-    if (!ws) return;
-    if (findPane(ws.rootPane, paneId)) {
+  setActivePane: (paneId) => {
+    let event: { wsId: string; paneId: string; previousActiveId: string } | null = null;
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+      if (!ws) return;
+      if (!findPane(ws.rootPane, paneId)) return;
+      if (ws.activePaneId === paneId) return; // No-op when already active.
+      event = { wsId: ws.id, paneId, previousActiveId: ws.activePaneId };
       ws.activePaneId = paneId;
+    });
+    if (event) {
+      const e = event as { wsId: string; paneId: string; previousActiveId: string };
+      publishPaneFocused(e.wsId, e.paneId, e.previousActiveId);
     }
-  }),
+  },
 
   updatePaneSizes: (branchId, sizes) => set((state: StoreState) => {
     const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
@@ -221,6 +271,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       if (!draftTarget || draftTarget.type !== 'leaf') return;
       draftTarget.metadata = next;
     });
+    publishPaneMetadataChanged(targetWsId, paneId, next);
   },
 
   getPaneMetadata: (paneId, opts) => {
@@ -242,7 +293,9 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     target.metadata = undefined;
   }),
 
-  focusPaneDirection: (direction) => set((state: StoreState) => {
+  focusPaneDirection: (direction) => {
+    let event: { wsId: string; paneId: string; previousActiveId: string } | null = null;
+    set((state: StoreState) => {
     const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
     if (!ws) return;
 
@@ -287,8 +340,14 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     };
 
     const targetId = navigate(ws.activePaneId, direction);
-    if (targetId) {
+    if (targetId && targetId !== ws.activePaneId) {
+      event = { wsId: ws.id, paneId: targetId, previousActiveId: ws.activePaneId };
       ws.activePaneId = targetId;
     }
-  }),
+    });
+    if (event) {
+      const e = event as { wsId: string; paneId: string; previousActiveId: string };
+      publishPaneFocused(e.wsId, e.paneId, e.previousActiveId);
+    }
+  },
 });

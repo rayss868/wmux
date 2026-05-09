@@ -23,6 +23,7 @@ import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
 import { registerCompanyRpc } from './pipe/handlers/company.rpc';
+import { registerEventsRpc } from './pipe/handlers/events.rpc';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
@@ -264,6 +265,7 @@ registerSystemRpc(rpcRouter);
 registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker);
 registerCompanyRpc(rpcRouter, () => mainWindow);
+registerEventsRpc(rpcRouter);
 
 // IPC: webview CDP registration
 ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, webContentsId: number) => {

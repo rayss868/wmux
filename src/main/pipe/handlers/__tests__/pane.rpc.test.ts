@@ -274,4 +274,37 @@ describe('pane.rpc — metadata', () => {
       expect(res.ok).toBe(true);
     });
   });
+
+  describe('pane.list snapshot wrapper (review fix 2b + 5a)', () => {
+    it('wraps the renderer response with asOfSeq + bootId', async () => {
+      sendToRendererMock.mockResolvedValueOnce([
+        { id: 'p1', surfaceCount: 1, active: true },
+      ]);
+
+      const router = setupRouter();
+      const res = await router.dispatch({ id: 'rpc-list-1', method: 'pane.list', params: {} });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const result = res.result as { asOfSeq: number; bootId: string; panes: unknown[] };
+        expect(typeof result.asOfSeq).toBe('number');
+        expect(typeof result.bootId).toBe('string');
+        expect(result.bootId.length).toBeGreaterThan(0);
+        expect(result.panes).toHaveLength(1);
+      }
+    });
+
+    it('forwards workspaceId param to the renderer', async () => {
+      sendToRendererMock.mockResolvedValueOnce([]);
+      const router = setupRouter();
+      await router.dispatch({
+        id: 'rpc-list-2',
+        method: 'pane.list',
+        params: { workspaceId: 'ws-target' },
+      });
+      const [, method, payload] = sendToRendererMock.mock.calls[0];
+      expect(method).toBe('pane.list');
+      expect(payload).toMatchObject({ workspaceId: 'ws-target' });
+    });
+  });
 });

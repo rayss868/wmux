@@ -4,6 +4,7 @@ import { createWorkspace, generateId, BUILTIN_TEMPLATES, type Pane, type PaneLea
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId } from '../../themes';
+import { publishWorkspaceMetadataChanged } from '../../events/publisher';
 
 /** Collect all leaf panes from a pane tree */
 function collectLeafPanes(pane: Pane): PaneLeaf[] {
@@ -112,13 +113,20 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (ws) ws.name = name;
     }),
 
-    updateWorkspaceMetadata: (id, metadata) => set((state: StoreState) => {
-      const ws = state.workspaces.find((w: Workspace) => w.id === id);
-      if (ws) {
+    updateWorkspaceMetadata: (id, metadata) => {
+      let publishPayload: { wsId: string; full: WorkspaceMetadata; patch: Partial<WorkspaceMetadata> } | null = null;
+      set((state: StoreState) => {
+        const ws = state.workspaces.find((w: Workspace) => w.id === id);
+        if (!ws) return;
         if (!ws.metadata) ws.metadata = {};
         Object.assign(ws.metadata, metadata);
+        publishPayload = { wsId: ws.id, full: { ...ws.metadata }, patch: metadata };
+      });
+      if (publishPayload) {
+        const p = publishPayload as { wsId: string; full: WorkspaceMetadata; patch: Partial<WorkspaceMetadata> };
+        publishWorkspaceMetadataChanged(p.wsId, p.full, p.patch);
       }
-    }),
+    },
 
     reorderWorkspace: (fromIndex, toIndex) => set((state: StoreState) => {
       if (fromIndex === toIndex) return;

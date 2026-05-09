@@ -50,6 +50,8 @@ export const IPC = {
   SCROLLBACK_LOAD: 'scrollback:load',
   // Token tracking
   TOKEN_UPDATE: 'token:update',
+  // EventBus publish — renderer→main one-way for pane lifecycle events
+  EVENTS_PUBLISH: 'events:publish',
   // Window control
   WINDOW_HIDE: 'window:hide',
   // MCP integration status / management (Settings panel + CLI parity)
