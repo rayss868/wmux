@@ -18,6 +18,7 @@ export type IpcErrorCode =
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'
   | 'PERMISSION_DENIED'
+  | 'RESOURCE_EXHAUSTED'
   | 'UNKNOWN';
 
 const KNOWN_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
@@ -25,17 +26,22 @@ const KNOWN_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'VALIDATION_ERROR',
   'NOT_FOUND',
   'PERMISSION_DENIED',
+  'RESOURCE_EXHAUSTED',
   'UNKNOWN',
 ]);
 
 /**
  * Matches a leading `[CODE] ` prefix written by the wrapper so we can
- * detect that a message has already been stamped. Kept in sync with
- * the renderer-side regex in `useIpc.ts` — if you change one, change
- * the other.
+ * detect that a message has already been stamped (avoids double-stamping
+ * if a handler is wrapped twice). Only the main-side regex is anchored
+ * because we're matching against our own raw output here. The
+ * renderer-side regex in `useIpc.ts` deliberately drops the anchor —
+ * Electron wraps the message envelope (`Error invoking remote method
+ * '...': Error: <msg>`) before it reaches the renderer, so the stamp
+ * is no longer at the start.
  */
 const MESSAGE_CODE_PREFIX =
-  /^\[(DAEMON_DISCONNECTED|VALIDATION_ERROR|NOT_FOUND|PERMISSION_DENIED|UNKNOWN)\] /;
+  /^\[(DAEMON_DISCONNECTED|VALIDATION_ERROR|NOT_FOUND|PERMISSION_DENIED|RESOURCE_EXHAUSTED|UNKNOWN)\] /;
 
 export interface StructuredLogEntry {
   ts: number;
@@ -71,6 +77,18 @@ function classifyError(err: unknown): IpcErrorCode {
     lower.includes('daemon is not connected')
   ) {
     return 'DAEMON_DISCONNECTED';
+  }
+
+  // Daemon session cap reached. Phrasing comes from
+  // `DaemonSessionManager.createSession` — keep this matcher in sync.
+  // Without classification the renderer would surface a generic
+  // "알 수 없는 오류" toast, which hides the actionable instruction
+  // (close some panes / restart wmux) that the daemon attached.
+  if (
+    lower.includes('cannot create new terminal') &&
+    lower.includes('active sessions already running')
+  ) {
+    return 'RESOURCE_EXHAUSTED';
   }
 
   return 'UNKNOWN';
