@@ -5,6 +5,25 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.3] — 2026-05-11 — License Bundling + Third-Party Notices Attribution
+
+wmux 빌드 산출물에 부족했던 attribution 의무를 정리한 patch. `THIRD_PARTY_NOTICES` 가 Playwright 하나만 적혀 있었지만 실제 runtime 번들은 **110 packages** (16 직접 deps + Electron + ~93 transitive) 를 포함하고 있었다. MIT/ISC/BSD/Apache-2.0 의 "all copies or substantial portions" 조항을 모두 충족하도록 재구성. 코드 동작 변경 없음 — 사용자 가시 변경은 tray 메뉴에 라이선스 진입점 3 개 신설.
+
+### Added
+
+- **자동 생성 스크립트 `scripts/generate-notices.mjs`** — `npm run notices` 로 production deps tree 전체를 walk 해서 `THIRD_PARTY_NOTICES` 를 재생성한다. 외부 의존성 0 개 (`npm ls --prod --all --json` + `node:fs` 만 사용). 추가 install 없이 CI 에서도 그대로 실행 가능. dependency 변경 시 즉시 갱신.
+- **Tray 컨텍스트 메뉴 라이선스 진입점 3 개** — `About wmux` (네이티브 About 패널), `License (wmux)` (MIT 본문 직접 열기), `Third-party licenses` (`THIRD_PARTY_NOTICES` 직접 열기). `shell.openPath` 로 OS 기본 텍스트 앱에서 열고, 연결된 앱 없으면 `showItemInFolder` fallback. 그동안 wmux 는 application menu 자체가 없어서 사용자가 라이선스 파일에 도달할 경로가 0 이었다.
+- **`app.setAboutPanelOptions`** — 네이티브 About 다이얼로그에 wmux 버전 / MIT copyright pointer / project URL metadata 설정. macOS 는 앱 메뉴에서 자동 표시, Windows/Linux 는 신규 tray 항목 "About wmux" 가 트리거.
+
+### Fixed
+
+- **`THIRD_PARTY_NOTICES` 의 109 packages 누락** — 이전 파일은 Playwright 1 개만 적혀 있어 사실상 MIT/ISC/BSD/Apache-2.0 attribution 의무 (carry copyright notice in "all copies") 가 부분 미준수 상태였다. 자동 생성으로 110 packages 모두 채움. 라이선스 분포: 98 MIT, 7 ISC, 2 Apache-2.0 (electron-squirrel-startup, playwright-core), 2 BSD-3-Clause, 1 BSD-2-Clause. **Zero copyleft, zero unknown** — 재배포 권리 위험 0.
+- **wmux 자체 `LICENSE` 가 빌드 산출물에 누락** — `forge.config.ts` 의 `extraResource` 에 `./LICENSE` 추가. 빌드 후 `<install>/resources/LICENSE` 에 위치하여 wmux 의 MIT 본문도 exe distribution 과 함께 carry. (Electron 본체 LICENSE — Chromium / V8 / Node 커버 — 는 electron-packager 가 install root 의 `wmux.exe` 옆에 자동 emit, 이미 충족됨.)
+
+### Migration Notes
+
+- 자동. 사용자 액션 불필요. 외부 MCP 통합 측에 변경 없음. 빌드 자체에 영향 없는 데이터 + UI 보조 작업.
+
 ## [2.8.2] — 2026-05-11 — Session Cap Headroom + Silent-Failure Fix
 
 @alphabeen 이 v2.8.1 출시 직후 PR #25 로 보고한 두 문제를 한 patch 에 묶는다. v2.8.1 의 startup brick 픽스 이후에도 **runtime accumulation** 시나리오 (X close 후 daemon 이 유지하는 detached 세션이 며칠에 걸쳐 누적) 에서는 hard cap 50 에 다시 도달했고, 더 나쁜 건 cap throw 가 renderer 의 `Ctrl+T` 핸들러에서 silent 하게 묻혀 단축키가 무반응처럼 보이던 결함이다. v2.8.1 사용자는 즉시 업그레이드 권장.
