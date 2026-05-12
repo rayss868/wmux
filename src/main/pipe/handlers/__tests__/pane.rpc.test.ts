@@ -3,6 +3,8 @@ import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerPaneRpc } from '../pane.rpc';
 import { PANE_METADATA_MAX_BYTES } from '../../../../shared/types';
+import { EventBus } from '../../../events/EventBus';
+import { MetadataStore } from '../../../metadata/MetadataStore';
 
 const { sendToRendererMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
@@ -16,6 +18,18 @@ function register(): RpcRouter {
   const router = new RpcRouter();
   registerPaneRpc(router, (() => null) as () => BrowserWindow | null);
   return router;
+}
+
+/**
+ * Setup helper for M0-b metadata tests. Injects a fresh MetadataStore so
+ * each test gets a clean slate without poking the module-level singleton.
+ */
+function setupWithStore(): { router: RpcRouter; store: MetadataStore } {
+  const win = {} as BrowserWindow;
+  const router = new RpcRouter();
+  const store = new MetadataStore({ eventBus: new EventBus() });
+  registerPaneRpc(router, () => win, { store });
+  return { router, store };
 }
 
 describe('pane.rpc — search', () => {
@@ -262,36 +276,91 @@ describe('pane.rpc — metadata', () => {
   });
 
   describe('pane.setMetadata', () => {
-    it('forwards a sanitized patch with merge=true by default', async () => {
-      const router = setupRouter();
+    // === M0-b: paneId-present path writes to MetadataStore directly ===
+
+    it('writes a sanitized patch to MetadataStore with merge=true by default (paneId path)', async () => {
+      const { router, store } = setupWithStore();
       const res = await router.dispatch({
         id: 'rpc-1',
         method: 'pane.setMetadata',
-        params: { paneId: 'pane-x', label: 'Backend', role: 'service' },
+        params: { paneId: 'pane-x', workspaceId: 'ws-1', label: 'Backend', role: 'service' },
       });
 
       expect(res.ok).toBe(true);
-      expect(sendToRendererMock).toHaveBeenCalledTimes(1);
-      const [, method, payload] = sendToRendererMock.mock.calls[0];
-      expect(method).toBe('pane.setMetadata');
-      expect(payload).toMatchObject({
-        paneId: 'pane-x',
-        merge: true,
-        patch: { label: 'Backend', role: 'service' },
-      });
+      // sendToRenderer is NOT called for paneId-present writes (M0-b).
+      expect(sendToRendererMock).not.toHaveBeenCalled();
+      // The store committed the sanitized patch.
+      const entry = store.get('pane-x');
+      expect(entry.version).toBe(1);
+      expect(entry.metadata.label).toBe('Backend');
+      expect(entry.metadata.role).toBe('service');
     });
 
-    it('honors merge=false when caller passes it', async () => {
-      const router = setupRouter();
+    it('honors merge=false (mergeMode=replace) when caller passes it (paneId path)', async () => {
+      const { router, store } = setupWithStore();
+      // Seed with prior metadata so 'replace' has something to discard.
+      store.set('pane-x', { label: 'Old', role: 'svc' }, { workspaceId: 'ws-1' });
+
       await router.dispatch({
         id: 'rpc-2',
         method: 'pane.setMetadata',
-        params: { paneId: 'pane-x', status: 'idle', merge: false },
+        params: { paneId: 'pane-x', workspaceId: 'ws-1', status: 'idle', merge: false },
       });
 
-      const [, , payload] = sendToRendererMock.mock.calls[0];
-      expect(payload).toMatchObject({ merge: false, patch: { status: 'idle' } });
+      const entry = store.get('pane-x');
+      // 'replace' wipes label/role and only status survives.
+      expect(entry.metadata.label).toBeUndefined();
+      expect(entry.metadata.role).toBeUndefined();
+      expect(entry.metadata.status).toBe('idle');
+      expect(sendToRendererMock).not.toHaveBeenCalled();
     });
+
+    it("reply preserves v2.x shape — no 'version' field yet (M0-f adds it)", async () => {
+      const { router } = setupWithStore();
+      const res = await router.dispatch({
+        id: 'rpc-shape',
+        method: 'pane.setMetadata',
+        params: { paneId: 'pane-x', workspaceId: 'ws-1', label: 'X' },
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const result = res.result as { ok: boolean; paneId: string; metadata: unknown; version?: number };
+        expect(result.ok).toBe(true);
+        expect(result.paneId).toBe('pane-x');
+        expect(result.metadata).toBeDefined();
+        expect(result.version).toBeUndefined();   // v2.x compat; M0-f exposes version
+      }
+    });
+
+    it('subsequent setMetadata writes bump version monotonically (paneId path)', async () => {
+      const { router, store } = setupWithStore();
+      await router.dispatch({
+        id: 'v1', method: 'pane.setMetadata',
+        params: { paneId: 'pane-x', workspaceId: 'ws-1', label: 'A' },
+      });
+      await router.dispatch({
+        id: 'v2', method: 'pane.setMetadata',
+        params: { paneId: 'pane-x', workspaceId: 'ws-1', status: 'running' },
+      });
+      const entry = store.get('pane-x');
+      expect(entry.version).toBe(2);
+      expect(entry.metadata.label).toBe('A');
+      expect(entry.metadata.status).toBe('running');
+    });
+
+    it('rejects with a descriptive error when the merged shape blows the byte cap', async () => {
+      const { router } = setupWithStore();
+      const huge = 'x'.repeat(PANE_METADATA_MAX_BYTES);
+      const res = await router.dispatch({
+        id: 'rpc-cap',
+        method: 'pane.setMetadata',
+        params: { paneId: 'pane-x', workspaceId: 'ws-1', custom: { blob: huge } },
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error).toMatch(/exceeds/);
+    });
+
+    // === Legacy fallback: paneId omitted → renderer resolves active leaf ===
 
     it('rejects when label exceeds 64 chars', async () => {
       const router = setupRouter();
@@ -372,12 +441,9 @@ describe('pane.rpc — metadata', () => {
   });
 
   describe('pane.getMetadata', () => {
-    it('forwards paneId to renderer', async () => {
-      const router = setupRouter();
-      sendToRendererMock.mockResolvedValueOnce({
-        paneId: 'pane-x',
-        metadata: { label: 'Backend' },
-      });
+    it('reads from MetadataStore when paneId is provided (no renderer round-trip)', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-x', { label: 'Backend' }, { workspaceId: 'ws-1' });
 
       const res = await router.dispatch({
         id: 'rpc-9',
@@ -386,50 +452,104 @@ describe('pane.rpc — metadata', () => {
       });
 
       expect(res.ok).toBe(true);
-      expect(sendToRendererMock).toHaveBeenCalledWith(
-        expect.any(Function),
-        'pane.getMetadata',
-        { paneId: 'pane-x' },
-      );
+      if (res.ok) {
+        expect(res.result).toEqual({
+          paneId: 'pane-x',
+          metadata: expect.objectContaining({ label: 'Backend' }),
+        });
+      }
+      expect(sendToRendererMock).not.toHaveBeenCalled();
     });
 
-    it('passes undefined paneId through when omitted', async () => {
+    it('reply preserves v2.x shape — no version field (M0-f adds it)', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-x', { label: 'Y' }, { workspaceId: 'ws-1' });
+      const res = await router.dispatch({
+        id: 'rpc-9b',
+        method: 'pane.getMetadata',
+        params: { paneId: 'pane-x' },
+      });
+      if (res.ok) {
+        const result = res.result as { paneId: string; metadata: unknown; version?: number };
+        expect(result.version).toBeUndefined();
+      }
+    });
+
+    it('returns empty metadata for a pane that has never been written', async () => {
+      const { router } = setupWithStore();
+      const res = await router.dispatch({
+        id: 'rpc-9c',
+        method: 'pane.getMetadata',
+        params: { paneId: 'pane-unknown' },
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.result).toEqual({ paneId: 'pane-unknown', metadata: {} });
+      }
+    });
+
+    it('falls through to renderer when paneId is omitted (legacy active-pane resolution)', async () => {
       const router = setupRouter();
       await router.dispatch({
         id: 'rpc-10',
         method: 'pane.getMetadata',
         params: {},
       });
-      const [, , payload] = sendToRendererMock.mock.calls[0];
+      const [, method, payload] = sendToRendererMock.mock.calls[0];
+      expect(method).toBe('pane.getMetadata');
       expect(payload.paneId).toBeUndefined();
     });
   });
 
   describe('pane.clearMetadata', () => {
-    it('forwards paneId to renderer', async () => {
-      const router = setupRouter();
+    it('clears via MetadataStore when paneId is provided (no renderer round-trip)', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-x', { label: 'Backend' }, { workspaceId: 'ws-1' });
+
       const res = await router.dispatch({
         id: 'rpc-11',
         method: 'pane.clearMetadata',
         params: { paneId: 'pane-x' },
       });
       expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.result).toEqual({ ok: true, paneId: 'pane-x' });
+      }
+      // Store entry is cleared but version stays monotonic (clear bumped to v2).
+      const after = store.get('pane-x');
+      expect(after.version).toBe(2);
+      expect(after.metadata).toEqual({});
+      expect(sendToRendererMock).not.toHaveBeenCalled();
+    });
+
+    it('falls through to renderer when paneId is omitted', async () => {
+      const router = setupRouter();
+      const res = await router.dispatch({
+        id: 'rpc-11b',
+        method: 'pane.clearMetadata',
+        params: {},
+      });
+      expect(res.ok).toBe(true);
       const [, method, payload] = sendToRendererMock.mock.calls[0];
       expect(method).toBe('pane.clearMetadata');
-      expect(payload).toEqual({ paneId: 'pane-x', workspaceId: undefined });
+      expect(payload).toEqual({ paneId: undefined, workspaceId: undefined });
     });
   });
 
   describe('review fixes', () => {
-    it('1.1 — forwards workspaceId for setMetadata so cross-workspace writes are scoped', async () => {
-      const router = setupRouter();
+    it('1.1 — workspaceId scopes the MetadataStore write (M0-b paneId path)', async () => {
+      const { router, store } = setupWithStore();
       await router.dispatch({
         id: 'rpc-fix-1',
         method: 'pane.setMetadata',
         params: { workspaceId: 'ws-caller', paneId: 'pane-y', label: 'X' },
       });
-      const [, , payload] = sendToRendererMock.mock.calls[0];
-      expect(payload.workspaceId).toBe('ws-caller');
+      // The store remembers the workspaceId on the entry so subsequent
+      // events emit with the right scope.
+      const entry = store.get('pane-y');
+      expect(entry.metadata.label).toBe('X');
+      // sendToRenderer NOT called because paneId was provided.
+      expect(sendToRendererMock).not.toHaveBeenCalled();
     });
 
     it('1.1 — forwards workspaceId for getMetadata + clearMetadata', async () => {

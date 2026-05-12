@@ -10,6 +10,7 @@ import {
   PANE_METADATA_CUSTOM_MAX_ENTRIES,
 } from '../../../shared/types';
 import { eventBus } from '../../events/EventBus';
+import { metadataStore, type MergeMode, type MetadataStore } from '../../metadata/MetadataStore';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -86,7 +87,20 @@ function sanitizeMetadataPatch(input: MetadataPatchInput): SanitizedPatch | { er
   return out;
 }
 
-export function registerPaneRpc(router: RpcRouter, getWindow: GetWindow): void {
+/**
+ * Options for registerPaneRpc — exposed so tests can inject a fresh
+ * MetadataStore instance instead of the module-level singleton.
+ */
+export interface PaneRpcOptions {
+  store?: MetadataStore;
+}
+
+export function registerPaneRpc(
+  router: RpcRouter,
+  getWindow: GetWindow,
+  opts: PaneRpcOptions = {},
+): void {
+  const store = opts.store ?? metadataStore;
   /**
    * pane.list — returns all panes (leaf nodes) of the current workspace,
    * wrapped in a snapshot envelope. `asOfSeq` is the EventBus seq at the
@@ -133,9 +147,22 @@ export function registerPaneRpc(router: RpcRouter, getWindow: GetWindow): void {
   /**
    * pane.setMetadata — set descriptive metadata on a leaf pane.
    * params: { paneId?, workspaceId?, label?, role?, status?, custom?, merge? }
+   *
+   * M0-b authority migration:
+   *   - paneId provided → MetadataStore.set() directly (main authoritative).
+   *     paneSlice mirror conversion lands in M0-d; until then, pane.list
+   *     (still renderer-sourced) may briefly lag behind. M0-c (pane.list
+   *     snapshot integration) closes that gap.
+   *   - paneId omitted → sendToRenderer fallback so the renderer can resolve
+   *     the active leaf. This legacy path retires when M0-d introduces a
+   *     main-side active-leaf resolver.
+   *
+   * Wire shape is preserved from v2.x. The new `version` field on the reply
+   * (and `expectedVersion` / `mergeMode` on params) lands with M0-f.
+   *
    * External MCP callers SHOULD pass workspaceId so writes stay scoped to the
    * caller's workspace and don't get hijacked to whichever ws the user is
-   * currently viewing. paneId omitted → active pane in the targeted workspace.
+   * currently viewing.
    * merge defaults to true (patch-style); false replaces the metadata object.
    */
   router.register('pane.setMetadata', (params) => {
@@ -147,6 +174,37 @@ export function registerPaneRpc(router: RpcRouter, getWindow: GetWindow): void {
     if ('error' in sanitized) {
       return Promise.reject(new Error(`pane.setMetadata: ${sanitized.error}`));
     }
+
+    // Fast path: caller addressed a specific pane. Write to MetadataStore
+    // directly; do not round-trip the renderer.
+    if (paneId) {
+      const mergeMode: MergeMode = merge ? 'merge' : 'replace';
+      let result;
+      try {
+        result = store.set(paneId, sanitized, {
+          mergeMode,
+          workspaceId: workspaceId ?? '',
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return Promise.reject(new Error(`pane.setMetadata: ${msg}`));
+      }
+      if (!result.ok) {
+        // v2.x wire has no expectedVersion, so VERSION_CONFLICT is
+        // unreachable today. Still report it cleanly if M0-f's wire add
+        // lands a caller in this branch with expectedVersion.
+        return Promise.reject(
+          new Error(`pane.setMetadata: ${result.error} (currentVersion=${result.currentVersion})`),
+        );
+      }
+      // v2.x-compatible reply shape: { ok, paneId, metadata }. The version
+      // field lands in M0-f. Internal callers that already speak the M0
+      // API can read it from `store.get(paneId).version`.
+      return Promise.resolve({ ok: true, paneId, metadata: result.metadata });
+    }
+
+    // Legacy fallback: renderer resolves the active leaf id and writes
+    // paneSlice. M0-d will replace this path with a main-side resolver.
     return sendToRenderer(getWindow, 'pane.setMetadata', {
       paneId,
       workspaceId,
@@ -158,20 +216,44 @@ export function registerPaneRpc(router: RpcRouter, getWindow: GetWindow): void {
   /**
    * pane.getMetadata — read metadata for a leaf pane.
    * params: { paneId?, workspaceId? } — omitted workspaceId → active workspace.
+   *
+   * M0-b: paneId-present reads come from MetadataStore. paneId-absent reads
+   * still go through the renderer until M0-d.
    */
   router.register('pane.getMetadata', (params) => {
     const paneId = typeof params['paneId'] === 'string' ? params['paneId'] : undefined;
     const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+
+    if (paneId) {
+      const entry = store.get(paneId);
+      // v2.x-compatible reply shape: { paneId, metadata }. M0-f adds version.
+      return Promise.resolve({ paneId, metadata: entry.metadata });
+    }
+
     return sendToRenderer(getWindow, 'pane.getMetadata', { paneId, workspaceId });
   });
 
   /**
    * pane.clearMetadata — drop all metadata for a leaf pane.
    * params: { paneId?, workspaceId? }
+   *
+   * M0-b: paneId-present clears go through MetadataStore. paneId-absent
+   * clears still flow through the renderer.
    */
   router.register('pane.clearMetadata', (params) => {
     const paneId = typeof params['paneId'] === 'string' ? params['paneId'] : undefined;
     const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+
+    if (paneId) {
+      const result = store.clear(paneId);
+      // result is always ok for clear(); pull out the version-less reply.
+      return Promise.resolve(
+        result.ok
+          ? { ok: true, paneId }
+          : { ok: false, paneId, error: result.error },
+      );
+    }
+
     return sendToRenderer(getWindow, 'pane.clearMetadata', { paneId, workspaceId });
   });
 
