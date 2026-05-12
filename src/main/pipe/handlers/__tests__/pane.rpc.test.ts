@@ -757,5 +757,72 @@ describe('pane.rpc — metadata', () => {
       expect(method).toBe('pane.list');
       expect(payload).toMatchObject({ workspaceId: 'ws-target' });
     });
+
+    // === M0-c: MetadataStore snapshot inject into pane.list panes[] ===
+
+    it('panes carry metadata + version joined from MetadataStore (M0-c)', async () => {
+      const { router, store } = setupWithStore();
+      // Seed the store with metadata for pane-meta.
+      const setResult = store.set(
+        'pane-meta',
+        { label: 'Backend', role: 'service' },
+        { workspaceId: 'ws-1' },
+      );
+      expect(setResult.ok).toBe(true);
+
+      // Renderer returns the pane tree; metadata is injected by the handler.
+      sendToRendererMock.mockResolvedValueOnce([
+        { id: 'pane-meta', surfaceCount: 1, active: true },
+      ]);
+
+      const res = await router.dispatch({
+        id: 'rpc-list-m0c-1',
+        method: 'pane.list',
+        params: { workspaceId: 'ws-1' },
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const result = res.result as {
+          asOfSeq: number;
+          bootId: string;
+          panes: Array<{
+            id: string;
+            metadata: { label?: string; role?: string };
+            version: number;
+          }>;
+        };
+        expect(result.panes).toHaveLength(1);
+        const pane = result.panes[0];
+        const stored = store.get('pane-meta');
+        expect(pane.version).toBe(stored.version);
+        expect(pane.metadata.label).toBe(stored.metadata.label);
+        expect(pane.metadata.role).toBe(stored.metadata.role);
+      }
+    });
+
+    it('panes without a store entry get metadata: {} and version: 0 (M0-c)', async () => {
+      const { router } = setupWithStore();
+      sendToRendererMock.mockResolvedValueOnce([
+        { id: 'pane-unknown', surfaceCount: 1, active: true },
+      ]);
+
+      const res = await router.dispatch({
+        id: 'rpc-list-m0c-2',
+        method: 'pane.list',
+        params: {},
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const result = res.result as {
+          panes: Array<{ id: string; metadata: Record<string, unknown>; version: number }>;
+        };
+        expect(result.panes).toHaveLength(1);
+        expect(result.panes[0].id).toBe('pane-unknown');
+        expect(result.panes[0].metadata).toEqual({});
+        expect(result.panes[0].version).toBe(0);
+      }
+    });
   });
 });

@@ -8,8 +8,8 @@ import {
   PANE_METADATA_STATUS_MAX,
   PANE_METADATA_CUSTOM_KEY_MAX,
   PANE_METADATA_CUSTOM_MAX_ENTRIES,
+  type PaneMetadata,
 } from '../../../shared/types';
-import { eventBus } from '../../events/EventBus';
 import { metadataStore, type MergeMode, type MetadataStore } from '../../metadata/MetadataStore';
 
 type GetWindow = () => BrowserWindow | null;
@@ -104,18 +104,62 @@ export function registerPaneRpc(
   /**
    * pane.list — returns all panes (leaf nodes) of the current workspace,
    * wrapped in a snapshot envelope. `asOfSeq` is the EventBus seq at the
-   * moment of the snapshot — clients reconciling after a `resync` should
-   * drain events with `seq > asOfSeq`. `bootId` invalidates cached state
-   * across daemon restarts (mismatch ⇒ drop ALL caches, including pane ids).
+   * moment of the MetadataStore snapshot — clients reconciling after a
+   * `resync` should drain events with `seq > asOfSeq`. `bootId` invalidates
+   * cached state across daemon restarts (mismatch ⇒ drop ALL caches,
+   * including pane ids).
    *
-   * Wire shape: `{ asOfSeq: number, bootId: string, panes: PaneListEntry[] }`.
+   * M0-c: each pane entry is augmented with `metadata` + `version` joined
+   * from MetadataStore.snapshot(). We capture the snapshot BEFORE calling
+   * the renderer so the envelope's asOfSeq + bootId stay atomic with the
+   * metadata view, even if the store mutates while sendToRenderer awaits.
+   * Pane tree shape changes that happen after the snapshot are reconciled
+   * by the client via the event stream (events with seq > asOfSeq).
+   *
+   * Panes that have no entry in the store get `metadata: {}` and
+   * `version: 0` — the same shape MetadataStore.get() returns for a
+   * never-set / fully-cleared paneId, so external clients can use a single
+   * code path for both states.
+   *
+   * Wire shape:
+   *   { asOfSeq: number, bootId: string,
+   *     panes: Array<PaneListEntry & { metadata: PaneMetadata, version: number }> }
    */
   router.register('pane.list', async (params) => {
-    const panes = await sendToRenderer(getWindow, 'pane.list', params);
+    // Capture the metadata snapshot first — this freezes asOfSeq + bootId
+    // alongside the metadata view in a single synchronous task. The
+    // following await may interleave with store writes, but they show up
+    // in events with seq > asOfSeq, not in this reply.
+    const snapshot = store.snapshot();
+    const metadataByPaneId = new Map<string, { metadata: PaneMetadata; version: number }>();
+    for (const entry of snapshot.entries) {
+      metadataByPaneId.set(entry.paneId, {
+        metadata: entry.metadata,
+        version: entry.version,
+      });
+    }
+
+    const panes = (await sendToRenderer(getWindow, 'pane.list', params)) as Array<
+      Record<string, unknown> & { id?: unknown }
+    >;
+
+    const joined = panes.map((pane) => {
+      const paneId = typeof pane.id === 'string' ? pane.id : '';
+      const found = metadataByPaneId.get(paneId);
+      // Missing-pane fallback: metadata: {}, version: 0 — identical to
+      // MetadataStore.get() on an unknown paneId. Explicit so clients
+      // never see undefined for either field.
+      return {
+        ...pane,
+        metadata: found?.metadata ?? {},
+        version: found?.version ?? 0,
+      };
+    });
+
     return {
-      asOfSeq: eventBus.latestSeq(),
-      bootId: eventBus.bootId,
-      panes,
+      asOfSeq: snapshot.asOfSeq,
+      bootId: snapshot.bootId,
+      panes: joined,
     };
   });
 
