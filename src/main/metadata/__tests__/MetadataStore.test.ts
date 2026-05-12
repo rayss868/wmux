@@ -161,6 +161,30 @@ describe('MetadataStore', () => {
       });                                                // preserved
     });
 
+    it("'replaceShared' silently ignores patch.custom — substrate guarantee against namespace clobber", () => {
+      // A misbehaving (or naive) caller sends shared fields + their own
+      // custom map. The substrate must NOT let that overwrite another
+      // tool's namespaced state — that's the whole point of replaceShared.
+      const result = store.set(
+        'p-1',
+        {
+          label: 'Owned',
+          custom: { 'attacker.steal': 'true' },          // ← attempt to clobber
+        },
+        { mergeMode: 'replaceShared', workspaceId: 'ws-1' },
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.metadata.label).toBe('Owned');
+      // base.custom survives wholesale; patch.custom is dropped.
+      expect(result.metadata.custom).toEqual({
+        'orchestrator.taskId': 'T-1',
+        'qa.status': 'pending',
+      });
+      // attacker key MUST NOT land.
+      expect(result.metadata.custom?.['attacker.steal']).toBeUndefined();
+    });
+
     it('version is bumped on the post-merge shape, regardless of mode', () => {
       // p-1 is at v1 after the beforeEach.
       const replace = store.set('p-1', {}, { mergeMode: 'replace', workspaceId: 'ws-1' });
@@ -272,6 +296,38 @@ describe('MetadataStore', () => {
       expect(() =>
         store.set('p-1', { custom }, { workspaceId: 'ws-1' }),
       ).toThrow(/"custom" exceeds/);
+    });
+
+    it('rejects cumulative merge writes that grow custom past the entry cap', () => {
+      // Each individual patch stays under the cap, but accumulated state
+      // crosses it. The post-merge check must catch this — otherwise the
+      // contract documented in stability.md is meaningless.
+      const half = Math.ceil(PANE_METADATA_CUSTOM_MAX_ENTRIES / 2);
+      const first: Record<string, string> = {};
+      const second: Record<string, string> = {};
+      for (let i = 0; i < half; i++) first[`a${i}`] = 'v';
+      for (let i = 0; i < half + 1; i++) second[`b${i}`] = 'v'; // pushes past cap when merged
+      store.set('p-1', { custom: first }, { workspaceId: 'ws-1' });
+      expect(() =>
+        store.set('p-1', { custom: second }, { workspaceId: 'ws-1' }),
+      ).toThrow(/"custom" exceeds/);
+    });
+
+    it('size cap check runs AFTER updatedAt is appended (boundary safety)', () => {
+      // sanitize() does not enforce the byte cap; the post-merge check does.
+      // The codex P2 #2 fix moved that check to run after updatedAt is appended
+      // so the cap reflects the actual stored shape.
+      //
+      // Envelope arithmetic for {custom:{k:VALUE}}:
+      //   raw overhead         = {"custom":{"k":""}}             → 18 bytes
+      //   updatedAt overhead   = ,"updatedAt":1234567890123       → ~25 bytes (13-digit ts)
+      // We pick value = MAX_BYTES - 30 so that:
+      //   pre-updatedAt JSON size  = MAX_BYTES - 12 (would have passed the old check)
+      //   post-updatedAt JSON size = MAX_BYTES + 13 (must throw with the fix)
+      const value = 'x'.repeat(PANE_METADATA_MAX_BYTES - 30);
+      expect(() =>
+        store.set('p-1', { custom: { k: value } }, { workspaceId: 'ws-1' }),
+      ).toThrow(/exceeds .* bytes/);
     });
 
     it('rejects merged shape exceeding PANE_METADATA_MAX_BYTES', () => {

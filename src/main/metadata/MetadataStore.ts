@@ -158,11 +158,23 @@ export class MetadataStore {
     }
 
     const merged = this.merge(existing?.metadata ?? {}, sanitized, mode);
+    merged.updatedAt = Date.now();
+
+    // Validate the post-merge shape after every field that will be stored
+    // is present. Two cumulative limits:
+    //   1. custom entry count — sanitize() only sees the patch, so a chain
+    //      of merge-mode writes could grow the stored custom past the cap.
+    //   2. total byte cap — JSON.stringify the final committed shape
+    //      (updatedAt + version-less metadata) to ensure boundary payloads
+    //      that pass with just sanitized fields still fail once updatedAt
+    //      is appended.
+    if (merged.custom && Object.keys(merged.custom).length > PANE_METADATA_CUSTOM_MAX_ENTRIES) {
+      throw new Error(`"custom" exceeds ${PANE_METADATA_CUSTOM_MAX_ENTRIES} entries`);
+    }
     if (JSON.stringify(merged).length > PANE_METADATA_MAX_BYTES) {
       throw new Error(`metadata exceeds ${PANE_METADATA_MAX_BYTES} bytes`);
     }
 
-    merged.updatedAt = Date.now();
     const newVersion = currentVersion + 1;
     const workspaceId = opts.workspaceId ?? existing?.workspaceId ?? '';
 
@@ -411,14 +423,17 @@ export class MetadataStore {
     }
 
     if (mode === 'replaceShared') {
-      // Replace top-level shared fields wholesale; preserve custom from base
-      // unless patch explicitly provides one.
+      // Replace top-level shared fields wholesale; preserve base.custom
+      // wholesale. patch.custom is silently ignored — callers that need to
+      // write custom should use 'merge' (additive) or 'replace' (full
+      // overwrite). This is the substrate guarantee that lets one tool
+      // claim the shared display vocabulary without touching another
+      // tool's namespaced state. See docs/PROTOCOL.md §1.4.
       const result: PaneMetadata = {};
       if (base.custom !== undefined) result.custom = { ...base.custom };
       if (patch.label !== undefined) result.label = patch.label;
       if (patch.role !== undefined) result.role = patch.role;
       if (patch.status !== undefined) result.status = patch.status;
-      if (patch.custom !== undefined) result.custom = { ...patch.custom };
       return result;
     }
 
