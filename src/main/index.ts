@@ -37,6 +37,7 @@ import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
+import { collectLegacyMetadata } from './metadata/legacyMigration';
 import { sessionManager } from './ipc/handlers/session.handler';
 
 // Force English for Chromium internal messages to avoid encoding corruption
@@ -492,10 +493,44 @@ app.on('ready', async () => {
   //
   // Hydrate first, then wire — otherwise the hydrate path itself would
   // re-trigger a persist write of state we just read from disk.
+  //
+  // M0-f follow-up (codex P2): v2.8.x → v2.9.0 migration. When
+  // `metadata.json` does not exist yet (first boot after upgrade),
+  // `loadMetadata()` returns null. `session.json` still carries every
+  // user-set label/role/status/custom on `PaneLeaf.metadata`. Without the
+  // lift below, `pane.list` would still render correctly (it falls back
+  // to the renderer's PaneLeaf.metadata — M0-c P2 fix) but
+  // `pane.getMetadata` would return `{}/version 0`, and the next
+  // merge-mode write would silently drop the legacy fields. We migrate
+  // them into the store and persist immediately so the second boot uses
+  // metadata.json as the source of truth and skips this branch.
   try {
     const persistedMetadata = sessionManager.loadMetadata();
     if (persistedMetadata) {
       metadataStore.hydrate(persistedMetadata);
+    } else {
+      const session = sessionManager.load();
+      if (session) {
+        const migrated = collectLegacyMetadata(session);
+        if (migrated.length > 0) {
+          // Hydrate directly, then persist synchronously. The persist
+          // callback is wired AFTER this block so hydrate() does not
+          // recursively trigger saveMetadataSync; we drive the initial
+          // write here explicitly so the next boot reads metadata.json.
+          metadataStore.hydrate({ schema_version: 1, entries: migrated });
+          try {
+            sessionManager.saveMetadataSync(metadataStore.serialize());
+            console.log(
+              `[boot] migrated ${migrated.length} legacy PaneLeaf.metadata entries to MetadataStore`,
+            );
+          } catch (persistErr) {
+            // Non-fatal: hydrate succeeded and the in-memory store has the
+            // legacy data, so this boot is correct. The next mutation goes
+            // through the persist callback below and will retry the write.
+            console.error('[Main] legacy metadata persist failed:', persistErr);
+          }
+        }
+      }
     }
   } catch (err) {
     console.error('[Main] metadata hydrate failed; starting clean:', err);

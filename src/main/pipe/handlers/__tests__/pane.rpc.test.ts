@@ -272,7 +272,23 @@ function setupRouter(): RpcRouter {
 describe('pane.rpc — metadata', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    sendToRendererMock.mockResolvedValue({ ok: true });
+    // M0-d follow-up (codex P1): resolveTarget now routes paneId-present
+    // calls through `pane.validateWorkspace` so an MCP scoped to one
+    // workspace can't read/write metadata on a pane in another workspace.
+    // Default the mock to echo back the caller's paneId+workspaceId as if
+    // the renderer confirmed membership; tests that want to exercise the
+    // rejection path override with `mockResolvedValueOnce({ error: ... })`.
+    sendToRendererMock.mockImplementation(
+      (_getWin: unknown, method: string, params: Record<string, unknown>) => {
+        if (method === 'pane.validateWorkspace') {
+          return Promise.resolve({
+            paneId: typeof params['paneId'] === 'string' ? params['paneId'] : '',
+            workspaceId: typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined,
+          });
+        }
+        return Promise.resolve({ ok: true });
+      },
+    );
   });
 
   describe('pane.setMetadata', () => {
@@ -287,8 +303,12 @@ describe('pane.rpc — metadata', () => {
       });
 
       expect(res.ok).toBe(true);
-      // sendToRenderer is NOT called for paneId-present writes (M0-b).
-      expect(sendToRendererMock).not.toHaveBeenCalled();
+      // M0-d follow-up (codex P1): paneId-present writes now round-trip
+      // through `pane.validateWorkspace` to verify workspace membership.
+      // The store write itself still happens in main — sendToRenderer is
+      // ONLY called for the validation IPC, never for the actual mutation.
+      expect(sendToRendererMock).toHaveBeenCalledTimes(1);
+      expect(sendToRendererMock.mock.calls[0][1]).toBe('pane.validateWorkspace');
       // The store committed the sanitized patch.
       const entry = store.get('pane-x');
       expect(entry.version).toBe(1);
@@ -312,7 +332,10 @@ describe('pane.rpc — metadata', () => {
       expect(entry.metadata.label).toBeUndefined();
       expect(entry.metadata.role).toBeUndefined();
       expect(entry.metadata.status).toBe('idle');
-      expect(sendToRendererMock).not.toHaveBeenCalled();
+      // M0-d follow-up (codex P1): only the validateWorkspace IPC is
+      // called; the actual replace lands in MetadataStore.
+      expect(sendToRendererMock).toHaveBeenCalledTimes(1);
+      expect(sendToRendererMock.mock.calls[0][1]).toBe('pane.validateWorkspace');
     });
 
     it('reply carries v2.x-compatible keys plus the M0-f `version` field', async () => {
@@ -511,7 +534,7 @@ describe('pane.rpc — metadata', () => {
   });
 
   describe('pane.getMetadata', () => {
-    it('reads from MetadataStore when paneId is provided (no renderer round-trip)', async () => {
+    it('reads from MetadataStore when paneId is provided (only the validateWorkspace IPC fires)', async () => {
       const { router, store } = setupWithStore();
       store.set('pane-x', { label: 'Backend' }, { workspaceId: 'ws-1' });
 
@@ -530,7 +553,11 @@ describe('pane.rpc — metadata', () => {
           version: 1,
         });
       }
-      expect(sendToRendererMock).not.toHaveBeenCalled();
+      // M0-d follow-up (codex P1): paneId-present reads validate workspace
+      // membership via the renderer. The actual read still hits the store
+      // directly; sendToRenderer is only called for that validation.
+      expect(sendToRendererMock).toHaveBeenCalledTimes(1);
+      expect(sendToRendererMock.mock.calls[0][1]).toBe('pane.validateWorkspace');
     });
 
     it('reply includes the M0-f `version` field alongside paneId+metadata', async () => {
@@ -591,7 +618,7 @@ describe('pane.rpc — metadata', () => {
   });
 
   describe('pane.clearMetadata', () => {
-    it('clears via MetadataStore when paneId is provided (no renderer round-trip)', async () => {
+    it('clears via MetadataStore when paneId is provided (only the validateWorkspace IPC fires)', async () => {
       const { router, store } = setupWithStore();
       store.set('pane-x', { label: 'Backend' }, { workspaceId: 'ws-1' });
 
@@ -610,7 +637,10 @@ describe('pane.rpc — metadata', () => {
       const after = store.get('pane-x');
       expect(after.version).toBe(2);
       expect(after.metadata).toEqual({});
-      expect(sendToRendererMock).not.toHaveBeenCalled();
+      // M0-d follow-up (codex P1): paneId-present clears validate workspace
+      // membership via the renderer before MetadataStore performs the clear.
+      expect(sendToRendererMock).toHaveBeenCalledTimes(1);
+      expect(sendToRendererMock.mock.calls[0][1]).toBe('pane.validateWorkspace');
     });
 
     it('resolves active leaf via pane.resolveActiveLeaf IPC when paneId is omitted', async () => {
@@ -650,8 +680,15 @@ describe('pane.rpc — metadata', () => {
       // events emit with the right scope.
       const entry = store.get('pane-y');
       expect(entry.metadata.label).toBe('X');
-      // sendToRenderer NOT called because paneId was provided.
-      expect(sendToRendererMock).not.toHaveBeenCalled();
+      // M0-d follow-up (codex P1): the only sendToRenderer call is the
+      // validateWorkspace round-trip — the workspace+pane pair gets
+      // confirmed by the renderer before MetadataStore commits.
+      expect(sendToRendererMock).toHaveBeenCalledTimes(1);
+      expect(sendToRendererMock.mock.calls[0][1]).toBe('pane.validateWorkspace');
+      expect(sendToRendererMock.mock.calls[0][2]).toEqual({
+        paneId: 'pane-y',
+        workspaceId: 'ws-caller',
+      });
     });
 
     it('1.1 — forwards workspaceId on resolveActiveLeaf for getMetadata + clearMetadata', async () => {
@@ -1144,6 +1181,112 @@ describe('pane.rpc — metadata', () => {
       const after = store.get('pane-mm');
       expect(after.version).toBe(1);
       expect(after.metadata.label).toBe('A');
+    });
+  });
+
+  // === M0-d follow-up (codex P1) — cross-workspace metadata access ===
+  //
+  // M0-b moved metadata writes from useRpcBridge into MetadataStore.set()
+  // (paneId-keyed). M0-d then removed the now-dead renderer handlers and
+  // their workspace membership check. Without the follow-up validation in
+  // `resolveTarget`, an MCP scoped to workspace A could pass workspace B's
+  // paneId together with its own workspaceId and quietly read/mutate B's
+  // metadata. These three guards lock the validation in via the new
+  // `pane.validateWorkspace` IPC path.
+  describe('cross-workspace access rejected (codex P1)', () => {
+    it('setMetadata rejects paneId from a different workspace', async () => {
+      const { router, store } = setupWithStore();
+      // Renderer rejects the validation — paneId belongs elsewhere.
+      sendToRendererMock.mockImplementation(
+        (_w: unknown, method: string) => {
+          if (method === 'pane.validateWorkspace') {
+            return Promise.resolve({
+              error: 'pane.validateWorkspace: leaf "b-pane" not in workspace "ws-a"',
+            });
+          }
+          return Promise.resolve({ ok: true });
+        },
+      );
+
+      const res = await router.dispatch({
+        id: 'p1-set',
+        method: 'pane.setMetadata',
+        params: { paneId: 'b-pane', workspaceId: 'ws-a', label: 'Hijack' },
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error).toMatch(/not in workspace/);
+      }
+      // Store untouched — the attacker's payload must not have landed.
+      const entry = store.get('b-pane');
+      expect(entry.version).toBe(0);
+      expect(entry.metadata).toEqual({});
+    });
+
+    it('getMetadata rejects paneId from a different workspace', async () => {
+      const { router, store } = setupWithStore();
+      // Seed legitimate metadata on b-pane under its real workspace —
+      // an attacker scoped to ws-a must NOT be able to read it.
+      store.set('b-pane', { label: 'Secret' }, { workspaceId: 'ws-b' });
+
+      sendToRendererMock.mockImplementation(
+        (_w: unknown, method: string) => {
+          if (method === 'pane.validateWorkspace') {
+            return Promise.resolve({
+              error: 'pane.validateWorkspace: leaf "b-pane" not in workspace "ws-a"',
+            });
+          }
+          return Promise.resolve({ ok: true });
+        },
+      );
+
+      const res = await router.dispatch({
+        id: 'p1-get',
+        method: 'pane.getMetadata',
+        params: { paneId: 'b-pane', workspaceId: 'ws-a' },
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error).toMatch(/not in workspace/);
+      }
+      // The seeded secret is still there — the attacker's read failed
+      // BEFORE MetadataStore.get() ran, so no leak.
+      expect(store.get('b-pane').metadata.label).toBe('Secret');
+    });
+
+    it('clearMetadata rejects paneId from a different workspace', async () => {
+      const { router, store } = setupWithStore();
+      // Seed metadata on b-pane under its real workspace — an attacker
+      // scoped to ws-a must NOT be able to wipe it.
+      store.set('b-pane', { label: 'Important' }, { workspaceId: 'ws-b' });
+
+      sendToRendererMock.mockImplementation(
+        (_w: unknown, method: string) => {
+          if (method === 'pane.validateWorkspace') {
+            return Promise.resolve({
+              error: 'pane.validateWorkspace: leaf "b-pane" not in workspace "ws-a"',
+            });
+          }
+          return Promise.resolve({ ok: true });
+        },
+      );
+
+      const res = await router.dispatch({
+        id: 'p1-clear',
+        method: 'pane.clearMetadata',
+        params: { paneId: 'b-pane', workspaceId: 'ws-a' },
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error).toMatch(/not in workspace/);
+      }
+      // The seeded metadata survives — clear() was never called.
+      const entry = store.get('b-pane');
+      expect(entry.metadata.label).toBe('Important');
+      expect(entry.version).toBe(1);
     });
   });
 });

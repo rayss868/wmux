@@ -200,17 +200,52 @@ export function registerPaneRpc(
   });
 
   /**
-   * Resolves the target pane for a metadata RPC. When the caller provides
-   * `paneId`, we use it directly. When `paneId` is omitted, we ask the
-   * renderer for the active leaf via the internal `pane.resolveActiveLeaf`
-   * channel — read-only; paneSlice is not mutated. The result feeds into
-   * MetadataStore, which remains the sole writer on the metadata surface.
+   * Resolves the target pane for a metadata RPC. Two paths:
+   *
+   *   - `paneId` provided: ask the renderer to confirm the paneId actually
+   *     belongs to `workspaceId` (or, when workspaceId is omitted, to any
+   *     workspace) via the internal `pane.validateWorkspace` channel.
+   *     MetadataStore is keyed by paneId only — without this check an MCP
+   *     scoped to workspace A could pass B's paneId + its own workspaceId
+   *     and read/write B's metadata (codex P1, M0-d follow-up). The renderer
+   *     holds the authoritative pane tree, so it's the right place to ask.
+   *   - `paneId` omitted: ask the renderer for the active leaf via the
+   *     `pane.resolveActiveLeaf` channel. Read-only; paneSlice is not
+   *     mutated. The resolved leaf id is already scoped to the workspace
+   *     the renderer answered for, so no additional check is needed.
+   *
+   * Both channels are renderer-internal — they never expose metadata
+   * patches; the renderer only answers "is this pane in that workspace"
+   * (validate) or "which leaf is active" (resolve). MetadataStore remains
+   * the sole writer on the metadata surface.
    */
   async function resolveTarget(
     paneId: string | undefined,
     workspaceId: string | undefined,
   ): Promise<{ paneId: string; workspaceId: string | undefined }> {
-    if (paneId) return { paneId, workspaceId };
+    if (paneId) {
+      // M0-d follow-up (codex P1) — workspace membership check. MetadataStore
+      // is keyed by paneId only, so without this an MCP scoped to workspace
+      // A could pass B's paneId together with its own workspaceId and quietly
+      // read/mutate B's metadata. pane.list still uses the renderer tree-walk
+      // path (no resolveTarget call), so this only adds one IPC per
+      // set/get/clear write — well below the resolveActiveLeaf budget the
+      // paneId-omitted path already pays.
+      const validation = (await sendToRenderer(getWindow, 'pane.validateWorkspace', {
+        paneId,
+        workspaceId,
+      })) as { paneId?: string; workspaceId?: string; error?: string };
+      if (validation.error || !validation.paneId) {
+        throw new Error(validation.error ?? 'pane.validateWorkspace: pane not found');
+      }
+      return {
+        paneId: validation.paneId,
+        // When the caller omitted workspaceId, use the workspaceId the
+        // renderer just confirmed — it's the authoritative value for
+        // event scoping on the subsequent MetadataStore write.
+        workspaceId: workspaceId ?? validation.workspaceId,
+      };
+    }
     const resolved = (await sendToRenderer(getWindow, 'pane.resolveActiveLeaf', {
       workspaceId,
     })) as { paneId?: string; workspaceId?: string; error?: string };

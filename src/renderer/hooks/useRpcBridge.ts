@@ -392,6 +392,47 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     return { paneId: target.id, workspaceId: wsId };
   }
 
+  if (method === 'pane.validateWorkspace') {
+    // M0-d follow-up (codex P1): main asks the renderer to confirm that a
+    // caller-supplied `paneId` actually belongs to the caller's `workspaceId`.
+    // MetadataStore is keyed by paneId only, so without this check an MCP
+    // scoped to workspace A could pass B's paneId together with its own
+    // workspaceId and quietly read/write B's metadata via the paneId-present
+    // branch of `resolveTarget` in `pane.rpc.ts`. The renderer holds the
+    // authoritative pane tree, so we ask it.
+    //
+    // Read-only — does not mutate paneSlice. Returns the authoritative
+    // workspaceId on success so the handler can scope events even if the
+    // caller omitted `workspaceId` (paneId-only legacy calls).
+    const paneId = typeof params.paneId === 'string' ? params.paneId : '';
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    if (paneId.length === 0) {
+      return { error: 'pane.validateWorkspace: paneId required' };
+    }
+    // When the caller passed an explicit workspaceId, we MUST scope the
+    // lookup to it — otherwise we'd defeat the whole check (finding the
+    // pane in another workspace and then claiming it belonged to the
+    // caller's). When workspaceId is omitted, we scan every workspace so
+    // a legacy paneId-only call still works.
+    const ws = workspaceId.length > 0
+      ? store.workspaces.find((w) => w.id === workspaceId)
+      : store.workspaces.find((w) => findPaneById(w.rootPane, paneId) !== null);
+    if (!ws) {
+      return {
+        error: workspaceId.length > 0
+          ? `pane.validateWorkspace: workspace "${workspaceId}" not found`
+          : `pane.validateWorkspace: paneId "${paneId}" not in any workspace`,
+      };
+    }
+    const target = findPaneById(ws.rootPane, paneId);
+    if (!target || target.type !== 'leaf') {
+      return {
+        error: `pane.validateWorkspace: leaf "${paneId}" not in workspace "${ws.id}"`,
+      };
+    }
+    return { paneId, workspaceId: ws.id };
+  }
+
   // M0-d: pane.setMetadata / pane.getMetadata / pane.clearMetadata handlers
   // were removed. After M0-b the main process routes those RPCs straight
   // through MetadataStore and never calls sendToRenderer for them, so these
