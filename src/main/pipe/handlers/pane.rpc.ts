@@ -252,26 +252,42 @@ export function registerPaneRpc(
     const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
 
     // M0-f: explicit `mergeMode` wins over legacy `merge:boolean`. When
-    // neither is provided, default to 'merge' (v2.x semantics). Invalid
-    // mergeMode strings fall back to the legacy interpretation rather
-    // than throwing — keeps stranger clients flowing without surprises.
+    // mergeMode is undefined we fall back to the legacy `merge` boolean
+    // (v2.8.x compatibility); when it's provided we accept the three
+    // documented modes and reject everything else. An earlier draft
+    // silently fell back on a wrong-typed value (e.g. mergeMode: 'foo')
+    // which masked client bugs — codex P2.
     const mergeModeParam = params['mergeMode'];
-    const mergeMode: MergeMode =
+    let mergeMode: MergeMode;
+    if (mergeModeParam === undefined) {
+      mergeMode = params['merge'] === false ? 'replace' : 'merge';
+    } else if (
       mergeModeParam === 'merge' ||
       mergeModeParam === 'replace' ||
       mergeModeParam === 'replaceShared'
-        ? mergeModeParam
-        : params['merge'] === false
-          ? 'replace'
-          : 'merge';
+    ) {
+      mergeMode = mergeModeParam;
+    } else {
+      throw new Error(
+        'pane.setMetadata: "mergeMode" must be one of "merge", "replace", "replaceShared"',
+      );
+    }
 
-    // M0-f: expectedVersion is optimistic-concurrency guard. Coerce only
-    // when it's a real number; anything else means "no guard" (legacy).
-    const expectedVersionRaw = params['expectedVersion'];
-    const expectedVersion =
-      typeof expectedVersionRaw === 'number' && Number.isFinite(expectedVersionRaw)
-        ? expectedVersionRaw
-        : undefined;
+    // M0-f: expectedVersion is the optimistic-concurrency guard. An
+    // earlier draft coerced wrong-typed values (e.g. the string "1" from
+    // a CLI/env serialization path) to undefined, which silently bypassed
+    // the guard and turned the call into an unconditional write. Reject
+    // anything that isn't a non-negative integer up front — codex P2.
+    let expectedVersion: number | undefined;
+    if (params['expectedVersion'] !== undefined) {
+      const ev = params['expectedVersion'];
+      if (typeof ev !== 'number' || !Number.isInteger(ev) || ev < 0) {
+        throw new Error(
+          'pane.setMetadata: "expectedVersion" must be a non-negative integer',
+        );
+      }
+      expectedVersion = ev;
+    }
 
     const sanitized = sanitizeMetadataPatch(params as MetadataPatchInput);
     if ('error' in sanitized) {

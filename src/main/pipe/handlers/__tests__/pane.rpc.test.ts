@@ -1047,5 +1047,103 @@ describe('pane.rpc — metadata', () => {
       expect(after.metadata.label).toBe('NEW');
       expect(after.metadata.custom?.['other.key']).toBe('preserve-me');
     });
+
+    // codex P2: an earlier draft of pane.setMetadata silently coerced a
+    // wrong-typed expectedVersion (e.g. the string "1" from a CLI/env
+    // serialization path) to undefined. That dropped the optimistic-
+    // concurrency guard on the floor and turned the call into an
+    // unconditional write. The handler now rejects malformed values up
+    // front so callers get a clear error instead of a stale-write race.
+    it('rejects malformed expectedVersion (codex P2)', async () => {
+      const { router, store } = setupWithStore();
+      // Seed at version 1 so a "real" guarded write would be valid.
+      store.set('pane-mv', { label: 'A' }, { workspaceId: 'ws-1' });
+
+      // String "1" — looks like a version to a sloppy serializer but
+      // would silently drop the guard. Must reject.
+      const asString = await router.dispatch({
+        id: 'mv-str',
+        method: 'pane.setMetadata',
+        params: {
+          paneId: 'pane-mv',
+          workspaceId: 'ws-1',
+          label: 'B',
+          expectedVersion: '1',
+        },
+      });
+      expect(asString.ok).toBe(false);
+      if (!asString.ok) {
+        expect(asString.error).toMatch(/expectedVersion/);
+      }
+
+      // Negative integer — versions are non-negative.
+      const asNegative = await router.dispatch({
+        id: 'mv-neg',
+        method: 'pane.setMetadata',
+        params: {
+          paneId: 'pane-mv',
+          workspaceId: 'ws-1',
+          label: 'C',
+          expectedVersion: -1,
+        },
+      });
+      expect(asNegative.ok).toBe(false);
+      if (!asNegative.ok) {
+        expect(asNegative.error).toMatch(/expectedVersion/);
+      }
+
+      // Non-integer float — versions are monotonic integers.
+      const asFloat = await router.dispatch({
+        id: 'mv-float',
+        method: 'pane.setMetadata',
+        params: {
+          paneId: 'pane-mv',
+          workspaceId: 'ws-1',
+          label: 'D',
+          expectedVersion: 1.5,
+        },
+      });
+      expect(asFloat.ok).toBe(false);
+      if (!asFloat.ok) {
+        expect(asFloat.error).toMatch(/expectedVersion/);
+      }
+
+      // None of the rejected calls should have mutated the store —
+      // version stays at 1 and label is still "A".
+      const after = store.get('pane-mv');
+      expect(after.version).toBe(1);
+      expect(after.metadata.label).toBe('A');
+    });
+
+    // codex P2: same shape for mergeMode. Earlier draft fell back on
+    // legacy `merge` boolean when mergeMode was wrong-typed, so
+    // `mergeMode: 'foo'` was silently treated as 'merge'. Now: when the
+    // field is provided it must be one of the three documented modes.
+    // (undefined still falls back to the legacy boolean — that's the
+    // v2.8.x compatibility path the legacy-fallback test guards.)
+    it('rejects unknown mergeMode strings (codex P2)', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-mm', { label: 'A' }, { workspaceId: 'ws-1' });
+
+      const res = await router.dispatch({
+        id: 'mm-bad',
+        method: 'pane.setMetadata',
+        params: {
+          paneId: 'pane-mm',
+          workspaceId: 'ws-1',
+          label: 'B',
+          mergeMode: 'wrongMode',
+        },
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error).toMatch(/mergeMode/);
+      }
+
+      // No mutation — label/version unchanged.
+      const after = store.get('pane-mm');
+      expect(after.version).toBe(1);
+      expect(after.metadata.label).toBe('A');
+    });
   });
 });
