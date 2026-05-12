@@ -225,27 +225,53 @@ export function registerPaneRpc(
 
   /**
    * pane.setMetadata — set descriptive metadata on a leaf pane.
-   * params: { paneId?, workspaceId?, label?, role?, status?, custom?, merge? }
+   * params: { paneId?, workspaceId?, label?, role?, status?, custom?,
+   *           merge?, mergeMode?, expectedVersion? }
    *
    * M0-b: MetadataStore is the sole writer for metadata. If the caller
    * omits paneId, the handler resolves the active leaf via the internal
    * `pane.resolveActiveLeaf` channel (renderer answers with the leaf id;
    * no paneSlice write happens) and then commits via MetadataStore.set().
-   * paneSlice now sees ZERO metadata writes from the RPC path — M0-d will
-   * formalize this by removing the slice's setter.
    *
-   * Wire shape is preserved from v2.x. The new `version` field on the reply
-   * (and `expectedVersion` / `mergeMode` on params) lands with M0-f.
+   * M0-f wire-format spec:
+   *   - `mergeMode` (v2.9.0+) — 'merge' | 'replace' | 'replaceShared'.
+   *     Wins over the legacy `merge` boolean when both are present.
+   *   - `merge` (v2.8.x legacy) — true → 'merge', false → 'replace'.
+   *     Default 'merge' when neither field is present.
+   *   - `expectedVersion` (v2.9.0+) — optimistic concurrency guard.
+   *     Mismatch returns VERSION_CONFLICT and does not mutate.
+   *   - Reply now includes `version` (additive — v2.8.x destructures of
+   *     { ok, paneId, metadata } keep working).
    *
    * External MCP callers SHOULD pass workspaceId so writes stay scoped to
    * the caller's workspace and don't get hijacked to whichever ws the user
    * is currently viewing.
-   * merge defaults to true (patch-style); false replaces the metadata object.
    */
   router.register('pane.setMetadata', async (params) => {
     const paneId = typeof params['paneId'] === 'string' ? params['paneId'] : undefined;
     const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
-    const merge = params['merge'] !== false; // default true
+
+    // M0-f: explicit `mergeMode` wins over legacy `merge:boolean`. When
+    // neither is provided, default to 'merge' (v2.x semantics). Invalid
+    // mergeMode strings fall back to the legacy interpretation rather
+    // than throwing — keeps stranger clients flowing without surprises.
+    const mergeModeParam = params['mergeMode'];
+    const mergeMode: MergeMode =
+      mergeModeParam === 'merge' ||
+      mergeModeParam === 'replace' ||
+      mergeModeParam === 'replaceShared'
+        ? mergeModeParam
+        : params['merge'] === false
+          ? 'replace'
+          : 'merge';
+
+    // M0-f: expectedVersion is optimistic-concurrency guard. Coerce only
+    // when it's a real number; anything else means "no guard" (legacy).
+    const expectedVersionRaw = params['expectedVersion'];
+    const expectedVersion =
+      typeof expectedVersionRaw === 'number' && Number.isFinite(expectedVersionRaw)
+        ? expectedVersionRaw
+        : undefined;
 
     const sanitized = sanitizeMetadataPatch(params as MetadataPatchInput);
     if ('error' in sanitized) {
@@ -260,7 +286,6 @@ export function registerPaneRpc(
       throw new Error(`pane.setMetadata: ${msg}`);
     }
 
-    const mergeMode: MergeMode = merge ? 'merge' : 'replace';
     let result;
     try {
       // Passing workspaceId through unchanged (including undefined) lets
@@ -270,23 +295,31 @@ export function registerPaneRpc(
       result = store.set(target.paneId, sanitized, {
         mergeMode,
         workspaceId: target.workspaceId,
+        ...(expectedVersion !== undefined && { expectedVersion }),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`pane.setMetadata: ${msg}`);
     }
     if (!result.ok) {
-      // v2.x wire has no expectedVersion, so VERSION_CONFLICT is
-      // unreachable today. Still report it cleanly if M0-f's wire add
-      // lands a caller in this branch with expectedVersion.
+      // VERSION_CONFLICT — RpcRouter currently only propagates the error
+      // message string; we embed `currentVersion=N` so clients can parse
+      // the right base for a retry. Structured error envelopes (with
+      // `code: RPC_VERSION_CONFLICT` and `data.currentVersion`) are
+      // future work — see src/shared/rpc.ts for the type stubs.
       throw new Error(
         `pane.setMetadata: ${result.error} (currentVersion=${result.currentVersion})`,
       );
     }
-    // v2.x-compatible reply shape: { ok, paneId, metadata }. The version
-    // field lands in M0-f. Internal callers that already speak the M0
-    // API can read it from `store.get(paneId).version`.
-    return { ok: true, paneId: target.paneId, metadata: result.metadata };
+    // M0-f wire-format reply: { ok, paneId, metadata, version }. The
+    // `version` field is additive — v2.8.x clients that only read the
+    // first three keys keep working.
+    return {
+      ok: true,
+      paneId: target.paneId,
+      metadata: result.metadata,
+      version: result.version,
+    };
   });
 
   /**
@@ -309,8 +342,9 @@ export function registerPaneRpc(
     }
 
     const entry = store.get(target.paneId);
-    // v2.x-compatible reply shape: { paneId, metadata }. M0-f adds version.
-    return { paneId: target.paneId, metadata: entry.metadata };
+    // M0-f wire-format reply: { paneId, metadata, version }. `version` is
+    // additive — v2.8.x clients reading { paneId, metadata } keep working.
+    return { paneId: target.paneId, metadata: entry.metadata, version: entry.version };
   });
 
   /**
@@ -333,8 +367,11 @@ export function registerPaneRpc(
     }
 
     const result = store.clear(target.paneId);
+    // M0-f wire-format reply: { ok, paneId, version }. Version is the
+    // post-clear monotonic counter (bumped by store.clear). v2.8.x clients
+    // that only read { ok, paneId } continue to work.
     return result.ok
-      ? { ok: true, paneId: target.paneId }
+      ? { ok: true, paneId: target.paneId, version: result.version }
       : { ok: false, paneId: target.paneId, error: result.error };
   });
 

@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
-import { ALL_RPC_METHODS } from '../../../shared/rpc';
+import { ALL_RPC_METHODS, type PaneMetadataCapabilities } from '../../../shared/rpc';
 import { WMUX_EVENT_TYPES, RING_CAPACITY } from '../../../shared/events';
 import { eventBus } from '../../events/EventBus';
 
@@ -34,10 +34,19 @@ export function registerSystemRpc(router: RpcRouter): void {
    * (pane metadata, future event bus, etc.) without inferring from method names.
    */
   router.register('system.capabilities', (_params) => {
+    // M0-f: features.paneMetadata is now an object describing the M0 surface
+    // (optimisticConcurrency + supported mergeModes). v2.8.x clients that
+    // wrote `if (caps.features.paneMetadata)` keep working because a non-null
+    // object is truthy. v2.9.0+ clients can feature-detect by reading the
+    // fields directly.
+    const paneMetadata: PaneMetadataCapabilities = {
+      optimisticConcurrency: true,
+      mergeModes: ['merge', 'replace', 'replaceShared'],
+    };
     return Promise.resolve({
       methods: ALL_RPC_METHODS,
       features: {
-        paneMetadata: true,
+        paneMetadata,
         events: {
           types: WMUX_EVENT_TYPES,
           maxRingSize: RING_CAPACITY,

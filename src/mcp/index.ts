@@ -296,16 +296,18 @@ server.tool(
 
 server.tool(
   'pane_set_metadata',
-  'Attach descriptive metadata (label/role/status + custom k/v) to a leaf pane in the calling workspace. The custom map is deep-merged when merge=true, so cooperating tools can each write their own keys without clobbering. Set merge=false to replace the entire metadata object. Omit paneId to target the active pane in the calling workspace.',
+  'Attach descriptive metadata (label/role/status + custom k/v) to a leaf pane in the calling workspace. The custom map is deep-merged when mergeMode="merge" (the default), so cooperating tools can each write their own keys without clobbering. Use mergeMode="replace" to overwrite the entire metadata object, or "replaceShared" (v2.9.0+) to overwrite label/role/status while preserving another tool\'s custom keys verbatim. Pass expectedVersion (v2.9.0+) for optimistic concurrency — the call fails with VERSION_CONFLICT if the pane has been updated since you last read it. Omit paneId to target the active pane in the calling workspace.',
   {
     paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace.'),
     label: z.string().max(64).optional().describe('Short human label, e.g. "Backend".'),
     role: z.string().max(64).optional().describe('Free-form role tag, e.g. "service" or "test-runner".'),
     status: z.string().max(128).optional().describe('Current status, e.g. "running-tests".'),
-    custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when merge=true. Recommended convention: namespace your keys with a tool prefix (e.g. "orchestrator.taskId", "qa.status") to avoid semantic collisions with other cooperating tools.'),
-    merge: z.boolean().optional().describe('Default true (patch + deep-merge custom). Set false to replace the entire metadata object.'),
+    custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when mergeMode="merge". Recommended convention: namespace your keys with a tool prefix (e.g. "orchestrator.taskId", "qa.status") to avoid semantic collisions with other cooperating tools.'),
+    merge: z.boolean().optional().describe('Legacy v2.8.x flag; prefer mergeMode. true → merge, false → replace. When both `merge` and `mergeMode` are provided, `mergeMode` wins.'),
+    mergeMode: z.enum(['merge', 'replace', 'replaceShared']).optional().describe('Explicit merge semantics (v2.9.0+). "merge" patches and deep-merges custom (default). "replace" wipes the metadata object and writes only the provided fields. "replaceShared" overwrites label/role/status but preserves another tool\'s custom keys. Overrides legacy `merge` boolean when both are provided.'),
+    expectedVersion: z.number().int().nonnegative().optional().describe('Optimistic concurrency guard (v2.9.0+). If the pane\'s current metadata version differs, the call fails with VERSION_CONFLICT and does not mutate. Read the current version from pane_get_metadata or wmux_pane_list. Omit for unconditional writes (legacy v2.8.x behavior).'),
   },
-  async ({ paneId, label, role, status, custom, merge }) => {
+  async ({ paneId, label, role, status, custom, merge, mergeMode, expectedVersion }) => {
     const workspaceId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId };
     if (paneId !== undefined) params['paneId'] = paneId;
@@ -314,6 +316,8 @@ server.tool(
     if (status !== undefined) params['status'] = status;
     if (custom !== undefined) params['custom'] = custom;
     if (merge !== undefined) params['merge'] = merge;
+    if (mergeMode !== undefined) params['mergeMode'] = mergeMode;
+    if (expectedVersion !== undefined) params['expectedVersion'] = expectedVersion;
     return callRpc('pane.setMetadata', params);
   },
 );

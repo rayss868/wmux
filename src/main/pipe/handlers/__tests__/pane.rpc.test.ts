@@ -315,7 +315,7 @@ describe('pane.rpc — metadata', () => {
       expect(sendToRendererMock).not.toHaveBeenCalled();
     });
 
-    it("reply preserves v2.x shape — no 'version' field yet (M0-f adds it)", async () => {
+    it('reply carries v2.x-compatible keys plus the M0-f `version` field', async () => {
       const { router } = setupWithStore();
       const res = await router.dispatch({
         id: 'rpc-shape',
@@ -324,11 +324,13 @@ describe('pane.rpc — metadata', () => {
       });
       expect(res.ok).toBe(true);
       if (res.ok) {
-        const result = res.result as { ok: boolean; paneId: string; metadata: unknown; version?: number };
+        const result = res.result as { ok: boolean; paneId: string; metadata: unknown; version: number };
         expect(result.ok).toBe(true);
         expect(result.paneId).toBe('pane-x');
         expect(result.metadata).toBeDefined();
-        expect(result.version).toBeUndefined();   // v2.x compat; M0-f exposes version
+        // M0-f: version is now part of the wire shape (additive — v2.8.x
+        // clients reading { ok, paneId, metadata } still work).
+        expect(result.version).toBe(1);
       }
     });
 
@@ -521,15 +523,17 @@ describe('pane.rpc — metadata', () => {
 
       expect(res.ok).toBe(true);
       if (res.ok) {
+        // M0-f wire-format reply: { paneId, metadata, version }.
         expect(res.result).toEqual({
           paneId: 'pane-x',
           metadata: expect.objectContaining({ label: 'Backend' }),
+          version: 1,
         });
       }
       expect(sendToRendererMock).not.toHaveBeenCalled();
     });
 
-    it('reply preserves v2.x shape — no version field (M0-f adds it)', async () => {
+    it('reply includes the M0-f `version` field alongside paneId+metadata', async () => {
       const { router, store } = setupWithStore();
       store.set('pane-x', { label: 'Y' }, { workspaceId: 'ws-1' });
       const res = await router.dispatch({
@@ -538,8 +542,10 @@ describe('pane.rpc — metadata', () => {
         params: { paneId: 'pane-x' },
       });
       if (res.ok) {
-        const result = res.result as { paneId: string; metadata: unknown; version?: number };
-        expect(result.version).toBeUndefined();
+        const result = res.result as { paneId: string; metadata: unknown; version: number };
+        // M0-f: getMetadata now returns the monotonic version. The store
+        // seed above is the only write, so version === 1.
+        expect(result.version).toBe(1);
       }
     });
 
@@ -552,7 +558,9 @@ describe('pane.rpc — metadata', () => {
       });
       expect(res.ok).toBe(true);
       if (res.ok) {
-        expect(res.result).toEqual({ paneId: 'pane-unknown', metadata: {} });
+        // M0-f wire-format reply: { paneId, metadata, version }. Never-written
+        // panes get version 0 (the "no entry" sentinel from MetadataStore.get).
+        expect(res.result).toEqual({ paneId: 'pane-unknown', metadata: {}, version: 0 });
       }
     });
 
@@ -570,9 +578,11 @@ describe('pane.rpc — metadata', () => {
       });
       expect(res.ok).toBe(true);
       if (res.ok) {
+        // M0-f wire-format reply: { paneId, metadata, version }.
         expect(res.result).toEqual({
           paneId: 'pane-active',
           metadata: expect.objectContaining({ label: 'Hello' }),
+          version: 1,
         });
       }
       const [, method] = sendToRendererMock.mock.calls[0];
@@ -592,7 +602,9 @@ describe('pane.rpc — metadata', () => {
       });
       expect(res.ok).toBe(true);
       if (res.ok) {
-        expect(res.result).toEqual({ ok: true, paneId: 'pane-x' });
+        // M0-f wire-format reply: { ok, paneId, version }. Version is the
+        // post-clear monotonic counter (bumped from 1 → 2).
+        expect(res.result).toEqual({ ok: true, paneId: 'pane-x', version: 2 });
       }
       // Store entry is cleared but version stays monotonic (clear bumped to v2).
       const after = store.get('pane-x');
@@ -615,7 +627,9 @@ describe('pane.rpc — metadata', () => {
       });
       expect(res.ok).toBe(true);
       if (res.ok) {
-        expect(res.result).toEqual({ ok: true, paneId: 'pane-active' });
+        // M0-f wire-format reply: { ok, paneId, version }. Store had
+        // version 1 from the seed set, clear bumped to 2.
+        expect(res.result).toEqual({ ok: true, paneId: 'pane-active', version: 2 });
       }
       // Metadata cleared via MetadataStore, not via renderer paneSlice.
       expect(store.get('pane-active').metadata).toEqual({});
@@ -856,6 +870,182 @@ describe('pane.rpc — metadata', () => {
         // No store entry exists yet, so version is still 0.
         expect(result.panes[0].version).toBe(0);
       }
+    });
+  });
+
+  // === M0-f: wire-format spec for metadata RPCs ===
+  //
+  // The new fields (mergeMode, expectedVersion) and the `version` reply
+  // field are additive. v2.8.x clients keep working — covered by the
+  // legacy-fallback test below.
+  describe('M0-f wire-format', () => {
+    it('pane.setMetadata reply carries the new version on consecutive writes', async () => {
+      const { router } = setupWithStore();
+      const res1 = await router.dispatch({
+        id: 'm0f-v1',
+        method: 'pane.setMetadata',
+        params: { paneId: 'pane-v', workspaceId: 'ws-1', label: 'A' },
+      });
+      expect(res1.ok).toBe(true);
+      if (res1.ok) {
+        const r = res1.result as { version: number };
+        expect(r.version).toBe(1);
+      }
+      // Second set on the same pane bumps version monotonically.
+      const res2 = await router.dispatch({
+        id: 'm0f-v2',
+        method: 'pane.setMetadata',
+        params: { paneId: 'pane-v', workspaceId: 'ws-1', status: 'running' },
+      });
+      expect(res2.ok).toBe(true);
+      if (res2.ok) {
+        const r = res2.result as { version: number };
+        expect(r.version).toBe(2);
+      }
+    });
+
+    it('pane.getMetadata reply includes the current monotonic version', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-g', { label: 'X' }, { workspaceId: 'ws-1' });
+      store.set('pane-g', { status: 'idle' }, { workspaceId: 'ws-1' });
+      const res = await router.dispatch({
+        id: 'm0f-get',
+        method: 'pane.getMetadata',
+        params: { paneId: 'pane-g' },
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const r = res.result as { paneId: string; version: number };
+        expect(r.paneId).toBe('pane-g');
+        expect(r.version).toBe(2);
+      }
+    });
+
+    it('expectedVersion=current passes through; mismatch returns VERSION_CONFLICT', async () => {
+      const { router } = setupWithStore();
+      // First write — no guard, lands as version 1.
+      const w1 = await router.dispatch({
+        id: 'm0f-ev1',
+        method: 'pane.setMetadata',
+        params: { paneId: 'pane-ev', workspaceId: 'ws-1', label: 'one' },
+      });
+      expect(w1.ok).toBe(true);
+      if (w1.ok) {
+        expect((w1.result as { version: number }).version).toBe(1);
+      }
+
+      // Stale expectedVersion (0) — server rejects, no mutation.
+      const conflict = await router.dispatch({
+        id: 'm0f-ev2',
+        method: 'pane.setMetadata',
+        params: {
+          paneId: 'pane-ev',
+          workspaceId: 'ws-1',
+          label: 'two',
+          expectedVersion: 0,
+        },
+      });
+      expect(conflict.ok).toBe(false);
+      if (!conflict.ok) {
+        // Error message embeds the current version for retry — see
+        // RPC_VERSION_CONFLICT comment in src/shared/rpc.ts.
+        expect(conflict.error).toMatch(/VERSION_CONFLICT/);
+        expect(conflict.error).toMatch(/currentVersion=1/);
+      }
+
+      // Correct expectedVersion (1) — succeeds, version bumps to 2.
+      const w2 = await router.dispatch({
+        id: 'm0f-ev3',
+        method: 'pane.setMetadata',
+        params: {
+          paneId: 'pane-ev',
+          workspaceId: 'ws-1',
+          label: 'three',
+          expectedVersion: 1,
+        },
+      });
+      expect(w2.ok).toBe(true);
+      if (w2.ok) {
+        const r = w2.result as { version: number; metadata: { label?: string } };
+        expect(r.version).toBe(2);
+        expect(r.metadata.label).toBe('three');
+      }
+    });
+
+    it('mergeMode wins over the legacy merge boolean when both are provided', async () => {
+      const { router, store } = setupWithStore();
+      // Seed with prior label so `replace` has something to discard.
+      store.set('pane-m', { label: 'OLD', role: 'svc' }, { workspaceId: 'ws-1' });
+
+      // Caller passes merge: true (would normally mean merge) AND
+      // mergeMode: 'replace'. Per the wire spec, mergeMode wins.
+      const res = await router.dispatch({
+        id: 'm0f-mm',
+        method: 'pane.setMetadata',
+        params: {
+          paneId: 'pane-m',
+          workspaceId: 'ws-1',
+          status: 'idle',
+          merge: true,
+          mergeMode: 'replace',
+        },
+      });
+      expect(res.ok).toBe(true);
+      const after = store.get('pane-m');
+      // Replace semantics — label/role wiped, only status survives.
+      expect(after.metadata.label).toBeUndefined();
+      expect(after.metadata.role).toBeUndefined();
+      expect(after.metadata.status).toBe('idle');
+    });
+
+    it('legacy merge: false still maps to replace mode (v2.8.x regression guard)', async () => {
+      const { router, store } = setupWithStore();
+      // Seed with prior metadata so `replace` has something to discard.
+      store.set('pane-l', { label: 'OLD', role: 'svc' }, { workspaceId: 'ws-1' });
+
+      // v2.8.x client: only `merge: false`, no `mergeMode`. Must still
+      // map to 'replace' semantics so existing tooling keeps working.
+      const res = await router.dispatch({
+        id: 'm0f-legacy',
+        method: 'pane.setMetadata',
+        params: {
+          paneId: 'pane-l',
+          workspaceId: 'ws-1',
+          status: 'done',
+          merge: false,
+        },
+      });
+      expect(res.ok).toBe(true);
+      const after = store.get('pane-l');
+      expect(after.metadata.label).toBeUndefined();
+      expect(after.metadata.role).toBeUndefined();
+      expect(after.metadata.status).toBe('done');
+    });
+
+    it('mergeMode: "replaceShared" preserves base.custom while replacing shared fields', async () => {
+      const { router, store } = setupWithStore();
+      // Seed with shared fields + custom that another tool wrote.
+      store.set(
+        'pane-rs',
+        { label: 'OLD', custom: { 'other.key': 'preserve-me' } },
+        { workspaceId: 'ws-1' },
+      );
+
+      const res = await router.dispatch({
+        id: 'm0f-rs',
+        method: 'pane.setMetadata',
+        params: {
+          paneId: 'pane-rs',
+          workspaceId: 'ws-1',
+          label: 'NEW',
+          mergeMode: 'replaceShared',
+        },
+      });
+      expect(res.ok).toBe(true);
+      const after = store.get('pane-rs');
+      // label updated, but the other tool's custom key survived.
+      expect(after.metadata.label).toBe('NEW');
+      expect(after.metadata.custom?.['other.key']).toBe('preserve-me');
     });
   });
 });

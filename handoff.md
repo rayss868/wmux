@@ -1,36 +1,84 @@
-# Teammate Handoff
+# Teammate Handoff — M0-c/d/e/f Team Mode
 
-## Session State (세션 복구용 필수 필드)
-- **current_phase**: 0 (초기화 완료, Phase 1 진입 직전)
-- **completed_tasks**: []
-- **blocked_items**: []
-- **next_steps**: Phase 1 — 디자인 정제 (검색 인덱싱 전략, 정규식, scrollback dump 포함 여부, MCP tool 노출, threshold 임계값) + architect-reviewer 검증
-- **active_worktrees**: []
+## Session State
+- **current_phase**: 0 (Init complete) → Phase 3 (Implementation) 진입
+- **completed_tasks**: M0-a (MetadataStore), M0-b (handler rewrite) — PR #34 base 7 commits
+- **blocked_items**: (none)
+- **next_steps**: M0-c teammate 스폰
+- **active_worktrees**: (none — sequential mode)
 
-## Outgoing Teammate Summary
-(아직 teammate 없음)
+## Context
 
-## What Was Completed
-- Phase 0: branch 생성, 기록 파일 초기화
+### Branch
+- `feature/m0-b-handler-rewrite` (PR #34 open)
+- 7 commits already
+- 새 commit 추가 방식 (squash X, force-push X)
 
-## What Remains
-- Phase 1: 디자인 brainstorming + architect 리뷰
-- Phase 2: 태스크 분해 + DAG + code-reviewer 리뷰
-- Phase 3: 구현 (병렬 worktree)
-- Phase 3.5: 통합 병합
-- Phase 4: 코드 리뷰
-- Phase 5: 마무리 (테스트 + 머지/PR 결정)
+### Baseline
+- Tests: 1019 pass
+- tsc clean, eslint 0 errors
+- MetadataStore (`src/main/metadata/MetadataStore.ts`) day-one API 갖춤
+- `pane.resolveActiveLeaf` IPC 가 paneId resolve 통일 (M0-b)
+- paneSlice 는 더 이상 RPC metadata path 에서 mutate 안 됨 → M0-d 거의 no-op
 
-## Gotchas / 컨텍스트
-- 메인 베이스에 PR #19 클립보드 fix 머지됨 (`useTerminal.ts` 수정). 이번 작업은 같은 파일 (search bar) 건드릴 수 있어서 충돌 주의.
-- 현재 PR 상태:
-  - PR #16 (pane metadata) — in review, base `main`
-  - PR #17 (events poll) — in review, base `feature/pane-metadata` (stack)
-- 외부 툴링 RFC (#15, alphabeen) 진행 중 — Cross-pane search MCP tool로 노출 시 그 RFC와 시너지
+### Plan 문서
+- `C:\Users\rizz\.claude\plans\generic-wandering-teapot.md`
+- 메모리: `project_substrate_10_plan.md`, `project_m0_progress.md`
 
-## Key Files
-- `src/renderer/hooks/useTerminal.ts` — 기존 SearchAddon 통합 위치
-- `src/renderer/components/Terminal/` — 검색 bar UI 위치
-- `src/main/pipe/handlers/` — 새 RPC handler 위치
-- `src/mcp/index.ts` — MCP tool 노출 위치
-- `src/shared/rpc.ts` — RPC method union 추가
+## Implementation Order (sequential)
+
+### 1. M0-c
+- File: `src/main/pipe/handlers/pane.rpc.ts` (`pane.list` handler)
+- Envelope: `{ asOfSeq, bootId, panes: [{ ...paneInfo, metadata, version }] }`
+- `asOfSeq` / `bootId` 는 이미 v2.8.0 에 있음. metadata + version 만 inject.
+- Tests 2개
+
+### 2. M0-d
+- File: `src/renderer/stores/slices/paneSlice.ts`
+- Compile-time write protect. M0-b 이후 거의 no-op.
+- Test 1개
+
+### 3. M0-e
+- Files: `src/main/session/SessionManager.ts`, `src/main/pipe/handlers/pane.rpc.ts`
+- persist-then-publish 순서, hydrate, schema_version
+- Tests 2개
+
+### 4. M0-f
+- Files: `src/shared/rpc.ts`, `src/shared/events.ts`, `src/main/pipe/handlers/system.rpc.ts`, `src/preload/index.ts`, `src/renderer/hooks/useRpcBridge.ts`, `src/mcp/index.ts`
+- Wire-format spec, features.paneMetadata 객체화
+- Tests 3+
+
+## Gotchas
+
+1. **PR #34 외부 리뷰어** — alphabeen, codex 가 PR 추적 중. force-push 금지.
+2. **codex 단계별 리뷰** — 각 단계 commit 후 codex review skill 호출. P1 이상 finding 즉시 fix commit.
+3. **paneSlice authority** — main process 가 authority. renderer mirror only.
+4. **wire-format additive** — v2.8.x client 호환성 유지.
+5. **persist-then-publish** — `MetadataStore.set() → SessionManager.persist() → EventBus.publish()` 순서 필수 (race spec #1).
+6. **schema_version** — SessionManager dump 에 추가. 기존 v1 없는 dump 는 v1 normalize.
+7. **테스트 인프라** — vitest, in-process. flaky 1회 재실행 허용.
+
+## Test Discipline
+- `npm test` 전체 실행. 1019 → +N pass 유지 (회귀 0)
+- tsc clean, eslint 0 errors mandatory
+
+## Key File Paths
+- Main process metadata authority: `src/main/metadata/MetadataStore.ts` (read-only for c/d/e/f, snapshot() 호출)
+- RPC handlers: `src/main/pipe/handlers/pane.rpc.ts`, `system.rpc.ts`
+- Session: `src/main/session/SessionManager.ts`
+- Renderer: `src/renderer/stores/slices/paneSlice.ts`, `src/renderer/hooks/useRpcBridge.ts`
+- Shared: `src/shared/rpc.ts`, `src/shared/events.ts`, `src/shared/types.ts`
+- Preload: `src/preload/index.ts`
+- MCP: `src/mcp/index.ts`
+
+## Interface Changes (다른 모듈에 영향)
+- `pane.list` 응답 — `panes[].metadata` + `panes[].version` 추가 (M0-c, additive)
+- `setMetadata` 응답 — `version` (M0-a 추가됨, M0-f spec 화)
+- `system.capabilities.features.paneMetadata` — boolean → 객체 (M0-f). 객체 truthy → boolean 호환.
+- `PaneMetadataChangedEvent.version` — optional (additive)
+- session.json dump — `schema_version` 필드 추가 (M0-e)
+
+## 사용자 정책
+- `git push` 전 반드시 사용자 확인 (memory `feedback_push_confirm.md`)
+- 코드/commit/PR body 모두 영어, 대화만 한국어 (memory `feedback_pr_commit_english.md`)
+- merge 후 누락 파일 반드시 스캔 (memory `feedback_merge_missing_files.md`)
