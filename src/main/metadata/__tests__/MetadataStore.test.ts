@@ -482,4 +482,109 @@ describe('MetadataStore', () => {
       expect(store.get('p-orphan').metadata.label).toBe('Orphan');
     });
   });
+
+  // ===========================================================================
+  // Persist-then-publish (M0-e)
+  // ===========================================================================
+
+  describe('persist-then-publish (M0-e)', () => {
+    /**
+     * Wraps an EventBus to record an "emit" marker in the shared trace
+     * the moment `bus.emit` is called from inside the store. The store
+     * also calls the wrapped EventBus's `latestSeq()` from `snapshot()`,
+     * so we narrow the trace to emits only (those are the publish step
+     * the race spec talks about).
+     */
+    function traceBus(trace: string[]): EventBus {
+      const inner = new EventBus();
+      const real = inner.emit.bind(inner);
+      inner.emit = ((input: Parameters<EventBus['emit']>[0]) => {
+        trace.push('emit');
+        return real(input);
+      }) as EventBus['emit'];
+      return inner;
+    }
+
+    it('persist runs before emit on set()', () => {
+      const order: string[] = [];
+      const localBus = traceBus(order);
+      const s = new MetadataStore({
+        eventBus: localBus,
+        persist: () => order.push('persist'),
+      });
+      s.set('p-1', { label: 'x' }, { workspaceId: 'ws-1' });
+      expect(order).toEqual(['persist', 'emit']);
+    });
+
+    it('persist runs before emit on clear()', () => {
+      const order: string[] = [];
+      const localBus = traceBus(order);
+      const s = new MetadataStore({ eventBus: localBus });
+      // Seed without persist so the initial set() does not pollute the
+      // trace we want to assert on (clear-time ordering only).
+      s.set('p-1', { label: 'x' }, { workspaceId: 'ws-1' });
+      order.length = 0;
+
+      s.setPersist(() => order.push('persist'));
+      s.clear('p-1');
+      expect(order).toEqual(['persist', 'emit']);
+    });
+
+    it('persist failure suppresses emit but keeps the in-memory commit (race spec #1)', () => {
+      const order: string[] = [];
+      const localBus = traceBus(order);
+      const s = new MetadataStore({
+        eventBus: localBus,
+        persist: () => {
+          throw new Error('disk full');
+        },
+      });
+      const result = s.set('p-1', { label: 'x' }, { workspaceId: 'ws-1' });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.version).toBe(1);
+      // No emit — subscribers must not observe a state we could not
+      // durably record.
+      expect(order).toEqual([]);
+      // In-memory state still has the write; next hydrate replaces it
+      // with whatever was last successfully persisted.
+      expect(s.get('p-1').metadata.label).toBe('x');
+    });
+
+    it('persist failure on clear() also suppresses emit', () => {
+      const order: string[] = [];
+      const localBus = traceBus(order);
+      let persistCount = 0;
+      const s = new MetadataStore({
+        eventBus: localBus,
+        // First persist succeeds (set), second persist throws (clear).
+        persist: () => {
+          persistCount += 1;
+          if (persistCount === 2) throw new Error('disk full');
+        },
+      });
+      s.set('p-1', { label: 'x' }, { workspaceId: 'ws-1' });
+      expect(order).toEqual(['emit']);
+      s.clear('p-1');
+      // Emit suppressed on the failing clear; the in-memory state is
+      // still cleared (matches the documented commit-but-no-publish path).
+      expect(order).toEqual(['emit']);
+      expect(s.get('p-1').metadata).toEqual({});
+    });
+
+    it('setPersist late-binds the callback', () => {
+      const order: string[] = [];
+      const localBus = traceBus(order);
+      const s = new MetadataStore({ eventBus: localBus });
+
+      // First write — no persist wired yet, so emit fires immediately.
+      s.set('p-1', { label: 'first' }, { workspaceId: 'ws-1' });
+      expect(order).toEqual(['emit']);
+
+      // Wire persist; the next write must now go persist → emit.
+      s.setPersist(() => order.push('persist'));
+      s.set('p-1', { label: 'second' }, { workspaceId: 'ws-1' });
+      expect(order).toEqual(['emit', 'persist', 'emit']);
+    });
+  });
 });

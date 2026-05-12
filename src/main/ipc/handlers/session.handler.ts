@@ -6,7 +6,15 @@ import { SessionManager } from '../../session/SessionManager';
 import type { SessionData } from '../../../shared/types';
 import { wrapHandler } from '../wrapHandler';
 
-const sessionManager = new SessionManager();
+/**
+ * Module-level singleton. Exported so the main-process boot path
+ * (`src/main/index.ts`) can wire its `saveMetadataSync` into the
+ * `MetadataStore` persist callback (M0-e) and hydrate the store from
+ * `metadata.json` on launch. Keep a single instance so the IPC handlers
+ * and the metadata persistence path share the same `pendingData` /
+ * debounce timer / queue state.
+ */
+export const sessionManager = new SessionManager();
 
 export function registerSessionHandlers(): () => void {
   ipcMain.removeHandler(IPC.SESSION_SAVE);

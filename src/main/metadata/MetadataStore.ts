@@ -112,9 +112,36 @@ function isEmptyMetadata(meta: PaneMetadata): boolean {
 export class MetadataStore {
   private readonly bus: EventBus;
   private readonly map = new Map<string, InternalEntry>();
+  /**
+   * Persist callback wired in M0-e. Called inline from `set()`/`clear()`/
+   * `onPaneDeleted()` BEFORE the event is emitted (persist-then-publish —
+   * race spec #1). Synchronous to keep the critical section atomic.
+   *
+   * Optional: when undefined (M0-a/b/c/d test fixtures, or boot order
+   * issues), set/clear behave exactly as before. The boot path in
+   * `src/main/index.ts` wires this via `setPersist()` after both the
+   * MetadataStore singleton and SessionManager exist.
+   */
+  private persist: ((shape: PersistedShape) => void) | undefined;
 
-  constructor(opts?: { eventBus?: EventBus }) {
+  constructor(opts?: {
+    eventBus?: EventBus;
+    persist?: (shape: PersistedShape) => void;
+  }) {
     this.bus = opts?.eventBus ?? defaultEventBus;
+    this.persist = opts?.persist;
+  }
+
+  /**
+   * Late-bind the persist callback after construction. Lets the main-process
+   * boot path create the MetadataStore singleton at import time and wire the
+   * SessionManager-backed persister once both singletons exist (avoids a
+   * module-init cycle: SessionManager → app.getPath('userData') requires
+   * Electron's `app` to be ready, which is well after the metadata module
+   * is first imported).
+   */
+  setPersist(persist: ((shape: PersistedShape) => void) | undefined): void {
+    this.persist = persist;
   }
 
   /**
@@ -137,10 +164,13 @@ export class MetadataStore {
    *   4. enforce MAX_BYTES       → throws if post-merge exceeds cap
    *   5. bump version            → currentVersion + 1
    *   6. commit in-memory        → map.set(paneId, ...)
+   *   6.5 persist (M0-e)         → persist(this.serialize()) — synchronous;
+   *                                on throw, suppress emit and return
+   *                                early with the in-memory commit intact
    *   7. emit event              → EventBus.emit('pane.metadata.changed')
    *
-   * Persistence (step 6.5 in the design doc — persist-then-publish) lands
-   * in M0-b/e. M0-a sequences commit → emit synchronously.
+   * Step 6.5 is wired by the boot path (`setPersist`). Test fixtures and
+   * pre-boot writes skip it cleanly when no callback is registered.
    */
   set(
     paneId: string,
@@ -184,6 +214,19 @@ export class MetadataStore {
       workspaceId,
     });
 
+    // Step 6.5 — persist-then-publish (race spec #1).
+    // If persist throws, we still committed in-memory but skip the emit
+    // so subscribers never see a state we could not durably record. On
+    // the next reconciliation pass, the on-disk snapshot is whatever was
+    // last successfully persisted; subscribers re-derive via pane.list.
+    if (!this.runPersist()) {
+      return {
+        ok: true,
+        version: newVersion,
+        metadata: cloneMetadata(merged),
+      };
+    }
+
     if (workspaceId) {
       this.bus.emit({
         type: 'pane.metadata.changed',
@@ -224,6 +267,13 @@ export class MetadataStore {
       version: newVersion,
       workspaceId,
     });
+
+    // Step 6.5 — persist-then-publish (race spec #1). See `set()` for the
+    // rationale; clear() uses the identical commit-but-no-publish path on
+    // persist failure.
+    if (!this.runPersist()) {
+      return { ok: true, version: newVersion, metadata: {} };
+    }
 
     if (workspaceId) {
       this.bus.emit({
@@ -340,6 +390,12 @@ export class MetadataStore {
       workspaceId,
     });
 
+    // Step 6.5 — persist-then-publish (race spec #1). onPaneDeleted is the
+    // tombstone write: serialize() drops empty entries so the on-disk
+    // shape shrinks naturally, but the in-memory slot lingers to keep
+    // versions monotonic for recycled paneIds within one daemon run.
+    if (!this.runPersist()) return;
+
     if (workspaceId) {
       this.bus.emit({
         type: 'pane.metadata.changed',
@@ -357,6 +413,31 @@ export class MetadataStore {
   }
 
   // === Internals ===
+
+  /**
+   * Drives the persist-then-publish step.
+   *
+   * Returns true when persistence succeeded (or no callback is wired —
+   * test fixtures and pre-boot writes), in which case the caller should
+   * proceed with the emit. Returns false when persistence threw: the
+   * in-memory commit is intact, but the event is suppressed so no
+   * subscriber observes a state we couldn't durably record. The error
+   * is logged here so every call site doesn't repeat the same swallow.
+   */
+  private runPersist(): boolean {
+    if (this.persist === undefined) return true;
+    try {
+      this.persist(this.serialize());
+      return true;
+    } catch (err) {
+      // commit-but-no-publish path — log and bail. The in-memory state
+      // will be replaced by whatever is on disk on the next hydrate, and
+      // live subscribers will reconcile via the next pane.list call.
+      // eslint-disable-next-line no-console
+      console.error('[MetadataStore] persist failed; suppressing event emit:', err);
+      return false;
+    }
+  }
 
   private sanitize(input: Partial<PaneMetadata>): Partial<PaneMetadata> {
     const out: Partial<PaneMetadata> = {};

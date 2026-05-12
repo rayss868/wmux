@@ -36,6 +36,8 @@ import { createTray, destroyTray } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
+import { metadataStore } from './metadata/MetadataStore';
+import { sessionManager } from './ipc/handlers/session.handler';
 
 // Force English for Chromium internal messages to avoid encoding corruption
 // on non-ASCII locales (e.g. Korean Windows where cp949 garbles console output).
@@ -484,6 +486,24 @@ app.on('ready', async () => {
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('[Main] Page loaded successfully');
   });
+  // M0-e — hydrate MetadataStore from disk, then wire the persist callback
+  // so subsequent `metadataStore.set/clear/onPaneDeleted` flush to disk
+  // BEFORE the `pane.metadata.changed` event publishes (race spec #1).
+  //
+  // Hydrate first, then wire — otherwise the hydrate path itself would
+  // re-trigger a persist write of state we just read from disk.
+  try {
+    const persistedMetadata = sessionManager.loadMetadata();
+    if (persistedMetadata) {
+      metadataStore.hydrate(persistedMetadata);
+    }
+  } catch (err) {
+    console.error('[Main] metadata hydrate failed; starting clean:', err);
+  }
+  metadataStore.setPersist((shape) => {
+    sessionManager.saveMetadataSync(shape);
+  });
+
   // Write auth token BEFORE starting pipe server — prevents race where
   // MCP client reads old token while new pipe is already listening
   const authToken = pipeServer.getAuthToken();
