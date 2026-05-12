@@ -80,6 +80,49 @@ If the current version is not `7`, the call returns JSON-RPC error `-32001`:
 
 The caller decides whether to retry (after re-reading or re-merging) or surrender.
 
+**Canonical retry pattern.** When a write returns `VERSION_CONFLICT`, the client should:
+
+1. **Read the current version** via `pane.getMetadata` or `pane.list`. The response carries the post-conflict `version` and the committed `metadata`.
+2. **Re-compute the intended patch** against the new base. The conflict means another writer committed between your prior read and your write — your patch may now collide with theirs, or may need to merge differently.
+3. **Retry `pane.setMetadata`** with `expectedVersion: <current_version>`. If another concurrent writer commits again during step 2, this retry conflicts too; loop until success or surrender.
+
+The loop is bounded by application policy, not the substrate. A typical client implementation:
+
+```ts
+async function setWithRetry(
+  paneId: string,
+  computePatch: (base: PaneMetadata) => Partial<PaneMetadata>,
+  maxAttempts = 5,
+) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const { metadata, version } = await rpc('pane.getMetadata', { paneId });
+    const patch = computePatch(metadata);
+    try {
+      return await rpc('pane.setMetadata', {
+        paneId,
+        ...patch,
+        expectedVersion: version,
+      });
+    } catch (err) {
+      // v2.9.0 surfaces VERSION_CONFLICT as a substring of the error
+      // message ("VERSION_CONFLICT (currentVersion=N)"). v2.9.1+ will
+      // also expose it as a structured `code: 'VERSION_CONFLICT'`
+      // envelope; clients that read the envelope SHOULD prefer that
+      // path and fall back to substring matching for older daemons.
+      if (!String((err as Error).message).includes('VERSION_CONFLICT')) throw err;
+      // backoff + retry (jittered exponential is a reasonable default)
+    }
+  }
+  throw new Error('setWithRetry: maxAttempts exceeded');
+}
+```
+
+Notes:
+
+- The substrate provides no built-in retry — clients own the loop because the right backoff, max attempts, and "give up" policy are tool-specific.
+- `mergeMode: 'replaceShared'` (see §1.4) does NOT bypass conflict detection; it changes the merge semantics, not the version-bump contract.
+- The `version` returned in a successful reply is always the post-commit version; use it as the next `expectedVersion` if you intend to chain writes without re-reading.
+
 **`expectedVersion` omitted:** no check; the call always commits. This is the v2.x behavior and stays the default for clients that haven't migrated to optimistic concurrency.
 
 **`expectedVersion: 0` semantics:** `0` is the correct guard for a pane that has never been written. The call succeeds iff no concurrent writer has set anything on this pane yet — i.e. the current stored version is also `0`. Use this when you want a write to land only on a "blank" pane (e.g. the first tool to claim a freshly-spawned pane) and you do not want to clobber state that another tool may have already written between your read and your write. If any prior write committed, the call returns `VERSION_CONFLICT` with `currentVersion >= 1`.
@@ -106,6 +149,8 @@ When both `merge` and `mergeMode` are present on the same request, `mergeMode` w
 ### 1.5 Validation
 
 Inputs are validated before commit. Failures return a JSON-RPC error with a descriptive message and **do not** increment `version`. Limits live in [`api/stability.md`](./api/stability.md#validation-limits-v30-baseline-values).
+
+**Single source of truth.** All metadata field validation — types, length caps for `label`/`role`/`status`, the `custom` key/value contract, and the total serialized-byte cap — happens inside `MetadataStore.set` and `MetadataStore.clear`. The RPC handler layer is responsible only for wire-shape normalization (paneId resolution, `mergeMode` and `expectedVersion` type checks, workspaceId scoping); it does not re-validate the payload before forwarding it to the store. Two parallel validators would be a substrate liability — shared constants and near-identical branches inevitably drift across PRs and silently shadow each other. Keeping validation in one place ensures the version bump and the validate step stay atomic in the same critical section, and there is exactly one error message per rejection class.
 
 ---
 

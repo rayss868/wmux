@@ -1,91 +1,23 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
-import {
-  PANE_METADATA_MAX_BYTES,
-  PANE_METADATA_LABEL_MAX,
-  PANE_METADATA_ROLE_MAX,
-  PANE_METADATA_STATUS_MAX,
-  PANE_METADATA_CUSTOM_KEY_MAX,
-  PANE_METADATA_CUSTOM_MAX_ENTRIES,
-  type PaneMetadata,
-} from '../../../shared/types';
+import type { PaneMetadata } from '../../../shared/types';
 import { metadataStore, type MergeMode, type MetadataStore } from '../../metadata/MetadataStore';
 
 type GetWindow = () => BrowserWindow | null;
 
-interface MetadataPatchInput {
-  label?: unknown;
-  role?: unknown;
-  status?: unknown;
-  custom?: unknown;
-}
-
-interface SanitizedPatch {
-  label?: string;
-  role?: string;
-  status?: string;
-  custom?: Record<string, string>;
-}
-
-function sanitizeMetadataPatch(input: MetadataPatchInput): SanitizedPatch | { error: string } {
-  const out: SanitizedPatch = {};
-
-  if (input.label !== undefined) {
-    if (typeof input.label !== 'string') return { error: '"label" must be a string' };
-    if (input.label.length > PANE_METADATA_LABEL_MAX) {
-      return { error: `"label" exceeds ${PANE_METADATA_LABEL_MAX} chars` };
-    }
-    out.label = input.label;
-  }
-  if (input.role !== undefined) {
-    if (typeof input.role !== 'string') return { error: '"role" must be a string' };
-    if (input.role.length > PANE_METADATA_ROLE_MAX) {
-      return { error: `"role" exceeds ${PANE_METADATA_ROLE_MAX} chars` };
-    }
-    out.role = input.role;
-  }
-  if (input.status !== undefined) {
-    if (typeof input.status !== 'string') return { error: '"status" must be a string' };
-    if (input.status.length > PANE_METADATA_STATUS_MAX) {
-      return { error: `"status" exceeds ${PANE_METADATA_STATUS_MAX} chars` };
-    }
-    out.status = input.status;
-  }
-  if (input.custom !== undefined) {
-    if (
-      typeof input.custom !== 'object' ||
-      input.custom === null ||
-      Array.isArray(input.custom)
-    ) {
-      return { error: '"custom" must be an object of string→string' };
-    }
-    const entries = Object.entries(input.custom);
-    if (entries.length > PANE_METADATA_CUSTOM_MAX_ENTRIES) {
-      return { error: `"custom" exceeds ${PANE_METADATA_CUSTOM_MAX_ENTRIES} entries` };
-    }
-    const custom: Record<string, string> = {};
-    for (const [k, v] of entries) {
-      if (k.length === 0) {
-        return { error: '"custom" key cannot be empty' };
-      }
-      if (k.length > PANE_METADATA_CUSTOM_KEY_MAX) {
-        return { error: `"custom" key exceeds ${PANE_METADATA_CUSTOM_KEY_MAX} chars` };
-      }
-      if (typeof v !== 'string') {
-        return { error: `"custom.${k}" must be a string` };
-      }
-      custom[k] = v;
-    }
-    out.custom = custom;
-  }
-
-  // Hard cap on serialized size — prevents bloated session.json.
-  if (JSON.stringify(out).length > PANE_METADATA_MAX_BYTES) {
-    return { error: `metadata exceeds ${PANE_METADATA_MAX_BYTES} bytes` };
-  }
-  return out;
-}
+// === Validation single source of truth ===
+//
+// Field-level metadata validation (label/role/status string + length caps,
+// custom-map key/value contract, total byte cap) lives in MetadataStore.set.
+// The handler only normalizes wire-shape — paneId/workspaceId resolution,
+// mergeMode + expectedVersion type checks — and forwards a raw patch.
+// Two parallel validators (one here, one in the store) was alphabeen's
+// drift-risk concern on PR #34: with shared constants, near-identical
+// switch arms, and zero compile-time link between them, the two paths
+// would silently fork as caps or rules evolve. The store throws on every
+// rejection; the handler wraps with its RPC-method prefix and surfaces
+// the message verbatim. See docs/PROTOCOL.md §1.2.
 
 /**
  * Options for registerPaneRpc — exposed so tests can inject a fresh
@@ -324,10 +256,15 @@ export function registerPaneRpc(
       expectedVersion = ev;
     }
 
-    const sanitized = sanitizeMetadataPatch(params as MetadataPatchInput);
-    if ('error' in sanitized) {
-      throw new Error(`pane.setMetadata: ${sanitized.error}`);
-    }
+    // Wire-shape extraction only — actual field validation (types, caps,
+    // custom-map contract) is the store's job. Cast targets are safe because
+    // MetadataStore.set runs sanitize() up front and throws on every shape
+    // violation; the catch below wraps with the RPC-method prefix.
+    const patch: Partial<PaneMetadata> = {};
+    if (params['label'] !== undefined) patch.label = params['label'] as string;
+    if (params['role'] !== undefined) patch.role = params['role'] as string;
+    if (params['status'] !== undefined) patch.status = params['status'] as string;
+    if (params['custom'] !== undefined) patch.custom = params['custom'] as Record<string, string>;
 
     let target: { paneId: string; workspaceId: string | undefined };
     try {
@@ -342,8 +279,9 @@ export function registerPaneRpc(
       // Passing workspaceId through unchanged (including undefined) lets
       // MetadataStore fall back to the pane's remembered workspaceId, so a
       // legacy paneId-only call doesn't clear the scope established by an
-      // earlier write.
-      result = store.set(target.paneId, sanitized, {
+      // earlier write. store.set runs sanitize() before any mutation, so a
+      // bad payload throws here without bumping the version.
+      result = store.set(target.paneId, patch, {
         mergeMode,
         workspaceId: target.workspaceId,
         ...(expectedVersion !== undefined && { expectedVersion }),

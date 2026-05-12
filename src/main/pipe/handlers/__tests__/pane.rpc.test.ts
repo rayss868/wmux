@@ -286,6 +286,19 @@ describe('pane.rpc — metadata', () => {
             workspaceId: typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined,
           });
         }
+        // After alphabeen review #4 fix: validation moved entirely into
+        // MetadataStore, so a "bad payload" test reaches resolveTarget
+        // first. Provide a default active-leaf so the resolve succeeds
+        // and the rejection bubbles up from store.sanitize(). Tests that
+        // need a specific resolver response override per-call with
+        // `sendToRendererMock.mockResolvedValueOnce(...)`.
+        if (method === 'pane.resolveActiveLeaf') {
+          return Promise.resolve({
+            paneId: '__test_active_leaf__',
+            workspaceId:
+              typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined,
+          });
+        }
         return Promise.resolve({ ok: true });
       },
     );
@@ -400,7 +413,11 @@ describe('pane.rpc — metadata', () => {
       if (!res.ok) {
         expect(res.error).toMatch(/label/);
       }
-      expect(sendToRendererMock).not.toHaveBeenCalled();
+      // alphabeen review #4: validation now lives in MetadataStore.set, so
+      // resolveTarget (which IPCs into the renderer) runs BEFORE the
+      // rejection. The substrate invariant is "store is the sole validator",
+      // not "no IPC happens on a bad payload" — that property never had a
+      // contract behind it anyway.
     });
 
     it('rejects when status exceeds 128 chars', async () => {
@@ -425,7 +442,6 @@ describe('pane.rpc — metadata', () => {
 
       expect(res.ok).toBe(false);
       if (!res.ok) expect(res.error).toMatch(/custom\.count/);
-      expect(sendToRendererMock).not.toHaveBeenCalled();
     });
 
     it('rejects when custom is an array, not an object', async () => {
@@ -450,7 +466,6 @@ describe('pane.rpc — metadata', () => {
 
       expect(res.ok).toBe(false);
       if (!res.ok) expect(res.error).toMatch(/exceeds/);
-      expect(sendToRendererMock).not.toHaveBeenCalled();
     });
 
     it('resolves active leaf via pane.resolveActiveLeaf IPC when paneId is omitted', async () => {
@@ -726,7 +741,6 @@ describe('pane.rpc — metadata', () => {
       });
       expect(res.ok).toBe(false);
       if (!res.ok) expect(res.error).toMatch(/role/);
-      expect(sendToRendererMock).not.toHaveBeenCalled();
     });
 
     it('1.3 — rejects empty custom key', async () => {
