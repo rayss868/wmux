@@ -111,6 +111,60 @@ describe('SessionManager metadata persistence (M0-e)', () => {
     expect(sm.loadMetadata()).toBeNull();
   });
 
+  it('loadMetadata rejects a corrupt metadata.label (non-string field)', () => {
+    // Codex P2 (M0-e): the type guard must validate each `PaneMetadata`
+    // field, not just that `metadata` is a non-null object. A tampered
+    // file with `label: 123` would otherwise hydrate into the store and
+    // violate the PaneMetadata runtime contract that clients depend on.
+    const sm = new SessionManager();
+    const metadataPath = path.join(tmpRoot, 'metadata.json');
+
+    fs.writeFileSync(
+      metadataPath,
+      JSON.stringify({
+        schema_version: METADATA_SCHEMA_VERSION,
+        entries: [
+          {
+            paneId: 'p-1',
+            workspaceId: 'ws-1',
+            metadata: { label: 123 }, // wrong type — must be string|undefined
+            version: 1,
+          },
+        ],
+      }),
+      'utf-8',
+    );
+
+    expect(sm.loadMetadata()).toBeNull();
+  });
+
+  it('loadMetadata rejects a corrupt metadata.custom (array instead of object)', () => {
+    // Codex P2 (M0-e): `custom` is `Record<string, string>` per the
+    // PaneMetadata contract. Arrays parse as `typeof === 'object'` so
+    // the old shallow check let them through; we explicitly reject
+    // arrays here and require every value to be a string.
+    const sm = new SessionManager();
+    const metadataPath = path.join(tmpRoot, 'metadata.json');
+
+    fs.writeFileSync(
+      metadataPath,
+      JSON.stringify({
+        schema_version: METADATA_SCHEMA_VERSION,
+        entries: [
+          {
+            paneId: 'p-1',
+            workspaceId: 'ws-1',
+            metadata: { custom: [] }, // wrong shape — must be object<string,string>
+            version: 1,
+          },
+        ],
+      }),
+      'utf-8',
+    );
+
+    expect(sm.loadMetadata()).toBeNull();
+  });
+
   it('loadMetadata rejects a wrong schema_version (forward-incompatible payload)', () => {
     const sm = new SessionManager();
     const metadataPath = path.join(tmpRoot, 'metadata.json');

@@ -244,23 +244,63 @@ export class SessionManager {
    * at the validation layer; the caller's `MetadataStore.migrate` would
    * have been the right hook, but on-disk format changes also require
    * an explicit migration registry (M0-f / v3.1+) which has not landed.
+   *
+   * Codex P2 (M0-e): the inner `metadata` field is validated strictly
+   * against the `PaneMetadata` runtime contract. Previously this guard
+   * accepted any non-null object, so a corrupt or tampered entry such
+   * as `{ label: 123 }` or `{ custom: [] }` passed validation and
+   * `MetadataStore.hydrate()` cloned the invalid fields into the
+   * authoritative store, leaking them to clients. We now reject the
+   * envelope (return false → atomicReadJSONSync returns null → boot
+   * falls back to the clean-slate path) if any field violates its
+   * declared type.
    */
   private static isPersistedShape(parsed: unknown): parsed is PersistedShape {
     if (typeof parsed !== 'object' || parsed === null) return false;
     const obj = parsed as Record<string, unknown>;
     if (obj['schema_version'] !== METADATA_SCHEMA_VERSION) return false;
     if (!Array.isArray(obj['entries'])) return false;
-    // Shallow entry validation — paneId/workspaceId must be strings,
-    // version a number, metadata an object. Per-field caps are
-    // re-enforced when the store hydrates and re-sanitises.
     for (const entry of obj['entries']) {
       if (typeof entry !== 'object' || entry === null) return false;
       const e = entry as Record<string, unknown>;
       if (typeof e['paneId'] !== 'string') return false;
       if (typeof e['workspaceId'] !== 'string') return false;
       if (typeof e['version'] !== 'number') return false;
-      if (typeof e['metadata'] !== 'object' || e['metadata'] === null) return false;
+      if (!SessionManager.isPaneMetadataShape(e['metadata'])) return false;
     }
+    return true;
+  }
+
+  /**
+   * Strict shape check for the `PaneMetadata` runtime contract
+   * (shared/types.ts). Per-field byte caps are re-enforced when the
+   * store hydrates and re-sanitises — here we only gate type identity
+   * so corrupt fields never reach `MetadataStore.hydrate()`.
+   */
+  private static isPaneMetadataShape(value: unknown): boolean {
+    if (typeof value !== 'object' || value === null) return false;
+    if (Array.isArray(value)) return false;
+    const m = value as Record<string, unknown>;
+
+    if (m['label'] !== undefined && typeof m['label'] !== 'string') return false;
+    if (m['role'] !== undefined && typeof m['role'] !== 'string') return false;
+    if (m['status'] !== undefined && typeof m['status'] !== 'string') return false;
+    if (m['updatedAt'] !== undefined && typeof m['updatedAt'] !== 'number') return false;
+
+    if (m['custom'] !== undefined) {
+      const custom = m['custom'];
+      if (typeof custom !== 'object' || custom === null || Array.isArray(custom)) {
+        return false;
+      }
+      // PaneMetadata.custom is Record<string, string> — every value
+      // must be a string. A tampered file with non-string values would
+      // otherwise hydrate into the store as-is and break clients that
+      // index `custom[k]` expecting a string.
+      for (const v of Object.values(custom as Record<string, unknown>)) {
+        if (typeof v !== 'string') return false;
+      }
+    }
+
     return true;
   }
 }
