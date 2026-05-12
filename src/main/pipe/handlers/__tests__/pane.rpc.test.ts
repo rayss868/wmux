@@ -428,15 +428,83 @@ describe('pane.rpc — metadata', () => {
       expect(sendToRendererMock).not.toHaveBeenCalled();
     });
 
-    it('forwards undefined paneId so renderer falls back to active pane', async () => {
-      const router = setupRouter();
-      await router.dispatch({
+    it('resolves active leaf via pane.resolveActiveLeaf IPC when paneId is omitted', async () => {
+      // M0-b: paneId-absent path asks the renderer for the active leaf id
+      // (read-only — no paneSlice write) and then commits the metadata
+      // through MetadataStore. Codex P1 regression guard: a write here is
+      // visible to a subsequent paneId-present read.
+      const { router, store } = setupWithStore();
+      sendToRendererMock.mockResolvedValueOnce({
+        paneId: 'pane-active',
+        workspaceId: 'ws-active',
+      });
+      const res = await router.dispatch({
         id: 'rpc-8',
         method: 'pane.setMetadata',
         params: { label: 'Active' },
       });
-      const [, , payload] = sendToRendererMock.mock.calls[0];
-      expect(payload.paneId).toBeUndefined();
+      expect(res.ok).toBe(true);
+      // sendToRenderer was called for the resolve, not for a write.
+      expect(sendToRendererMock).toHaveBeenCalledTimes(1);
+      const [, method, payload] = sendToRendererMock.mock.calls[0];
+      expect(method).toBe('pane.resolveActiveLeaf');
+      expect(payload).toEqual({ workspaceId: undefined });
+      // MetadataStore committed under the resolved paneId.
+      const entry = store.get('pane-active');
+      expect(entry.version).toBe(1);
+      expect(entry.metadata.label).toBe('Active');
+    });
+
+    // === Codex P1 regression: read-after-write across paneId modes ===
+
+    it('paneId-absent write then paneId-present read returns the committed metadata (P1 fix)', async () => {
+      const { router, store } = setupWithStore();
+      sendToRendererMock.mockResolvedValueOnce({
+        paneId: 'pane-resolved',
+        workspaceId: 'ws-1',
+      });
+      // Step 1: paneId-absent write — resolver returns pane-resolved.
+      await router.dispatch({
+        id: 'step1',
+        method: 'pane.setMetadata',
+        params: { label: 'WritesThrough' },
+      });
+      // Step 2: paneId-present read — must see the write.
+      const res = await router.dispatch({
+        id: 'step2',
+        method: 'pane.getMetadata',
+        params: { paneId: 'pane-resolved' },
+      });
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const result = res.result as { paneId: string; metadata: { label?: string } };
+        expect(result.paneId).toBe('pane-resolved');
+        expect(result.metadata.label).toBe('WritesThrough');
+      }
+      // Store reflects the same.
+      expect(store.get('pane-resolved').metadata.label).toBe('WritesThrough');
+    });
+
+    // === Codex P2 regression: workspaceId remembered across paneId-only writes ===
+
+    it('remembers workspaceId across writes — later paneId-only call still emits scoped event (P2 fix)', async () => {
+      const { router, store } = setupWithStore();
+      // First write establishes workspaceId on the entry.
+      await router.dispatch({
+        id: 'first',
+        method: 'pane.setMetadata',
+        params: { paneId: 'pane-1', workspaceId: 'ws-A', label: 'one' },
+      });
+      // Second write omits workspaceId — must NOT erase the remembered scope.
+      await router.dispatch({
+        id: 'second',
+        method: 'pane.setMetadata',
+        params: { paneId: 'pane-1', status: 'running' },
+      });
+      // Snapshot still has the original workspaceId tag.
+      const snap = store.snapshot();
+      const entry = snap.entries.find((e) => e.paneId === 'pane-1');
+      expect(entry?.workspaceId).toBe('ws-A');
     });
   });
 
@@ -488,16 +556,27 @@ describe('pane.rpc — metadata', () => {
       }
     });
 
-    it('falls through to renderer when paneId is omitted (legacy active-pane resolution)', async () => {
-      const router = setupRouter();
-      await router.dispatch({
+    it('resolves active leaf via pane.resolveActiveLeaf IPC when paneId is omitted', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-active', { label: 'Hello' }, { workspaceId: 'ws-1' });
+      sendToRendererMock.mockResolvedValueOnce({
+        paneId: 'pane-active',
+        workspaceId: 'ws-1',
+      });
+      const res = await router.dispatch({
         id: 'rpc-10',
         method: 'pane.getMetadata',
         params: {},
       });
-      const [, method, payload] = sendToRendererMock.mock.calls[0];
-      expect(method).toBe('pane.getMetadata');
-      expect(payload.paneId).toBeUndefined();
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.result).toEqual({
+          paneId: 'pane-active',
+          metadata: expect.objectContaining({ label: 'Hello' }),
+        });
+      }
+      const [, method] = sendToRendererMock.mock.calls[0];
+      expect(method).toBe('pane.resolveActiveLeaf');
     });
   });
 
@@ -522,17 +601,26 @@ describe('pane.rpc — metadata', () => {
       expect(sendToRendererMock).not.toHaveBeenCalled();
     });
 
-    it('falls through to renderer when paneId is omitted', async () => {
-      const router = setupRouter();
+    it('resolves active leaf via pane.resolveActiveLeaf IPC when paneId is omitted', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-active', { label: 'X' }, { workspaceId: 'ws-1' });
+      sendToRendererMock.mockResolvedValueOnce({
+        paneId: 'pane-active',
+        workspaceId: 'ws-1',
+      });
       const res = await router.dispatch({
         id: 'rpc-11b',
         method: 'pane.clearMetadata',
         params: {},
       });
       expect(res.ok).toBe(true);
-      const [, method, payload] = sendToRendererMock.mock.calls[0];
-      expect(method).toBe('pane.clearMetadata');
-      expect(payload).toEqual({ paneId: undefined, workspaceId: undefined });
+      if (res.ok) {
+        expect(res.result).toEqual({ ok: true, paneId: 'pane-active' });
+      }
+      // Metadata cleared via MetadataStore, not via renderer paneSlice.
+      expect(store.get('pane-active').metadata).toEqual({});
+      const [, method] = sendToRendererMock.mock.calls[0];
+      expect(method).toBe('pane.resolveActiveLeaf');
     });
   });
 
@@ -552,8 +640,12 @@ describe('pane.rpc — metadata', () => {
       expect(sendToRendererMock).not.toHaveBeenCalled();
     });
 
-    it('1.1 — forwards workspaceId for getMetadata + clearMetadata', async () => {
-      const router = setupRouter();
+    it('1.1 — forwards workspaceId on resolveActiveLeaf for getMetadata + clearMetadata', async () => {
+      const { router } = setupWithStore();
+      sendToRendererMock.mockResolvedValue({
+        paneId: 'pane-caller-active',
+        workspaceId: 'ws-caller',
+      });
       await router.dispatch({
         id: 'rpc-fix-2',
         method: 'pane.getMetadata',
@@ -566,8 +658,12 @@ describe('pane.rpc — metadata', () => {
       });
       const getCall = sendToRendererMock.mock.calls[0];
       const clearCall = sendToRendererMock.mock.calls[1];
-      expect(getCall[2]).toEqual({ paneId: undefined, workspaceId: 'ws-caller' });
-      expect(clearCall[2]).toEqual({ paneId: undefined, workspaceId: 'ws-caller' });
+      // Both round-trip to the renderer for active-leaf resolution scoped to
+      // the caller's workspace, then MetadataStore handles the read/clear.
+      expect(getCall[1]).toBe('pane.resolveActiveLeaf');
+      expect(getCall[2]).toEqual({ workspaceId: 'ws-caller' });
+      expect(clearCall[1]).toBe('pane.resolveActiveLeaf');
+      expect(clearCall[2]).toEqual({ workspaceId: 'ws-caller' });
     });
 
     it('1.2 — rejects role exceeding 64 chars', async () => {
@@ -618,13 +714,13 @@ describe('pane.rpc — metadata', () => {
     });
 
     it('1.3 — accepts custom map at exactly the entry limit', async () => {
-      const router = setupRouter();
+      const { router } = setupWithStore();
       const custom: Record<string, string> = {};
       for (let i = 0; i < 32; i++) custom[`k${i}`] = 'v';
       const res = await router.dispatch({
         id: 'rpc-fix-8',
         method: 'pane.setMetadata',
-        params: { custom },
+        params: { paneId: 'pane-z', workspaceId: 'ws-1', custom },
       });
       expect(res.ok).toBe(true);
     });

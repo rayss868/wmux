@@ -371,6 +371,27 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     return { ok: true };
   }
 
+  if (method === 'pane.resolveActiveLeaf') {
+    // M0-b internal IPC: main asks the renderer to resolve the active leaf
+    // pane for a workspace. Used when an external RPC caller omits `paneId`
+    // and we need to forward the active selection to MetadataStore. Read-only
+    // — does not write to paneSlice; only returns the current active leaf id
+    // and the resolved workspaceId so the next write hits the right pane.
+    //
+    // This channel keeps MetadataStore as the sole metadata writer: the
+    // renderer never sees the patch, it only answers "which leaf is active?".
+    const wsId = typeof params.workspaceId === 'string' && params.workspaceId.length > 0
+      ? params.workspaceId
+      : store.activeWorkspaceId;
+    const ws = store.workspaces.find((w) => w.id === wsId);
+    if (!ws) return { error: `pane.resolveActiveLeaf: workspace "${wsId}" not found` };
+    const target = findPaneById(ws.rootPane, ws.activePaneId);
+    if (!target || target.type !== 'leaf') {
+      return { error: `pane.resolveActiveLeaf: active pane is not a leaf in workspace "${wsId}"` };
+    }
+    return { paneId: target.id, workspaceId: wsId };
+  }
+
   if (method === 'pane.setMetadata') {
     // Workspace scoping: external MCP callers MUST pass workspaceId so writes
     // can't be hijacked into whichever workspace the user happens to focus.
