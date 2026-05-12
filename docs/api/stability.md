@@ -224,10 +224,10 @@ These can grow in minor releases; they cannot shrink within v3.x.
 |---|---|---|
 | `PANE_METADATA_MAX_BYTES` | 8192 | Hard cap on serialized PaneMetadata size. |
 | `PANE_METADATA_LABEL_MAX` | 64 | Max chars in `label`. |
-| `PANE_METADATA_ROLE_MAX` | 32 | Max chars in `role`. |
-| `PANE_METADATA_STATUS_MAX` | 64 | Max chars in `status`. |
+| `PANE_METADATA_ROLE_MAX` | 64 | Max chars in `role`. |
+| `PANE_METADATA_STATUS_MAX` | 128 | Max chars in `status`. |
 | `PANE_METADATA_CUSTOM_KEY_MAX` | 64 | Max chars in a `custom` key. |
-| `PANE_METADATA_CUSTOM_MAX_ENTRIES` | 64 | Max entries in `custom`. |
+| `PANE_METADATA_CUSTOM_MAX_ENTRIES` | 32 | Max entries in `custom`. |
 | `RING_CAPACITY` (events) | 1024 | Event bus ring buffer size. |
 | `POLL_DEFAULT_MAX` | 256 | Default per-poll event cap. |
 | `MAX_CONNECTIONS` (Named Pipe) | 50 | Concurrent client connections. |

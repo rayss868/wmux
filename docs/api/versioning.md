@@ -87,7 +87,7 @@ v3.0 is a major bump but **not a wire-break release**. Substrate 3.0 = "the subs
 - `pane.setMetadata` gains a `mergeMode: 'merge' | 'replace' | 'replaceShared'` parameter. The legacy `merge: boolean` parameter still works (`merge: true` ⇒ `mergeMode: 'merge'`; `merge: false` ⇒ `mergeMode: 'replace'`). Callers see no breaking change.
 - `pane.setMetadata` reply gains `version: number`. Callers that ignore extra fields see no change.
 - `pane.metadata.changed` event envelope gains `version: number`.
-- `pane.list` snapshot envelope gains per-pane `metadata.version: number`.
+- `pane.list` snapshot envelope gains a per-pane `version: number` field — a **sibling of `metadata`**, not nested inside it. See [`../PROTOCOL.md`](../PROTOCOL.md#3-snapshot-envelope-panelist) §3 for the full envelope shape.
 - `system.capabilities.features` gains a stability-tier map.
 - New `wmuxPermissions` field in MCP server manifests (no impact on plugins that don't set it).
 
