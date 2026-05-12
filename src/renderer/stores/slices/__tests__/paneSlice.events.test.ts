@@ -10,7 +10,6 @@ vi.mock('../../../events/publisher', () => ({
   publishPaneCreated: (...args: unknown[]) => { publishCalls.push({ fn: 'pane.created', args }); },
   publishPaneClosed: (...args: unknown[]) => { publishCalls.push({ fn: 'pane.closed', args }); },
   publishPaneFocused: (...args: unknown[]) => { publishCalls.push({ fn: 'pane.focused', args }); },
-  publishPaneMetadataChanged: (...args: unknown[]) => { publishCalls.push({ fn: 'pane.metadata.changed', args }); },
 }));
 
 type TestState = PaneSlice & {
@@ -113,22 +112,16 @@ describe('paneSlice — event publication', () => {
     });
   });
 
-  describe('setPaneMetadata', () => {
-    it('publishes pane.metadata.changed with the merged metadata', () => {
-      store.getState().setPaneMetadata(rootPaneId, { label: 'Backend' });
-      const event = publishCalls.find((c) => c.fn === 'pane.metadata.changed');
-      expect(event).toBeDefined();
-      expect(event?.args[0]).toBe(wsId);
-      expect(event?.args[1]).toBe(rootPaneId);
-      expect((event?.args[2] as { label?: string }).label).toBe('Backend');
-    });
-
-    it('does not publish on size-cap rejection', () => {
-      const huge = 'x'.repeat(10_000);
-      try {
-        store.getState().setPaneMetadata(rootPaneId, { custom: { blob: huge } });
-      } catch { /* expected */ }
-      expect(publishCalls.filter((c) => c.fn === 'pane.metadata.changed')).toHaveLength(0);
+  // M0-d: paneSlice no longer exposes setPaneMetadata / getPaneMetadata /
+  // clearPaneMetadata. MetadataStore in the main process is the sole writer
+  // (M0-a + M0-b). The compile-time guard is the type system itself — the
+  // runtime guard below asserts the methods are absent on the store state.
+  describe('metadata write protect (M0-d)', () => {
+    it('does not expose setPaneMetadata / getPaneMetadata / clearPaneMetadata on the slice', () => {
+      const state = store.getState() as unknown as Record<string, unknown>;
+      expect(state['setPaneMetadata']).toBeUndefined();
+      expect(state['getPaneMetadata']).toBeUndefined();
+      expect(state['clearPaneMetadata']).toBeUndefined();
     });
   });
 });
