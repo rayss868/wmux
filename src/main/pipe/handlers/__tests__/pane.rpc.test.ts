@@ -824,5 +824,38 @@ describe('pane.rpc — metadata', () => {
         expect(result.panes[0].version).toBe(0);
       }
     });
+
+    // Codex P2: until M0-e wires SessionManager hydration, restored panes
+    // only carry their saved metadata on the renderer's PaneLeaf.metadata.
+    // The join must fall back to it rather than overwriting with {}.
+    it('falls back to renderer-provided metadata when the store has no entry (codex P2)', async () => {
+      const { router } = setupWithStore();
+      sendToRendererMock.mockResolvedValueOnce([
+        {
+          id: 'pane-restored',
+          surfaceCount: 1,
+          active: true,
+          metadata: { label: 'Restored', role: 'svc' },
+        },
+      ]);
+
+      const res = await router.dispatch({
+        id: 'rpc-list-m0c-3',
+        method: 'pane.list',
+        params: {},
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        const result = res.result as {
+          panes: Array<{ id: string; metadata: { label?: string; role?: string }; version: number }>;
+        };
+        expect(result.panes).toHaveLength(1);
+        expect(result.panes[0].metadata.label).toBe('Restored');
+        expect(result.panes[0].metadata.role).toBe('svc');
+        // No store entry exists yet, so version is still 0.
+        expect(result.panes[0].version).toBe(0);
+      }
+    });
   });
 });

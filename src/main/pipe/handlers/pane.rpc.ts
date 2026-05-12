@@ -110,26 +110,36 @@ export function registerPaneRpc(
    * including pane ids).
    *
    * M0-c: each pane entry is augmented with `metadata` + `version` joined
-   * from MetadataStore.snapshot(). We capture the snapshot BEFORE calling
-   * the renderer so the envelope's asOfSeq + bootId stay atomic with the
-   * metadata view, even if the store mutates while sendToRenderer awaits.
-   * Pane tree shape changes that happen after the snapshot are reconciled
-   * by the client via the event stream (events with seq > asOfSeq).
+   * from MetadataStore.snapshot(). We call the renderer FIRST and only then
+   * capture the metadata snapshot, so `asOfSeq` reflects the EventBus state
+   * at or after the pane tree the client receives. Clients can then safely
+   * drain events with `seq > asOfSeq` without double-applying a `pane.created`
+   * for a pane the snapshot already contains. Metadata mutations that happen
+   * during the gap are delivered as ordinary events, so final consistency is
+   * preserved (codex P2).
    *
-   * Panes that have no entry in the store get `metadata: {}` and
-   * `version: 0` — the same shape MetadataStore.get() returns for a
-   * never-set / fully-cleared paneId, so external clients can use a single
-   * code path for both states.
+   * Fallback order for `metadata` per pane:
+   *   1. MetadataStore entry (authoritative once M0-e SessionManager hydration
+   *      lands)
+   *   2. `l.metadata` from the renderer response — preserves v2.x session
+   *      metadata for panes restored from disk before M0-e wires hydration
+   *   3. `{}` — never-seen pane, identical to MetadataStore.get() shape
+   * `version` follows the same priority: store version → 0 (the renderer
+   * does not track a version field on PaneLeaf).
    *
    * Wire shape:
    *   { asOfSeq: number, bootId: string,
    *     panes: Array<PaneListEntry & { metadata: PaneMetadata, version: number }> }
    */
   router.register('pane.list', async (params) => {
-    // Capture the metadata snapshot first — this freezes asOfSeq + bootId
-    // alongside the metadata view in a single synchronous task. The
-    // following await may interleave with store writes, but they show up
-    // in events with seq > asOfSeq, not in this reply.
+    // 1. Fetch the pane tree from the renderer.
+    const panes = (await sendToRenderer(getWindow, 'pane.list', params)) as Array<
+      Record<string, unknown> & { id?: unknown; metadata?: unknown }
+    >;
+
+    // 2. THEN snapshot the metadata store. asOfSeq is anchored to the pane
+    //    tree we just received: any event with seq > asOfSeq describes a
+    //    delta relative to the panes[] the client is about to read.
     const snapshot = store.snapshot();
     const metadataByPaneId = new Map<string, { metadata: PaneMetadata; version: number }>();
     for (const entry of snapshot.entries) {
@@ -139,19 +149,20 @@ export function registerPaneRpc(
       });
     }
 
-    const panes = (await sendToRenderer(getWindow, 'pane.list', params)) as Array<
-      Record<string, unknown> & { id?: unknown }
-    >;
-
     const joined = panes.map((pane) => {
       const paneId = typeof pane.id === 'string' ? pane.id : '';
       const found = metadataByPaneId.get(paneId);
-      // Missing-pane fallback: metadata: {}, version: 0 — identical to
-      // MetadataStore.get() on an unknown paneId. Explicit so clients
-      // never see undefined for either field.
+      // Renderer-provided metadata is the M0-e bridge: until SessionManager
+      // hydrates MetadataStore from session.json, restored panes only carry
+      // their saved metadata on PaneLeaf.metadata. Falling back to it here
+      // keeps v2.x sessions intact during the M0 rollout.
+      const rendererMetadata =
+        pane.metadata && typeof pane.metadata === 'object' && !Array.isArray(pane.metadata)
+          ? (pane.metadata as PaneMetadata)
+          : undefined;
       return {
         ...pane,
-        metadata: found?.metadata ?? {},
+        metadata: found?.metadata ?? rendererMetadata ?? {},
         version: found?.version ?? 0,
       };
     });
