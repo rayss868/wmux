@@ -206,10 +206,24 @@ export interface BrowserTypeHumanlikeParams {
 // === Daemon RPC Types ===
 
 export interface DaemonEvent {
-  type: 'session.created' | 'session.destroyed' | 'session.died' | 'session.output' | 'agent.event' | 'agent.critical' | 'activity.idle';
+  type:
+    | 'session.created'
+    | 'session.destroyed'
+    | 'session.died'
+    | 'session.output'
+    | 'agent.event'
+    | 'agent.critical'
+    | 'activity.idle'
+    | 'activity.active';
   sessionId: string;
   data: unknown;
 }
+
+// NOTE: 'session.destroyed' is broadcast when the renderer/MCP explicitly
+// closes a session (pty:dispose → DaemonSessionManager.destroySession),
+// while 'session.died' is broadcast when the underlying PTY exits on its
+// own. Both must clear agentStatus on the main side; only one is reliably
+// observed depending on the caller path.
 
 export interface DaemonCreateSessionParams {
   id: string;
