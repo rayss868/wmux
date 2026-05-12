@@ -49,6 +49,18 @@ export interface PollResult {
   resync?: true;
 }
 
+/**
+ * Synchronous post-emit hook. Runs after the event has been committed to
+ * the ring (so a subscriber that throws cannot prevent the event from being
+ * polled by other clients), but inside the same JS task as `emit()` so
+ * downstream side effects observe the new state immediately.
+ *
+ * Hooks are best-effort: a throw is caught and logged, never propagated.
+ * Subscribers MUST NOT call `emit()` from inside a hook (re-entrancy is
+ * not protected and the seq order would be opaque).
+ */
+export type EventBusSubscriber = (event: WmuxEvent) => void;
+
 export class EventBus {
   private readonly buf: (WmuxEvent | undefined)[] = new Array(RING_CAPACITY);
   private head = 0;        // next write index
@@ -56,6 +68,15 @@ export class EventBus {
   private size = 0;        // number of valid entries
   /** UUID stamped at construction. Invalidates client caches on daemon restart. */
   readonly bootId: string = randomUUID();
+
+  /**
+   * Synchronous post-emit hooks. The store-tombstone wiring in
+   * `src/main/index.ts` is the canonical example: when a `pane.closed`
+   * event lands on the bus, `MetadataStore.onPaneDeleted(paneId)` runs in
+   * the same task so the metadata.json file shrinks immediately and the
+   * hydrated store never resurrects ghost panes on next boot.
+   */
+  private readonly subscribers: EventBusSubscriber[] = [];
 
   emit(input: EmitInput): WmuxEvent {
     const event = {
@@ -67,7 +88,40 @@ export class EventBus {
     this.buf[this.head] = event;
     this.head = (this.head + 1) % RING_CAPACITY;
     if (this.size < RING_CAPACITY) this.size++;
+
+    // Synchronous fan-out to in-process subscribers. The event is already
+    // committed to the ring above, so a throwing subscriber cannot suppress
+    // the event for `events.poll` consumers. We swallow + log to keep the
+    // emit side effect-free from the caller's perspective.
+    if (this.subscribers.length > 0) {
+      for (const sub of this.subscribers) {
+        try {
+          sub(event);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('[EventBus] subscriber threw on emit:', err);
+        }
+      }
+    }
     return event;
+  }
+
+  /**
+   * Register a synchronous subscriber that runs after every successful
+   * `emit()`. Returns an unsubscribe function. Multiple subscribers run
+   * in registration order; each is isolated by a try/catch so one
+   * misbehaving subscriber cannot block the others.
+   *
+   * Intended for in-process lifecycle wiring (e.g. main-side
+   * `MetadataStore.onPaneDeleted` on `pane.closed`). External clients
+   * still pull via `events.poll`.
+   */
+  subscribe(handler: EventBusSubscriber): () => void {
+    this.subscribers.push(handler);
+    return () => {
+      const idx = this.subscribers.indexOf(handler);
+      if (idx >= 0) this.subscribers.splice(idx, 1);
+    };
   }
 
   /**
@@ -160,6 +214,9 @@ export class EventBus {
     this.head = 0;
     this.nextSeq = 1;
     this.size = 0;
+    // Drop registered subscribers so per-test wiring does not leak across
+    // suite runs that share the module-level singleton.
+    this.subscribers.length = 0;
   }
 }
 

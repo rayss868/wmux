@@ -82,6 +82,8 @@ The caller decides whether to retry (after re-reading or re-merging) or surrende
 
 **`expectedVersion` omitted:** no check; the call always commits. This is the v2.x behavior and stays the default for clients that haven't migrated to optimistic concurrency.
 
+**`expectedVersion: 0` semantics:** `0` is the correct guard for a pane that has never been written. The call succeeds iff no concurrent writer has set anything on this pane yet — i.e. the current stored version is also `0`. Use this when you want a write to land only on a "blank" pane (e.g. the first tool to claim a freshly-spawned pane) and you do not want to clobber state that another tool may have already written between your read and your write. If any prior write committed, the call returns `VERSION_CONFLICT` with `currentVersion >= 1`.
+
 **Version is committed in the same transaction as the merged shape.** The `mergeMode` evaluation, validation, persistence, and event emission all happen inside one synchronous critical section in the main-process `MetadataStore` (single-threaded JS provides natural serialization). The `version` returned on a successful write is always the version of the post-merge shape; the `pane.metadata.changed` event carries the same value.
 
 ### 1.4 mergeMode semantics
@@ -99,7 +101,7 @@ Legacy `merge: boolean` parameter remains for backwards compatibility:
 - `merge: true` ⇒ `mergeMode: 'merge'`
 - `merge: false` ⇒ `mergeMode: 'replace'`
 
-Passing both `merge` and `mergeMode` is an error. New clients should use `mergeMode` and stop sending `merge`.
+When both `merge` and `mergeMode` are present on the same request, `mergeMode` wins; the legacy `merge` field is ignored, not an error. The legacy field is preserved so v2.8.x clients continue to work unchanged, but new clients SHOULD send `mergeMode` only and stop emitting `merge`.
 
 ### 1.5 Validation
 

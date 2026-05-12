@@ -250,4 +250,63 @@ describe('EventBus', () => {
       expect(r2.events.map((e) => e.seq)).toEqual([4, 5, 6]);
     });
   });
+
+  describe('subscribe (final-review follow-up P0-1)', () => {
+    it('invokes subscribers synchronously with the committed event', () => {
+      const seen: { seq: number; type: string }[] = [];
+      bus.subscribe((ev) => seen.push({ seq: ev.seq, type: ev.type }));
+
+      bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+      bus.emit({ type: 'pane.closed', workspaceId: 'ws-1', paneId: 'p1' });
+
+      expect(seen).toEqual([
+        { seq: 1, type: 'pane.created' },
+        { seq: 2, type: 'pane.closed' },
+      ]);
+    });
+
+    it('unsubscribe stops future delivery without affecting other subscribers', () => {
+      const a: number[] = [];
+      const b: number[] = [];
+      const unsubA = bus.subscribe((ev) => a.push(ev.seq));
+      bus.subscribe((ev) => b.push(ev.seq));
+
+      bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+      unsubA();
+      bus.emit({ type: 'pane.closed', workspaceId: 'ws-1', paneId: 'p1' });
+
+      expect(a).toEqual([1]);
+      expect(b).toEqual([1, 2]);
+    });
+
+    it('throwing subscriber does not block other subscribers or suppress poll delivery', () => {
+      const seen: number[] = [];
+      bus.subscribe(() => {
+        throw new Error('boom');
+      });
+      bus.subscribe((ev) => seen.push(ev.seq));
+
+      // emit must not throw — the synchronous fan-out swallows subscriber errors.
+      expect(() => {
+        bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+      }).not.toThrow();
+
+      expect(seen).toEqual([1]);
+      // The throwing subscriber must NOT have prevented the event from
+      // being committed to the ring; a poll-only client still sees it.
+      const r = bus.poll(0);
+      expect(r.events.map((e) => e.seq)).toEqual([1]);
+    });
+
+    it('reset() clears subscribers (test-isolation guarantee)', () => {
+      const seen: number[] = [];
+      bus.subscribe((ev) => seen.push(ev.seq));
+      bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+      expect(seen).toEqual([1]);
+
+      bus.reset();
+      bus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p2' });
+      expect(seen).toEqual([1]); // unchanged — subscriber dropped on reset
+    });
+  });
 });

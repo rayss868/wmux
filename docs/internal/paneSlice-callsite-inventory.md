@@ -32,7 +32,7 @@ Codex 2nd review identified labels / roles / status badges / restore state / pan
 | `src/renderer/hooks/useRpcBridge.ts:429` `store.clearPaneMetadata(...)` IPC handler | renderer IPC inbound | Same. |
 | `src/renderer/stores/slices/paneSlice.ts:239` `setPaneMetadata` | renderer-internal | **The current authority.** M0.C removes the write code path entirely (compile-time guard via not exporting the setter from `PaneSlice`). Only the mirror update remains. |
 | `src/renderer/stores/slices/paneSlice.ts:287` `clearPaneMetadata` | renderer-internal | Same — remove. |
-| `src/renderer/events/publisher.ts:47` `publishPaneMetadataChanged` | renderer → main → EventBus | After M0.B (persist-then-publish), main process emits the event directly from `MetadataStore.set()`. This publisher call becomes unused for pane metadata (still used for renderer-originated pane.created/closed/focused). |
+| ~~`src/renderer/events/publisher.ts:47` `publishPaneMetadataChanged`~~ | renderer → main → EventBus | **Removed** in the M0 follow-up cleanup. After M0.B (persist-then-publish), the main process emits the event directly from `MetadataStore.set()`; M0.D removed the renderer write path so no caller remained. The export was deleted to prevent future contributors from re-introducing a publisher that would race the store's own emit. |
 
 **Risk:** none of these are user-visible UI. The wire-shape contracts (`pane.setMetadata` JSON-RPC params + reply, `pane.metadata.changed` event envelope) are owned by external tooling tests, not view-layer tests.
 

@@ -39,6 +39,7 @@ import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
 import { sessionManager } from './ipc/handlers/session.handler';
+import { eventBus } from './events/EventBus';
 
 // Force English for Chromium internal messages to avoid encoding corruption
 // on non-ASCII locales (e.g. Korean Windows where cp949 garbles console output).
@@ -537,6 +538,36 @@ app.on('ready', async () => {
   }
   metadataStore.setPersist((shape) => {
     sessionManager.saveMetadataSync(shape);
+  });
+
+  // Final-review follow-up (P0-1): wire pane lifecycle into MetadataStore.
+  //
+  // Without this subscriber, `MetadataStore.onPaneDeleted()` had no
+  // production caller — only unit tests exercised it. Two consequences:
+  //   1. `metadata.json` grew monotonically as panes were created/closed;
+  //      every closed pane left a tombstone slot in the in-memory map and,
+  //      worse, kept its label/role/status durably on disk.
+  //   2. After daemon restart, `hydrate()` re-seeded every closed-pane
+  //      entry, so `pane.list` and `pane.getMetadata` would surface
+  //      metadata for paneIds that no longer existed in the renderer's
+  //      pane tree — ghost panes resurrected on every boot.
+  //
+  // The renderer publishes `pane.closed` through preload IPC (see
+  // `registerHandlers.ts` `onEventsPublish`), which lands as an
+  // `eventBus.emit(...)` call. We subscribe to the main-side EventBus so
+  // any future producer of `pane.closed` (PTYBridge, daemon broadcast)
+  // gets the same tombstone treatment without duplicating the wiring.
+  eventBus.subscribe((event) => {
+    if (event.type !== 'pane.closed') return;
+    try {
+      metadataStore.onPaneDeleted(event.paneId);
+    } catch (err) {
+      // onPaneDeleted swallows persist failures internally; this catch
+      // is a belt-and-suspenders guard against a future refactor that
+      // throws synchronously (e.g. a validate step). The pane-close
+      // signal must never propagate an error back to the emitter.
+      console.error('[Main] metadataStore.onPaneDeleted failed:', err);
+    }
   });
 
   // Write auth token BEFORE starting pipe server — prevents race where

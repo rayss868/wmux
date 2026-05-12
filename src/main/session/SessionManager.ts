@@ -260,6 +260,14 @@ export class SessionManager {
     const obj = parsed as Record<string, unknown>;
     if (obj['schema_version'] !== METADATA_SCHEMA_VERSION) return false;
     if (!Array.isArray(obj['entries'])) return false;
+    // Final-review follow-up (P1-8): the on-disk envelope is an `entries`
+    // array, not a map. A tampered or torn-write file with two entries for
+    // the same paneId would silently let `MetadataStore.hydrate()`'s
+    // `map.set(paneId, …)` loop keep the *last* one, dropping the prior
+    // entry's version + workspaceId without warning. We reject the whole
+    // envelope here — the helper returns null, and the boot path falls
+    // back to the legacy-migration / clean-slate branch in main/index.ts.
+    const seenPaneIds = new Set<string>();
     for (const entry of obj['entries']) {
       if (typeof entry !== 'object' || entry === null) return false;
       const e = entry as Record<string, unknown>;
@@ -267,6 +275,9 @@ export class SessionManager {
       if (typeof e['workspaceId'] !== 'string') return false;
       if (typeof e['version'] !== 'number') return false;
       if (!SessionManager.isPaneMetadataShape(e['metadata'])) return false;
+      const paneId = e['paneId'] as string;
+      if (seenPaneIds.has(paneId)) return false;
+      seenPaneIds.add(paneId);
     }
     return true;
   }

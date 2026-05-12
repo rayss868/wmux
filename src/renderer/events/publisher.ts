@@ -4,8 +4,17 @@
 // inside their state mutations so external tooling can poll the EventBus on
 // main and see pane lifecycle. Failures are swallowed — telemetry never
 // breaks a state mutation.
+//
+// NOTE on `pane.metadata.changed`: There is intentionally no renderer-side
+// publisher for this event. As of v2.9.0 (M0-d) the renderer no longer owns
+// the metadata write path; `MetadataStore` (main process) is the sole writer
+// and emits `pane.metadata.changed` directly on the main-process EventBus
+// from inside its synchronous critical section. A renderer publisher would
+// race the store's own emit and could surface stale `version` values to
+// subscribers. If you need to react to metadata changes, poll the EventBus
+// or rely on `pane.list` reconciliation.
 
-import type { PaneMetadata, WorkspaceMetadata } from '../../shared/types';
+import type { WorkspaceMetadata } from '../../shared/types';
 import type { WmuxEventType } from '../../shared/events';
 
 interface ElectronEventsAPI {
@@ -37,14 +46,6 @@ export function publishPaneClosed(workspaceId: string, paneId: string): void {
 
 export function publishPaneFocused(workspaceId: string, paneId: string, previousPaneId?: string): void {
   publish({ type: 'pane.focused', workspaceId, paneId, ...(previousPaneId ? { previousPaneId } : {}) });
-}
-
-export function publishPaneMetadataChanged(
-  workspaceId: string,
-  paneId: string,
-  metadata: PaneMetadata,
-): void {
-  publish({ type: 'pane.metadata.changed', workspaceId, paneId, metadata });
 }
 
 export function publishWorkspaceMetadataChanged(

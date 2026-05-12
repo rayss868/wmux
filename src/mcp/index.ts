@@ -305,7 +305,7 @@ server.tool(
     custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when mergeMode="merge". Recommended convention: namespace your keys with a tool prefix (e.g. "orchestrator.taskId", "qa.status") to avoid semantic collisions with other cooperating tools.'),
     merge: z.boolean().optional().describe('Legacy v2.8.x flag; prefer mergeMode. true → merge, false → replace. When both `merge` and `mergeMode` are provided, `mergeMode` wins.'),
     mergeMode: z.enum(['merge', 'replace', 'replaceShared']).optional().describe('Explicit merge semantics (v2.9.0+). "merge" patches and deep-merges custom (default). "replace" wipes the metadata object and writes only the provided fields. "replaceShared" overwrites label/role/status but preserves another tool\'s custom keys. Overrides legacy `merge` boolean when both are provided.'),
-    expectedVersion: z.number().int().nonnegative().optional().describe('Optimistic concurrency guard (v2.9.0+). If the pane\'s current metadata version differs, the call fails with VERSION_CONFLICT and does not mutate. Read the current version from pane_get_metadata or pane_list. Omit for unconditional writes (legacy v2.8.x behavior).'),
+    expectedVersion: z.number().int().nonnegative().optional().describe('Optimistic concurrency guard (v2.9.0+). If the pane\'s current metadata version differs, the call fails with VERSION_CONFLICT and does not mutate. Read the current version from pane_get_metadata or pane_list. Omit for unconditional writes (legacy v2.8.x behavior). expectedVersion: 0 is the correct guard for a pane that has never been written; it succeeds iff no concurrent writer has set anything on this pane yet (useful for "claim a fresh pane" patterns).'),
   },
   async ({ paneId, label, role, status, custom, merge, mergeMode, expectedVersion }) => {
     const workspaceId = await requireWorkspaceId();
@@ -324,7 +324,7 @@ server.tool(
 
 server.tool(
   'pane_get_metadata',
-  'Read the metadata attached to a leaf pane in the calling workspace. Returns { paneId, metadata } or null metadata if none set.',
+  'Read the metadata attached to a leaf pane in the calling workspace. Returns { paneId, metadata, version }. A version of 0 means no metadata has ever been written for this pane (the "never written" sentinel — pair with expectedVersion: 0 on pane_set_metadata to claim a fresh pane atomically).',
   {
     paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace.'),
   },

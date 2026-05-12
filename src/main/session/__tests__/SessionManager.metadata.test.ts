@@ -165,6 +165,42 @@ describe('SessionManager metadata persistence (M0-e)', () => {
     expect(sm.loadMetadata()).toBeNull();
   });
 
+  it('loadMetadata rejects an envelope with duplicate paneIds', () => {
+    // Final-review follow-up (P1-8): the on-disk envelope is an `entries`
+    // array. A tampered or torn-write file with two entries for the same
+    // paneId would silently let `MetadataStore.hydrate()` keep only the
+    // last entry (Map.set semantics), dropping the prior entry's version
+    // + workspaceId without warning. We reject the whole envelope here so
+    // the boot path falls back to legacy migration / clean slate instead
+    // of hydrating an inconsistent state.
+    const sm = new SessionManager();
+    const metadataPath = path.join(tmpRoot, 'metadata.json');
+
+    fs.writeFileSync(
+      metadataPath,
+      JSON.stringify({
+        schema_version: METADATA_SCHEMA_VERSION,
+        entries: [
+          {
+            paneId: 'p-dup',
+            workspaceId: 'ws-1',
+            metadata: { label: 'first' },
+            version: 1,
+          },
+          {
+            paneId: 'p-dup', // ← duplicate; second wins silently without the guard
+            workspaceId: 'ws-1',
+            metadata: { label: 'second' },
+            version: 2,
+          },
+        ],
+      }),
+      'utf-8',
+    );
+
+    expect(sm.loadMetadata()).toBeNull();
+  });
+
   it('loadMetadata rejects a wrong schema_version (forward-incompatible payload)', () => {
     const sm = new SessionManager();
     const metadataPath = path.join(tmpRoot, 'metadata.json');
