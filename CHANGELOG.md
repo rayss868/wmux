@@ -5,6 +5,71 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.4] — 2026-05-12 — Agent Notification Pipeline Restoration
+
+사용자가 보고한 "Claude 가 작업을 끝내도 사이드바 dot, unread 배지, OS 토스트 — 3가지 신호 전부 안 뜬다" 결함을 root-cause 수준에서 복구. main 의 감지 레이어 (PTYBridge, AgentDetector, ActivityMonitor) 가 emit 하는 신호를 renderer UI 까지 연결하는 wiring 이 4 군데 끊겨 있었고, **wmux production 인 daemon mode 에서는 PTYBridge 가 아예 우회되어 본 fix 가 0 효과** 라는 더 큰 결함도 포함. PR #30 (4 commits, +1579/-141, 29 files).
+
+### Fixed
+
+- **AgentDetector status event 가 아무에게도 listen 되지 않던 결함** — `src/main/pty/PTYBridge.ts:207` 가 `agentDetector.onCritical` 만 구독하고 `onEvent` 는 dead code. Claude/Codex/Aider 의 "esc to interrupt" / "shift+tab to cycle" / "Applied edit to" 같은 정확한 prompt 패턴은 감지되어 emit 되었지만 호출되는 콜백이 0 개라 사이드바 dot 이 영영 켜지지 않았다. PTYBridge 가 `onEvent` 도 구독하도록 추가, `IPC.METADATA_UPDATE` 로 `agentStatus`/`agentName` broadcast + `sendNotification` 호출.
+- **`IPC.NOTIFICATION` payload shape 가 sender 마다 달라서 외부 RPC 알림이 깨지던 결함** — `PTYBridge` 는 `(channel, ptyId, notification)` 3-arg, `notify.rpc.ts` 는 `(channel, { title, body, type })` 1-arg. preload `notification.onNew` 는 3-arg signature 라 RPC path 의 첫 인자가 ptyId 자리로 들어가 payload 가 silent 하게 깨졌다. 새 `sendNotification` utility (`src/main/notification/sendNotification.ts`) 가 단일 `(window, ptyId|null, payload)` contract 로 통일.
+- **`IPC.METADATA_UPDATE` 가 두 sender 사이에 shape 불일치였던 결함** — `metadata.handler` 는 `(ptyId, data)` 2-arg, `meta.rpc` 는 `(payload)` 1-arg 로 같은 채널에 송신. 한 path 가 정상 동작하는 동안 다른 path 가 silent 하게 깨졌다. `MetadataUpdatePayload` (`src/shared/types.ts`) 를 단일 discriminated payload 로 정의, `broadcastMetadataUpdate` utility 로 모든 sender 통일. meta.rpc 의 `{kind: 'status'|'progress'}` discriminator 폐기, workspace-level field 로 직접 매핑.
+- **WorkspaceMetadata.agentStatus 가 자동으로 'idle' 로 복귀하지 않던 결함** — `'waiting'`/`'complete'`/`'running'` 이 한 번 set 되면 lifecycle reset 없음. 사용자 입력 후 agent 가 다시 실행되어도 dot 은 `'waiting'`, PTY 가 죽어도 dot 은 `'running'` 으로 남는 거짓말 발생. ActivityMonitor 의 새 `onActive` 콜백이 burst 진입 시점에 `'running'` 설정, `PTYBridge.onExit` 가 `'idle'` broadcast, `cleanupInstance` 도 dispose path 에서 동일하게 broadcast (idempotent). renderer 의 `AppLayout` 가 session restore 직후 모든 workspace 의 stale agentStatus 를 sanitize.
+- **Daemon mode 에서 알림 wiring 이 통째로 빠져 있던 결함 (production blocker)** — wmux 의 production normal 은 daemon mode. PTY output 은 `DaemonPTYBridge` 를 통과하고 `PTYBridge` 는 우회된다. `DaemonPTYBridge` 가 이미 `'agent'`/`'critical'`/`'idle'` event 를 emit 하고 있었지만 `DaemonSessionManager` 는 `'idle'` 만 forward, `daemon/index.ts` 는 `'activity.idle'` 만 broadcast, `DaemonClient` 는 `'session.died'` 만 specific emit. 즉 local mode fix 만으로는 사용자 환경에서 0 효과. 신규 `DaemonNotificationRouter` (`src/main/notification/DaemonNotificationRouter.ts`) 가 daemon broadcast event 5 종 (`session:agent`/`active`/`critical`/`idle`/`died`/`destroyed`) 을 listen 해서 PTYBridge 와 동일한 로직 실행. `DaemonEvent` type 에 `'activity.active'` + `'session.destroyed'` 추가, `daemon/index.ts` 가 신규 type 모두 broadcast, `DaemonClient` 가 specific emit. daemon 측 `AgentDetector` 의 dedup state 도 onActive burst 시점에 in-process 로 reset (main 에서 daemon process 의 detector 에 접근 불가하기 때문).
+- **PTY echo / SIGWINCH redraw 가 false-positive idle 알림을 유발하던 결함 (사용자 발견)** — 7-round review pipeline (CEO + Eng + Codex × 4 + Claude subagent) 가 catch 못 한 케이스. ActivityMonitor 는 byte count 휴리스틱이라 "agent task ending" 과 "외부 상태 변화로 인한 PTY redraw" 를 구분 못 함. (a) 사용자 keystroke 가 PTY echo 로 돌아와 active threshold 를 넘기고 잠시 멈추면 "Task may have finished" 가 사용자 입력 중에 발화. (b) workspace 전환 시 `FitAddon.fit()` → `IPC.PTY_RESIZE` → SIGWINCH → TUI agent 의 full-screen redraw 가 active 진입 → 5s 후 idle timer 발화. 신규 `idleSuppression` 모듈 (`src/main/notification/idleSuppression.ts`) 이 `lastResizeAt`/`lastUserWriteAt` 을 per-ptyId 로 추적, 30 s window 내면 activity-fallback 알림 suppress. AgentDetector 의 precise event 는 gate 안 함 (정확한 신호이므로). `pty.handler.ts` 의 4 path (write × 2 + resize × 2) 가 `markResize`/`markUserWrite` 호출. 사용자가 보고한 "타자 치는 중 알람" + "워크스페이스만 눌렀다가 다른 곳 가면 +1" 두 시나리오 모두 해결.
+- **사용자가 보고 있는 surface 에도 알림이 누적되던 결함** — `useNotificationListener` 가 active workspace 의 active surface 일치 여부 체크 없이 무조건 `addNotification` + `pushToast` 호출. 사용자가 직접 보고 있는 곳은 알림 의미 0 인데 unread 배지가 계속 올라갔다. 알림 발생 직전 `isActivePtySurface` 체크 → 일치하면 in-app surface (`addNotification` + `pushToast`) skip. OS toast 는 `ToastManager` 가 자체 focus gate 가지고 있어 변경 없음.
+- **workspace 전환만으로는 unread 가 read 처리 되지 않던 결함** — 사용자 보고: "워크스페이스만 눌러서 들렀다가 다른 곳 가면 unread 가 +1." Pane click 만이 markRead 트리거였고 sidebar 의 workspace 타일 click 은 read 영향 0. `workspaceSlice.setActiveWorkspace` action 이 해당 workspace 의 모든 unread 를 read 로 자동 처리하도록 변경. `Array.isArray(state.notifications)` 가드로 workspaceSlice 단독 테스트 호환.
+- **pushToast 가 사용자 toast 설정 무시하던 결함** — `useNotificationListener` 가 settings 의 `toastEnabled` 무시하고 매번 in-app overlay 띄움. 사용자가 "Toast notifications" 끄면 OS toast 만 suppress, in-app 은 그대로 표시되던 결함. `state.toastEnabled` gate 추가 (sound playback 패턴과 동일).
+- **AgentDetector 의 Claude `esc to interrupt` 가 false-positive 'waiting'** — 실제로는 "지금 response 가 진행 중, ESC 로 중단 가능" 힌트이지 idle 신호가 아니다. 패턴 제거. mid-turn 에 잘못된 알림 fire 차단.
+- **AgentDetector enum 명명 불일치** — `AgentEvent.status: 'completed'` vs `WorkspaceMetadata.agentStatus: 'complete'`. `AgentStatus` enum 으로 통일 (Aider 패턴 `'completed'` → `'complete'` 텍스트 변경 포함). 외부 consumer 없어 안전.
+- **AgentDetector dedup 이 turn N+1 의 같은 prompt 를 영영 차단하던 결함** — `lastEmittedKey` 가 single global string 이라 한 번 emit 한 prompt 는 다시 emit 안 됨 → 사용자가 추가 입력해도 사이드바 dot 갱신 0. `lastEmittedFor` Map 으로 per-(agent:status) 분리 + `resetEmissionState()` method 추가, ActivityMonitor 의 새 active burst 시점에 reset (turn boundary). local mode 는 PTYBridge 가 직접 호출, daemon mode 는 `DaemonPTYBridge.onActive` 콜백이 in-process 에서 호출.
+- **AgentDetector 의 ANSI strip 이 private-mode prefix 를 못 잡던 결함** — `\x1b[?25h` 같은 cursor visibility 시퀀스 (`?` 포함) 가 `[0-9;]*[a-zA-Z]` regex 와 안 맞아 `clean` 에 잔존, gate 매칭 실패 가능. `[0-9;?<=>]*[a-zA-Z@]` 로 확장.
+- **AgentDetector 가 lone `\r` redraw 를 한 라인으로 처리하던 결함** — Claude/Codex TUI footer 는 CR 단독으로 redraw. `split(/\r?\n/)` 가 통째로 묶어 line-anchored regex 가 매칭 실패. `split(/\r?\n|\r(?!\n)/)` 로 확장.
+- **AgentDetector.onEvent/onCritical 이 unsubscribe 안 돌려주던 결함** — `void` 반환이라 PTY recycle 시마다 listener 누적. v2.7.2 의 PlaywrightEngine CDP 세션 누수와 동일 카테고리. unsubscribe 함수 반환으로 변경, PTYBridge `cleanupInstance` + DaemonPTYBridge `cleanup` 에서 호출. ActivityMonitor 의 `onActiveToIdle`/`onActive` 도 같은 패턴.
+- **AgentDetector callback 내부 throw 가 후속 라인 감지를 죽이던 결함** — PTYBridge middleware 패턴과 일치시켜 onEvent/onActive 콜백 본문에 try/catch 가드 추가. 한 callback 의 실패가 PTY stream 전체를 죽이지 않게 격리.
+- **`AGENT_EVENT_SUPPRESSION_MS` 로 ActivityMonitor 의 fallback 알림 dedup** — AgentDetector 가 precise event emit 직후 ActivityMonitor 가 또 idle 발화하면 같은 turn 에 알림 2 회. PTYBridge / DaemonNotificationRouter 가 `lastAgentEventAt` 추적, 10 s 이내면 fallback skip.
+- **`notify` RPC 가 workspaceId 없이는 깨지던 결함** — preload signature 가 `ptyId: string` 강제, `addNotification` 이 `surfaceId` 강제. RPC path 는 ptyId 가 없어 silent drop 되거나 type error. workspaceId optional 로 변경 (CLI `wmux notify` backward compat 유지), `Notification.surfaceId` optional, useNotificationListener 가 `null` ptyId 면 workspaceId 로 active surface resolve (or active workspace fallback).
+
+### Added
+
+- **`sendNotification` utility** (`src/main/notification/sendNotification.ts`) — 모든 `IPC.NOTIFICATION` 송신의 단일 entry point. window null/destroyed 가드 + `(ptyId | null, payload)` 시그니처 통일. PTYBridge 4 호출 지점 + notify.rpc + DaemonNotificationRouter 모두 import.
+- **`broadcastMetadataUpdate` utility** (`src/main/ipc/handlers/metadata.handler.ts`) — 모든 `IPC.METADATA_UPDATE` 송신의 단일 entry point. MetadataUpdatePayload 단일 shape.
+- **`idleSuppression` 모듈** (`src/main/notification/idleSuppression.ts`) — per-PTY resize/user-write 시점 추적. 30 s suppression window 로 ActivityMonitor 의 byte-count heuristic false-positive 차단.
+- **`DaemonNotificationRouter`** (`src/main/notification/DaemonNotificationRouter.ts`) — daemon mode 에서 PTYBridge 의 알림 라우팅 역할 대체. `DaemonClient` event 5 종 listen → `sendNotification` + `broadcastMetadataUpdate` + toast.
+- **AgentDetector 의 in-process API 확장** — `getActiveAgents()` / `getLastAgent()` / `resetEmissionState()` public method 추가. PTYBridge 가 lastAgent name 을 onActive metadata 에 채워 넣을 수 있게.
+- **37 신규 unit test** — `AgentDetector.test.ts` (18, enum/unsubscribe/dedup/`\r` split/ANSI strip/getters/critical), `ActivityMonitor.test.ts` (+4, onActive cycle dedup), `sendNotification.test.ts` (4, null/destroyed/ptyId 분기), `PTYBridge.notify.test.ts` (5, METADATA_UPDATE + NOTIFICATION + try/catch + cleanup unsub), `notify.rpc.test.ts` (6, workspaceId optional + MCP path + type fallback + toast). IRON RULE 7 regression 중 6 cover, R7 (pushToast in renderer) 는 jsdom 필요해 manual.
+
+### Migration Notes
+
+- 자동. 사용자 액션 불필요.
+- `Notification.surfaceId` 를 optional 로 변경 — `Pane.tsx` 의 `surfaceIds.has(n.surfaceId)` 에 undefined guard 추가됨. 다른 consumer 없음.
+- `AgentEvent.status` enum 변경 (`'completed'` → `'complete'`) — wmux 내부에서 PTYBridge `onCritical` 만 consume 했고 onEvent 는 dead code 였으므로 외부 영향 없음.
+- `IPC.METADATA_UPDATE` payload shape 통일 — preload `metadata.onUpdate` 시그니처가 `(payload)` 단일 인자로 변경. renderer 의 `useNotificationListener` 가 호환 처리. 외부 MCP / CLI consumer 영향 없음.
+- `notify` RPC 의 `workspaceId` 는 optional 신규 param. CLI `wmux notify --title X --body Y` 는 그대로 동작. MCP 클라이언트가 `mcp.claimWorkspace` 의 workspaceId 를 함께 보내면 precise routing (active surface auto-select).
+
+### Deferred (follow-up issues)
+
+- `DaemonNotificationRouter` regression test suite — manual verification 으로 cover, daemon IPty pipeline mock 은 별도 작업.
+- session-restore sanitize regression test — session fixture builder 필요.
+- `onExit` elapsed=0 cosmetic (cleanupInstance 가 ptyCreatedAt 먼저 wipe 하는 path) — purely message-text, behavioural 영향 0.
+- `DaemonClient.removeAllListeners` on disconnect — pre-existing, 본 PR 범위 외.
+- `TODOS.md` 에 cherry-picked deferral 추가: E3 (transient dot flash animation, P3), E4 (per-workspace notification mute, P2), E5 (tray icon unread badge — cross-platform, P2), Phase 2 Eureka (Claude Code stop-hook → OSC 9 BEL emit, P3).
+
+### Review Trail
+
+| Pass | Reviewer | Findings | Status |
+|---|---|---|---|
+| Plan 1 | `/plan-ceo-review` | 5 proposals | SELECTIVE_EXPANSION, 2 accepted |
+| Plan 1 | Codex round 1 | 10 | all addressed |
+| Plan 1 | `/plan-eng-review` | 11, 1 critical | all addressed |
+| Plan 1 | Codex round 2 | 8 | all addressed (daemon mode wiring 6 파일 추가) |
+| Code 2 | Codex round 3 | 2 (P1+P2) | all addressed in `5aee27f` |
+| Code 3 | Codex round 4 | 3 (P2+P2+P3) | all addressed in `cddd3bd` |
+| Code 3 | Claude subagent | 7 (P2+P2+P3×5) | 2 addressed, 5 deferred |
+| Code 4 | 사용자 manual test | 2 (resize/typing FP) | addressed in `42f5bd3` |
+
+7-round review pipeline 의 한계: AI review 가 PTY echo / SIGWINCH redraw 같은 **runtime 동작** 은 코드만 보고 모델링하기 어렵다. 사용자 manual test 가 마지막 안전망이 됐다는 점이 기록 가치 있음.
+
 ## [2.8.3] — 2026-05-11 — License Bundling + Third-Party Notices Attribution
 
 wmux 빌드 산출물에 부족했던 attribution 의무를 정리한 patch. `THIRD_PARTY_NOTICES` 가 Playwright 하나만 적혀 있었지만 실제 runtime 번들은 **110 packages** (16 직접 deps + Electron + ~93 transitive) 를 포함하고 있었다. MIT/ISC/BSD/Apache-2.0 의 "all copies or substantial portions" 조항을 모두 충족하도록 재구성. 코드 동작 변경 없음 — 사용자 가시 변경은 tray 메뉴에 라이선스 진입점 3 개 신설.
