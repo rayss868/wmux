@@ -1,0 +1,313 @@
+# wmux Substrate Protocol
+
+> **Status:** Draft 1 (Phase 0 deliverable for Substrate 3.0). Expanded during Phase 1 M3 as the M0 MetadataStore lands.
+> **Audience:** plugin authors, dashboard builders, orchestrators, and anyone integrating wmux as a substrate.
+> **Companion docs:** [`api/inventory.md`](./api/inventory.md), [`api/versioning.md`](./api/versioning.md), [`api/stability.md`](./api/stability.md).
+
+This document is the substrate contract. It describes the wire-level rules that external tools rely on, in enough detail to write a correct client without reading wmux source code.
+
+---
+
+## 0. Foundational model
+
+wmux is a **terminal substrate**: it owns panes, terminal I/O, and the event bus. It does not own workflow logic. External tools (MCP plugins, dashboards, orchestrators) build workflow intelligence on top of these primitives.
+
+Three contract layers:
+
+1. **State surface:** `PaneMetadata` (per-pane) and `WorkspaceMetadata` (per-workspace). Mutable. Reads return the latest committed state.
+2. **Event surface:** an in-memory ring buffer of lifecycle events, polled via `events.poll`. Lets clients react without continuous state polling.
+3. **Identity surface:** `workspaceId`, `paneId`, `ptyId`, `bootId`, MCP server name, and the Named Pipe token. Determines who is talking to whom and what state survives daemon restarts.
+
+The protocol below is the contract between wmux and clients across these three layers.
+
+---
+
+## 1. PaneMetadata semantics
+
+### 1.1 Layered status
+
+PaneMetadata has two layers:
+
+- **Top-level fields** (`label`, `role`, `status`) — *shared display vocabulary*. Any tool may read or write. Reflects the most relevant human-facing workflow state at any given moment. Used by current and future wmux UI surfaces (pane headers, search results, sidebars) and by other tools that want a quick read of "what's this pane doing."
+- **`custom` object** — *tool-specific extension*. Opaque to wmux. Each tool writes under its own namespace; deep-merge ensures cooperating tools don't clobber each other's keys.
+
+This split came out of the RFC #15 discussion. The principle:
+
+> Top-level fields are read by humans and other tools at a glance. Tool-specific richness lives under `custom.<tool>.*` and is parsed only by the tool that wrote it.
+
+Multiple tools may write to `status` (the shared top-level field). wmux does not mediate. The convention is **last writer wins** for the shared field, with each tool also keeping its own rich state under `custom.<toolName>.status` (or similar). Tools that need precedence enforcement coordinate among themselves; wmux does not enforce ownership.
+
+Optimistic concurrency (§1.3) is the substrate-level primitive for coordination when two writers race on the same field.
+
+### 1.2 Namespacing convention
+
+`custom` is a flat `Record<string, string>` (one-level deep-merged on `setMetadata`). The convention for keys:
+
+- `<toolName>.<keyName>` — e.g. `orchestrator.taskId`, `qa.status`, `dashboard.lastRender`.
+- Keys without a dot are permitted but discouraged; they're prone to semantic collision across tools.
+- Reserved namespaces:
+  - `wmux.*` — reserved for wmux itself (currently unused, claimed for future protocol-level fields).
+  - `wmux.<server-name>.*` — reserved for an MCP server with that name. Per-plugin identity (see §4) anchors the namespace.
+
+Cooperating tools should agree on namespacing out-of-band. The substrate does not validate namespace ownership; that's a §4 permission concern, not a §1 contract concern.
+
+### 1.3 Versioning and optimistic concurrency
+
+Each pane's metadata has a monotonic `version: number`, starting at 0 (no metadata ever set) and incrementing by 1 on every successful `setMetadata` or `clearMetadata`.
+
+**`expectedVersion` (optional):**
+
+```jsonc
+// pane.setMetadata params
+{
+  "paneId": "p-123",
+  "workspaceId": "ws-1",
+  "status": "running",
+  "expectedVersion": 7   // ← optimistic-concurrency check
+}
+```
+
+If the current version is not `7`, the call returns JSON-RPC error `-32001`:
+
+```jsonc
+{
+  "id": "req-42",
+  "ok": false,
+  "error": "VERSION_CONFLICT",
+  "currentVersion": 11   // ← actual current version
+}
+```
+
+The caller decides whether to retry (after re-reading or re-merging) or surrender.
+
+**`expectedVersion` omitted:** no check; the call always commits. This is the v2.x behavior and stays the default for clients that haven't migrated to optimistic concurrency.
+
+**Version is committed in the same transaction as the merged shape.** The `mergeMode` evaluation, validation, persistence, and event emission all happen inside one synchronous critical section in the main-process `MetadataStore` (single-threaded JS provides natural serialization). The `version` returned on a successful write is always the version of the post-merge shape; the `pane.metadata.changed` event carries the same value.
+
+### 1.4 mergeMode semantics
+
+The v3.0 wire format has three modes:
+
+| `mergeMode` | Semantics |
+|---|---|
+| `'merge'` (default) | Patch-style. Top-level fields in the patch overwrite existing values. The `custom` object deep-merges one level: keys in `patch.custom` overwrite same-named keys in `existing.custom`; other existing keys are preserved. |
+| `'replace'` | Full overwrite. The new metadata equals exactly `patch`; everything not in `patch` is dropped, including `custom`. |
+| `'replaceShared'` | Replace top-level shared fields (`label`, `role`, `status`) but preserve `custom`. Intended for tools that want to take ownership of the shared display vocabulary without disturbing other tools' tool-specific state. |
+
+Legacy `merge: boolean` parameter remains for backwards compatibility:
+
+- `merge: true` ⇒ `mergeMode: 'merge'`
+- `merge: false` ⇒ `mergeMode: 'replace'`
+
+Passing both `merge` and `mergeMode` is an error. New clients should use `mergeMode` and stop sending `merge`.
+
+### 1.5 Validation
+
+Inputs are validated before commit. Failures return a JSON-RPC error with a descriptive message and **do not** increment `version`. Limits live in [`api/stability.md`](./api/stability.md#validation-limits-v30-baseline-values).
+
+---
+
+## 2. Event bus contract
+
+### 2.1 Polling model
+
+The event bus is **pull, not push**. Clients call `events.poll(cursor)`; the bus returns all events with `seq > cursor` (subject to filters), plus a new cursor and a `bootId`.
+
+Stdio MCP transport doesn't carry server-initiated notifications cleanly, and `daemon.readPromptEvents` already establishes the pull pattern. The 1024-event ring covers minutes of typical activity; bursts beyond that surface as `droppedCount > 0` and trigger client-side reconciliation via §2.5.
+
+### 2.2 Cursor is opaque
+
+Today, `cursor` is a monotonic 64-bit integer assigned by the bus. **Clients must not depend on this.** The substrate guarantees only:
+
+- `cursor: 0` always means "replay from oldest in the ring."
+- `nextCursor` returned from `events.poll` is the right value to pass back on the next poll. Do not increment, sort, or compare it.
+- `nextCursor` is monotonically non-decreasing across calls from the same client (strictly increasing only when new events were delivered). Specifically: `nextCursor >= priorCursor` always; `nextCursor > priorCursor` if and only if at least one event was scanned past the cursor (including filter no-matches, which still advance the cursor — see §2.3).
+
+Future evolutions (sharded rings, segmented cursors) may change the underlying encoding without notice. Opaque-cursor clients are unaffected.
+
+### 2.3 Filtered polling
+
+`events.poll` accepts `types?: WmuxEventType[]` and `workspaceId?: string` filters. The cursor advances on **scanned** events, not just matched ones — a subscriber filtering for `process.exited` across a busy bus doesn't re-scan unmatched events on every poll.
+
+### 2.4 `bootId` and daemon restart
+
+`bootId` is a UUIDv4 stamped at `EventBus` construction. Every `events.poll` response, every `pane.list` response, and `system.capabilities().features.events.bootId` all return the same value for the lifetime of a main-process run.
+
+**Mismatch across calls means the daemon restarted under the caller.** Required client action:
+
+1. Drop all cached state — pane ids, pty ids, cursors, last-seen workspace metadata.
+2. Re-hydrate via `pane.list` (returns a new `asOfSeq` and `bootId`).
+3. Resume `events.poll` with `cursor: asOfSeq`.
+
+`bootId` mismatch is a stricter signal than `resync: true`. Cursor-window drift is recoverable by re-polling; daemon restart invalidates the entire seq space.
+
+**Atomicity:** the `bootId` is set once when `EventBus` is constructed. It does not change while the main process is alive; the construction happens before any RPC handler can return a response. Clients can rely on the value remaining constant across the lifetime of a successful connection.
+
+### 2.5 Snapshot reconciliation (`resync: true` and `droppedCount`)
+
+If the caller's cursor drifted past the ring window (`cursor + 1 < oldestSeq`) **or** is in the future (`cursor > latestSeq`), the response carries `resync: true`. The `droppedCount` field is set when the drift is past the ring window (the daemon knows exactly how many events were missed).
+
+Required client action on `resync: true`:
+
+1. Stop trusting cached pane state.
+2. Call `pane.list` to get a fresh snapshot. The response carries `{ asOfSeq, bootId, panes }`.
+3. If `bootId` differs from your last known value, treat as a daemon restart (§2.4): drop everything else cached too.
+4. Resume `events.poll` with `cursor: asOfSeq`.
+
+`pane.list` is the substrate's snapshot primitive. It returns the full pane tree with metadata + version per pane, plus the `asOfSeq` watermark that anchors event replay.
+
+### 2.6 PollResult fields, full
+
+```jsonc
+{
+  "events": [/* WmuxEvent[] with seq > effectiveCursor */],
+  "nextCursor": 412,
+  "priorCursor": 380,    // ← echoes the cursor you passed in
+  "bootId": "550e8400-e29b-41d4-a716-446655440000",
+  "droppedCount": 3,     // ← set if drifted past ring window
+  "resync": true         // ← set if drift or future cursor
+}
+```
+
+`priorCursor` and `droppedCount` are diagnostic — clients can log them to detect partner-side problems (the caller was paused, the bus was too small for the burst rate, etc.).
+
+### 2.7 Ordering caveat
+
+Event `seq` is monotonic in **arrival order**, not in **causal order**. Two independent producers (PTYBridge in main; paneSlice via preload IPC) write to the bus on different paths. Within one producer, order is preserved; across producers, a same-tick `pane.created` (renderer-published) and `process.started` (main-published) can land in the bus in either order.
+
+Clients must not assume `seq` order implies causal order across producer boundaries. Use timestamps (`ts`) for cross-producer reasoning when ordering matters.
+
+---
+
+## 3. Snapshot envelope (`pane.list`)
+
+`pane.list` is more than a list. It returns:
+
+```jsonc
+{
+  "asOfSeq": 412,
+  "bootId": "550e8400-e29b-41d4-a716-446655440000",
+  "panes": [
+    {
+      "id": "p-1",
+      "type": "leaf",
+      // …tree structure…
+      "metadata": { /* PaneMetadata */ },
+      "version": 7                       // ← per-pane metadata version
+    }
+    // …more panes…
+  ]
+}
+```
+
+**Properties:**
+
+- `asOfSeq` is the EventBus seq at the moment the snapshot was assembled. Events with `seq <= asOfSeq` are already reflected in `panes[*].metadata`; events with `seq > asOfSeq` are the next ones to consume via `events.poll(cursor: asOfSeq)`.
+- `bootId` matches the EventBus's current value. Use it to detect daemon restarts.
+- Snapshot is atomic from the client's perspective: the entire response is a consistent slice of state at `asOfSeq`. Internally, the M0 transaction-aware MetadataStore guarantees this — `pane.list` reads from a snapshot view of the store, not interleaved with concurrent writes.
+
+This is the reconciliation primitive for §2.5.
+
+---
+
+## 4. Permission enforcement
+
+The substrate has four enforcement points. All four exist to prevent one MCP from doing something it wasn't authorized to do.
+
+| # | Point | Status | Notes |
+|---|---|---|---|
+| 1 | Method dispatch | v3.0 (new in Phase 2.1) | `wmuxPermissions` in the MCP server manifest declares which methods this server may call. RPC dispatcher rejects unauthorized calls. |
+| 2 | Metadata path write | v3.0 (new in Phase 2.1) | `wmuxPermissions` may scope writes to specific `custom.<namespace>.*` paths. Writes outside the allowed paths are rejected. |
+| 3 | Event subscription | v3.0 (new in Phase 2.1) | `events.poll` filters are enforced against `wmuxPermissions`. A server that hasn't declared subscription to `pane.created` can't see those events even if it polls. |
+| 4 | Workspace claim | **v2.7.2 (already shipped)** | `mcp.claimWorkspace` binds an MCP server to a workspace. Subsequent writes targeting other workspaces are rejected. |
+
+`wmuxPermissions` syntax (Phase 2.1 spec, draft): `<capability>[:<path-glob>]`. Examples:
+
+- `pane.read` — read pane state and metadata.
+- `meta.write` — write any pane's metadata (top-level + custom).
+- `meta.write:custom.dashboard.*` — write only the `dashboard.*` paths inside `custom`.
+- `events.subscribe:pane.*` — subscribe to `pane.created`, `pane.closed`, `pane.focused`, `pane.metadata.changed`.
+
+Per-plugin identity is the MCP server name. Two servers with the same name on the same wmux instance is a registration error.
+
+**Raw RPC bypass policy:** all four enforcement points are at method-dispatch level. There's no "internal" path that skips them; the IPC handler entry point is the chokepoint. The substrate does not expose a "trusted" mode that lets a plugin opt out of enforcement.
+
+(Full `wmuxPermissions` spec lands in `api/mcp-plugin-spec.md` during Phase 2.1. This section is the contract sketch.)
+
+---
+
+## 5. Named Pipe security model
+
+The wmux daemon exposes the JSON-RPC surface over a Windows Named Pipe at `\\.\pipe\wmux-rpc-<token>`.
+
+### 5.1 Token-based authentication
+
+Every connection must present the token from `%APPDATA%\wmux\pipe-token` in the first request:
+
+```jsonc
+{
+  "id": "req-1",
+  "method": "system.identify",
+  "params": {},
+  "token": "<base64-encoded-token>"
+}
+```
+
+The token is a 256-bit random value generated on first daemon launch and persisted to disk. The file is written with `secureWriteTokenFile` — Windows OS ACLs restrict read access to the current user's SID; other users on the same machine cannot read it. The token is rotated only on explicit request (planned CLI: `wmux pipe rotate-token`).
+
+### 5.2 Connection cap
+
+`MAX_CONNECTIONS = 50` concurrent client connections per daemon. A new connection beyond the cap is rejected immediately. The cap protects against runaway plugin scenarios where a misbehaving client opens connections in a loop.
+
+### 5.3 Why not ACL the pipe itself?
+
+The pipe is created with a default DACL that allows the current user's processes to connect. Earlier plans proposed restricting the pipe DACL further; that approach was retired because:
+
+- The token model already provides per-process authentication independently of OS user identity.
+- Windows pipe DACL semantics interact awkwardly with elevated processes (admin shells reaching a non-elevated wmux daemon and vice versa).
+- Token rotation is a clean recovery primitive; DACL re-tightening requires daemon restart.
+
+The current model is: OS isolates users, token isolates processes, `mcp.claimWorkspace` isolates workspaces within a process, and `wmuxPermissions` isolates capability classes within a workspace. Defense in depth, with the token acting as the primary security boundary.
+
+### 5.4 What the token does NOT authenticate
+
+- **Plugin identity beyond "you have the token."** Two MCP servers connecting with the same token are distinguishable only by the `system.identify` they declare. The `wmuxPermissions`-based plugin identity model is the v3.0 strengthening of this.
+- **Workspace ownership.** Any token-holder can read any workspace's state by default. `mcp.claimWorkspace` is the opt-in scoping mechanism; tools that don't claim get read-only-style access to the full surface.
+- **Transport encryption.** Named Pipe is a local IPC; the OS is the trust boundary. Cross-machine access would require a different transport (WebSocket + TLS, planned for v3.1+).
+
+---
+
+## 6. Identity model
+
+| Identifier | Lifetime | Cache invalidation signal |
+|---|---|---|
+| `workspaceId` | persisted across daemon restarts | — (stable) |
+| `paneId` | one daemon run | `bootId` change |
+| `ptyId` | one PTY process | `process.exited` event |
+| `bootId` | one main-process run | itself (mismatch = restart) |
+| MCP server name | stable as long as the server is registered | re-registration |
+| Pipe token | persisted on disk; rotated explicitly | token rotation event (planned) |
+
+The two stable-across-restart identifiers are `workspaceId` and MCP server name. Everything else is single-run; clients must reconcile via `pane.list` after a `bootId` change.
+
+---
+
+## 7. Known limitations and v3.0 boundaries
+
+Things external clients may run into that aren't bugs but are explicit substrate boundaries:
+
+- **Workspace identity blocker (open).** The `project_workspace_identity_fix.md` issue exists but is being investigated in Phase 1 M4. Today, an MCP server that claims workspace A and then writes metadata with an explicit `workspaceId: B` is rejected (correct), but the active-pane resolution path when *no* `workspaceId` is provided can hijack to whichever workspace the user is viewing. External callers SHOULD pass `workspaceId` explicitly to bypass this.
+- **No buffer access yet.** `terminal.readEvents` covers structured prompt events; arbitrary scrollback buffer reads are partial via `input.readScreen`. The cross-workspace policy gate for full buffer access is a v3.1+ design item.
+- **Cursor evolution.** The opaque-cursor guarantee is a forward-compat hedge. If sharded rings ship in v3.x, the encoding may change; opaque-cursor clients are unaffected by design.
+- **Layered status precedence.** The substrate does not enforce precedence among writers of the top-level `status` field. Last writer wins. Tools that need precedence should coordinate via `custom.<tool>.status` and pick one tool to own the shared field.
+- **Cross-producer ordering.** `seq` is arrival order, not causal order. See §2.7.
+
+---
+
+## 8. Change history of this document
+
+| Version | Date | Notes |
+|---|---|---|
+| Draft 1 | 2026-05-12 | Phase 0 initial draft. Covers PaneMetadata layered status, mergeMode, version + expectedVersion, bootId, cursor opaqueness, snapshot envelope, permission enforcement (sketch), Named Pipe security model. Phase 1 M3 will expand. |
+
+This document evolves alongside the implementation. Changes that affect the wire contract require a major-version bump per [`api/versioning.md`](./api/versioning.md). Changes that clarify existing semantics ship in any release.
