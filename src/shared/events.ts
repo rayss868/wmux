@@ -74,6 +74,15 @@ export interface PaneMetadataChangedEvent extends WmuxEventBase {
   type: 'pane.metadata.changed';
   paneId: string;
   metadata: PaneMetadata;
+  /**
+   * Monotonic version assigned by MetadataStore (v2.9.0+). Present when
+   * emitted by the main-process MetadataStore; absent when emitted from
+   * legacy renderer paths (publisher.ts) that pre-date the store.
+   * Subscribers SHOULD ignore events with `version` ≤ a previously seen
+   * value for the same `paneId` (idempotence — see PROTOCOL.md §1.3,
+   * race #2).
+   */
+  version?: number;
 }
 
 /**
