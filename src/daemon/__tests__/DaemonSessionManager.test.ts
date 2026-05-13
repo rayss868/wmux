@@ -398,6 +398,69 @@ describe('DaemonSessionManager', () => {
       expect(managed?.ringBuffer.readAll().toString()).toBe('immediate output');
     });
 
+    it('resize-then-attach sequence (attach with cols/rows) unmutes recovery PTY', () => {
+      // v2.8.5 race fix: the attachSession RPC accepts optional cols/rows
+      // and (in daemon/index.ts) calls resizeSession FIRST when present.
+      // This guarantees that a recovery PTY's bridge unmutes even when
+      // useTerminal's first resize loses the race against attach
+      // completion. Without this sequence, the bridge stayed muted
+      // forever — input reached the PTY but echo got dropped, looking
+      // like the pane was completely dead to the user after a reboot.
+      vi.useFakeTimers();
+      try {
+        manager.createSession({
+          id: 'rec-attach-race',
+          cmd: 'cmd.exe',
+          cwd: '.',
+          deferOutput: true,
+        });
+        const managed = manager.getSession('rec-attach-race');
+        expect(managed?.bridge.isMuted).toBe(true);
+
+        // Mirror what the attach RPC handler does when cols/rows are
+        // present: resize first, then attach. The attach call itself is
+        // unrelated to muting — it only flips meta.state.
+        manager.resizeSession('rec-attach-race', 100, 40);
+        manager.attachSession('rec-attach-race');
+
+        expect(managed?.deferred).toBe(false);
+        expect(managed?.meta.state).toBe('attached');
+
+        // Drain delay must still elapse before output flows.
+        vi.advanceTimersByTime(100);
+        expect(managed?.bridge.isMuted).toBe(false);
+
+        // PTY output now reaches the ring buffer — proving the user's
+        // keystrokes will echo properly.
+        lastMockPty?.simulateData('PS C:\\> ');
+        expect(managed?.ringBuffer.readAll().toString()).toBe('PS C:\\> ');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('attach without cols/rows leaves deferred state untouched (backwards-compat)', () => {
+      // v2.8.5: legacy callers that send `{ id }` only must keep getting
+      // the v2.8.1 behavior — bridge stays muted until something else
+      // triggers resize. The attach RPC handler's resize call is gated
+      // on cols/rows being present, so a bare attach must not unmute.
+      manager.createSession({
+        id: 'rec-bare-attach',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        deferOutput: true,
+      });
+      const managed = manager.getSession('rec-bare-attach');
+      expect(managed?.bridge.isMuted).toBe(true);
+
+      manager.attachSession('rec-bare-attach');
+
+      // attachSession touches meta.state but never the bridge mute flag.
+      expect(managed?.meta.state).toBe('attached');
+      expect(managed?.deferred).toBe(true);
+      expect(managed?.bridge.isMuted).toBe(true);
+    });
+
     it('deferred session that exits before resize still emits session:died', () => {
       // Exit notification path must work even while muted — otherwise
       // a recovered shell that crashes before its first resize would
