@@ -4,7 +4,15 @@ import { PTYBridge } from '../pty/PTYBridge';
 import { DaemonClient } from '../DaemonClient';
 import { McpRegistrar } from '../mcp/McpRegistrar';
 import { registerPTYHandlers } from './handlers/pty.handler';
-import { registerSessionHandlers } from './handlers/session.handler';
+// NOTE: registerSessionHandlers is deliberately NOT imported here. It is
+// installed once at module-load from src/main/index.ts and stays alive for
+// the entire process lifetime. Including it in `registerAllHandlers` would
+// reintroduce the v2.8.1 Bug 3 race class: the daemon-connect handler swap
+// (cleanup → re-register) would briefly remove `scrollback:load` and
+// `session:load` between the two calls. A renderer mass-mount that fires
+// scrollback.load during that microsecond window receives "No handler
+// registered" rejections, the silent .catch resolves, and the next 5s
+// autosave overwrites the previous scrollback files on disk.
 import { registerShellHandlers } from './handlers/shell.handler';
 import { registerMetadataHandlers } from './handlers/metadata.handler';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
@@ -32,7 +40,9 @@ export function registerAllHandlers(
   options: RegisterHandlersOptions = {},
 ): () => void {
   const cleanupPty = registerPTYHandlers(ptyManager, ptyBridge, daemonClient, getWindow);
-  const cleanupSession = registerSessionHandlers();
+  // session/scrollback handlers: installed elsewhere (module-load in
+  // main/index.ts) and intentionally NOT in this swap cycle. See the
+  // import-block note above for the race rationale.
   const cleanupShell = registerShellHandlers();
   const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow);
   registerClipboardHandlers();
@@ -77,7 +87,8 @@ export function registerAllHandlers(
 
   return () => {
     cleanupPty();
-    cleanupSession();
+    // cleanupSession deliberately omitted — session/scrollback handlers
+    // live outside this swap cycle (see import-block note above).
     cleanupShell();
     cleanupMetadata();
     cleanupFs();

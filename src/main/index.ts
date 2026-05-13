@@ -38,7 +38,7 @@ import { registerFirstRunHandlers } from './firstRun';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
-import { sessionManager } from './ipc/handlers/session.handler';
+import { sessionManager, registerSessionHandlers } from './ipc/handlers/session.handler';
 import { eventBus } from './events/EventBus';
 import { initLogSink, logLine } from './util/logSink';
 
@@ -226,6 +226,17 @@ const mcpHandlerOptions = {
     }
   },
 };
+
+// Register session + scrollback handlers ONCE, outside the registerAllHandlers
+// swap cycle. These channels (session:load/save, scrollback:load/dump) only
+// depend on the local sessionManager singleton and have no daemon-mode vs
+// local-mode variant, so there is no reason to tear them down on daemon
+// connect/disconnect. Keeping them in the swap cycle exposed renderer
+// scrollback.load to a microsecond "No handler registered" rejection window
+// on cold boot, which silently destroyed previous-session scrollback when
+// the post-restore 5s autosave dumped the empty/fresh buffer over it.
+// Same hardening pattern as the v2.8.1 Bug 3 fix for `daemon:get-ready-state`.
+registerSessionHandlers();
 
 let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
 

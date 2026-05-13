@@ -57,18 +57,15 @@ function ensureStream(): fs.WriteStream | null {
 }
 
 /**
- * Append a structured log line. Always writes to stderr first (so existing
- * console redirection / DevTools renderer logs still see it), then mirrors
- * to the daily log file. Never throws.
+ * Append a structured log line. Writes to stderr only — the file write is
+ * handled automatically by the stderr tee installed in `initLogSink()`.
+ * Writing to the file directly here would double-log every line because
+ * the tee already intercepts our stderr write.
  */
 export function logLine(level: Level, source: string, message: string): void {
   const ts = new Date().toISOString();
   const line = `[${ts}] [${level}] [${source}] ${message}\n`;
   try { process.stderr.write(line); } catch { /* ignore */ }
-  const stream = ensureStream();
-  if (stream) {
-    try { stream.write(line); } catch { /* swallow */ }
-  }
 }
 
 /**
