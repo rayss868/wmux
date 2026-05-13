@@ -287,26 +287,14 @@ export function registerPTYHandlers(
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       try {
-        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string; cols: number; rows: number }>;
+        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string }>;
         const session = sessions.find(s => s.id === id);
         if (!session || session.state === 'dead') {
           return { success: false, error: 'Session not found or dead' };
         }
 
-        // Ensure attached and session pipe connected.
-        //
-        // v2.8.5: pass the session's saved geometry so the daemon can
-        // resize+unmute a recovery PTY (deferOutput=true) atomically
-        // before SessionPipe forwarding starts. Without this, useTerminal's
-        // first resize RPC races against attach completion: if it lands
-        // first, daemon throws "session not found" which pty:resize
-        // silently swallows (line 236), and the bridge stays muted forever.
-        // The user then sees a pane that accepts input but echoes nothing.
-        await daemonClient.rpc('daemon.attachSession', {
-          id,
-          cols: session.cols,
-          rows: session.rows,
-        });
+        // Ensure attached and session pipe connected
+        await daemonClient.rpc('daemon.attachSession', { id });
         await daemonClient.connectSessionPipe(id);
 
         // Set up data forwarding. Routed through the per-id helper so a

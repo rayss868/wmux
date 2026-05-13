@@ -10,7 +10,7 @@ import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import type { DaemonState } from './types';
-import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonAttachSessionParams } from '../shared/rpc';
+import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
 
 // === Constants ===
 const wmuxDir = getWmuxDir();
@@ -542,30 +542,7 @@ function registerRpcHandlers(
 
   // daemon.attachSession
   pipeServer.onRpc('daemon.attachSession', async (params) => {
-    const p = params as unknown as DaemonAttachSessionParams;
-
-    // v2.8.5: when the client knows the geometry, resize the PTY BEFORE
-    // attach so a recovery session (deferOutput=true) unmutes its
-    // bridge before the SessionPipe starts forwarding output. Without
-    // this, the renderer's first resize RPC could race-lose against
-    // attach completion (silent "session not found" swallow) and the
-    // bridge would stay muted forever — input still reaches the PTY
-    // but echo and command output get dropped, looking like "input
-    // doesn't work" on every recovered pane after a reboot.
-    //
-    // Resize is best-effort here: a missing/dead session will surface
-    // through the attachSession() call below with a clearer error.
-    if (
-      typeof p.cols === 'number' && p.cols > 0 &&
-      typeof p.rows === 'number' && p.rows > 0
-    ) {
-      try {
-        sessionManager.resizeSession(p.id, p.cols, p.rows);
-      } catch (err) {
-        log('warn', `attach-time resize failed for ${p.id}:`, err);
-      }
-    }
-
+    const p = params as unknown as DaemonSessionIdParams;
     sessionManager.attachSession(p.id);
 
     // Create and start SessionPipe for data streaming

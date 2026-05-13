@@ -239,24 +239,6 @@ export interface DaemonSessionIdParams {
   id: string;
 }
 
-/**
- * Attach carries optional geometry so the daemon can resize+unmute a
- * recovery PTY (deferOutput=true) atomically before its SessionPipe
- * starts forwarding output. Without this, the renderer's first resize
- * RPC could lose the race against attach completion (silent
- * "session not found" swallow in pty.handler.ts) and the bridge would
- * stay muted forever — input still reaches the PTY but echo and
- * command output get dropped, looking like "input doesn't work".
- *
- * Backwards compatible: cols/rows are optional. Legacy callers sending
- * only { id } get the previous behavior (no attach-time resize).
- */
-export interface DaemonAttachSessionParams {
-  id: string;
-  cols?: number;
-  rows?: number;
-}
-
 export interface DaemonResizeParams {
   id: string;
   cols: number;
