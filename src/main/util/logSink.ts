@@ -97,23 +97,63 @@ export function initLogSink(): void {
   initialised = true;
 
   const orig = process.stderr.write.bind(process.stderr);
+
+  // Reentrancy guard. Without this, an EPIPE thrown by `orig()` below
+  // becomes an `uncaughtException`, the registered handler logs via
+  // `console.error`, which routes back through *this* override — and
+  // EPIPE re-throws on the same broken pipe. Within ~17 minutes that
+  // grew the log file to 692 MB on a packaged Windows GUI build where
+  // process.stderr is connected to a parent that no longer exists.
+  //
+  // The flag is checked synchronously inside the override; we never
+  // await between set and clear, so single-threadedness of the JS event
+  // loop is sufficient to prevent the recursion.
+  let writing = false;
+
   process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+    if (writing) {
+      // Recursive entry — drop silently. The outer call already wrote
+      // the original chunk to the file and is in the middle of the
+      // orig() pass-through. The inner attempt is whatever EPIPE
+      // handler / uncaughtException reporter tried to surface; logging
+      // it here would just amplify the loop.
+      return true;
+    }
+    writing = true;
     try {
-      const filePath = resolveLogPath();
-      if (filePath) {
-        const str = typeof chunk === 'string'
-          ? chunk
-          : (chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf-8') : String(chunk));
-        // appendFileSync writes through to the OS immediately and fsyncs
-        // before returning. createWriteStream would buffer until 16KB
-        // high-water-mark — for a long-lived main with small log lines
-        // that means the file sits at 0 bytes on disk for the whole
-        // session, defeating the postmortem use case entirely.
-        fs.appendFileSync(filePath, str);
+      try {
+        const filePath = resolveLogPath();
+        if (filePath) {
+          const str = typeof chunk === 'string'
+            ? chunk
+            : (chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf-8') : String(chunk));
+          // appendFileSync writes through to the OS immediately and fsyncs
+          // before returning. createWriteStream would buffer until 16KB
+          // high-water-mark — for a long-lived main with small log lines
+          // that means the file sits at 0 bytes on disk for the whole
+          // session, defeating the postmortem use case entirely.
+          fs.appendFileSync(filePath, str);
+        }
+      } catch { /* swallow — never break stderr */ }
+
+      // Pass through to the original stderr. Wrapped in its own
+      // try/catch because in packaged Windows GUI builds the inherited
+      // stderr handle can be a closed pipe — orig() then throws EPIPE,
+      // which propagates to the caller (often inside console.error)
+      // and becomes uncaughtException. The Node default handler is
+      // already overridden in main/index.ts to log via console.error,
+      // which routes here again. Catching keeps the log-tee one-way
+      // and isolates the "useful" file write from a busted host
+      // stderr.
+      try {
+        // @ts-expect-error - spread re-applies original signature
+        return orig(chunk, ...rest);
+      } catch {
+        return true;
       }
-    } catch { /* swallow — never break stderr */ }
-    // @ts-expect-error - spread re-applies original signature
-    return orig(chunk, ...rest);
+    } finally {
+      writing = false;
+    }
   }) as typeof process.stderr.write;
 
   logLine('info', 'logSink', `started — version=${app.getVersion()}, pid=${process.pid}, platform=${process.platform}`);
