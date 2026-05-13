@@ -17,6 +17,14 @@ import { wrapHandler } from '../wrapHandler';
 export const sessionManager = new SessionManager();
 
 export function registerSessionHandlers(): () => void {
+  // Instrumentation: scrollback restore race investigation. This function is
+  // called from `registerAllHandlers`, which is invoked both at module load
+  // AND during the daemon-connect/disconnect handler swap in main/index.ts.
+  // Logging the exact register/unregister boundaries lets us correlate any
+  // renderer-side `scrollback.load` rejection ("No handler registered for
+  // 'scrollback:load'") against the swap window timing.
+  console.error(`[session.handler] register cycle: install (ts=${new Date().toISOString()})`);
+
   ipcMain.removeHandler(IPC.SESSION_SAVE);
   ipcMain.handle(IPC.SESSION_SAVE, wrapHandler(IPC.SESSION_SAVE, (_event: Electron.IpcMainInvokeEvent, data: SessionData) => {
     sessionManager.save(data);
@@ -62,6 +70,9 @@ export function registerSessionHandlers(): () => void {
   }));
 
   return () => {
+    // Instrumentation: see register-cycle log above. This is the window we
+    // suspect the renderer's scrollback.load lands in during cold boot.
+    console.error(`[session.handler] register cycle: uninstall (ts=${new Date().toISOString()})`);
     ipcMain.removeHandler(IPC.SESSION_SAVE);
     ipcMain.removeHandler(IPC.SESSION_LOAD);
     ipcMain.removeHandler(IPC.SCROLLBACK_DUMP);

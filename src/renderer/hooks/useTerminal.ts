@@ -566,7 +566,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // the 5s autosave tick dump an empty/partial buffer over the
         // previous scrollback file on disk.
         terminalRegistry.set(ptyId, terminal);
-      }).catch(() => {
+      }).catch((err) => {
+        // Instrumentation: surface the real failure reason. Previously this
+        // catch silently swallowed errors, including "No handler registered
+        // for 'scrollback:load'" rejections that occur during the main-side
+        // IPC handler swap window (daemon connect, src/main/index.ts).
+        // Without this log, a failed restore is indistinguishable from a
+        // legitimately empty scrollback file, and the next 5s autosave
+        // overwrites the previous (intact) file on disk with the fresh PTY
+        // prompt — destroying the user's prior session output. The renderer
+        // console.error is mirrored into the main-side log file by the
+        // webContents `console-message` listener in src/main/index.ts.
+        const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        // eslint-disable-next-line no-console
+        console.error(`[useTerminal] scrollback.load FAILED surfaceFile=${scrollbackFile} ptyId=${ptyId} err=${msg}`);
         if (terminalRef.current !== terminal) return;
         scrollbackLoaded = true;
         for (const data of pendingData) {

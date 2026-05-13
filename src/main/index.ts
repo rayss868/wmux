@@ -40,6 +40,7 @@ import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
 import { sessionManager } from './ipc/handlers/session.handler';
 import { eventBus } from './events/EventBus';
+import { initLogSink, logLine } from './util/logSink';
 
 // Force English for Chromium internal messages to avoid encoding corruption
 // on non-ASCII locales (e.g. Korean Windows where cp949 garbles console output).
@@ -320,6 +321,11 @@ ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, web
 
 console.log('[DEBUG] registering app.on(ready)');
 app.on('ready', async () => {
+  // Persistent log sink — must come first so every subsequent stderr write
+  // and explicit logLine() call lands on disk for postmortem analysis.
+  // Path: %APPDATA%\wmux\logs\main-YYYY-MM-DD.log (Windows default).
+  initLogSink();
+  logLine('info', 'main', 'app.on(ready) fired');
   console.log('[Main] App ready, creating window...');
 
   // Populate the native About panel (macOS shows this automatically in
@@ -340,6 +346,19 @@ app.on('ready', async () => {
 
   mainWindow = createWindow();
   console.log(`[Main] Window created: ${!!mainWindow}`);
+  logLine('info', 'main', `window created: present=${!!mainWindow}`);
+
+  // Relay renderer console messages (warn + error) into the persistent log
+  // file so renderer-side instrumentation (e.g. useTerminal scrollback
+  // .catch) survives the postmortem cycle. level enum: 0=verbose, 1=info,
+  // 2=warning, 3=error. We capture 2 and 3 only — verbose/info from
+  // renderer would otherwise drown the signal we care about.
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level < 2) return;
+    const lvl: 'warn' | 'error' = level === 3 ? 'error' : 'warn';
+    const where = sourceId ? `${sourceId}:${line}` : 'renderer';
+    logLine(lvl, 'renderer', `${where} — ${message}`);
+  });
 
   attachWindowRecovery(mainWindow);
 
@@ -373,8 +392,18 @@ app.on('ready', async () => {
       if (authOk) {
         daemonClient = client;
         console.log('[Main] Connected to wmux-daemon (auth verified)');
+        // Instrumentation: handler swap race investigation. The cleanup →
+        // re-register sequence below tears down IPC handlers (including
+        // scrollback:load) for a microsecond window. If the renderer's bulk
+        // useTerminal mount fires scrollback.load during this window, the
+        // invokes reject silently and the post-boot autosave overwrites the
+        // previous scrollback files. Logging the exact swap boundary so we
+        // can correlate with renderer-side .catch traces.
+        logLine('info', 'main', 'handler swap (daemon connect): cleanup begin');
         cleanupHandlers();
+        logLine('info', 'main', 'handler swap (daemon connect): cleanup done, register begin');
         cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient, mcpHandlerOptions);
+        logLine('info', 'main', 'handler swap (daemon connect): register done');
         // Mount the notification router now that we have a live daemon
         // client. PTY data flows through daemon → DaemonClient events, and
         // this router translates them into the same renderer-facing IPC
@@ -390,8 +419,11 @@ app.on('ready', async () => {
           daemonNotificationRouter?.stop();
           daemonNotificationRouter = null;
           daemonClient = null;
+          logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
           cleanupHandlers();
+          logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup done, register begin');
           cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
+          logLine('warn', 'main', 'handler swap (daemon disconnect): register done');
         });
       }
     }
