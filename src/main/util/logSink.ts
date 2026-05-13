@@ -22,9 +22,10 @@ import { app } from 'electron';
 
 type Level = 'info' | 'warn' | 'error';
 
-let logStream: fs.WriteStream | null = null;
+let currentLogPath: string | null = null;
 let currentDate = '';
 let initialised = false;
+let logDirCreated = false;
 
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
@@ -34,33 +35,45 @@ function logPath(date: string): string {
   return path.join(app.getPath('logs'), `main-${date}.log`);
 }
 
-function ensureStream(): fs.WriteStream | null {
+/**
+ * Resolve the current daily log file path. Lazily creates the parent
+ * directory once. Returns null only if directory creation fails (which
+ * we silently swallow so logging never crashes the main process).
+ *
+ * NOTE: we deliberately do NOT use fs.createWriteStream here. Stream
+ * writes are buffered up to the default 16KB high-water-mark and only
+ * flush to disk on stream end/drain. For a long-lived main process that
+ * emits small, infrequent log lines, this leaves the file at 0 bytes on
+ * disk for the entire session — defeating the whole point of a
+ * postmortem log sink. fs.appendFileSync writes immediately, fsyncs,
+ * and returns, so every log line is durably on disk before the call
+ * returns. The synchronous cost is acceptable for diagnostic-rate
+ * logging (a few writes per second at peak) and is mandatory if we
+ * want the file to survive a crash that bypasses Node's stream-shutdown
+ * flush.
+ */
+function resolveLogPath(): string | null {
   const today = todayUtc();
-  if (logStream && currentDate === today) return logStream;
+  if (currentLogPath && currentDate === today) return currentLogPath;
 
-  // Date rolled over — close previous handle before opening a new one.
-  if (logStream) {
-    try { logStream.end(); } catch { /* ignore */ }
-    logStream = null;
+  const filePath = logPath(today);
+  if (!logDirCreated || currentDate !== today) {
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      logDirCreated = true;
+    } catch {
+      return null;
+    }
   }
-
-  try {
-    const filePath = logPath(today);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    logStream = fs.createWriteStream(filePath, { flags: 'a' });
-    currentDate = today;
-    return logStream;
-  } catch {
-    logStream = null;
-    return null;
-  }
+  currentLogPath = filePath;
+  currentDate = today;
+  return currentLogPath;
 }
 
 /**
  * Append a structured log line. Writes to stderr only — the file write is
- * handled automatically by the stderr tee installed in `initLogSink()`.
- * Writing to the file directly here would double-log every line because
- * the tee already intercepts our stderr write.
+ * handled automatically by the stderr tee installed in `initLogSink()`,
+ * which calls `appendFileSync` for immediate disk durability.
  */
 export function logLine(level: Level, source: string, message: string): void {
   const ts = new Date().toISOString();
@@ -86,12 +99,17 @@ export function initLogSink(): void {
   const orig = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
     try {
-      const stream = ensureStream();
-      if (stream) {
+      const filePath = resolveLogPath();
+      if (filePath) {
         const str = typeof chunk === 'string'
           ? chunk
           : (chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf-8') : String(chunk));
-        stream.write(str);
+        // appendFileSync writes through to the OS immediately and fsyncs
+        // before returning. createWriteStream would buffer until 16KB
+        // high-water-mark — for a long-lived main with small log lines
+        // that means the file sits at 0 bytes on disk for the whole
+        // session, defeating the postmortem use case entirely.
+        fs.appendFileSync(filePath, str);
       }
     } catch { /* swallow — never break stderr */ }
     // @ts-expect-error - spread re-applies original signature
