@@ -28,9 +28,9 @@ import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../shared/types';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { isFileDrag } from '../../../shared/dragDrop';
-import { Terminal } from '@xterm/xterm';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { withDefaultShell } from '../../utils/ptyCreateOptions';
+import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 
 /** Map shell executable path to a human-readable display name. */
 function shellDisplayName(shellPath: string): string {
@@ -45,26 +45,6 @@ function shellDisplayName(shellPath: string): string {
   // Strip extension and capitalize
   const name = base.replace(/\.exe$/i, '');
   return name.charAt(0).toUpperCase() + name.slice(1);
-}
-
-/** Serialize an xterm Terminal buffer to plain text.
- *  Only includes lines up to the cursor position (skips empty viewport padding). */
-function serializeTerminalBuffer(terminal: Terminal): string {
-  const buffer = terminal.buffer.active;
-  // Only read up to baseY + cursorY (actual content), not the full viewport
-  const lastLine = buffer.baseY + buffer.cursorY;
-  const lines: string[] = [];
-  for (let i = 0; i <= lastLine && i < buffer.length; i++) {
-    const line = buffer.getLine(i);
-    if (line) {
-      lines.push(line.translateToString(true));
-    }
-  }
-  // Trim trailing empty lines
-  while (lines.length > 0 && lines[lines.length - 1] === '') {
-    lines.pop();
-  }
-  return lines.join('\r\n');
 }
 
 /** Collect all terminal surfaces from a pane tree */
