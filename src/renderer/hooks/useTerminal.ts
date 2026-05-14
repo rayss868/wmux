@@ -695,8 +695,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       console.debug('[Terminal] font/theme fit skipped — active selection');
       return;
     }
+    // Visibility guard — when the workspace tab containing this terminal is
+    // hidden (display:none) the container has zero dimensions and fit() will
+    // collapse cols to a tiny value. That reflows the in-memory buffer to
+    // one or two characters per physical row; the next scrollback dump
+    // persists that garbled state to disk and on the next launch the user
+    // sees an "empty / column-of-chars" terminal. The other fit() sites in
+    // this hook (initial mount, ResizeObserver, fonts.ready, visibility
+    // watcher, `fit` callback) already have this guard — font/theme was
+    // the last unguarded site.
+    const container = containerRef.current;
+    if (!container || container.offsetWidth === 0 || container.offsetHeight === 0) {
+      console.debug('[Terminal] font/theme fit skipped — container has zero dimensions');
+      return;
+    }
     fitAddonRef.current?.fit();
-  }, [terminalFontSize, terminalFontFamily, xtermTheme]);
+  }, [terminalFontSize, terminalFontFamily, xtermTheme, containerRef]);
 
   // Manage WebGL lifecycle based on visibility.
   // Load WebGL when visible (GPU-accelerated rendering), dispose when hidden
