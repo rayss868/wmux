@@ -236,6 +236,11 @@ export function registerPTYHandlers(
   // while the user is typing (see idleSuppression.ts).
   ipcMain.removeAllListeners(IPC.PTY_WRITE);
   if (useDaemon && daemonClient) {
+    // Per-session diagnostic: log the first dropped write so silent
+    // input-mute leaves a paper trail in main.log without spamming on
+    // every keystroke if a pipe stays dead. Reset when a write succeeds
+    // so future regressions still log their first occurrence.
+    const writeDropLogged = new Set<string>();
     const onPtyWrite = (_event: Electron.IpcMainEvent, id: string, data: string): void => {
       if (typeof data !== 'string') return;
       if (data.length > 100_000) {
@@ -243,7 +248,15 @@ export function registerPTYHandlers(
         return; // prevent mega-writes
       }
       markUserWrite(id);
-      daemonClient.writeToSession(id, sanitizePtyText(data));
+      const delivered = daemonClient.writeToSession(id, sanitizePtyText(data));
+      if (!delivered) {
+        if (!writeDropLogged.has(id)) {
+          writeDropLogged.add(id);
+          console.warn(`[PTY_WRITE] drop sessionId=${id} reason=no-live-session-pipe (first occurrence; suppressing further logs for this id until next successful write)`);
+        }
+      } else if (writeDropLogged.has(id)) {
+        writeDropLogged.delete(id);
+      }
     };
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
   } else {
@@ -369,9 +382,23 @@ export function registerPTYHandlers(
           return { success: false, error: 'Session not found or dead' };
         }
 
-        // Ensure attached and session pipe connected
+        // Reconnect is an explicit fresh-attach intent — pass forceFresh
+        // so a stale sessionPipes entry (left over from a prior daemon
+        // pipe replacement) is torn down rather than silently reused.
+        // Without this, attach+connect can return success while the
+        // underlying socket is moments away from receiving its close
+        // event, and every subsequent write silently disappears.
         await daemonClient.rpc('daemon.attachSession', { id });
-        await daemonClient.connectSessionPipe(id);
+        await daemonClient.connectSessionPipe(id, { forceFresh: true });
+
+        // Health probe: confirm the freshly connected pipe is actually
+        // writable before reporting success. A truthy reconnect that
+        // points at a dead socket is the exact shape of the input-mute
+        // bug we're trying to prevent here.
+        const probeOk = daemonClient.isSessionPipeWritable(id);
+        if (!probeOk) {
+          return { success: false, error: 'Session pipe not writable after reconnect' };
+        }
 
         // Set up data forwarding. Routed through the per-id helper so a
         // repeat reconnect (e.g. AppLayout's reconcile firing again on the

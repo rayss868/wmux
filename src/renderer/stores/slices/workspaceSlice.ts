@@ -145,14 +145,39 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     loadSession: (data: SessionData) => set((state: StoreState) => {
       if (!data.workspaces || data.workspaces.length === 0) return;
 
-      // Security: sanitize surfaces — clear ptyIds and block dangerous URLs
+      // Security + correctness: sanitize surfaces.
+      //
+      // ptyId is cleared on every session.load. The previous design kept
+      // saved ptyIds intact and relied on AppLayout.reconcilePtys to
+      // either rebind them to live daemon sessions or clear the dead
+      // ones. That contract failed in the wild: when daemon recovery
+      // missed a session (or returned 0 sessions after a fresh start),
+      // reconcile took the "creating new PTY" path, called pty.create,
+      // and called updateSurfacePtyId with the new id — but the store
+      // update did not propagate to Pane → Terminal in time for the
+      // first keystrokes, and renderers ended up writing to the stale
+      // id permanently. Manifested as "PTY_WRITE drop sessionId=
+      // <stale> reason=no-live-session-pipe" with the terminal looking
+      // alive (stdout still flowing) but input-dead.
+      //
+      // Clearing ptyId up front pushes the create-fresh path into
+      // Terminal.tsx, which already handles a falsy externalPtyId by
+      // calling pty.create itself and threading the new id back via
+      // setPtyId + the onPtyCreated callback. That path is the one
+      // exercised on every new pane today, so it is the well-tested
+      // path. Scrollback restore continues to work because it keys off
+      // surface.id, not ptyId.
+      //
+      // Also block dangerous URL schemes on browser surfaces.
       const BLOCKED_URL_SCHEMES = ['javascript:', 'data:', 'vbscript:', 'file:'];
       const sanitizePanes = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
             if (s.surfaceType !== 'browser') {
-              // Keep ptyId intact — AppLayout will reconcile against active PTYs
-              // and clear only those that are actually dead.
+              // Force-clear the saved ptyId — the daemon session it
+              // referred to is, by definition, from a previous wmux
+              // launch and cannot be trusted to still exist.
+              s.ptyId = '';
             }
             // Strip dangerous browserUrl schemes that could execute code on load
             if (s.browserUrl) {

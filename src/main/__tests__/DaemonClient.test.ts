@@ -499,6 +499,101 @@ describe('DaemonClient', () => {
     });
   });
 
+  // ─── Regression: pty input-mute after renderer reload ──────────────
+  // Background: connectSessionPipe used to early-return on map presence
+  // alone, so a stale entry left over from a daemon-side pipe
+  // replacement (renderer reload, daemon hot-reconnect) silently masked
+  // the new pipe. Writes routed to the half-dead socket and dropped
+  // without a trace. These tests pin the new contract:
+  //   1. Live entries are reused (idempotent).
+  //   2. Stale entries are torn down and replaced.
+  //   3. `forceFresh: true` always replaces, even if the entry looks
+  //      live — pty:reconnect uses this for explicit fresh-attach.
+  //   4. writeToSession returns true only when a live socket exists,
+  //      and the new isSessionPipeWritable helper reports the same.
+  describe('connectSessionPipe / writeToSession idempotency', () => {
+    const SESSION_ID = 'test-session-idem';
+    let sessionPipe: ReturnType<typeof createMockSessionPipe>;
+
+    beforeEach(async () => {
+      const pipeName = testPipeName('idem');
+      mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {});
+      await mockServer.start();
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+
+      sessionPipe = createMockSessionPipe(SESSION_ID);
+      await sessionPipe.start();
+    });
+
+    afterEach(async () => {
+      await client?.disconnect();
+      await sessionPipe?.stop();
+      await mockServer?.stop();
+    });
+
+    it('reuses a live socket on repeat connect (idempotent path)', async () => {
+      await client.connectSessionPipe(SESSION_ID);
+      expect(client.isSessionPipeWritable(SESSION_ID)).toBe(true);
+
+      // Second call with same id should not open a new socket — same
+      // entry remains and writes still succeed.
+      await client.connectSessionPipe(SESSION_ID);
+      expect(client.isSessionPipeWritable(SESSION_ID)).toBe(true);
+      expect(client.writeToSession(SESSION_ID, 'hello')).toBe(true);
+    });
+
+    it('replaces a stale (destroyed) entry on next connect', async () => {
+      await client.connectSessionPipe(SESSION_ID);
+      expect(client.isSessionPipeWritable(SESSION_ID)).toBe(true);
+
+      // Server-side hangup mimics the daemon replacing its SessionPipe.
+      // The cached client socket gets a close event and becomes
+      // unwritable.
+      await sessionPipe.stop();
+      // Allow the close event to propagate.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(client.isSessionPipeWritable(SESSION_ID)).toBe(false);
+
+      // Bring the daemon side back up at the same pipe name.
+      sessionPipe = createMockSessionPipe(SESSION_ID);
+      await sessionPipe.start();
+
+      // Reconnect should NOT early-return — the stale entry must be
+      // torn down and a fresh socket installed.
+      await client.connectSessionPipe(SESSION_ID);
+      expect(client.isSessionPipeWritable(SESSION_ID)).toBe(true);
+      expect(client.writeToSession(SESSION_ID, 'after-replace')).toBe(true);
+    });
+
+    it('forceFresh forces a new socket even when the entry looks live', async () => {
+      await client.connectSessionPipe(SESSION_ID);
+      expect(client.isSessionPipeWritable(SESSION_ID)).toBe(true);
+
+      // pty:reconnect-style fresh attach. The previous socket must be
+      // destroyed and a new one opened, even though the map entry was
+      // apparently healthy.
+      await client.connectSessionPipe(SESSION_ID, { forceFresh: true });
+      expect(client.isSessionPipeWritable(SESSION_ID)).toBe(true);
+      expect(client.writeToSession(SESSION_ID, 'forced')).toBe(true);
+    });
+
+    it('writeToSession returns false when the session is not connected', () => {
+      expect(client.writeToSession('never-connected', 'x')).toBe(false);
+    });
+
+    it('writeToSession returns false after the socket is torn down', async () => {
+      await client.connectSessionPipe(SESSION_ID);
+      expect(client.writeToSession(SESSION_ID, 'live')).toBe(true);
+
+      await sessionPipe.stop();
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(client.writeToSession(SESSION_ID, 'after-close')).toBe(false);
+      expect(client.isSessionPipeWritable(SESSION_ID)).toBe(false);
+    });
+  });
+
   describe('helpers', () => {
     it('getDaemonPipeName should return platform-appropriate pipe name', () => {
       const name = getDaemonPipeName();

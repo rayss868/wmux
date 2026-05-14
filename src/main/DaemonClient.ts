@@ -135,9 +135,30 @@ export class DaemonClient extends EventEmitter {
     });
   }
 
-  /** Connect a session data pipe for streaming PTY output/input. */
-  async connectSessionPipe(sessionId: string): Promise<void> {
-    if (this.sessionPipes.has(sessionId)) return;
+  /**
+   * Connect a session data pipe for streaming PTY output/input.
+   *
+   * Idempotency is liveness-based, not map-presence-based. A stale entry
+   * left over from a daemon-side pipe replacement (renderer reload,
+   * daemon hot-reconnect, etc.) used to early-return success, leaving
+   * writes to silently route to a half-dead socket. Now the call always
+   * verifies the existing socket is still usable; if not, the stale
+   * entry is torn down and a fresh pipe is opened.
+   *
+   * Caller can force a fresh connection (e.g. `pty:reconnect` after a
+   * known daemon-side replacement) by passing `forceFresh: true`.
+   */
+  async connectSessionPipe(sessionId: string, opts?: { forceFresh?: boolean }): Promise<void> {
+    const existing = this.sessionPipes.get(sessionId);
+    if (existing) {
+      const isHealthy = !existing.destroyed && existing.writable;
+      if (isHealthy && !opts?.forceFresh) return;
+      // Stale or caller demands fresh — tear down before reconnecting.
+      // Removing from the map first prevents the close/error handlers
+      // from racing the new entry we're about to install.
+      this.sessionPipes.delete(sessionId);
+      existing.destroy();
+    }
 
     const pipeName = this.getSessionPipeName(sessionId);
 
@@ -172,12 +193,34 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
-  /** Write input data to a session via its data pipe. */
-  writeToSession(sessionId: string, data: string | Buffer): void {
+  /**
+   * Cheap liveness check for a session's data pipe. Used by pty:reconnect
+   * to probe the freshly opened socket before reporting success, so a
+   * truthy reconnect can't mask a half-dead pipe.
+   */
+  isSessionPipeWritable(sessionId: string): boolean {
     const socket = this.sessionPipes.get(sessionId);
-    if (socket && !socket.destroyed) {
-      socket.write(data);
-    }
+    if (!socket) return false;
+    return !socket.destroyed && socket.writable;
+  }
+
+  /**
+   * Write input data to a session via its data pipe. Returns true if the
+   * data was handed to a live socket, false if the call silently dropped.
+   *
+   * A false return points the caller at one of: (a) the session pipe was
+   * never connected, (b) the cached socket was torn down between attach
+   * and write, (c) the daemon replaced the pipe and our cached entry is
+   * a stale reference about to receive its close event. The caller is
+   * responsible for surfacing the drop so users don't see input-mute
+   * without explanation.
+   */
+  writeToSession(sessionId: string, data: string | Buffer): boolean {
+    const socket = this.sessionPipes.get(sessionId);
+    if (!socket) return false;
+    if (socket.destroyed || !socket.writable) return false;
+    socket.write(data);
+    return true;
   }
 
   /**
