@@ -1,7 +1,12 @@
-#!/usr/bin/env node
 // =============================================================================
 // recover-scrollback.mjs — one-shot recovery for v2.8.x → v2.9.0 migration
 // =============================================================================
+//
+// Invoked via `node scripts/recover-scrollback.mjs` (no shebang). Importing
+// a shebang'd ESM module is unreliable under vitest on Windows — the
+// shebang is left in place and Node's ESM parser fails with
+// `SyntaxError: Invalid or unexpected token`. Keep the entry point
+// node-prefixed so the file stays import-safe.
 //
 // Background
 // ----------
