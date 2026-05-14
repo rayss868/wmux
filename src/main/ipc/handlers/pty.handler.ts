@@ -40,6 +40,34 @@ function isAllowedShell(shell: string): boolean {
 }
 
 /**
+ * Recovery PTY mute race retry (v2.9.0-rc.2 fix for the symptom reported
+ * during v2.9.0-rc.1 dogfood).
+ *
+ * After a reboot, recovery sessions spawn with `deferOutput=true` so the
+ * bridge starts muted. `DaemonSessionManager.resizeSession` is what
+ * unmutes the bridge (Line 290-298) — but only after `attachSession`
+ * has registered the session. If useTerminal's first `pty:resize` RPC
+ * lands before `daemon.attachSession` completes, the daemon throws
+ * "Session 'X' not found", and a one-shot swallow would leave the
+ * bridge muted forever. Symptom to the user: input reaches the PTY,
+ * PowerShell processes it, but every echo and command output gets
+ * dropped. Looks like "input doesn't work" on every recovered pane.
+ *
+ * The retry rides out the attach race without reordering daemon-side
+ * attach/resize. That ordering reorder (commit 7d5fee3) was reverted
+ * in e032ae3 because it hit an OSC 7 ConPTY interaction — see the
+ * e032ae3 revert message for the v2.9.1 fix plan; this is the
+ * "retry-on-not-found in pty.handler.ts pty:resize" option.
+ *
+ * 5 attempts * 20ms = up to ~80ms total. Real-world attach completes
+ * in milliseconds. The final attempt's not-found is still swallowed
+ * gracefully so post-dispose / reconciliation races keep the prior
+ * behavior (the silent return existed for a reason — see git blame).
+ */
+const RESIZE_RETRY_ATTEMPTS = 5;
+const RESIZE_RETRY_DELAY_MS = 20;
+
+/**
  * Validate and resolve cwd. Returns undefined if invalid.
  * Shared by both daemon and local modes.
  */
@@ -229,13 +257,28 @@ export function registerPTYHandlers(
         throw new Error(`PTY_RESIZE: cols and rows must be positive integers (got cols=${cols}, rows=${rows})`);
       }
       markResize(id);
-      try {
-        await daemonClient.rpc('daemon.resizeSession', { id, cols, rows });
-      } catch (err: unknown) {
-        // Session may have been destroyed during reconciliation — ignore gracefully
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('not found') || msg.includes('not exist')) return;
-        throw err;
+
+      // Retry on "not found" to ride out the recovery-PTY attach race
+      // (see RESIZE_RETRY_ATTEMPTS doc block above for the full story).
+      // Non-"not found" errors throw immediately. The final attempt's
+      // not-found is swallowed gracefully to preserve the prior
+      // reconciliation-destroyed-session behavior.
+      for (let attempt = 0; attempt < RESIZE_RETRY_ATTEMPTS; attempt++) {
+        try {
+          await daemonClient.rpc('daemon.resizeSession', { id, cols, rows });
+          return;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const isNotFound = msg.includes('not found') || msg.includes('not exist');
+          if (!isNotFound) throw err;
+          if (attempt === RESIZE_RETRY_ATTEMPTS - 1) {
+            // Final attempt also failed with not-found: graceful return.
+            // Session genuinely gone (destroyed during reconciliation,
+            // or post-dispose race). Preserves prior swallow behavior.
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, RESIZE_RETRY_DELAY_MS));
+        }
       }
     }));
   } else {
