@@ -59,12 +59,28 @@ function isAllowedShell(shell: string): boolean {
  * e032ae3 revert message for the v2.9.1 fix plan; this is the
  * "retry-on-not-found in pty.handler.ts pty:resize" option.
  *
- * 5 attempts * 20ms = up to ~80ms total. Real-world attach completes
- * in milliseconds. The final attempt's not-found is still swallowed
- * gracefully so post-dispose / reconciliation races keep the prior
- * behavior (the silent return existed for a reason — see git blame).
+ * Retry budget: 50 attempts * 20ms = up to ~1s total. The initial
+ * v2.9.0-rc.2 try (5 * 20 = 80ms) was empirically too short during
+ * dogfood — daemon attach can stretch into hundreds of ms or more
+ * on a cold-restart, especially if multiple panes mass-mount and
+ * each invokes attach back-to-back. 1s gives real headroom while
+ * staying well under any human-perceptible delay.
+ *
+ * Cost in steady state: zero. Retry only fires on "not found",
+ * which only happens during the attach window. A normal resize
+ * (drag, splitter move, font change) returns on attempt 0.
+ *
+ * The final attempt's not-found is still swallowed gracefully so
+ * post-dispose / reconciliation races keep the prior behavior
+ * (the silent return existed for a reason — see git blame).
+ *
+ * A diagnostic console line fires whenever the retry actually rode
+ * out >=1 attempt, so we can measure real-world attach latency from
+ * dogfood logs and decide whether the budget needs further tuning
+ * or whether option (2) — renderer-side attach-await-then-fit — is
+ * worth the larger blast radius.
  */
-const RESIZE_RETRY_ATTEMPTS = 5;
+const RESIZE_RETRY_ATTEMPTS = 50;
 const RESIZE_RETRY_DELAY_MS = 20;
 
 /**
@@ -266,6 +282,16 @@ export function registerPTYHandlers(
       for (let attempt = 0; attempt < RESIZE_RETRY_ATTEMPTS; attempt++) {
         try {
           await daemonClient.rpc('daemon.resizeSession', { id, cols, rows });
+          if (attempt > 0) {
+            // Diagnostic: log how many retries the attach race needed.
+            // Stays cheap (one log line per recovery, not per resize).
+            const elapsedMs = attempt * RESIZE_RETRY_DELAY_MS;
+            // eslint-disable-next-line no-console
+            console.log(
+              `[pty:resize] attach race retry succeeded for ${id} ` +
+              `after ${attempt + 1} attempts (~${elapsedMs}ms wait)`,
+            );
+          }
           return;
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -275,6 +301,13 @@ export function registerPTYHandlers(
             // Final attempt also failed with not-found: graceful return.
             // Session genuinely gone (destroyed during reconciliation,
             // or post-dispose race). Preserves prior swallow behavior.
+            const elapsedMs = RESIZE_RETRY_ATTEMPTS * RESIZE_RETRY_DELAY_MS;
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[pty:resize] attach race retry exhausted for ${id} ` +
+              `after ${RESIZE_RETRY_ATTEMPTS} attempts (~${elapsedMs}ms). ` +
+              `Session may be genuinely gone, or attach is taking >${elapsedMs}ms.`,
+            );
             return;
           }
           await new Promise((resolve) => setTimeout(resolve, RESIZE_RETRY_DELAY_MS));

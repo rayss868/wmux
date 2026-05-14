@@ -79,8 +79,13 @@ describe('pty.handler PTY_RESIZE retry (v2.9.0-rc.2 recovery race)', () => {
     // If this fires, a future change removed or renamed the retry
     // constants. The recovery PTY mute race comes back the next time
     // someone reboots and useTerminal's first resize loses to attach.
-    expect(source).toMatch(/const\s+RESIZE_RETRY_ATTEMPTS\s*=\s*5/);
-    expect(source).toMatch(/const\s+RESIZE_RETRY_DELAY_MS\s*=\s*20/);
+    //
+    // Budget: 50 attempts * 20ms = ~1s. Lower budgets (the original
+    // 5 * 20 = 80ms) were observed to be too short during dogfood —
+    // attach can stretch into hundreds of ms on cold restart and the
+    // shorter budget left the bridge muted.
+    expect(source).toMatch(/const\s+RESIZE_RETRY_ATTEMPTS\s*=\s*50\b/);
+    expect(source).toMatch(/const\s+RESIZE_RETRY_DELAY_MS\s*=\s*20\b/);
   });
 
   it('PTY_RESIZE handler uses a retry loop with the retry constants', () => {
@@ -121,5 +126,24 @@ describe('pty.handler PTY_RESIZE retry (v2.9.0-rc.2 recovery race)', () => {
     // microseconds and still lose to attach completion. The 20ms
     // spacing gives attach a real window to finish.
     expect(block).toMatch(/setTimeout\([^,]+,\s*RESIZE_RETRY_DELAY_MS\)/);
+  });
+
+  it('logs a diagnostic line when retry actually rode out >=1 attempt', () => {
+    const block = resizeBlock();
+    // We need to know how many attempts dogfood is hitting in the
+    // wild — that's the data we need to decide whether to keep
+    // tuning the budget or move to renderer-side attach-await
+    // (option 2). The success log fires only when attempt > 0 so
+    // steady-state resize stays silent.
+    expect(block).toMatch(/attach race retry succeeded/);
+    expect(block).toMatch(/attempt\s*>\s*0/);
+  });
+
+  it('warns on retry exhaustion so dogfood can spot real-world latency tail', () => {
+    const block = resizeBlock();
+    // If exhaustion ever fires in dogfood, the attach is taking
+    // longer than the budget — which means option 2 is mandatory,
+    // not optional. The warn line gives a clear breadcrumb.
+    expect(block).toMatch(/attach race retry exhausted/);
   });
 });
