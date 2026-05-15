@@ -164,9 +164,11 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       // paste sequences so apps like Claude Code see it as a single paste.
       const text = await window.clipboardAPI.readText();
       if (text) {
-        // Centralized 4096-byte chunking helper avoids the main process's
-        // 100KB pty.write silent backstop when pasting large blobs.
-        pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes ?? null);
+        // Async chunked write: paces the IPC queue so the conpty input
+        // pipe drains between chunks, normalizes line endings to \r so
+        // PowerShell does not execute mid-paste, and keeps surrogate
+        // pairs whole across chunk boundaries.
+        await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes ?? null);
         return;
       }
 

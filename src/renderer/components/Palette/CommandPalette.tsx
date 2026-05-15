@@ -4,6 +4,7 @@ import PaletteItem, { type PaletteItemData, type PaletteCategory } from './Palet
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
 import { withDefaultShell } from '../../utils/ptyCreateOptions';
+import { pastePtyChunked } from '../../utils/clipboardChunk';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -431,7 +432,18 @@ export default function CommandPalette() {
           if (pane) {
             const surface = pane.surfaces.find((s) => s.id === pane.activeSurfaceId);
             if (surface?.ptyId) {
-              window.electronAPI.pty.write(surface.ptyId, cmd);
+              // Route through the paste chunker. Recent commands originate
+              // from the user's `inputBuffer`, which accumulates raw paste
+              // payloads (`useTerminal.ts: terminal.onData`) — so a
+              // previously-pasted multi-line snippet can be re-emitted
+              // here. Chunking normalizes CRLF, paces IPC, and keeps the
+              // payload under the main process's 100KB silent backstop.
+              const surfacePtyId = surface.ptyId;
+              void pastePtyChunked(
+                (d) => window.electronAPI.pty.write(surfacePtyId, d),
+                cmd,
+                null,
+              ).catch((err) => console.error('[wmux:palette] chunk write failed:', err));
             }
           }
           togglePalette();

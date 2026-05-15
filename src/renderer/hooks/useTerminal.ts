@@ -8,7 +8,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { t } from '../i18n';
 import { XTERM_THEMES, extractXtermColors, type ThemeId, type BuiltinThemeId } from '../themes';
-import { pastePtyChunked } from '../utils/clipboardChunk';
+import { pastePtyChunked, chunkOnDataIfNeeded } from '../utils/clipboardChunk';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
@@ -328,12 +328,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // Try text first
           const text = await window.clipboardAPI.readText();
           if (text) {
-            // Chunk into 4096-byte writes to evade main's 100KB silent
-            // backstop on pty.write. Bracketed paste markers (when the
-            // foreground app enabled them) wrap the entire stream so apps
-            // still see one logical paste regardless of chunk count.
+            // Async chunked write — paces IPC, normalizes CRLF to \r so
+            // PowerShell does not execute mid-paste, keeps surrogate pairs
+            // whole, and wraps the body in bracketed-paste markers when
+            // the foreground app enabled DECSET 2004.
             const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
-            pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
+            await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
             return;
           }
           // No text — check for image, save to temp file, paste path
@@ -369,7 +369,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           const text = await window.clipboardAPI.readText();
           if (text) {
             const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
-            pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
+            await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
             return;
           }
           if (window.clipboardAPI.readImage) {
@@ -437,9 +437,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // single paste rather than streamed character-by-character.
         const text = await window.clipboardAPI.readText();
         if (text) {
-          // Centralized 4096-byte chunking — keeps us under the main
-          // process's 100KB silent backstop on pty.write.
-          pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
+          // Async chunked write: paces the IPC queue so the conpty input
+          // pipe drains between chunks, normalizes line endings to \r so
+          // PowerShell does not execute mid-paste, keeps surrogate pairs
+          // whole, and wraps the body in bracketed-paste markers when
+          // the foreground app enabled DECSET 2004.
+          await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
           return;
         }
 
@@ -460,10 +463,23 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     // Drag-and-drop is handled globally in preload via webUtils.getPathForFile()
 
-    // Forward user input to PTY and track commands for palette history
+    // Forward user input to PTY and track commands for palette history.
+    //
+    // `onData` is the catch-all for input that did not flow through our
+    // explicit paste handlers — Shift+Insert, OS menu paste, middle-click
+    // paste on Linux/macOS, IME commits, and normal keystrokes all land
+    // here. Normal keystrokes are 1-4 code units and ship as a single
+    // IPC write; anything larger is almost certainly an xterm-native
+    // paste that bypassed our chunker, so route it through
+    // `chunkOnDataIfNeeded` to pace the IPC queue and avoid the 100KB
+    // silent backstop in `pty.handler.ts`. The helper preserves xterm's
+    // own bracketed-paste markers if it pre-wrapped the payload.
     let inputBuffer = '';
     terminal.onData((data) => {
-      window.electronAPI.pty.write(ptyId, data);
+      void chunkOnDataIfNeeded(
+        (d) => window.electronAPI.pty.write(ptyId, d),
+        data,
+      ).catch((err) => console.error('[wmux:onData] chunk write failed:', err));
 
       if (data === '\r' || data === '\n') {
         const cmd = inputBuffer.trim();

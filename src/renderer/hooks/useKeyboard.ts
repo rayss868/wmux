@@ -5,6 +5,7 @@ import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { withDefaultShell } from '../utils/ptyCreateOptions';
 import { useIpc } from './useIpc';
+import { pastePtyChunked } from '../utils/clipboardChunk';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -585,7 +586,18 @@ export function useKeyboard() {
               const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
               if (surface?.ptyId) {
                 const text = match.sendEnter ? match.command + '\r' : match.command;
-                window.electronAPI.pty.write(surface.ptyId, text);
+                // Route through the paste chunker. User-authored keybinding
+                // commands can contain multi-line shell snippets pasted into
+                // the settings field; chunking normalizes CRLF, paces IPC,
+                // and keeps the payload under the 100KB backstop. The
+                // trailing `\r` from `sendEnter` is preserved by the
+                // normalizer (lone `\r` is left alone).
+                const surfacePtyId = surface.ptyId;
+                void pastePtyChunked(
+                  (d) => window.electronAPI.pty.write(surfacePtyId, d),
+                  text,
+                  null,
+                ).catch((err) => console.error('[wmux:keybinding] chunk write failed:', err));
               }
             }
           }

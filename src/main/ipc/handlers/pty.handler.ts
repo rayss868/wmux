@@ -234,6 +234,36 @@ export function registerPTYHandlers(
   // to the screen), so they show up to ActivityMonitor as agent output.
   // Mark the user-write timestamp so the idle fallback suppresses itself
   // while the user is typing (see idleSuppression.ts).
+  //
+  // Oversize backstop (defense-in-depth): the renderer chunks paste
+  // payloads into PTY_WRITE_BACKSTOP_CHUNK_SIZE-byte segments before
+  // sending (`src/renderer/utils/clipboardChunk.ts`), so normal callers
+  // never exceed PTY_WRITE_BACKSTOP. If a future code path or external
+  // tooling slips a larger write through, we now split it locally
+  // rather than silently dropping — silent drops were the root cause
+  // of the chronic "front of paste disappears" regression. The warn
+  // log surfaces the caller so it can be fixed at the source.
+  const PTY_WRITE_BACKSTOP = 100_000;
+  const PTY_WRITE_BACKSTOP_CHUNK_SIZE = 8_192;
+  const PTY_WRITE_HARD_LIMIT = 10_000_000; // 10 MB — true denial-of-service guard
+
+  /** Split an oversize payload into safe segments without dropping any data. */
+  function segmentOversize(data: string): string[] {
+    if (data.length <= PTY_WRITE_BACKSTOP) return [data];
+    const out: string[] = [];
+    for (let i = 0; i < data.length; i += PTY_WRITE_BACKSTOP_CHUNK_SIZE) {
+      // Avoid splitting a UTF-16 surrogate pair at the boundary so the
+      // shell never sees a lone surrogate (would render as U+FFFD).
+      let end = Math.min(i + PTY_WRITE_BACKSTOP_CHUNK_SIZE, data.length);
+      if (end < data.length) {
+        const last = data.charCodeAt(end - 1);
+        if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+      }
+      out.push(data.slice(i, end));
+    }
+    return out;
+  }
+
   ipcMain.removeAllListeners(IPC.PTY_WRITE);
   if (useDaemon && daemonClient) {
     // Per-session diagnostic: log the first dropped write so silent
@@ -243,13 +273,24 @@ export function registerPTYHandlers(
     const writeDropLogged = new Set<string>();
     const onPtyWrite = (_event: Electron.IpcMainEvent, id: string, data: string): void => {
       if (typeof data !== 'string') return;
-      if (data.length > 100_000) {
-        console.warn(`[PTY_WRITE] dropped oversize write: ${data.length} chars (limit 100_000). This is a backstop; renderer should chunk.`);
-        return; // prevent mega-writes
+      if (data.length > PTY_WRITE_HARD_LIMIT) {
+        console.error(`[PTY_WRITE] refused payload exceeding hard limit: ${data.length} chars > ${PTY_WRITE_HARD_LIMIT}. Caller must fix.`);
+        return;
+      }
+      if (data.length > PTY_WRITE_BACKSTOP) {
+        console.warn(`[PTY_WRITE] oversize payload ${data.length} chars > ${PTY_WRITE_BACKSTOP}; segmenting locally. Renderer should chunk at the source.`);
       }
       markUserWrite(id);
-      const delivered = daemonClient.writeToSession(id, sanitizePtyText(data));
-      if (!delivered) {
+      const segments = segmentOversize(data);
+      let allDelivered = true;
+      for (const segment of segments) {
+        const delivered = daemonClient.writeToSession(id, sanitizePtyText(segment));
+        if (!delivered) {
+          allDelivered = false;
+          break;
+        }
+      }
+      if (!allDelivered) {
         if (!writeDropLogged.has(id)) {
           writeDropLogged.add(id);
           console.warn(`[PTY_WRITE] drop sessionId=${id} reason=no-live-session-pipe (first occurrence; suppressing further logs for this id until next successful write)`);
@@ -263,12 +304,18 @@ export function registerPTYHandlers(
     const onPtyWrite = (_event: Electron.IpcMainEvent, id: string, data: string): void => {
       if (!ptyManager.get(id)) return;
       if (typeof data !== 'string') return;
-      if (data.length > 100_000) {
-        console.warn(`[PTY_WRITE] dropped oversize write: ${data.length} chars (limit 100_000). This is a backstop; renderer should chunk.`);
+      if (data.length > PTY_WRITE_HARD_LIMIT) {
+        console.error(`[PTY_WRITE] refused payload exceeding hard limit: ${data.length} chars > ${PTY_WRITE_HARD_LIMIT}. Caller must fix.`);
         return;
       }
+      if (data.length > PTY_WRITE_BACKSTOP) {
+        console.warn(`[PTY_WRITE] oversize payload ${data.length} chars > ${PTY_WRITE_BACKSTOP}; segmenting locally. Renderer should chunk at the source.`);
+      }
       markUserWrite(id);
-      ptyManager.write(id, sanitizePtyText(data));
+      const segments = segmentOversize(data);
+      for (const segment of segments) {
+        ptyManager.write(id, sanitizePtyText(segment));
+      }
     };
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
   }

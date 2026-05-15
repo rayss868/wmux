@@ -31,6 +31,7 @@ import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { withDefaultShell } from '../../utils/ptyCreateOptions';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
+import { pastePtyChunked } from '../../utils/clipboardChunk';
 
 /** Map shell executable path to a human-readable display name. */
 function shellDisplayName(shellPath: string): string {
@@ -228,7 +229,19 @@ export default function AppLayout() {
       if (!activeSurface || activeSurface.surfaceType === 'browser') return;
 
       const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
-      window.electronAPI.pty.write(activeSurface.ptyId, text);
+      // Route the joined path string through the paste chunker. Single-file
+      // drops fit easily in one write, but a multi-file drop with long
+      // Windows paths (UNC, OneDrive, long-form Program Files) can blow
+      // through the main process's 100KB silent backstop. Chunking also
+      // paces the IPC writes so the conpty input pipe drains between
+      // sends. No bracketed-paste markers — drag-drop targets the prompt,
+      // not a paste-aware foreground app.
+      const surfacePtyId = activeSurface.ptyId;
+      void pastePtyChunked(
+        (d) => window.electronAPI.pty.write(surfacePtyId, d),
+        text,
+        null,
+      ).catch((err) => console.error('[wmux:drag-drop] chunk write failed:', err));
     });
 
     // Visual drag overlay
