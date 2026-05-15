@@ -22,6 +22,7 @@ export interface PaneSlice {
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string) => void;
   focusPaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
+  cyclePane: (direction: 'next' | 'prev') => void;
   updatePaneSizes: (branchId: string, sizes: number[]) => void;
   resizeActivePane: (direction: 'left' | 'right' | 'up' | 'down', amount: number) => void;
   equalizePaneSizes: () => void;
@@ -288,6 +289,39 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       event = { wsId: ws.id, paneId: targetId, previousActiveId: ws.activePaneId };
       ws.activePaneId = targetId;
     }
+    });
+    if (event) {
+      const e = event as { wsId: string; paneId: string; previousActiveId: string };
+      publishPaneFocused(e.wsId, e.paneId, e.previousActiveId);
+    }
+  },
+
+  // Tab-style cycle through every leaf pane in the active workspace, wrapping
+  // around at the ends. Tree traversal order matches getLeafPanes (depth-first,
+  // left-to-right / top-to-bottom) so the cycle order mirrors what the user
+  // sees on screen. Bare-Tab would conflict with shell completion, so this is
+  // wired to Ctrl+Tab / Ctrl+Shift+Tab in useKeyboard.
+  cyclePane: (direction) => {
+    let event: { wsId: string; paneId: string; previousActiveId: string } | null = null;
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+      if (!ws) return;
+
+      const leaves = getLeafPanes(ws.rootPane);
+      if (leaves.length <= 1) return;
+
+      const currentIdx = leaves.findIndex((l) => l.id === ws.activePaneId);
+      // Defensive: if active pane somehow isn't a leaf in the tree, jump to
+      // the first/last leaf instead of throwing.
+      const fallbackIdx = direction === 'next' ? 0 : leaves.length - 1;
+      const baseIdx = currentIdx === -1 ? fallbackIdx : currentIdx;
+      const delta = direction === 'next' ? 1 : -1;
+      const nextIdx = (baseIdx + delta + leaves.length) % leaves.length;
+      const targetId = leaves[nextIdx].id;
+      if (targetId === ws.activePaneId) return;
+
+      event = { wsId: ws.id, paneId: targetId, previousActiveId: ws.activePaneId };
+      ws.activePaneId = targetId;
     });
     if (event) {
       const e = event as { wsId: string; paneId: string; previousActiveId: string };

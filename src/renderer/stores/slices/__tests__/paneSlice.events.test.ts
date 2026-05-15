@@ -112,6 +112,28 @@ describe('paneSlice — event publication', () => {
     });
   });
 
+  describe('cyclePane', () => {
+    it('publishes pane.focused with previous active pane id', () => {
+      store.getState().splitPane(rootPaneId, 'horizontal');
+      const splitActiveId = store.getState().workspaces[0].activePaneId;
+      publishCalls.length = 0;
+
+      store.getState().cyclePane('next');
+      const focused = publishCalls.find((c) => c.fn === 'pane.focused');
+      expect(focused).toBeDefined();
+      expect(focused?.args[0]).toBe(wsId);
+      // (wsId, newActiveId, previousActiveId)
+      expect(focused?.args[2]).toBe(splitActiveId);
+      expect(focused?.args[1]).not.toBe(splitActiveId);
+    });
+
+    it('does not publish when only one pane exists', () => {
+      publishCalls.length = 0;
+      store.getState().cyclePane('next');
+      expect(publishCalls.filter((c) => c.fn === 'pane.focused')).toHaveLength(0);
+    });
+  });
+
   // M0-d: paneSlice no longer exposes setPaneMetadata / getPaneMetadata /
   // clearPaneMetadata. MetadataStore in the main process is the sole writer
   // (M0-a + M0-b). The compile-time guard is the type system itself — the

@@ -273,6 +273,7 @@ export const ko = {
   'cheatSheet.openSettings': '설정 열기',
   'cheatSheet.toggleSidebar': '사이드바 토글',
   'cheatSheet.commandPalette': '명령 팔레트',
+  'cheatSheet.cyclePane': '창 순환 (멀티뷰)',
   'cheatSheet.dontShowAgain': '다시 표시 안 함',
   'cheatSheet.dismiss': '닫기',
 

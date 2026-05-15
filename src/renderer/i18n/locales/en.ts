@@ -273,6 +273,7 @@ export const en = {
   'cheatSheet.openSettings': 'Open settings',
   'cheatSheet.toggleSidebar': 'Toggle sidebar',
   'cheatSheet.commandPalette': 'Command palette',
+  'cheatSheet.cyclePane': 'Cycle pane (multi-view)',
   'cheatSheet.dontShowAgain': 'Don\'t show again',
   'cheatSheet.dismiss': 'Dismiss',
 

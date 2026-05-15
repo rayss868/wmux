@@ -96,9 +96,16 @@ describe('buildShortcuts', () => {
     expect(winList.find((e) => e.label === 'cheatSheet.toggleSidebar')?.combo).toBe('Ctrl+Shift+B');
   });
 
-  it('returns 8 shortcut entries', () => {
-    expect(buildShortcuts('darwin').length).toBe(8);
-    expect(buildShortcuts('win32').length).toBe(8);
+  it('returns 9 shortcut entries', () => {
+    expect(buildShortcuts('darwin').length).toBe(9);
+    expect(buildShortcuts('win32').length).toBe(9);
+  });
+
+  it('cyclePane combo is literal "Ctrl+Tab" on every platform', () => {
+    const macList = buildShortcuts('darwin');
+    const winList = buildShortcuts('win32');
+    expect(macList.find((e) => e.label === 'cheatSheet.cyclePane')?.combo).toBe('Ctrl+Tab');
+    expect(winList.find((e) => e.label === 'cheatSheet.cyclePane')?.combo).toBe('Ctrl+Tab');
   });
 });
 
@@ -205,12 +212,12 @@ describe('KeyboardCheatSheetView (renderToStaticMarkup)', () => {
     expect(renderView({ progress: 5 })).toMatch(/style="width:\s*100%/);
   });
 
-  it('renders all 8 shortcut entries in the list', () => {
+  it('renders all 9 shortcut entries in the list', () => {
     const html = renderView({ shortcuts: buildShortcuts('win32') });
     // Each shortcut entry is rendered inside a <li>; count occurrences of the
-    // closing </li> tag inside the list to verify all 8 made it.
+    // closing </li> tag inside the list to verify all 9 made it.
     const liMatches = html.match(/<li/g) ?? [];
-    expect(liMatches.length).toBe(8);
+    expect(liMatches.length).toBe(9);
   });
 });
 

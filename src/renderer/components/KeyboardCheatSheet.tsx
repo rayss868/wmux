@@ -68,6 +68,9 @@ export function buildShortcuts(platform: string | undefined): CheatSheetEntry[] 
     { label: 'cheatSheet.openSettings', combo: `${mod},` },
     { label: 'cheatSheet.commandPalette', combo: `${mod}K` },
     { label: 'cheatSheet.toggleSidebar', combo: 'Ctrl+Shift+B' },
+    // Ctrl+Tab is literal on every OS — useKeyboard binds it via literalCtrl
+    // so the cheat sheet must show "Ctrl+" instead of ⌘ on macOS.
+    { label: 'cheatSheet.cyclePane', combo: 'Ctrl+Tab', literal: false },
     // tmux prefix is always literal Ctrl+B (wmux convention, D1 / useKeyboard.ts).
     // TODO(T1): wire i18n key for cheat sheet "tmux prefix" entry.
     { label: 'tmux prefix', combo: 'Ctrl+B', literal: true },

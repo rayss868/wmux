@@ -377,6 +377,19 @@ export function useKeyboard() {
         return;
       }
 
+      // Ctrl+Tab / Ctrl+Shift+Tab: Cycle through every leaf pane in the active
+      // workspace (wraps around). Browser-style tab switching — bare Tab would
+      // break shell completion inside the terminal so we require literal Ctrl
+      // on every OS (matches Chrome / VS Code convention, including macOS).
+      // stopImmediatePropagation prevents xterm from also seeing the Tab and
+      // emitting a literal `\t` into the now-focused pane.
+      if (literalCtrl && !alt && key === 'Tab') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        store.getState().cyclePane(shift ? 'prev' : 'next');
+        return;
+      }
+
       // Ctrl+I: Toggle notification panel
       if (cmdOrCtrl && !shift && !alt && key === 'i') {
         e.preventDefault();

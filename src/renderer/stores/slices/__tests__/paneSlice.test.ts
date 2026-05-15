@@ -172,4 +172,66 @@ describe('PaneSlice', () => {
       expect(wsAfterMove.activePaneId).toBe(leaves[1].id);
     });
   });
+
+  describe('cyclePane', () => {
+    it('does nothing with only 1 pane', () => {
+      const ws = getActiveWorkspace(store);
+      const activeId = ws.activePaneId;
+
+      store.getState().cyclePane('next');
+      expect(getActiveWorkspace(store).activePaneId).toBe(activeId);
+
+      store.getState().cyclePane('prev');
+      expect(getActiveWorkspace(store).activePaneId).toBe(activeId);
+    });
+
+    it('next moves to the next leaf in tree order', () => {
+      const ws = getActiveWorkspace(store);
+      const rootId = ws.rootPane.id;
+
+      // Split twice → 3 leaves total. Tree shape after each split:
+      //   Step 1 (split rootId horizontally):  [originalCopy, A]    active = A
+      //   Step 2 (split A horizontally):       [originalCopy, [A, B]]  active = B
+      store.getState().splitPane(rootId, 'horizontal');
+      const wsAfterFirst = getActiveWorkspace(store);
+      store.getState().splitPane(wsAfterFirst.activePaneId, 'horizontal');
+
+      const wsAfter = getActiveWorkspace(store);
+      const leaves = getLeafPanes(wsAfter.rootPane);
+      expect(leaves).toHaveLength(3);
+
+      // Active is the last leaf (B). next → wrap to leaves[0].
+      expect(wsAfter.activePaneId).toBe(leaves[2].id);
+      store.getState().cyclePane('next');
+      expect(getActiveWorkspace(store).activePaneId).toBe(leaves[0].id);
+
+      // next again → leaves[1], then leaves[2].
+      store.getState().cyclePane('next');
+      expect(getActiveWorkspace(store).activePaneId).toBe(leaves[1].id);
+      store.getState().cyclePane('next');
+      expect(getActiveWorkspace(store).activePaneId).toBe(leaves[2].id);
+    });
+
+    it('prev cycles backwards and wraps from first to last', () => {
+      const ws = getActiveWorkspace(store);
+      const rootId = ws.rootPane.id;
+
+      store.getState().splitPane(rootId, 'horizontal');
+      const wsAfterFirst = getActiveWorkspace(store);
+      store.getState().splitPane(wsAfterFirst.activePaneId, 'vertical');
+
+      const wsAfter = getActiveWorkspace(store);
+      const leaves = getLeafPanes(wsAfter.rootPane);
+      expect(leaves).toHaveLength(3);
+
+      // Snap to leaves[0] then go prev → wraps to leaves[leaves.length - 1].
+      store.getState().setActivePane(leaves[0].id);
+      store.getState().cyclePane('prev');
+      expect(getActiveWorkspace(store).activePaneId).toBe(leaves[leaves.length - 1].id);
+
+      // prev again walks toward the front.
+      store.getState().cyclePane('prev');
+      expect(getActiveWorkspace(store).activePaneId).toBe(leaves[leaves.length - 2].id);
+    });
+  });
 });
