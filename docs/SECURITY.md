@@ -1,6 +1,6 @@
 # wmux Substrate — Security Model
 
-> **Status:** Draft 1 (Phase 0 / Phase 3.2 baseline). Companion to the [substrate protocol](./PROTOCOL.md) and the v3.0 [stability contract](./api/stability.md).
+> **Status:** Draft 1 (Phase 0 baseline). Companion to the [substrate protocol](./PROTOCOL.md) and the v3.0 [stability contract](./api/stability.md).
 > **Audience:** plugin authors, integrators, security reviewers, and anyone trying to decide whether wmux fits a given threat model.
 
 This document states the wmux substrate's security posture. It is deliberately narrow about what wmux protects against and explicit about what it does not. The substrate's identity is a small neutral core plus a plugin layer (§4 of `PROTOCOL.md`); the security model follows the same shape — small core guarantees, hard delegations to the OS, and a clear list of out-of-scope threats.
@@ -24,39 +24,21 @@ The following are first-class commitments. Regressions here are bugs.
 ### 1.1 At-rest file mode
 
 - POSIX (`macOS`, `Linux`): `~/.wmux/` and every file inside it are created with mode `0o600` (owner read/write only). Directories are `0o700`.
-- Windows: `%USERPROFILE%\.wmux\` inherits the user profile ACL by default. The daemon additionally hardens the directory ACL on startup to remove inherited groups and grant the current user only (see §1.2).
+- Windows: `%USERPROFILE%\.wmux\` inherits the default user profile ACL. The substrate relies on the OS user profile boundary as the trust line — same-user processes can read substrate files; other users on the same machine cannot.
 
-### 1.2 NTFS ACL hardening (Windows)
+> **Note (2026-05-16):** an earlier draft of this document described additional Windows-side `icacls` hardening and cloud-sync exclusion signals applied by the daemon on startup. That code path produced a broken ACL state in user-dogfood testing (lock-out of the owner) and was reverted. Any future hardening over what `0o600` / the default user profile ACL provides will be re-introduced only after dogfood passes on a real `%USERPROFILE%\.wmux\` directory, not just a fresh-tmpdir dynamic test.
 
-On daemon startup, wmux invokes `icacls` to:
+### 1.2 Named Pipe authentication
 
-1. Disable ACL inheritance on `%USERPROFILE%\.wmux\`.
-2. Remove all granted principals except the current user.
-3. Grant the current user full control, propagating to existing children.
+The wmux daemon exposes its RPC surface over a Windows Named Pipe (or Unix socket on POSIX). Every connection must present the per-boot auth token from `%USERPROFILE%\.wmux-auth-token` (POSIX: `~/.wmux-auth-token`). The token file is mode `0o600` and written via the `secureWriteTokenFile` helper, which applies an OS-level ACL restricting read to the current user's SID. Clients without the token are rejected before any RPC is dispatched. See `PROTOCOL.md` §5 for the full token model.
 
-This is a defense-in-depth measure on top of the default profile ACL. The hardening is idempotent and runs once per daemon boot.
-
-### 1.3 Cloud-sync exclusion signals
-
-On Windows, the daemon applies three signals to `%USERPROFILE%\.wmux\` and its `buffers\` subdirectory on startup:
-
-1. **Hidden + System NTFS attributes** (`attrib +H +S`). Many backup utilities skip system-hidden folders by default.
-2. **Not-content-indexed attribute** (`attrib +I`). Windows Search ignores the contents, so scrollback never surfaces in a Search index.
-3. **`.no-cloud-sync.txt` notice file** at the directory root. A plain-text note humans see when browsing the folder in Explorer or a sync-tool UI, instructing them to exclude it from cloud sync, backup, or indexing tools.
-
-These are *opportunistic* signals. They are not a guaranteed exclusion. OneDrive's Known Folder Move only targets Desktop, Documents, Pictures, Music, and Videos by default, so `%USERPROFILE%\.wmux\` is normally outside its scope; users who explicitly redirect their profile root or use Windows Backup must add an exclusion in their backup tool. Third-party sync engines (Dropbox, Google Drive, etc.) each have their own ignore configuration that wmux cannot influence. Users are responsible for confirming exclusion in the engines they run.
-
-POSIX systems have no equivalent ambient cloud-sync layer; the `0o700` directory mode is sufficient.
-
-### 1.4 Named Pipe authentication
-
-The daemon's Named Pipe (Windows) and Unix socket (POSIX) carry a per-boot auth token. The token file is mode `0o600` (POSIX) and lives under `~/.wmux/`. Clients without the token are rejected before any RPC is dispatched.
-
-### 1.5 Per-plugin permission enforcement
+### 1.3 Per-plugin permission enforcement (Phase 2.1, planned)
 
 MCP plugins declare `wmuxPermissions` in their manifest. The substrate enforces those at four points (method · path · event · workspace claim) on every RPC and event delivery. A plugin without `pane.read` permission for a given pane never sees that pane's content via the substrate API.
 
-Permission enforcement is a substrate guarantee for plugin access through documented surfaces. It is *not* a sandbox: a same-user plugin process can read disk files directly without going through the substrate. Plugin disk access is governed by §1.1 and §1.2.
+Permission enforcement is a substrate guarantee for plugin access through documented surfaces. It is *not* a sandbox: a same-user plugin process can read disk files directly without going through the substrate. Plugin disk access is governed by §1.1.
+
+> Status: Phase 2.1 implementation work item. The contract above is the Phase 0 declaration of intent; enforcement code ships across the v3.0 release window. See `plans/generic-wandering-teapot.md`.
 
 ---
 
@@ -70,6 +52,8 @@ Permission enforcement is a substrate guarantee for plugin access through docume
 | Pagefile / swap leak | OS-level pagefile encryption (BitLocker on Windows, encrypted swap on macOS/Linux) |
 | Crash-dump scrubbing | OS crash-dump policy (Windows Error Reporting opt-out, etc.) |
 | Network confidentiality (PTY over remote shells) | The user's SSH / VPN / TLS stack |
+| Folder-level access restriction | The OS user profile ACL (Windows) / `0o700` mode (POSIX) |
+| Cloud-sync / backup exclusion | The user's sync / backup tool's own ignore configuration |
 
 If your threat model requires any of these, configure the OS layer. wmux does not duplicate them.
 
@@ -84,8 +68,8 @@ Stated explicitly so reviewers and operators don't infer guarantees that don't e
 - **Crash dumps.** A daemon or renderer crash may produce a dump containing scrollback bytes. Disable crash dumps at the OS level if this matters.
 - **GPU / framebuffer memory inspection.** Rendered terminal text passes through the GPU; same-user GPU memory access can recover it.
 - **Side-channel timing attacks** against PTY input or rendering.
-- **Cloud sync engines that ignore the exclusion marker** (§1.3). The user must configure those tools directly.
-- **Compromised plugins running as the same user.** Permission enforcement (§1.5) defends documented substrate access only. A compromised plugin process can do anything its user account can do.
+- **Cloud sync engines mirroring `~/.wmux/`.** If a user has redirected their profile root to OneDrive Known Folder Move or set up Windows Backup over the profile, scrollback gets mirrored. The user must add an exclusion in their backup tool — wmux does not.
+- **Compromised plugins running as the same user.** Permission enforcement (§1.3) defends documented substrate access only. A compromised plugin process can do anything its user account can do.
 - **Network-level attacks on PTY data carried over shells the user opens.** wmux is the multiplexer; SSH / VPN / TLS are the user's responsibility.
 
 ---
@@ -116,7 +100,7 @@ What we consider a security issue:
 What we do not consider a wmux security issue:
 
 - Same-user disclosure paths covered by §3.
-- Cloud-sync engines mirroring `~/.wmux/` despite §1.3 (configure the sync tool).
+- Cloud-sync engines mirroring `~/.wmux/` (configure the sync tool, see §2 and §3).
 - PTY content disclosure through tools the user runs *inside* a pane (that's the inner program's surface, not wmux's).
 
 ---
@@ -125,4 +109,5 @@ What we do not consider a wmux security issue:
 
 | Date | Change |
 |---|---|
-| 2026-05-16 | Initial draft. Phase 0 baseline; expanded during Phase 3.2 Security review. |
+| 2026-05-16 | Initial draft (#41). Declared icacls + attrib + notice-file hardening signals + `mcp.claimWorkspace` enforcement. |
+| 2026-05-16 | Reverted icacls/attrib/notice-file claims (§1.2 and §1.3 of the original draft). Dogfood on a real `%USERPROFILE%\.wmux\` directory produced a broken ACL state (`/inheritance:r` removed the owner's WRITE_DAC, and the subsequent `/grant:r` failed silently). The dynamic test (`scripts/substrate-hardening-dynamic.mjs`) had passed on a fresh `mkdtempSync` directory whose ACL constitution is different from a long-lived profile-scoped folder; the test did not catch the production-only regression. Phase 3.2 hardening will be re-attempted only after a hardening helper that (a) grants the owner explicit `(OI)(CI)F` *before* removing inherited ACEs and (b) is dogfooded against a real user profile passes. |
