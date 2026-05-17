@@ -5,6 +5,47 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.1] — 2026-05-17 — Scrollback restore hotfix
+
+v2.8.x 이후 silently broken 이었던 scrollback restore 를 살리는 hotfix release. tray Quit → restart 시 모든 pane 이 fresh empty terminal 로 뜨던 증상의 진짜 root cause 3개를 모두 잡았다 (다층 race). 사용자 dogfood 로 end-to-end 검증 완료.
+
+업그레이드 영향:
+
+- 모든 변경은 v2.9.x backwards-compatible. 새 wire contract / disk schema 없음.
+- 새 설정 한 개: **Settings → Terminal → "시작 시 복원"** (Restore on launch, default ON). 끄면 매 launch fresh 시작.
+- 누적된 session.json ↔ daemon dump mismatch 가 있어 복원 안 보이는 사용자를 위해 `scripts/scrollback-reset.mjs` 한방 cleanup util 제공 (백업 후 정리, 비파괴).
+- 로그 파일이 자동으로 14일 retention 으로 정리됨 (이전엔 무제한 누적, 일부 사용자에서 ~700MB 까지 부풀었던 사례).
+
+### Added
+
+- **Scrollback restore 토글** (`uiSlice.scrollbackRestoreEnabled`, default `true`) — Settings → Terminal 에서 끌 수 있음. OFF 시 startup 에 `clearAllPtyState()` 로 모든 pane fresh 시작. daemon 은 ringBuffer dump 계속 (renderer 가 안 읽어서 orphan `.buf` 는 다음 launch `cleanOrphanedBuffers` 가 청소). en/ko/ja/zh i18n.
+- **Log auto-prune** (`main/util/logSink.ts`, `daemon/util/logSink.ts`) — 14일 이상 된 daily log 파일 startup 시 자동 삭제. 이전엔 retention 정책 없어 무제한 누적.
+- **`scripts/scrollback-reset.mjs`** — 비파괴 cleanup util. `~/.wmux/buffers/`, `sessions.json*`, `%APPDATA%/wmux/session.json*` 를 `~/.wmux/backup-<timestamp>/` 로 이동 (삭제 아님). 사용자가 session.json ↔ daemon dump mismatch 누적된 상태를 한 번에 청소할 수 있음.
+- **`scripts/scrollback-restore-test.mjs`** — bundled daemon subprocess + RPC probe 기반 dynamic test. recovery + flush bytes contract regression 가드.
+
+### Fixed
+
+- **L1 — `workspaceSlice.loadSession` ptyId wipe 제거**. 매 startup 마다 모든 `surface.ptyId` 를 `""` 로 force-clear 하던 코드가 reconcile 의 reconnect 경로 진입 자체를 막고 있었다. saved ptyId 는 이제 보존된다. 대신 `AppLayout` 이 `paneGate` (`'pending' | 'ready'`) render gate 로 PaneContainer mount 를 reconcile 완료 이후로 미뤄서 옛 propagation race 를 원천 봉쇄한다. 추가로 `clearAllPtyState` cross-slice atomic clear action 이 reconcile 실패/timeout 시 explicit fallback.
+- **L2 — `BEFORE_QUIT_TIMEOUT_MS` 4s → 8s** (cherry-picked from `fix/daemon-shutdown-phase-instrumentation` #45). 50-pane daemon 에서 4초로는 buffer dump 가 못 끝나 다음 launch 가 recovery 할 게 없던 상태. 동시에 daemon-side `logSink` (`daemon/util/logSink.ts`) + `[shutdown.phase]` per-phase 지표 + `[recovery] session X bytes=N` 가시화 도구 도입 — 이게 없었으면 다음 layer 진단 자체가 불가능했다.
+- **L3 — `pty.reconnect` race-free 재구성**. `AppLayout.reconcilePtys` 는 이제 sync liveness check 만 (dead ptyId clear, live 는 그대로). 실제 reconnect 호출은 `useTerminal` mount 안에서 모든 listener 등록 *후* 발생. 이전 구조는 daemon SessionPipe replay (10KB+) 가 `win.webContents.send(PTY_DATA, …)` 로 forward 됐을 때 renderer `ipcRenderer.on(PTY_DATA)` listener 가 아직 없어 Electron IPC 가 silently drop 하던 게 진짜 사용자 가시 root cause 였다.
+- **`pty.reconnect` failure 처리** — `{success: false}` 응답을 더 이상 swallow 하지 않는다 (`useTerminal` 가 `clearSurfacePtyIdByPty` 호출 → Terminal self-create fallback). 이전엔 dead session 이 stale ptyId 로 input-mute 영구 유지될 수 있었음 — 정확히 Fix 0 이 없애려던 클래스.
+- **`daemonMode` flag race** — `isDaemonModeActive` 를 startup IIFE 안에서 paneGate 가 ready 로 바뀌기 *전* 에 명시 set. 이전엔 별도 effect 가 set 해서 Terminal 이 `daemonModeAtMount=false` 로 mount 되고 reconnect 자체를 안 부르던 케이스 가능.
+- **Startup IIFE outer try/finally** — `session.load()` rejection 이 `.then` 안의 try 를 우회해서 `paneGate` 가 영구 pending 으로 갇히던 edge 봉쇄.
+- **`useRpcBridge` startup-window 가드** — external RPC (MCP, A2A) 가 startup 중에 stale `ptyId` 로 write 들어오는 걸 `{error: 'wmux is still starting', retryable: true}` 로 차단.
+- **`main/util/logSink.ts` stdout tee** — 이전엔 `stderr` 만 tee 해서 `console.log` 결과가 disk 에 안 남았다 (`console.warn`/`error` 만 capture). renderer 진단 라인이 main log file 에 같이 누적되도록 console-message `level<2 return` 필터도 제거.
+
+### Out of scope (다음 PR 후보)
+
+- **Fix B** (cap-aware suspended-session promote) — 50-pane 이상에서 `MAX_RECOVER_SESSIONS=40` 초과 session 은 여전히 복원 못 함. design doc `docs/internal/scrollback-restore-design.md` §5 에 spec. TODOS.md 에 항목 등록. 50-pane thundering herd (codex P1#3) 와 함께 처리.
+- **Substrate Phase 2+ Fix C** — 2-storage 통합. weeks 단위 작업. 별도 트랙.
+- **`AppLayout.gate` integration test** — vitest config 가 현재 `environment: 'node'` 라 jsdom + RTL setup 필요. follow-up.
+
+### 외부 협의 / Reviews
+
+- **Codex outside-voice** — plan 단계에서 13 holes 지적 → plan v2 resolution map 에 모두 매핑. 최종 pre-merge review 에서 추가 P1 3 + P2 3 — P1 + red test 는 fix, P1#3 (thundering herd) 와 P2#6 (session-end timeout) 은 known limitation 으로 명시 + 다음 PR 로 deferred.
+
+PR: **#46** (path-D inventory, docs), **#45** (daemon instrumentation + before-quit timeout 8s), **#47** (Fix 0 — three-layer race fix + toggle + log prune).
+
 ## [2.9.0] — 2026-05-14 — Substrate 3.0 — Phase 0 + M0
 
 wmux의 substrate identity 를 v3.0 으로 끌고 가기 위한 첫 번째 ship unit. v2.8.x 에서 이미 ~50% 가 출하돼 있던 substrate 표면 (PaneMetadata, EventBus, bootId, asOfSeq, `system.capabilities`, MCP host, `mcp.claimWorkspace`) 위에 (a) 그 표면의 contract 를 명문화한 Phase 0 문서, (b) main process 측 metadata authority 인 `MetadataStore` 와 그 wire 통합 (M0-a~f), (c) v2.8.x dogfood 중 노출된 스크롤백 손상 + reconcile race + logSink durable write 안정성 픽스를 한꺼번에 ship. **메인 PR 은 #34** (Substrate 3.0 — Phase 0 + M0, v2.9.0 ship unit) 이고 후속 마이그레이션 도구는 **#35** (chopped-dump recovery tool) 로 따라간다. 외부 RFC 협의는 **#15 (@alphabeen)** 에서 진행됐고 그 OCC + `mergeMode` 디자인이 코드로 착지.
