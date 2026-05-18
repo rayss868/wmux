@@ -428,4 +428,44 @@ describe('KeyboardCheatSheet default export — early return', () => {
     // tmux prefix still literal.
     expect(html).toContain('Ctrl+B');
   });
+
+  // Force-show override (Ctrl+B ? prefix action). The selector branch must
+  // re-render the overlay even when the user has permanently dismissed it,
+  // and must continue to hide it when the override is off.
+  it('renders the overlay when dismissed=true AND cheatSheetForceShown=true', async () => {
+    vi.resetModules();
+    vi.doMock('../../stores', () => ({
+      useStore: ((selector: (s: unknown) => unknown) =>
+        selector({
+          cheatSheetDismissed: true,
+          setCheatSheetDismissed: vi.fn(),
+          cheatSheetForceShown: true,
+          setCheatSheetForceShown: vi.fn(),
+          locale: 'en',
+        })) as unknown,
+    }));
+    vi.stubGlobal('window', { electronAPI: { platform: 'win32' } });
+    const mod = await import('../KeyboardCheatSheet');
+    const html = renderToStaticMarkup(createElement(mod.default));
+    expect(html).not.toBe('');
+    expect(html).toContain('role="region"');
+  });
+
+  it('renders nothing when dismissed=true AND cheatSheetForceShown=false', async () => {
+    vi.resetModules();
+    vi.doMock('../../stores', () => ({
+      useStore: ((selector: (s: unknown) => unknown) =>
+        selector({
+          cheatSheetDismissed: true,
+          setCheatSheetDismissed: vi.fn(),
+          cheatSheetForceShown: false,
+          setCheatSheetForceShown: vi.fn(),
+          locale: 'en',
+        })) as unknown,
+    }));
+    vi.stubGlobal('window', { electronAPI: { platform: 'win32' } });
+    const mod = await import('../KeyboardCheatSheet');
+    const html = renderToStaticMarkup(createElement(mod.default));
+    expect(html).toBe('');
+  });
 });

@@ -1116,6 +1116,7 @@ const PREFIX_ACTION_IDS = [
   'splitHorizontal', 'splitVertical', 'closePane',
   'newWorkspace', 'nextWorkspace', 'prevWorkspace',
   'hideWindow', 'toggleZoom', 'commandPalette',
+  'renameWorkspace', 'killWorkspace', 'showCheatSheet',
   'focusUp', 'focusDown', 'focusLeft', 'focusRight',
 ] as const;
 

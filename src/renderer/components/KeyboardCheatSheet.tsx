@@ -194,6 +194,11 @@ export function KeyboardCheatSheetView({
 export default function KeyboardCheatSheet() {
   const cheatSheetDismissed = useStore((s) => s.cheatSheetDismissed);
   const setCheatSheetDismissed = useStore((s) => s.setCheatSheetDismissed);
+  // One-shot force-show triggered by the `?` prefix action — re-displays the
+  // overlay even after the user has permanently dismissed it, and resets the
+  // local hidden/countdown state for a fresh viewing.
+  const cheatSheetForceShown = useStore((s) => s.cheatSheetForceShown);
+  const setCheatSheetForceShown = useStore((s) => s.setCheatSheetForceShown);
   const t = useT();
 
   const [hidden, setHidden] = useState(false);
@@ -218,9 +223,17 @@ export default function KeyboardCheatSheet() {
 
   const shortcuts = useMemo(() => buildShortcuts(platform), [platform]);
 
+  // When the prefix `?` action fires, reset local state so a previously
+  // expired/hidden overlay re-renders with a fresh 30s countdown.
+  useEffect(() => {
+    if (!cheatSheetForceShown) return;
+    setHidden(false);
+    setRemainingMs(CHEAT_SHEET_DURATION_MS);
+  }, [cheatSheetForceShown]);
+
   // Countdown tick — paused when any of the three flags is true.
   useEffect(() => {
-    if (cheatSheetDismissed || hidden) return;
+    if ((cheatSheetDismissed && !cheatSheetForceShown) || hidden) return;
 
     const interval = setInterval(() => {
       if (hoverRef.current || focusRef.current || docHiddenRef.current) return;
@@ -228,6 +241,11 @@ export default function KeyboardCheatSheet() {
         const next = prev - TICK_MS;
         if (next <= 0) {
           setHidden(true);
+          // Clear the one-shot override so a subsequent `?` press can flip
+          // the selector value and re-trigger the force-show effect. Without
+          // this reset, force-shown stays `true` forever after the first
+          // countdown expires and the next `?` becomes a no-op.
+          if (cheatSheetForceShown) setCheatSheetForceShown(false);
           return 0;
         }
         return next;
@@ -235,7 +253,7 @@ export default function KeyboardCheatSheet() {
     }, TICK_MS);
 
     return () => clearInterval(interval);
-  }, [cheatSheetDismissed, hidden]);
+  }, [cheatSheetDismissed, cheatSheetForceShown, hidden, setCheatSheetForceShown]);
 
   // visibilitychange listener — pause when window is hidden.
   useEffect(() => {
@@ -251,7 +269,9 @@ export default function KeyboardCheatSheet() {
 
   const onDismiss = useCallback(() => {
     setHidden(true);
-  }, []);
+    // Clear the one-shot override so the next `?` press triggers a re-show.
+    if (cheatSheetForceShown) setCheatSheetForceShown(false);
+  }, [cheatSheetForceShown, setCheatSheetForceShown]);
 
   const onDontShowAgainChange = useCallback(
     (checked: boolean) => {
@@ -274,7 +294,9 @@ export default function KeyboardCheatSheet() {
     focusRef.current = false;
   }, []);
 
-  if (cheatSheetDismissed || hidden) return null;
+  // Force-show wins over the permanent dismissal so `?` always works.
+  if (hidden) return null;
+  if (cheatSheetDismissed && !cheatSheetForceShown) return null;
 
   const progress = remainingMs / CHEAT_SHEET_DURATION_MS;
 

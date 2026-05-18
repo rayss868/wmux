@@ -150,6 +150,26 @@ describe('UISlice — first-run + cheat sheet flags', () => {
     // cheatSheetDismissed unchanged from earlier
     expect(store.getState().cheatSheetDismissed).toBe(true);
   });
+
+  // The `?` prefix action sets cheatSheetForceShown to override a previously
+  // permanent dismissal. The flag must be independently togglable and start
+  // false so the overlay's default lifetime is unchanged on fresh installs.
+  it('cheatSheetForceShown defaults to false and toggles via setter', () => {
+    expect(store.getState().cheatSheetForceShown).toBe(false);
+
+    store.getState().setCheatSheetForceShown(true);
+    expect(store.getState().cheatSheetForceShown).toBe(true);
+
+    store.getState().setCheatSheetForceShown(false);
+    expect(store.getState().cheatSheetForceShown).toBe(false);
+  });
+
+  it('setCheatSheetForceShown does not flip the permanent dismissal flag', () => {
+    store.getState().setCheatSheetDismissed(true);
+    store.getState().setCheatSheetForceShown(true);
+    expect(store.getState().cheatSheetDismissed).toBe(true);
+    expect(store.getState().cheatSheetForceShown).toBe(true);
+  });
 });
 
 describe('UISlice — multiview', () => {
