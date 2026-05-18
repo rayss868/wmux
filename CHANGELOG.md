@@ -5,6 +5,48 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.0] — 2026-05-18 — tmux prefix expansion + 16 new locales
+
+This release rounds out the tmux-style prefix layer with pass-through and three new
+bindings, fixes a long-standing dead-event handler on the workspace rename shortcut,
+and ships UI translations for 16 additional locales.
+
+### Added
+
+- **tmux pass-through.** Pressing the prefix combo twice (`Ctrl+B Ctrl+B` by default)
+  now forwards a literal Ctrl+B byte to the active terminal, so a nested tmux/screen
+  session running inside a wmux pane receives its own prefix instead of being
+  swallowed by wmux.
+- **Three new prefix bindings.** `,` opens inline rename for the active workspace,
+  `&` closes the workspace (disposing every PTY in its tree first), `?` redisplays
+  the keyboard cheat sheet even after it has been permanently dismissed.
+- **16 new UI locales:** Arabic, Bosnian, Danish, German, Spanish, French, Hindi,
+  Indonesian, Italian, Malay, Norwegian Bokmål, Polish, Brazilian Portuguese, Russian,
+  Thai, Turkish, Ukrainian, Vietnamese, and Traditional Chinese. Switch from
+  **Settings → Appearance → Language**.
+
+### Fixed
+
+- **Workspace rename actually works now.** Both the new `Ctrl+B ,` prefix action and
+  the existing `Ctrl+Shift+R` shortcut previously dispatched a custom event that no
+  component was listening for, so neither path opened the inline rename input. The
+  sidebar's `WorkspaceItem` now subscribes to the event on the active workspace.
+- **`?` prefix re-opens the cheat sheet after permanent dismissal.** The `AppLayout`
+  mount gate previously prevented the cheat sheet from rendering at all once the user
+  clicked "Don't show again", so the one-shot force-show flag had nothing to react to.
+  The gate now honors the override.
+- **`?` prefix works after a previous cheat sheet auto-expired.** The 30-second
+  countdown now clears the force-show flag when it hits zero, so the next `?` press
+  flips the selector and re-triggers the show effect.
+
+### Changed
+
+- **`createPrefixActions` factory.** The prefix-mode action registry in
+  `useKeyboard.ts` is now an exported factory taking `{store, electronAPI, doc}`, so
+  unit tests can drive every action with mocks instead of needing a DOM harness.
+  32 new unit tests cover every action plus the `ctrlByteForKeyCode` pass-through
+  helper.
+
 ## [2.9.1] — 2026-05-17 — Scrollback restore hotfix
 
 v2.8.x 이후 silently broken 이었던 scrollback restore 를 살리는 hotfix release. tray Quit → restart 시 모든 pane 이 fresh empty terminal 로 뜨던 증상의 진짜 root cause 3개를 모두 잡았다 (다층 race). 사용자 dogfood 로 end-to-end 검증 완료.
