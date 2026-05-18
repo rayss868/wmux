@@ -1806,5 +1806,24 @@ function localeFlag(locale: Locale): string {
     case 'ko': return '🇰🇷';
     case 'ja': return '🇯🇵';
     case 'zh': return '🇨🇳';
+    case 'zh-TW': return '🇹🇼';
+    case 'ar': return '🇸🇦';
+    case 'bs': return '🇧🇦';
+    case 'da': return '🇩🇰';
+    case 'de': return '🇩🇪';
+    case 'es': return '🇪🇸';
+    case 'fr': return '🇫🇷';
+    case 'hi': return '🇮🇳';
+    case 'id': return '🇮🇩';
+    case 'it': return '🇮🇹';
+    case 'ms': return '🇲🇾';
+    case 'nb': return '🇳🇴';
+    case 'pl': return '🇵🇱';
+    case 'pt-BR': return '🇧🇷';
+    case 'ru': return '🇷🇺';
+    case 'th': return '🇹🇭';
+    case 'tr': return '🇹🇷';
+    case 'uk': return '🇺🇦';
+    case 'vi': return '🇻🇳';
   }
 }
