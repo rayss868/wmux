@@ -151,8 +151,15 @@ export interface UISlice {
   // ─── First-run wizard / cheat sheet (Plan 1.15 + 1.18) ────────────────
   firstRunCompleted: boolean;
   cheatSheetDismissed: boolean;
+  /**
+   * One-shot override that re-shows the cheat sheet even when the user has
+   * permanently dismissed it. Set by the `?` prefix action; cleared when the
+   * overlay is closed. Not persisted in SessionData — purely runtime UI state.
+   */
+  cheatSheetForceShown: boolean;
   setFirstRunCompleted: (value: boolean) => void;
   setCheatSheetDismissed: (value: boolean) => void;
+  setCheatSheetForceShown: (value: boolean) => void;
 
   // ─── Prefix mode (tmux-style) ─────────────────────────────────────
   prefixMode: boolean;
@@ -540,6 +547,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   // (T8a) writes them out alongside other UI prefs.
   firstRunCompleted: false,
   cheatSheetDismissed: false,
+  cheatSheetForceShown: false,
 
   setFirstRunCompleted: (value) => set((state) => {
     state.firstRunCompleted = value;
@@ -547,6 +555,10 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setCheatSheetDismissed: (value) => set((state) => {
     state.cheatSheetDismissed = value;
+  }),
+
+  setCheatSheetForceShown: (value) => set((state) => {
+    state.cheatSheetForceShown = value;
   }),
 
   // ─── Prefix mode (tmux-style) ─────────────────────────────────────

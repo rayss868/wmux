@@ -57,6 +57,16 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
     if (editing) inputRef.current?.focus();
   }, [editing]);
 
+  // Listen for the global rename trigger dispatched by Ctrl+Shift+R and the
+  // tmux prefix `,` action. Only the active workspace's item responds, so the
+  // input lands on the row the user actually meant to rename.
+  useEffect(() => {
+    if (!isActive) return;
+    const handler = () => setEditing(true);
+    document.addEventListener('wmux:rename-workspace', handler);
+    return () => document.removeEventListener('wmux:rename-workspace', handler);
+  }, [isActive]);
+
   const commitRename = () => {
     const trimmed = editName.trim();
     if (trimmed && trimmed !== workspace.name) {

@@ -243,6 +243,10 @@ export default function AppLayout() {
   // earlier local-state gate that left the Settings button dead (C1 fix).
   const firstRunCompleted = useStore((s) => s.firstRunCompleted);
   const cheatSheetDismissed = useStore((s) => s.cheatSheetDismissed);
+  // Bypasses the dismissed gate when the `?` prefix action sets it. Without
+  // this subscription here the component never mounts after a permanent
+  // dismissal, so the override would have nothing to react to.
+  const cheatSheetForceShown = useStore((s) => s.cheatSheetForceShown);
   const setFirstRunCompleted = useStore((s) => s.setFirstRunCompleted);
   const [showFirstRunWizard, setShowFirstRunWizard] = useState<'firstRun' | 'reopen' | null>(null);
 
@@ -950,8 +954,10 @@ export default function AppLayout() {
       {/* Keyboard cheat sheet (T8a / Plan 1.18). Mounts derivatively from
           firstRunCompleted + !cheatSheetDismissed so that flipping
           cheatSheetDismissed=false from Settings (T8b) immediately re-mounts
-          the sheet. The component itself is a no-op when dismissed (D11). */}
-      {firstRunCompleted && !cheatSheetDismissed && <KeyboardCheatSheet />}
+          the sheet. The component itself is a no-op when dismissed (D11).
+          `cheatSheetForceShown` (set by the `?` prefix action) bypasses the
+          permanent dismissal so the cheat sheet can always be pulled back up. */}
+      {firstRunCompleted && (!cheatSheetDismissed || cheatSheetForceShown) && <KeyboardCheatSheet />}
 
       {companyViewVisible && (
         <CompanyView onClose={() => setCompanyViewVisible(false)} />

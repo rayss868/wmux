@@ -44,6 +44,21 @@ const PREFIX_TIMEOUT_MS = 2000;
 /** How long to show "Unknown: [key]" error */
 const PREFIX_ERROR_DISPLAY_MS = 500;
 
+/**
+ * Map a `Key<X>` `e.code` to the matching ASCII control byte (Ctrl+X).
+ *
+ * Used for tmux-style prefix pass-through: pressing the prefix combo twice
+ * (e.g. Ctrl+B Ctrl+B) sends a literal Ctrl+B to the focused PTY so nested
+ * multiplexers (tmux/screen running inside a wmux pane) still receive their
+ * own prefix. Returns null for any non-letter prefix configuration — those
+ * fall back to a silent exit rather than emitting random control characters.
+ */
+export function ctrlByteForKeyCode(code: string): string | null {
+  const m = /^Key([A-Z])$/.exec(code);
+  if (!m) return null;
+  return String.fromCharCode(m[1].charCodeAt(0) - 64);
+}
+
 /** Dispose all PTYs inside a pane tree */
 function disposePanePtys(pane: import('../../shared/types').Pane): void {
   if (pane.type === 'leaf') {
@@ -53,6 +68,103 @@ function disposePanePtys(pane: import('../../shared/types').Pane): void {
   } else {
     for (const child of pane.children) disposePanePtys(child);
   }
+}
+
+/**
+ * Minimal dependency surface used by {@link createPrefixActions} — pulled out so
+ * unit tests can inject lightweight stand-ins without touching `window` or the
+ * real Zustand store. Tests instantiate the registry with a fake store/electron
+ * API and verify side effects without simulating real key events.
+ */
+export interface PrefixActionDeps {
+  store: typeof useStore;
+  electronAPI: {
+    window: { hide: () => void };
+    pty: { dispose: (id: string) => void };
+  };
+  doc: Pick<Document, 'dispatchEvent'>;
+}
+
+/**
+ * Build the prefix-mode action registry.
+ *
+ * Exported as a pure factory so {@link useKeyboard} can wire it to live
+ * globals while tests can pass mocks. The registry is keyed by the action IDs
+ * referenced from `DEFAULT_PREFIX_CONFIG.bindings` and `SettingsPanel`'s
+ * `PREFIX_ACTION_IDS`; any change here must keep those three lists aligned.
+ */
+export function createPrefixActions(deps: PrefixActionDeps): Record<string, () => void> {
+  const { store, electronAPI, doc } = deps;
+
+  const disposeTree = (pane: import('../../shared/types').Pane): void => {
+    if (pane.type === 'leaf') {
+      for (const s of pane.surfaces) {
+        if (s.ptyId) electronAPI.pty.dispose(s.ptyId);
+      }
+    } else {
+      for (const child of pane.children) disposeTree(child);
+    }
+  };
+
+  return {
+    splitHorizontal: () => {
+      const state = store.getState();
+      const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+      if (ws) state.splitPane(ws.activePaneId, 'horizontal');
+    },
+    splitVertical: () => {
+      const state = store.getState();
+      const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+      if (ws) state.splitPane(ws.activePaneId, 'vertical');
+    },
+    closePane: () => {
+      const state = store.getState();
+      const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+      if (!ws) return;
+      const activeLeaf = findLeaf(ws.rootPane, ws.activePaneId);
+      if (activeLeaf) disposeTree(activeLeaf);
+      state.closePane(ws.activePaneId);
+    },
+    newWorkspace: () => { store.getState().addWorkspace(); },
+    nextWorkspace: () => {
+      const { workspaces, activeWorkspaceId } = store.getState();
+      if (workspaces.length <= 1) return;
+      const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
+      const nextIdx = (currentIdx + 1) % workspaces.length;
+      store.getState().setActiveWorkspace(workspaces[nextIdx].id);
+    },
+    prevWorkspace: () => {
+      const { workspaces, activeWorkspaceId } = store.getState();
+      if (workspaces.length <= 1) return;
+      const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
+      const prevIdx = (currentIdx - 1 + workspaces.length) % workspaces.length;
+      store.getState().setActiveWorkspace(workspaces[prevIdx].id);
+    },
+    hideWindow: () => { electronAPI.window.hide(); },
+    toggleZoom: () => {
+      const state = store.getState();
+      const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+      if (ws) state.togglePaneZoom(ws.activePaneId);
+    },
+    commandPalette: () => { store.getState().toggleCommandPalette(); },
+    focusUp: () => { store.getState().focusPaneDirection('up'); },
+    focusDown: () => { store.getState().focusPaneDirection('down'); },
+    focusLeft: () => { store.getState().focusPaneDirection('left'); },
+    focusRight: () => { store.getState().focusPaneDirection('right'); },
+    renameWorkspace: () => {
+      doc.dispatchEvent(new CustomEvent('wmux:rename-workspace'));
+    },
+    killWorkspace: () => {
+      const state = store.getState();
+      const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+      if (!ws) return;
+      disposeTree(ws.rootPane);
+      state.removeWorkspace(state.activeWorkspaceId);
+    },
+    showCheatSheet: () => {
+      store.getState().setCheatSheetForceShown(true);
+    },
+  };
 }
 
 export function useKeyboard() {
@@ -68,53 +180,15 @@ export function useKeyboard() {
   ipcInvokeRef.current = ipcInvoke;
 
   useEffect(() => {
-    // Action registry — maps action IDs to implementations
-    const prefixActions: Record<string, () => void> = {
-      splitHorizontal: () => {
-        const state = store.getState();
-        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-        if (ws) state.splitPane(ws.activePaneId, 'horizontal');
-      },
-      splitVertical: () => {
-        const state = store.getState();
-        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-        if (ws) state.splitPane(ws.activePaneId, 'vertical');
-      },
-      closePane: () => {
-        const state = store.getState();
-        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-        if (!ws) return;
-        const activeLeaf = findLeaf(ws.rootPane, ws.activePaneId);
-        if (activeLeaf) disposePanePtys(activeLeaf);
-        state.closePane(ws.activePaneId);
-      },
-      newWorkspace: () => { store.getState().addWorkspace(); },
-      nextWorkspace: () => {
-        const { workspaces, activeWorkspaceId } = store.getState();
-        if (workspaces.length <= 1) return;
-        const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
-        const nextIdx = (currentIdx + 1) % workspaces.length;
-        store.getState().setActiveWorkspace(workspaces[nextIdx].id);
-      },
-      prevWorkspace: () => {
-        const { workspaces, activeWorkspaceId } = store.getState();
-        if (workspaces.length <= 1) return;
-        const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
-        const prevIdx = (currentIdx - 1 + workspaces.length) % workspaces.length;
-        store.getState().setActiveWorkspace(workspaces[prevIdx].id);
-      },
-      hideWindow: () => { window.electronAPI.window.hide(); },
-      toggleZoom: () => {
-        const state = store.getState();
-        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-        if (ws) state.togglePaneZoom(ws.activePaneId);
-      },
-      commandPalette: () => { store.getState().toggleCommandPalette(); },
-      focusUp: () => { store.getState().focusPaneDirection('up'); },
-      focusDown: () => { store.getState().focusPaneDirection('down'); },
-      focusLeft: () => { store.getState().focusPaneDirection('left'); },
-      focusRight: () => { store.getState().focusPaneDirection('right'); },
-    };
+    // Action registry — built once per effect so the closure captures stable
+    // refs to store/electronAPI/document. See `createPrefixActions` (module
+    // scope) for the action implementations; the factory split lets unit tests
+    // exercise each action with mock dependencies.
+    const prefixActions = createPrefixActions({
+      store,
+      electronAPI: window.electronAPI,
+      doc: document,
+    });
     /** Clear the prefix timeout if running */
     const clearPrefixTimeout = () => {
       if (prefixTimeoutRef.current !== null) {
@@ -153,6 +227,29 @@ export function useKeyboard() {
         e.preventDefault();
         e.stopImmediatePropagation();
         clearPrefixTimeout();
+
+        // tmux-style pass-through: pressing the prefix combo a second time
+        // forwards a literal Ctrl+<prefix> to the active PTY so a tmux/screen
+        // session running inside the pane still receives its own prefix.
+        const prefixKeyCode = store.getState().prefixConfig.key;
+        if (literalCtrl && !shift && !alt && code === prefixKeyCode) {
+          const byte = ctrlByteForKeyCode(prefixKeyCode);
+          if (byte !== null) {
+            const state = store.getState();
+            const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+            if (ws) {
+              const leaf = findLeaf(ws.rootPane, ws.activePaneId);
+              if (leaf) {
+                const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+                if (surface?.ptyId) {
+                  window.electronAPI.pty.write(surface.ptyId, byte);
+                }
+              }
+            }
+          }
+          exitPrefixMode();
+          return;
+        }
 
         // Escape → just exit
         if (key === 'Escape') {
