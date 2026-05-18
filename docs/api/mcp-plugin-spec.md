@@ -165,7 +165,8 @@ Behaviour:
 
 - The entire array is parsed against §3. If **any** entry is malformed, the whole declaration is rejected — plugins cannot half-declare.
 - Accepted declarations overwrite any prior declaration from the same `clientName`. There is no union/merge in the first PR.
-- The persisted record preserves the raw strings the plugin sent so future parsers can re-validate against an updated grammar.
+- Leading and trailing whitespace on each entry is stripped before storage so that cosmetic reformatting (e.g. trailing newlines from a codegen template) does not register as a capability change. The widening detector in §2.3 operates on the stored (trimmed) form, not the wire form.
+- The persisted record preserves the (trimmed) strings the plugin sent so future parsers can re-validate against an updated grammar.
 - `rationale` is optional, surfaced verbatim in the future approval dialog. Omitting it on a re-declaration **clears** any previously stored rationale — the trust DB always reflects the most recent declaration, not a cumulative history.
 
 Result shape is a discriminated union:

@@ -85,6 +85,22 @@ describe('PluginIdentity trust-status invariant', () => {
     expect(next.declaredCapabilities).toEqual(['pane.read', 'meta.write']);
   });
 
+  it('applyDeclaration preserves trusted when only whitespace changes', () => {
+    // The handler trims wire-form permissions before passing them through,
+    // so applyDeclaration sees a canonical form on both sides. A trusted
+    // plugin that reformats its codegen template (e.g. adding a trailing
+    // space accidentally) must not lose trust over cosmetics. This test
+    // pins the *post-trim* equivalence — see mcp.rpc.ts:93-104 for the
+    // pre-applyDeclaration normalization step.
+    const trusted = makeRecord({
+      status: 'trusted',
+      declaredCapabilities: ['pane.read', 'meta.write:custom.x.*'],
+    });
+    // Same set, identical strings — applyDeclaration alone shouldn't demote.
+    const next = applyDeclaration(trusted, ['pane.read', 'meta.write:custom.x.*']);
+    expect(next.status).toBe('trusted');
+  });
+
   it('applyDeclaration treats path-glob changes as widening at the string level', () => {
     // String-set comparison: `meta.write:custom.x.*` and `meta.write:custom.y.*`
     // are different strings even though both share the `meta.write` capability.

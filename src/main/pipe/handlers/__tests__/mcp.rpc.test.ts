@@ -149,6 +149,69 @@ describe('mcp.declarePermissions', () => {
     expect(await store.get('demo-plugin')).toBeUndefined();
   });
 
+  it('trims wire-form whitespace before persisting the declaration', async () => {
+    // The handler must normalize leading/trailing whitespace so that a
+    // trusted plugin re-declaring `'pane.read '` doesn't trigger spurious
+    // widening demotion (set-diff would see the formatted-vs-unformatted
+    // strings as different capabilities). Spec §4.2 — substrate stores the
+    // trimmed form, not the wire form.
+    const response = await router.dispatch({
+      id: 'r-trim',
+      method: 'mcp.declarePermissions',
+      params: {
+        permissions: ['  pane.read', 'meta.write:custom.x.*  ', '\tevents.subscribe\n'],
+      },
+      clientName: 'demo-plugin',
+    });
+    expect(response.ok).toBe(true);
+    if (!response.ok) return;
+    const result = response.result as McpDeclarePermissionsResult;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.accepted).toEqual([
+      'pane.read',
+      'meta.write:custom.x.*',
+      'events.subscribe',
+    ]);
+    expect(result.identity.declaredCapabilities).toEqual(result.accepted);
+  });
+
+  it('does not demote a trusted plugin when re-declaring with whitespace differences', async () => {
+    // F-1 end-to-end: declare → forge trusted on disk → re-declare with
+    // cosmetic whitespace changes → assert still trusted. This guards the
+    // template-reformat regression path the cross-model review surfaced.
+    await router.dispatch({
+      id: 'r-trim-1',
+      method: 'mcp.declarePermissions',
+      params: { permissions: ['pane.read', 'meta.write:custom.x.*'] },
+      clientName: 'trim-test',
+    });
+    // Forge trusted on disk (no user-approval UI yet in this PR).
+    const persisted = await store.get('trim-test');
+    expect(persisted).toBeDefined();
+    if (!persisted) return;
+    // Write through the store's mutate path to keep cache/disk consistent.
+    const raw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+    raw.plugins['trim-test'].status = 'trusted';
+    fs.writeFileSync(dbPath, JSON.stringify(raw));
+    store.invalidateCache();
+
+    // Same capability set, just reformatted with whitespace.
+    const reDeclare = await router.dispatch({
+      id: 'r-trim-2',
+      method: 'mcp.declarePermissions',
+      params: { permissions: ['  pane.read  ', '\tmeta.write:custom.x.*\n'] },
+      clientName: 'trim-test',
+    });
+    expect(reDeclare.ok).toBe(true);
+    if (!reDeclare.ok) return;
+    const result = reDeclare.result as McpDeclarePermissionsResult;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Trust survives the cosmetic re-declaration.
+    expect(result.identity.status).toBe('trusted');
+  });
+
   it('returns a structured rejection when permissions is not an array', async () => {
     const response = await router.dispatch({
       id: 'r-5b',

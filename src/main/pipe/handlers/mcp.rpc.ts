@@ -86,12 +86,20 @@ export function registerMcpPluginRpc(
       return rejection;
     }
 
-    // Echo capability strings the plugin sent. We persist the raw input
-    // (not the parsed shape) so future PRs can re-parse against an updated
-    // grammar without losing the declaration. `parsed` is used only to
+    // Echo capability strings the plugin sent, trimmed of leading/trailing
+    // whitespace. We persist the trimmed form (not a fully canonical parse)
+    // so future PRs can re-parse against an updated grammar without losing
+    // the declaration. Trimming closes a widening false-positive: the
+    // grammar parser already trims for validation (parsePermission line 88),
+    // so storing the untrimmed wire form would make set-difference in
+    // applyDeclaration treat `'pane.read '` and `'pane.read'` as distinct
+    // capabilities and spuriously demote `trusted` plugins that reformat
+    // their codegen templates between handshakes. `parsed` is used only to
     // confirm grammar acceptance; enforcement comes later.
     const accepted = Array.isArray(params.permissions)
-      ? params.permissions.filter((p): p is string => typeof p === 'string')
+      ? params.permissions
+          .filter((p): p is string => typeof p === 'string')
+          .map((p) => p.trim())
       : [];
     const rationale =
       typeof params.rationale === 'string' ? params.rationale : undefined;
