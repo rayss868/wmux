@@ -107,21 +107,30 @@ export function registerInputRpc(
     await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.send');
 
     const safeText = params['raw'] === true ? text : sanitizePtyText(text);
+    // submit=true appends \r so the text is committed (Enter pressed). We do
+    // not append when the sanitized text already ends in \r to avoid a stray
+    // empty submit. Carriage return is the canonical commit byte for both
+    // line-mode shells and TUI input widgets (xterm/Claude Code/REPLs); \n
+    // would land as a soft newline in the input widget instead.
+    const payload =
+      params['submit'] === true && !safeText.endsWith('\r')
+        ? safeText + '\r'
+        : safeText;
 
     // Try local PTYManager first, then daemon
     const instance = ptyManager.get(ptyId);
     if (instance) {
-      ptyManager.write(ptyId, safeText);
+      ptyManager.write(ptyId, payload);
     } else {
       const dc = getDaemonClient?.();
       if (dc?.isConnected) {
-        dc.writeToSession(ptyId, safeText);
+        dc.writeToSession(ptyId, payload);
       } else {
         throw new Error(`input.send: PTY not found — id="${ptyId}"`);
       }
     }
 
-    return { ok: true, ptyId };
+    return { ok: true, ptyId, submitted: params['submit'] === true };
   });
 
   /**

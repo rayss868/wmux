@@ -239,15 +239,19 @@ server.tool(
 
 server.tool(
   'terminal_send',
-  'Send text to a terminal. Omit ptyId to target the active terminal. Use surface_list() to discover available PTY IDs. To send messages to OTHER workspaces, use a2a_task_send or a2a_broadcast instead.',
+  'Send text to a terminal. By default the text is written as-is — no Enter is pressed, so a shell command or TUI chat prompt will sit on the input line without being committed. Pass `submit: true` to append a carriage return (\\r) so the text is committed, equivalent to pressing Enter. Omit ptyId to target the active terminal. Use surface_list() to discover available PTY IDs. To send messages to OTHER workspaces, use a2a_task_send or a2a_broadcast instead.',
   {
     text: z.string().describe('Text to send to the terminal'),
     ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
+    submit: z.boolean().optional().describe('When true, append a carriage return (\\r) after the text so it is committed — equivalent to pressing Enter. Use this for shell commands and TUI chat prompts (e.g. Claude Code, REPLs). Default: false (text is written as-is; you must call terminal_send_key({ key: "enter" }) separately to commit).'),
   },
-  async ({ text, ptyId }) => {
+  async ({ text, ptyId, submit }) => {
     const workspaceId = await requireWorkspaceId();
     const effective = ptyId ?? (await resolveDefaultPtyId()) ?? undefined;
-    return callRpc('input.send', effective ? { text, ptyId: effective, workspaceId } : { text, workspaceId });
+    const base: Record<string, unknown> = { text, workspaceId };
+    if (effective) base.ptyId = effective;
+    if (submit) base.submit = true;
+    return callRpc('input.send', base);
   },
 );
 
