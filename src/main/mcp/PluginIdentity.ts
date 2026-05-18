@@ -83,26 +83,44 @@ export function applyContact(
   };
 }
 
-// Apply a permission declaration. Same trust-status invariant as
-// applyContact — declaring permissions cannot upgrade a 'denied' plugin
-// back to 'unconfirmed'. The declared capability list is overwritten
-// wholesale; capability unions across reconnects are intentionally not
-// supported until the user-approval PR defines reconciliation semantics.
-//
-// TODO(enforcement-PR): a `trusted` plugin can currently re-declare a
-// widened capability set and keep the `trusted` status. The follow-up PR
-// MUST detect capability widening (set-difference against the previously
-// approved declaredCapabilities) and demote to `unconfirmed` so the user
-// re-approves. See docs/api/mcp-plugin-spec.md §2.3 (spoofing scenarios).
-// In this record-only PR the risk is dormant because no enforcement reads
-// the field yet.
+// True when `next` contains at least one capability string that was not in
+// `prev`. A null/empty `prev` with non-empty `next` is also widening — a
+// `trusted` record without a stored declaration is anomalous (hand edit or
+// corrupt write), so we err on the side of demoting and forcing re-approval
+// rather than letting the declaration ride on inherited trust.
+function isWidenedDeclaration(
+  prev: readonly string[] | undefined,
+  next: readonly string[],
+): boolean {
+  if (!prev || prev.length === 0) return next.length > 0;
+  const prevSet = new Set(prev);
+  for (const cap of next) {
+    if (!prevSet.has(cap)) return true;
+  }
+  return false;
+}
+
+// Apply a permission declaration. Trust-status invariant: 'denied' never
+// regresses. 'legacy' upgrades to 'unconfirmed'. 'trusted' is preserved as
+// long as the new declaration is a subset of the previously approved
+// capability set — any widening (a new capability string the user has not
+// approved) demotes back to 'unconfirmed' so the user re-approves. Same
+// rule applies if the prior declaration was missing entirely. Spec
+// §2.3 / §4.3 codify this transition.
 export function applyDeclaration(
   existing: PluginIdentityRecord,
   capabilities: string[],
   rationale?: string,
 ): PluginIdentityRecord {
   const cur = currentStatusOf(existing);
-  const nextStatus: PluginTrustStatus = cur === 'legacy' ? 'unconfirmed' : cur;
+  let nextStatus: PluginTrustStatus;
+  if (cur === 'legacy') {
+    nextStatus = 'unconfirmed';
+  } else if (cur === 'trusted' && isWidenedDeclaration(existing.declaredCapabilities, capabilities)) {
+    nextStatus = 'unconfirmed';
+  } else {
+    nextStatus = cur;
+  }
   return {
     ...existing,
     declaredCapabilities: [...capabilities],

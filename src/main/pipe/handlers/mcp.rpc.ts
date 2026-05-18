@@ -60,15 +60,30 @@ export function registerMcpPluginRpc(
   // needs. Parses against the wmuxPermissions grammar; rejects the whole
   // declaration if any entry is malformed so plugins can't half-declare
   // and accidentally exclude themselves from future enforcement.
+  //
+  // Returns the structured McpDeclarePermissionsResult union — RPC envelope
+  // stays `ok: true` (the call itself succeeded) while application-level
+  // outcome rides in `result.ok`. This lets plugins see per-entry rejection
+  // detail (index + reason) without the wire envelope growing JSON-RPC
+  // error-data support. Spec §4.2.
   router.register('mcp.declarePermissions', async (rawParams, ctx) => {
     const params = (rawParams ?? {}) as Partial<McpDeclarePermissionsParams>;
     const { name } = resolveCallerName(ctx, undefined);
 
     const list = parsePermissionList(params.permissions);
     if (list.errors.length > 0) {
-      throw new Error(
-        `mcp.declarePermissions rejected: ${list.errors.join('; ')}`,
-      );
+      // Whole-declaration rejection: do NOT persist anything under `name`.
+      // Plugins re-submit a corrected declaration; partial state would
+      // confuse the future user-approval prompt.
+      const rejection: McpDeclarePermissionsResult = {
+        ok: false,
+        errors: list.errors.map((e) => ({
+          index: e.index,
+          permission: e.permission,
+          reason: e.reason,
+        })),
+      };
+      return rejection;
     }
 
     // Echo capability strings the plugin sent. We persist the raw input

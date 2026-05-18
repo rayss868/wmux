@@ -132,12 +132,29 @@ describe('permissionGrammar.parsePermissionList', () => {
     const result = parsePermissionList(['pane.read', 'bogus.capability']);
     expect(result.parsed).toHaveLength(1);
     expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toMatch(/unknown capability/);
+    expect(result.errors[0].reason).toMatch(/unknown capability/);
+    // Per-entry rejection carries the original index + value verbatim so
+    // callers can render "permission #N is invalid" against the input.
+    expect(result.errors[0].index).toBe(1);
+    expect(result.errors[0].permission).toBe('bogus.capability');
   });
 
-  it('rejects non-array input', () => {
-    expect(parsePermissionList('pane.read').errors).toContain(
-      'permissions must be an array',
-    );
+  it('preserves non-string entries verbatim in the rejection record', () => {
+    // A plugin that sent a number where a string was expected should see
+    // the original value echoed back, not a coerced one.
+    const result = parsePermissionList(['pane.read', 42, null]);
+    expect(result.parsed).toHaveLength(1);
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors[0].index).toBe(1);
+    expect(result.errors[0].permission).toBe(42);
+    expect(result.errors[1].index).toBe(2);
+    expect(result.errors[1].permission).toBeNull();
+  });
+
+  it('rejects non-array input with a sentinel index of -1', () => {
+    const result = parsePermissionList('pane.read');
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].index).toBe(-1);
+    expect(result.errors[0].reason).toBe('permissions must be an array');
   });
 });

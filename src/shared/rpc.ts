@@ -425,12 +425,38 @@ export interface McpDeclarePermissionsParams {
   rationale?: string;
 }
 
-export interface McpDeclarePermissionsResult {
-  ok: true;
-  identity: PluginIdentityRecord;
-  /**
-   * Parsed permission echoes — useful for clients verifying that wmux
-   * accepted the grammar they sent. Order matches `params.permissions`.
-   */
-  accepted: string[];
+/**
+ * Per-entry rejection surfaced through `McpDeclarePermissionsResult` when
+ * the declaration is rejected. Plugins can map `index` back to the entry
+ * they sent, see the original (possibly non-string) value, and render the
+ * reason inline next to it. `index = -1` is reserved for the top-level
+ * "permissions is not an array" error which has no per-entry context.
+ */
+export interface PermissionRejection {
+  index: number;
+  permission: unknown;
+  reason: string;
 }
+
+/**
+ * Result of `mcp.declarePermissions`. The union shape lets plugins receive
+ * structured per-entry feedback on rejection without the wire envelope
+ * having to grow JSON-RPC error-data support. Acceptance carries the
+ * identity record and the echoed capability list; rejection carries one
+ * `PermissionRejection` per malformed entry. Whole-declaration rejection
+ * is preserved — `accepted` only appears when every entry parsed.
+ */
+export type McpDeclarePermissionsResult =
+  | {
+      ok: true;
+      identity: PluginIdentityRecord;
+      /**
+       * Parsed permission echoes — useful for clients verifying that wmux
+       * accepted the grammar they sent. Order matches `params.permissions`.
+       */
+      accepted: string[];
+    }
+  | {
+      ok: false;
+      errors: PermissionRejection[];
+    };

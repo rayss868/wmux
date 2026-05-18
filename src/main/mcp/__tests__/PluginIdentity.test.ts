@@ -52,17 +52,66 @@ describe('PluginIdentity trust-status invariant', () => {
     expect(applyContact(fresh, undefined).status).toBe('unconfirmed');
   });
 
-  it('applyDeclaration preserves trusted but replaces capabilities', () => {
-    // Escalation trap: this is the documented hazard for the enforcement PR.
-    // The trust-status invariant is preserved (status stays 'trusted'); the
-    // PR-level decision to also DEMOTE on widening lives in the follow-up.
+  it('applyDeclaration preserves trusted on identical re-declaration', () => {
+    const trusted = makeRecord({
+      status: 'trusted',
+      declaredCapabilities: ['pane.read', 'meta.write'],
+    });
+    const next = applyDeclaration(trusted, ['pane.read', 'meta.write']);
+    expect(next.status).toBe('trusted');
+    expect(next.declaredCapabilities).toEqual(['pane.read', 'meta.write']);
+  });
+
+  it('applyDeclaration preserves trusted when capabilities are narrowed', () => {
+    // Subset-of-approved is safe — the user already consented to a superset.
+    const trusted = makeRecord({
+      status: 'trusted',
+      declaredCapabilities: ['pane.read', 'meta.write', 'events.subscribe'],
+    });
+    const next = applyDeclaration(trusted, ['pane.read', 'meta.write']);
+    expect(next.status).toBe('trusted');
+    expect(next.declaredCapabilities).toEqual(['pane.read', 'meta.write']);
+  });
+
+  it('applyDeclaration demotes trusted → unconfirmed when capabilities widen', () => {
+    // Escalation trap closed: a trusted plugin cannot silently broaden its
+    // approved surface. The user must re-approve. Spec §2.3 / §4.3.
     const trusted = makeRecord({
       status: 'trusted',
       declaredCapabilities: ['pane.read'],
     });
     const next = applyDeclaration(trusted, ['pane.read', 'meta.write']);
-    expect(next.status).toBe('trusted');
+    expect(next.status).toBe('unconfirmed');
     expect(next.declaredCapabilities).toEqual(['pane.read', 'meta.write']);
+  });
+
+  it('applyDeclaration treats path-glob changes as widening at the string level', () => {
+    // String-set comparison: `meta.write:custom.x.*` and `meta.write:custom.y.*`
+    // are different strings even though both share the `meta.write` capability.
+    // Conservative: anything not present verbatim in the approved set is new.
+    const trusted = makeRecord({
+      status: 'trusted',
+      declaredCapabilities: ['meta.write:custom.x.*'],
+    });
+    const next = applyDeclaration(trusted, ['meta.write:custom.y.*']);
+    expect(next.status).toBe('unconfirmed');
+  });
+
+  it('applyDeclaration demotes trusted with missing declaredCapabilities', () => {
+    // Anomalous on-disk state (hand edit, schema drift): trusted without a
+    // recorded declaration cannot be trusted-by-inheritance for a fresh one.
+    const oddTrusted = makeRecord({ status: 'trusted' });
+    const next = applyDeclaration(oddTrusted, ['pane.read']);
+    expect(next.status).toBe('unconfirmed');
+  });
+
+  it('applyDeclaration leaves denied unchanged even on capability widening', () => {
+    const denied = makeRecord({
+      status: 'denied',
+      declaredCapabilities: ['pane.read'],
+    });
+    const next = applyDeclaration(denied, ['pane.read', 'meta.write']);
+    expect(next.status).toBe('denied');
   });
 
   it('applyDeclaration preserves denied', () => {

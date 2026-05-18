@@ -113,6 +113,8 @@ describe('mcp.declarePermissions', () => {
     expect(response.ok).toBe(true);
     if (!response.ok) return;
     const result = response.result as McpDeclarePermissionsResult;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
     expect(result.accepted).toEqual([
       'pane.read',
       'meta.write:custom.dashboard.*',
@@ -121,20 +123,46 @@ describe('mcp.declarePermissions', () => {
     expect(result.identity.rationale).toBe('demo');
   });
 
-  it('rejects the entire declaration on any grammar error', async () => {
+  it('rejects the entire declaration with structured per-entry errors', async () => {
+    // RPC envelope stays ok=true (the call itself succeeded); application
+    // outcome is `result.ok=false` with per-entry rejection detail.
     const response = await router.dispatch({
       id: 'r-5',
       method: 'mcp.declarePermissions',
       params: {
-        permissions: ['pane.read', 'pane.teleport'],
+        permissions: ['pane.read', 'pane.teleport', 42],
       },
       clientName: 'demo-plugin',
     });
-    expect(response.ok).toBe(false);
-    if (response.ok) return;
-    expect(response.error).toMatch(/unknown capability/);
+    expect(response.ok).toBe(true);
+    if (!response.ok) return;
+    const result = response.result as McpDeclarePermissionsResult;
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors[0].index).toBe(1);
+    expect(result.errors[0].permission).toBe('pane.teleport');
+    expect(result.errors[0].reason).toMatch(/unknown capability/);
+    expect(result.errors[1].index).toBe(2);
+    expect(result.errors[1].permission).toBe(42);
     // Nothing should have been persisted under the rejected name
     expect(await store.get('demo-plugin')).toBeUndefined();
+  });
+
+  it('returns a structured rejection when permissions is not an array', async () => {
+    const response = await router.dispatch({
+      id: 'r-5b',
+      method: 'mcp.declarePermissions',
+      params: { permissions: 'pane.read' as unknown as string[] },
+      clientName: 'demo-plugin',
+    });
+    expect(response.ok).toBe(true);
+    if (!response.ok) return;
+    const result = response.result as McpDeclarePermissionsResult;
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors[0].index).toBe(-1);
+    expect(result.errors[0].reason).toBe('permissions must be an array');
   });
 
   it('records the caller under "unknown" when no clientName is present', async () => {
@@ -152,6 +180,8 @@ describe('mcp.declarePermissions', () => {
     expect(response.ok).toBe(true);
     if (!response.ok) return;
     const result = response.result as McpDeclarePermissionsResult;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
     expect(result.identity.name).toBe('unknown');
     expect(result.identity.status).toBe('unconfirmed');
   });

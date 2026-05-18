@@ -24,7 +24,10 @@ import {
   PluginTrustStore,
 } from '../PluginTrustStore';
 import { registerMcpPluginRpc } from '../../pipe/handlers/mcp.rpc';
-import type { McpIdentifyResult } from '../../../shared/rpc';
+import type {
+  McpDeclarePermissionsResult,
+  McpIdentifyResult,
+} from '../../../shared/rpc';
 
 let tmpDir = '';
 let dbPath = '';
@@ -193,7 +196,9 @@ describe('phase 2.1 production wiring — multi-step RPC sequence', () => {
     }
 
     // === Step 6: malformed declarePermissions must NOT corrupt the DB.
-    // The entire declaration is rejected; no plugin entry is mutated.
+    // The RPC envelope succeeds (ok=true) but `result.ok=false` carries
+    // structured per-entry rejection — see McpDeclarePermissionsResult
+    // union in shared/rpc.ts.
     const beforeMalformed = readDbFromDisk();
     const malformed = await router.dispatch({
       id: 's6',
@@ -203,7 +208,17 @@ describe('phase 2.1 production wiring — multi-step RPC sequence', () => {
       },
       clientName: 'claude-ai',
     });
-    expect(malformed.ok).toBe(false);
+    expect(malformed.ok).toBe(true);
+    if (malformed.ok) {
+      const result = malformed.result as McpDeclarePermissionsResult;
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0].index).toBe(1);
+        expect(result.errors[0].permission).toBe('made.up.capability');
+        expect(result.errors[0].reason).toMatch(/unknown capability/);
+      }
+    }
     await drainWrites();
     await settle();
     const afterMalformed = readDbFromDisk();
@@ -240,6 +255,61 @@ describe('phase 2.1 production wiring — multi-step RPC sequence', () => {
     // Trust-status invariant — the prior 'unconfirmed' from step 3 was
     // preserved across the declaration (no regression, no upgrade).
     expect(reloaded?.status).toBe('unconfirmed');
+  });
+
+  it('demotes a trusted plugin to unconfirmed when it widens its declared capabilities', async () => {
+    // First handshake + declaration establishes the unconfirmed entry.
+    await router.dispatch({
+      id: 't-1',
+      method: 'mcp.identify',
+      params: {},
+      clientName: 'demo-plugin',
+    });
+    await router.dispatch({
+      id: 't-2',
+      method: 'mcp.declarePermissions',
+      params: { permissions: ['pane.read'] },
+      clientName: 'demo-plugin',
+    });
+    await drainWrites();
+    await settle();
+
+    // Forge a user-approved 'trusted' state on disk — no UI in this PR.
+    // The next read goes through atomicReadJSON; invalidate the in-memory
+    // cache so the trust DB picks up our manual edit.
+    const raw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+    raw.plugins['demo-plugin'].status = 'trusted';
+    fs.writeFileSync(dbPath, JSON.stringify(raw));
+    store.invalidateCache();
+
+    // Widen the declaration — adds a capability the user never approved.
+    // Spec §2.3 / §4.3: status must demote so the user re-approves.
+    const widened = await router.dispatch({
+      id: 't-3',
+      method: 'mcp.declarePermissions',
+      params: { permissions: ['pane.read', 'meta.write'] },
+      clientName: 'demo-plugin',
+    });
+    expect(widened.ok).toBe(true);
+    await drainWrites();
+    await settle();
+
+    const onDisk = readDbFromDisk();
+    expect(onDisk.plugins['demo-plugin'].status).toBe('unconfirmed');
+
+    // A subsequent re-declaration that stays within the previously-approved
+    // surface (subset of original ['pane.read']) does NOT re-promote — only
+    // the user can move out of 'unconfirmed'.
+    await router.dispatch({
+      id: 't-4',
+      method: 'mcp.declarePermissions',
+      params: { permissions: ['pane.read'] },
+      clientName: 'demo-plugin',
+    });
+    await drainWrites();
+    await settle();
+    const onDiskAfterNarrow = readDbFromDisk();
+    expect(onDiskAfterNarrow.plugins['demo-plugin'].status).toBe('unconfirmed');
   });
 
   it('survives a corrupt disk file by loading empty and overwriting on next write', async () => {

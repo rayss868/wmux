@@ -2,7 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { sendRpc, setClientIdentity } from './wmux-client';
+import { clearClientIdentity, sendRpc, setClientIdentity } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
 import { resolveDefaultPtyId as resolveDefaultPtyIdImpl } from './paneResolver';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
@@ -656,9 +656,14 @@ async function main(): Promise<void> {
   wireClientIdentityHook();
   await server.connect(transport);
 
-  // Clean up Playwright connection when transport closes
+  // Clean up Playwright connection when transport closes. Also drop the
+  // declared plugin identity so any trailing RPC traffic falls back to
+  // the substrate's legacy audit path instead of stamping a stale name —
+  // a reconnect must re-run the MCP initialize handshake to re-establish
+  // identity (see wireClientIdentityHook above).
   transport.onclose = async () => {
     console.log('[wmux-mcp] Transport closed, disconnecting Playwright');
+    clearClientIdentity();
     await PlaywrightEngine.getInstance().disconnect();
   };
 

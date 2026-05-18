@@ -30,9 +30,25 @@ export const PLUGIN_TRUST_SCHEMA_VERSION = 1 as const;
 
 // Plugin names ride in over the wire from any client holding the wmux auth
 // token. Cap the key length so a malicious caller can't grow plugin-trust.json
-// unboundedly. 256 chars is generous for `org.tool-name@semver` patterns; the
-// DB-wide entry cap is a separate enforcement-PR concern.
+// unboundedly. 256 chars is generous for `org.tool-name@semver` patterns.
 export const MAX_PLUGIN_NAME_LEN = 256 as const;
+
+// DB-wide entry cap. A hostile or buggy client that re-handshakes under
+// fresh names could fragment the trust DB indefinitely; the LRU eviction
+// in `mutate` keeps growth bounded. 1024 entries × ~512 B/record ≈ 512 KB
+// worst case on disk, well below practical limits. User-curated state
+// ('trusted' / 'denied') is exempt from eviction — see `evictIfOverCap`.
+export const MAX_PLUGIN_TRUST_ENTRIES = 1024 as const;
+
+// Eviction priority across status tiers. Lower = evicted first. 'trusted'
+// and 'denied' carry a user decision and are never evicted by this path;
+// their rank is informational (sort never reaches them).
+const EVICTION_RANK: Readonly<Record<PluginTrustStatus, number>> = {
+  legacy: 0,
+  unconfirmed: 1,
+  trusted: 99,
+  denied: 99,
+};
 
 export interface PluginTrustDb {
   schemaVersion: number;
@@ -101,13 +117,52 @@ function ensureWmuxHomeDir(): void {
   }
 }
 
+// Drop the oldest evictable entries until the DB fits under `entryCap`.
+// Eviction order: 'legacy' before 'unconfirmed'; within a tier, smallest
+// `lastSeen` first. 'trusted' and 'denied' are protected — if user-issued
+// decisions alone exceed the cap, the DB is allowed to overflow rather
+// than discard user state. The DB is mutated in place.
+function evictIfOverCap(db: PluginTrustDb, entryCap: number): void {
+  const keys = Object.keys(db.plugins);
+  const overflow = keys.length - entryCap;
+  if (overflow <= 0) return;
+  const evictable: Array<{ key: string; status: PluginTrustStatus; lastSeen: number }> = [];
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(db.plugins, key)) continue;
+    const rec = db.plugins[key];
+    if (rec.status === 'trusted' || rec.status === 'denied') continue;
+    evictable.push({ key, status: rec.status, lastSeen: rec.lastSeen });
+  }
+  evictable.sort((a, b) => {
+    const rank = EVICTION_RANK[a.status] - EVICTION_RANK[b.status];
+    if (rank !== 0) return rank;
+    return a.lastSeen - b.lastSeen;
+  });
+  for (let i = 0; i < overflow && i < evictable.length; i++) {
+    delete db.plugins[evictable[i].key];
+  }
+}
+
+export interface PluginTrustStoreOptions {
+  /** Override the DB-wide entry cap (default MAX_PLUGIN_TRUST_ENTRIES). */
+  entryCap?: number;
+}
+
 export class PluginTrustStore {
   private readonly path: string;
+  private readonly entryCap: number;
   private cache: PluginTrustDb | null = null;
   private writeChain: Promise<void> = Promise.resolve();
 
-  constructor(targetPath: string = getPluginTrustPath()) {
+  constructor(
+    targetPath: string = getPluginTrustPath(),
+    options: PluginTrustStoreOptions = {},
+  ) {
     this.path = targetPath;
+    this.entryCap =
+      typeof options.entryCap === 'number' && options.entryCap > 0
+        ? Math.floor(options.entryCap)
+        : MAX_PLUGIN_TRUST_ENTRIES;
   }
 
   // Read the on-disk DB, tolerating absence and corruption. Cached in
@@ -224,11 +279,15 @@ export class PluginTrustStore {
 
   // Serialise a mutation behind the write chain so two callers don't race
   // on `load → mutate → persist`. The mutator may read AND write the db
-  // in place; we then re-cache and persist atomically.
+  // in place; we then re-cache, evict any over-cap entries, and persist
+  // atomically. Eviction runs AFTER the mutator so a freshly-upserted
+  // record participates in the LRU comparison (its lastSeen is current,
+  // so it's never the oldest).
   private mutate<T>(mutator: (db: PluginTrustDb) => T): Promise<T> {
     const chained = this.writeChain.then(async () => {
       const db = await this.load();
       const result = mutator(db);
+      evictIfOverCap(db, this.entryCap);
       this.cache = db;
       ensureWmuxHomeDir();
       await atomicWriteJSON(this.path, db);
