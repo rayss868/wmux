@@ -79,6 +79,8 @@ export const zh = {
   'terminal.exitedBracket': '[进程已退出，代码 {code}]',
   'terminal.copied': '已复制!',
   'terminal.copyFailed': '复制失败 — 已保留选区',
+  'terminal.openPathBlocked': '已阻止可执行文件 — 仅打开父文件夹',
+  'terminal.openPathFailed': '无法打开 — 显示文件夹位置',
   'terminal.bookmarkAdded': '已添加书签',
 
   // Context menu

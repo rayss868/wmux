@@ -80,6 +80,8 @@ export const ko = {
   'terminal.exitedBracket': '[프로세스가 코드 {code}로 종료됨]',
   'terminal.copied': '복사됨!',
   'terminal.copyFailed': '복사 실패 — 선택 영역 유지됨',
+  'terminal.openPathBlocked': '실행 파일 차단됨 — 부모 폴더만 열림',
+  'terminal.openPathFailed': '열 수 없음 — 폴더 위치 표시',
   'terminal.bookmarkAdded': '북마크 추가됨',
 
   // Context menu

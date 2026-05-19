@@ -13,6 +13,7 @@ import { pastePtyChunked, chunkOnDataIfNeeded } from '../utils/clipboardChunk';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
+import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 
 // Module-level terminal registry for scrollback persistence
 const terminalRegistry = new Map<string, Terminal>();
@@ -32,6 +33,31 @@ function showCopyToast() {
   el.style.opacity = '1';
   if (copyToastTimer) clearTimeout(copyToastTimer);
   copyToastTimer = setTimeout(() => { el!.style.opacity = '0'; }, 1200);
+}
+
+// Surfaces openPath outcomes that the user cannot otherwise see — without
+// this, Ctrl+clicking an .exe (blocked main-side) or a missing file
+// silently reveals the parent folder via showItemInFolder with no
+// explanation, which reads as "the click didn't do anything." Yellow for
+// blocked (security gate), red for generic failure (file gone, no
+// associated app). Shares no DOM with the copy toasts so they can briefly
+// overlap if a user copies-then-clicks in quick succession.
+let openPathToastTimer: ReturnType<typeof setTimeout> | null = null;
+function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.openPathFailed') {
+  let el = document.getElementById('wmux-openpath-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'wmux-openpath-toast';
+    el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);color:var(--bg-base);font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
+    document.body.appendChild(el);
+  }
+  el.style.background = messageKey === 'terminal.openPathBlocked'
+    ? 'var(--accent-yellow)'
+    : 'var(--accent-red)';
+  el.textContent = t(messageKey);
+  el.style.opacity = '1';
+  if (openPathToastTimer) clearTimeout(openPathToastTimer);
+  openPathToastTimer = setTimeout(() => { el!.style.opacity = '0'; }, 2400);
 }
 
 // Error variant — surfaced when clipboardAPI.writeText rejects so the user
@@ -173,6 +199,35 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.loadAddon(searchAddon);
     terminal.loadAddon(unicode11Addon);
     terminal.loadAddon(webLinksAddon);
+    // Path link provider — Ctrl+click an absolute filesystem path to open
+    // it in Explorer / Finder. Coexists with WebLinksAddon (URLs); the two
+    // detect disjoint token shapes so a single span never claims both.
+    // Main-side validation in shell.handler.openPath is the security
+    // boundary; the renderer regex is only a UX filter.
+    const pathLinkDisposable = terminal.registerLinkProvider(
+      createPathLinkProvider(terminal, (filePath) => {
+        void window.electronAPI.shell.openPath(filePath).then((result) => {
+          // Main-side outcomes:
+          //   • ok=true → opened cleanly, nothing to surface
+          //   • error='BLOCKED_EXTENSION' → security gate refused (.exe etc.)
+          //   • error=<message> → openPath failed (file gone, no handler);
+          //     main already revealed the parent folder via showItemInFolder
+          // The toast tells the user *why* their click landed on a folder
+          // instead of opening the file — otherwise it reads as a no-op.
+          if (!result || result.ok) return;
+          showOpenPathToast(
+            result.error === 'BLOCKED_EXTENSION'
+              ? 'terminal.openPathBlocked'
+              : 'terminal.openPathFailed',
+          );
+        }).catch((err: unknown) => {
+          // IPC-level rejection (validation throw: non-string, NUL byte,
+          // not absolute, length cap). These are developer-visible bugs
+          // rather than user-actionable failures — log only.
+          console.warn('[useTerminal] openPath failed:', err);
+        });
+      }, window.electronAPI.platform),
+    );
     // Activate Unicode 11 width tables — required for correct CJK / emoji
     // width. Without this, xterm defaults to v6 and TUI apps that use cursor
     // positioning (Claude Code, vim, etc.) collide frames over Korean text.
@@ -806,6 +861,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       autoCopy.dispose();
       selectionDisposable.dispose();
+      pathLinkDisposable.dispose();
       resizeObserver.disconnect();
       removeDataListener?.();
       removeExitListener?.();

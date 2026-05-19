@@ -61,6 +61,13 @@ const electronAPI = {
   shell: {
     list: () => ipcRenderer.invoke(IPC.SHELL_LIST) as Promise<{ name: string; path: string; args?: string[] }[]>,
     openExternal: (url: string) => ipcRenderer.invoke(IPC.SHELL_OPEN_EXTERNAL, url) as Promise<void>,
+    // Open an absolute filesystem path in the OS default app / explorer.
+    // Backed by Electron's shell.openPath; main validates the path is
+    // absolute, length-capped, and free of NUL bytes. Resolves with
+    // { ok, error? } — on `ok=false` main has already revealed the parent
+    // folder via showItemInFolder, so the renderer typically ignores it.
+    openPath: (filePath: string) =>
+      ipcRenderer.invoke(IPC.SHELL_OPEN_PATH, filePath) as Promise<{ ok: boolean; error?: string }>,
   },
   session: {
     save: (data: unknown) => ipcRenderer.invoke(IPC.SESSION_SAVE, data),
