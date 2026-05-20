@@ -80,6 +80,8 @@ export const en = {
   'terminal.exitedBracket': '[Process exited with code {code}]',
   'terminal.copied': 'Copied!',
   'terminal.copyFailed': 'Copy failed — selection kept',
+  'terminal.openPathBlocked': 'Executable blocked — opened parent folder',
+  'terminal.openPathFailed': "Couldn't open — showing folder",
   'terminal.bookmarkAdded': 'Bookmark added',
 
   // Context menu

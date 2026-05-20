@@ -1,7 +1,29 @@
 import { ipcMain, shell } from 'electron';
+import * as path from 'path';
 import { ShellDetector } from '../../pty/ShellDetector';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+
+// Hard cap on the path string the renderer can send. Long enough for
+// Windows long-path (\\?\ prefix + ~32k) callers but small enough that a
+// runaway buffer dump cannot lock the main process inside path.normalize.
+const MAX_PATH_LENGTH = 4096;
+
+// File extensions that launch executable code through OS shell association.
+// `shell.openPath` on a path with one of these extensions is equivalent to
+// the user double-clicking it in Explorer — arbitrary code execution.
+// Renderer-supplied paths originate from PTY output, which is untrusted
+// (a malicious git log message or pasted curl output could place such a
+// path on screen for the user to mis-click). We refuse to default-open
+// them and reveal the parent folder instead, so the user can still locate
+// the file and open it deliberately with a tool of their choice.
+//
+// Lowercase for case-insensitive lookup via `extname(...).toLowerCase()`.
+const BLOCKED_EXTENSIONS = new Set<string>([
+  '.exe', '.bat', '.cmd', '.com', '.scr', '.pif', '.ps1',
+  '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msi',
+  '.reg', '.lnk', '.hta', '.cpl',
+]);
 
 export function registerShellHandlers(): () => void {
   const detector = new ShellDetector();
@@ -19,8 +41,59 @@ export function registerShellHandlers(): () => void {
     return shell.openExternal(url);
   }));
 
+  // Open an absolute filesystem path. Invoked by Ctrl+click on path tokens
+  // surfaced via the terminal link provider. Validation is intentionally
+  // strict — the renderer can match arbitrary text, so main treats every
+  // payload as untrusted:
+  //   • must be a string of length ≥ 1 and ≤ MAX_PATH_LENGTH
+  //   • no NUL bytes (defense against C-string truncation tricks)
+  //   • must be an absolute path on the current OS (path.isAbsolute)
+  //
+  // Behaviour: shell.openPath opens folders in Explorer / Finder and files
+  // with the OS default app. When that fails (missing file, no associated
+  // app, permission denied) we fall back to showItemInFolder so the user
+  // can still locate the target.
+  ipcMain.removeHandler(IPC.SHELL_OPEN_PATH);
+  ipcMain.handle(IPC.SHELL_OPEN_PATH, wrapHandler(IPC.SHELL_OPEN_PATH, async (_event: Electron.IpcMainInvokeEvent, rawPath: string) => {
+    if (typeof rawPath !== 'string') {
+      throw new Error('path must be a string');
+    }
+    if (rawPath.length === 0 || rawPath.length > MAX_PATH_LENGTH) {
+      throw new Error('path length out of range');
+    }
+    if (rawPath.includes('\0')) {
+      throw new Error('path must not contain NUL bytes');
+    }
+    // Normalize first so '..' segments collapse to a real on-disk path
+    // before the absolute-path check; otherwise a payload like
+    // 'C:\\foo\\..\\..\\..\\Windows\\System32\\calc.exe' would pass the
+    // raw isAbsolute test while still escaping the user-clicked location.
+    const normalized = path.normalize(rawPath);
+    if (!path.isAbsolute(normalized)) {
+      throw new Error('path must be absolute');
+    }
+    // Block executable extensions — refuse the open and reveal the folder
+    // so the user still gets useful feedback without launching code from
+    // untrusted PTY content. See BLOCKED_EXTENSIONS for the rationale.
+    const ext = path.extname(normalized).toLowerCase();
+    if (BLOCKED_EXTENSIONS.has(ext)) {
+      shell.showItemInFolder(normalized);
+      return { ok: false, error: 'BLOCKED_EXTENSION' };
+    }
+    const err = await shell.openPath(normalized);
+    if (err) {
+      // openPath returns an error string when the file is missing, has no
+      // associated handler, or the OS refused the open. Reveal the parent
+      // folder so the user still gets useful feedback instead of a silent
+      // no-op.
+      shell.showItemInFolder(normalized);
+    }
+    return { ok: !err, error: err || undefined };
+  }));
+
   return () => {
     ipcMain.removeHandler(IPC.SHELL_LIST);
     ipcMain.removeHandler(IPC.SHELL_OPEN_EXTERNAL);
+    ipcMain.removeHandler(IPC.SHELL_OPEN_PATH);
   };
 }

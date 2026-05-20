@@ -79,6 +79,8 @@ export const ja = {
   'terminal.exitedBracket': '[プロセスがコード {code} で終了しました]',
   'terminal.copied': 'コピーしました!',
   'terminal.copyFailed': 'コピーに失敗しました — 選択を維持',
+  'terminal.openPathBlocked': '実行ファイルをブロック — 親フォルダを開きました',
+  'terminal.openPathFailed': '開けません — フォルダを表示',
   'terminal.bookmarkAdded': 'ブックマークを追加',
 
   // Context menu

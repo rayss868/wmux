@@ -43,6 +43,10 @@ export const IPC = {
   APPROVAL_REQUEST: 'approval:request',
   // Shell
   SHELL_OPEN_EXTERNAL: 'shell:open-external',
+  // Open an absolute filesystem path in the OS default app / explorer.
+  // Triggered by Ctrl+click on a path token rendered in the terminal.
+  // Path is validated main-side: must be absolute, no NUL bytes, length-capped.
+  SHELL_OPEN_PATH: 'shell:open-path',
   // File system
   FS_READ_DIR: 'fs:read-dir',
   FS_READ_FILE: 'fs:read-file',
