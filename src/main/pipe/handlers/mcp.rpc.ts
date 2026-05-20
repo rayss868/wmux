@@ -60,23 +60,46 @@ export function registerMcpPluginRpc(
   // needs. Parses against the wmuxPermissions grammar; rejects the whole
   // declaration if any entry is malformed so plugins can't half-declare
   // and accidentally exclude themselves from future enforcement.
+  //
+  // Returns the structured McpDeclarePermissionsResult union — RPC envelope
+  // stays `ok: true` (the call itself succeeded) while application-level
+  // outcome rides in `result.ok`. This lets plugins see per-entry rejection
+  // detail (index + reason) without the wire envelope growing JSON-RPC
+  // error-data support. Spec §4.2.
   router.register('mcp.declarePermissions', async (rawParams, ctx) => {
     const params = (rawParams ?? {}) as Partial<McpDeclarePermissionsParams>;
     const { name } = resolveCallerName(ctx, undefined);
 
     const list = parsePermissionList(params.permissions);
     if (list.errors.length > 0) {
-      throw new Error(
-        `mcp.declarePermissions rejected: ${list.errors.join('; ')}`,
-      );
+      // Whole-declaration rejection: do NOT persist anything under `name`.
+      // Plugins re-submit a corrected declaration; partial state would
+      // confuse the future user-approval prompt.
+      const rejection: McpDeclarePermissionsResult = {
+        ok: false,
+        errors: list.errors.map((e) => ({
+          index: e.index,
+          permission: e.permission,
+          reason: e.reason,
+        })),
+      };
+      return rejection;
     }
 
-    // Echo capability strings the plugin sent. We persist the raw input
-    // (not the parsed shape) so future PRs can re-parse against an updated
-    // grammar without losing the declaration. `parsed` is used only to
+    // Echo capability strings the plugin sent, trimmed of leading/trailing
+    // whitespace. We persist the trimmed form (not a fully canonical parse)
+    // so future PRs can re-parse against an updated grammar without losing
+    // the declaration. Trimming closes a widening false-positive: the
+    // grammar parser already trims for validation (parsePermission line 88),
+    // so storing the untrimmed wire form would make set-difference in
+    // applyDeclaration treat `'pane.read '` and `'pane.read'` as distinct
+    // capabilities and spuriously demote `trusted` plugins that reformat
+    // their codegen templates between handshakes. `parsed` is used only to
     // confirm grammar acceptance; enforcement comes later.
     const accepted = Array.isArray(params.permissions)
-      ? params.permissions.filter((p): p is string => typeof p === 'string')
+      ? params.permissions
+          .filter((p): p is string => typeof p === 'string')
+          .map((p) => p.trim())
       : [];
     const rationale =
       typeof params.rationale === 'string' ? params.rationale : undefined;

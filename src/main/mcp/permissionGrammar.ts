@@ -122,21 +122,41 @@ export function parsePermission(spec: unknown): PermissionParseResult {
   return { ok: true, permission: parsed };
 }
 
+// Per-entry rejection emitted by `parsePermissionList`. Carries enough
+// detail for the caller to point at the offending element in the original
+// input — the position survives across the wire so plugins can render
+// "permission #2 is unknown" instead of guessing.
+export interface PermissionParseError {
+  /**
+   * Index into the original input array. `-1` is reserved for the
+   * top-level "input is not an array" error which has no per-entry context.
+   */
+  index: number;
+  /** The original input value, unchanged — `unknown` to surface non-strings. */
+  permission: unknown;
+  /** Human-readable explanation from `parsePermission`. */
+  reason: string;
+}
+
 export interface PermissionListParseResult {
   parsed: ParsedPermission[];
-  errors: string[];
+  errors: PermissionParseError[];
 }
 
 export function parsePermissionList(input: unknown): PermissionListParseResult {
   if (!Array.isArray(input)) {
-    return { parsed: [], errors: ['permissions must be an array'] };
+    return {
+      parsed: [],
+      errors: [{ index: -1, permission: input, reason: 'permissions must be an array' }],
+    };
   }
   const parsed: ParsedPermission[] = [];
-  const errors: string[] = [];
-  for (const entry of input) {
+  const errors: PermissionParseError[] = [];
+  for (let i = 0; i < input.length; i++) {
+    const entry = input[i];
     const result = parsePermission(entry);
     if (result.ok) parsed.push(result.permission);
-    else errors.push(result.error);
+    else errors.push({ index: i, permission: entry, reason: result.error });
   }
   return { parsed, errors };
 }

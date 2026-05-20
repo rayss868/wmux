@@ -1,6 +1,6 @@
 # wmux MCP Plugin Specification
 
-> **Status:** Draft 1 (Phase 2.1 first PR — identity + declaration wired, enforcement deferred to follow-up PR).
+> **Status:** Draft 2 (Phase 2.1 follow-up — trust-DB invariants tightened: widening-demotion, LRU eviction, structured rejection, transport-close identity clear. Method-dispatch enforcement still deferred to a later PR).
 > **Audience:** authors of MCP servers and clients that connect to wmux.
 > **Companion docs:** [`PROTOCOL.md`](../PROTOCOL.md) §4 (permission enforcement), [`api/versioning.md`](./versioning.md), [`api/stability.md`](./stability.md).
 
@@ -66,8 +66,9 @@ Known spoofing scenarios:
 | Two processes both claim `clientName: "claude-ai"` | Both write to the same trust-DB entry; `lastSeen` reflects the most recent contact. capability declarations overwrite each other (last writer wins). |
 | Plugin claims a different name in different RPCs | Each name is recorded independently. The substrate does not cross-check or pin identity within a connection in this first PR. |
 | Plugin claims `wmux` (the bundled identity) | Allowed today. Future enforcement may reject reserved names. |
-| Trusted plugin re-declares a widened capability set | Status is preserved (`trusted` stays `trusted`) and `declaredCapabilities` is overwritten wholesale. In this record-only PR the field is unread, so the widening is dormant. **The follow-up enforcement PR MUST detect set-difference vs the previously approved capabilities and demote to `unconfirmed`** before honouring the new surface. Tracked at `applyDeclaration` in `src/main/mcp/PluginIdentity.ts`. |
+| Trusted plugin re-declares a widened capability set | Substrate computes `set-difference(new, old)` on the raw declaration strings. Any capability not present in the previously approved set demotes status `trusted → unconfirmed`. Same-set or narrowed re-declarations preserve `trusted`. `denied` is never re-promoted by either path. Implemented in `applyDeclaration` (`src/main/mcp/PluginIdentity.ts`). |
 | Hostile `clientName` (`__proto__`, `toString`, multi-MB string) | Trust DB stores plugin records in a null-prototype map and clamps names to `MAX_PLUGIN_NAME_LEN = 256`. Prototype keys cannot collide with `Object.prototype`; oversize names are truncated, never rejected, so the audit trail is preserved. |
+| Hostile churn under fresh names (a process re-handshakes with a new `clientName` every reconnect) | DB-wide LRU cap (`MAX_PLUGIN_TRUST_ENTRIES = 1024`) bounds growth. Eviction order: `legacy` first, then `unconfirmed`, both by oldest `lastSeen`. `trusted` and `denied` are **never** evicted — user-curated state is sticky even if it overflows the cap. |
 
 Plugins SHOULD pick a stable, namespaced identity (`my-org.my-tool`, not `tool`) so user-issued trust state survives upgrades.
 
@@ -164,8 +165,27 @@ Behaviour:
 
 - The entire array is parsed against §3. If **any** entry is malformed, the whole declaration is rejected — plugins cannot half-declare.
 - Accepted declarations overwrite any prior declaration from the same `clientName`. There is no union/merge in the first PR.
-- The persisted record preserves the raw strings the plugin sent so future parsers can re-validate against an updated grammar.
+- Leading and trailing whitespace on each entry is stripped before storage so that cosmetic reformatting (e.g. trailing newlines from a codegen template) does not register as a capability change. The widening detector in §2.3 operates on the stored (trimmed) form, not the wire form.
+- The persisted record preserves the (trimmed) strings the plugin sent so future parsers can re-validate against an updated grammar.
 - `rationale` is optional, surfaced verbatim in the future approval dialog. Omitting it on a re-declaration **clears** any previously stored rationale — the trust DB always reflects the most recent declaration, not a cumulative history.
+
+Result shape is a discriminated union:
+
+```jsonc
+// Acceptance — every entry parsed and the declaration was persisted.
+{ "ok": true,
+  "identity": { /* PluginIdentityRecord */ },
+  "accepted": ["pane.read", "meta.write:custom.my-org.*"] }
+
+// Rejection — at least one entry failed grammar; nothing was persisted.
+{ "ok": false,
+  "errors": [
+    { "index": 1, "permission": "pane.teleport",
+      "reason": "unknown capability \"pane.teleport\"" }
+  ] }
+```
+
+`index` is the 0-based position in the original `permissions` array. `index: -1` is reserved for top-level shape errors (e.g. `permissions` not an array). The RPC envelope itself stays `ok: true` whenever the call reached the handler — the application-level outcome rides in `result.ok` so plugins can distinguish "wmux is unreachable" from "wmux declined our declaration."
 
 ### 4.3 Trust states
 
@@ -178,7 +198,17 @@ A `PluginIdentityRecord` carries a `status` field:
 | `denied` | User rejected the plugin. | Future PR. |
 | `legacy` | Identity inferred from RPC traffic with no `clientName` envelope (pre-v2.10 callers, non-MCP clients). | RPC dispatch fallback. |
 
-Transitions in the first PR are limited to `legacy → unconfirmed` (when a previously-legacy plugin learns to send `clientName`) and `lastSeen` refreshes within the same status. User-issued `trusted`/`denied` cannot regress to `unconfirmed`.
+Allowed automated transitions:
+
+- `legacy → unconfirmed` — a previously-legacy plugin learns to send `clientName`.
+- `trusted → unconfirmed` — a trusted plugin re-declares a **widened** capability set (any string not in the previously approved declaration). Same-set or narrowed re-declarations preserve `trusted`.
+- Same-status `lastSeen` refresh.
+
+Forbidden automated transitions (only the user-approval dialog can perform these — landing in a follow-up PR):
+
+- `unconfirmed → trusted` / `unconfirmed → denied`
+- `denied → anything` (never regresses)
+- `trusted → trusted` after a widening (must demote and re-approve)
 
 ### 4.4 Trust DB location
 
@@ -203,6 +233,7 @@ Transitions in the first PR are limited to `legacy → unconfirmed` (when a prev
 - Written atomically via `atomicWriteJSON` (`src/daemon/util/atomicWrite/core.ts`).
 - The wmux main process owns the file; no other process should write it.
 - It is **not** a credential store. Treat it as user-readable index data.
+- Capped at `MAX_PLUGIN_TRUST_ENTRIES = 1024` entries. The LRU evictor runs after every mutation; eviction prefers `legacy` over `unconfirmed`, both ordered by oldest `lastSeen`. `trusted` and `denied` entries are exempt — if user-issued state alone exceeds the cap, the DB is allowed to overflow rather than discard the user's decisions.
 
 ---
 
@@ -255,3 +286,9 @@ MCP-server side (the wmux-bundled MCP server, which is itself the reference plug
 - `src/mcp/wmux-client.ts` — `setClientIdentity` stamps every outbound RPC envelope.
 
 External plugin authors building their own MCP servers can copy the pattern: capture `clientInfo` from the MCP SDK, attach `clientName`/`clientVersion` to the wmux auth-token-bearing JSON-RPC payload, then call `mcp.identify` once.
+
+### 8.1 Transport-close contract
+
+When the MCP transport closes (process shutdown, SIGINT, host disconnect), the wmux-bundled MCP server calls `clearClientIdentity()` from `src/mcp/wmux-client.ts`. This drops the cached `clientName`/`clientVersion` from module scope so any trailing RPC traffic (e.g. cleanup work scheduled during the shutdown handler) stamps an envelope-less request and falls back to the substrate's `legacy` audit path instead of mis-attributing the call to a plugin that has already disconnected.
+
+A reconnect MUST re-run the MCP initialize handshake to re-establish identity; there is no replay of cached identity across transport boundaries. External MCP servers SHOULD mirror this contract when implementing their own transport-close cleanup.

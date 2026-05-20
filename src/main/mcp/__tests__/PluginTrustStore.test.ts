@@ -4,6 +4,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   MAX_PLUGIN_NAME_LEN,
+  MAX_PLUGIN_TRUST_ENTRIES,
   PLUGIN_TRUST_SCHEMA_VERSION,
   PluginTrustStore,
 } from '../PluginTrustStore';
@@ -200,5 +201,104 @@ describe('PluginTrustStore hostile-input hardening', () => {
     const store = new PluginTrustStore(dbPath);
     const list = await store.list();
     expect(list.map((p) => p.name)).toEqual(['good']);
+  });
+});
+
+describe('PluginTrustStore LRU eviction', () => {
+  // Forge an on-disk DB so we can plant entries with arbitrary lastSeen +
+  // status without going through the upsert helpers (which always stamp
+  // lastSeen = now()). This lets us assert eviction order deterministically.
+  function writeDb(
+    plugins: Array<{
+      name: string;
+      status: 'unconfirmed' | 'legacy' | 'trusted' | 'denied';
+      lastSeen: number;
+      firstSeen?: number;
+    }>,
+  ): void {
+    const db = {
+      schemaVersion: PLUGIN_TRUST_SCHEMA_VERSION,
+      plugins: Object.fromEntries(
+        plugins.map((p) => [
+          p.name,
+          {
+            name: p.name,
+            status: p.status,
+            firstSeen: p.firstSeen ?? p.lastSeen,
+            lastSeen: p.lastSeen,
+          },
+        ]),
+      ),
+    };
+    fs.writeFileSync(dbPath, JSON.stringify(db));
+  }
+
+  it('evicts the oldest unconfirmed entry when the cap is exceeded', async () => {
+    writeDb([
+      { name: 'oldest', status: 'unconfirmed', lastSeen: 100 },
+      { name: 'middle', status: 'unconfirmed', lastSeen: 200 },
+      { name: 'newest', status: 'unconfirmed', lastSeen: 300 },
+    ]);
+    const store = new PluginTrustStore(dbPath, { entryCap: 3 });
+    // Adding a fourth entry pushes the DB to 4; LRU brings it back to 3.
+    await store.upsertContact('fresh');
+    const list = await store.list();
+    const names = list.map((p) => p.name).sort();
+    expect(names).toEqual(['fresh', 'middle', 'newest']);
+  });
+
+  it('evicts legacy entries before unconfirmed regardless of lastSeen', async () => {
+    // 'legacy' rank < 'unconfirmed' rank — a very-recent legacy still goes
+    // first because the substrate trusts envelope-bearing contacts more.
+    writeDb([
+      { name: 'old-unconfirmed', status: 'unconfirmed', lastSeen: 100 },
+      { name: 'fresh-legacy', status: 'legacy', lastSeen: 999 },
+    ]);
+    const store = new PluginTrustStore(dbPath, { entryCap: 2 });
+    await store.upsertContact('newcomer');
+    const list = await store.list();
+    expect(list.map((p) => p.name).sort()).toEqual(['newcomer', 'old-unconfirmed']);
+  });
+
+  it('skips trusted entries when picking the eviction victim', async () => {
+    // Cap is 3, DB starts at 3, adding one tips it over by 1. The only
+    // evictable record (unconfirmed-c) goes; both trusted entries survive.
+    writeDb([
+      { name: 'trusted-a', status: 'trusted', lastSeen: 100 },
+      { name: 'trusted-b', status: 'trusted', lastSeen: 200 },
+      { name: 'unconfirmed-c', status: 'unconfirmed', lastSeen: 300 },
+    ]);
+    const store = new PluginTrustStore(dbPath, { entryCap: 3 });
+    await store.upsertContact('newcomer');
+    const list = await store.list();
+    const names = list.map((p) => p.name).sort();
+    expect(names).toEqual(['newcomer', 'trusted-a', 'trusted-b']);
+  });
+
+  it('never evicts denied entries (user decision is sticky)', async () => {
+    writeDb([
+      { name: 'denied-a', status: 'denied', lastSeen: 100 },
+      { name: 'unconfirmed-b', status: 'unconfirmed', lastSeen: 200 },
+    ]);
+    const store = new PluginTrustStore(dbPath, { entryCap: 1 });
+    await store.upsertContact('fresh');
+    const list = await store.list();
+    const names = list.map((p) => p.name).sort();
+    expect(names).toContain('denied-a');
+    expect(names).not.toContain('unconfirmed-b');
+  });
+
+  it('allows the DB to exceed the cap when only protected entries remain', async () => {
+    writeDb([
+      { name: 't1', status: 'trusted', lastSeen: 100 },
+      { name: 't2', status: 'trusted', lastSeen: 200 },
+      { name: 'd1', status: 'denied', lastSeen: 300 },
+    ]);
+    const store = new PluginTrustStore(dbPath, { entryCap: 1 });
+    // Touch one of the records via upsertContact (which mutates → triggers
+    // eviction). No evictable entry exists, so the DB stays as-is.
+    await store.upsertContact('t1');
+    const list = await store.list();
+    expect(list).toHaveLength(3);
   });
 });

@@ -23,6 +23,18 @@ export function setClientIdentity(name?: string, version?: string): void {
   CLIENT_VERSION = trimmedVersion.length > 0 ? trimmedVersion : undefined;
 }
 
+// Drop the declared identity so any further outbound RPC stamps an
+// envelope-less request and falls through to the substrate's `legacy`
+// audit path. Called from the MCP transport.onclose handler — after the
+// transport tears down, an old name lingering in module scope would
+// misattribute trailing RPC traffic (e.g. cleanup work) to a plugin that
+// has already disconnected. A reconnect must re-run the initialize
+// handshake to re-establish identity, which is the intended contract.
+export function clearClientIdentity(): void {
+  CLIENT_NAME = undefined;
+  CLIENT_VERSION = undefined;
+}
+
 export function getClientIdentity(): { name?: string; version?: string } {
   return { name: CLIENT_NAME, version: CLIENT_VERSION };
 }

@@ -293,7 +293,13 @@ The trust DB lives at `~/.wmux/plugin-trust.json` (atomic-write, single-process 
 Plugins announce themselves with two RPCs. Both are idempotent and never reject existing user-issued trust state.
 
 - `mcp.identify({ name, version? })` — fired automatically by the wmux-bundled MCP server when the MCP `InitializeRequest` completes. External plugins (non-wmux MCP servers) MAY call it explicitly.
-- `mcp.declarePermissions({ permissions: string[], rationale? })` — plugin declares the full capability set it expects to use. Grammar errors reject the entire declaration; nothing is partial.
+- `mcp.declarePermissions({ permissions: string[], rationale? })` — plugin declares the full capability set it expects to use. Returns a discriminated union: `{ ok: true, identity, accepted }` on full acceptance, `{ ok: false, errors }` with per-entry `{ index, permission, reason }` when any entry fails grammar. Whole-declaration rejection — wmux does not partially accept. The RPC envelope stays `ok: true` whenever the call reached the handler; application outcome rides in `result.ok`.
+
+#### Trust-DB invariants (Phase 2.1 follow-up — shipped)
+
+- **Capability widening demotes `trusted`.** A re-declaration that introduces any capability string not present in the previously approved set drops status from `trusted` to `unconfirmed`. Subset / identical re-declarations preserve `trusted`. `denied` never regresses to `unconfirmed` regardless of re-declaration content.
+- **LRU eviction caps trust-DB growth.** `MAX_PLUGIN_TRUST_ENTRIES = 1024`. When the cap is exceeded, the substrate evicts `legacy` entries first (oldest `lastSeen` first), then `unconfirmed`. `trusted` and `denied` are exempt — user decisions persist even if they overflow the cap.
+- **Transport close clears in-process identity.** The wmux-bundled MCP server calls `clearClientIdentity()` from its `transport.onclose` handler so trailing RPC traffic stamps an envelope-less request and falls back to the substrate's `legacy` audit path. A reconnect must re-run the MCP initialize handshake.
 
 ### 4.3 `wmuxPermissions` grammar
 
@@ -406,5 +412,6 @@ Things external clients may run into that aren't bugs but are explicit substrate
 |---|---|---|
 | Draft 1 | 2026-05-12 | Phase 0 initial draft. Covers PaneMetadata layered status, mergeMode, version + expectedVersion, bootId, cursor opaqueness, snapshot envelope, permission enforcement (sketch), Named Pipe security model. Phase 1 M3 will expand. |
 | Draft 2 | 2026-05-16 | Phase 1 M4 — adds §6.1 `workspaceId` resolution paths (env / PID-tree walk / `mcp.claimWorkspace` / legacy `activeWorkspaceId` fallback). §7 limitation entry rewritten to point at §6.1 and to define the path-D removal as a Phase 2.1 work item rather than a v3.0 blocker. |
+| Draft 3 | 2026-05-18 | Phase 2.1 follow-up — §4.2 adds structured rejection result for `mcp.declarePermissions` (discriminated union with per-entry `errors`) and the trust-DB invariants subsection: capability-widening demotion, LRU eviction cap, transport-close identity clear. No method-dispatch enforcement yet. |
 
 This document evolves alongside the implementation. Changes that affect the wire contract require a major-version bump per [`api/versioning.md`](./api/versioning.md). Changes that clarify existing semantics ship in any release.
