@@ -50,6 +50,13 @@ export const createNotificationSlice: StateCreator<StoreState, [['zustand/immer'
     for (const n of state.notifications) {
       n.read = true;
     }
+    // Global mark-all-read is the strongest "seen everything" signal we have;
+    // the visual ring should collapse alongside. Guarded for unit tests that
+    // mount notificationSlice without paneSlice (no paneNotificationRing
+    // field on the test store).
+    if (state.paneNotificationRing) {
+      state.paneNotificationRing = {};
+    }
   }),
 
   markAllReadForWorkspace: (workspaceId) => set((state: StoreState) => {

@@ -38,27 +38,6 @@ export function buildNotifAriaLabel(notif: Notification, now: number = Date.now(
 }
 
 /**
- * Resolve a global mark-all-read action. T2 introduces a top-level
- * `markAllRead` slice action; until that lands, fall back to iterating every
- * workspace and calling the per-workspace action. Either way, every loaded
- * notification ends up read.
- */
-type MarkAllReadResolver = {
-  markAllRead?: () => void;
-  markAllReadForWorkspace: (workspaceId: string) => void;
-  notifications: Notification[];
-};
-export function runGlobalMarkAllRead(state: MarkAllReadResolver): void {
-  if (typeof state.markAllRead === 'function') {
-    state.markAllRead();
-    return;
-  }
-  const wsIds = new Set<string>();
-  for (const n of state.notifications) wsIds.add(n.workspaceId);
-  for (const id of wsIds) state.markAllReadForWorkspace(id);
-}
-
-/**
  * Emoji icon for a notification type. NOT updated as part of T10 (DESIGN D9
  * scope hygiene); kept here so the view function stays pure and renderable.
  */
@@ -225,8 +204,16 @@ export default function NotificationPanel() {
 
   const firstUnreadRef = useRef<HTMLDivElement>(null);
   const markAllReadBtnRef = useRef<HTMLButtonElement>(null);
+  // Track the notification id the firstUnreadRef captured at render time so
+  // the rAF focus pass can detect a race (new notification arrived between
+  // render and rAF firing) and degrade to the mark-all button instead of
+  // focusing the now-stale row. See useEffect below.
+  const firstUnreadIdAtRenderRef = useRef<string | null>(null);
 
   const sorted = useMemo(() => sortNotificationsDesc(notifications), [notifications]);
+  // Capture at render time which notification the firstUnreadRef will point
+  // at; consumed by the focus rAF below to detect the race window.
+  firstUnreadIdAtRenderRef.current = sorted.find((n) => !n.read)?.id ?? null;
   const unreadCount = useMemo(
     () => notifications.filter((n) => !n.read).length,
     [notifications],
@@ -248,10 +235,22 @@ export default function NotificationPanel() {
   // ─── Initial focus: first unread, else markAllRead button (D5) ─────────────
   // Defer with requestAnimationFrame so the enter animation has flipped the
   // panel into the visible DOM tree before we move focus.
+  //
+  // Race fix (FIX #4): a new notification arriving between render and rAF
+  // firing would shift `firstUnreadRef` to a no-longer-newest row. We
+  // re-derive first unread from live store state at rAF time and only
+  // accept the cached ref if its captured id still matches. Otherwise we
+  // fall back to the mark-all button so the user lands somewhere stable
+  // instead of on a row that quietly got demoted to second-newest.
   useEffect(() => {
     if (!notificationPanelVisible) return;
     const raf = requestAnimationFrame(() => {
-      if (firstUnreadRef.current) {
+      const liveFirstUnreadId =
+        useStore.getState().notifications
+          .filter((n) => !n.read)
+          .sort((a, b) => b.timestamp - a.timestamp)[0]?.id ?? null;
+      const capturedId = firstUnreadIdAtRenderRef.current;
+      if (firstUnreadRef.current && capturedId !== null && capturedId === liveFirstUnreadId) {
         firstUnreadRef.current.focus();
       } else if (markAllReadBtnRef.current) {
         markAllReadBtnRef.current.focus();
@@ -277,10 +276,10 @@ export default function NotificationPanel() {
   };
 
   const handleGlobalMarkAllRead = () => {
-    // Resolve at click time so we pick up T2's slice action if/when it lands
-    // without breaking when it hasn't. See runGlobalMarkAllRead for the
-    // resolver contract — the action is invoked through the live store state.
-    runGlobalMarkAllRead(useStore.getState() as unknown as MarkAllReadResolver);
+    // T2 is merged — call the slice action directly. The action also clears
+    // paneNotificationRing as part of the global "seen everything" semantics
+    // (see notificationSlice.markAllRead).
+    useStore.getState().markAllRead();
   };
 
   return (

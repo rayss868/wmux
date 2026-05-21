@@ -188,3 +188,97 @@ describe('workspaceSlice — per-workspace notification mute (T4)', () => {
     ).toBe(true);
   });
 });
+
+// FIX #1 — workspace-level lifecycle clear of paneNotificationRing. closePane
+// covers the pane-level case (CEO A7 stamp). Phase 4 review found that
+// removeWorkspace and setActiveWorkspace (auto-mark-read) leaked stale ring
+// entries so rings stayed 'glow' permanently on workspaces the user had
+// already cleared.
+describe('workspaceSlice — paneNotificationRing lifecycle (FIX #1 + FIX #3)', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+    // Add a second workspace so removeWorkspace is allowed (one-workspace
+    // floor short-circuits the action).
+    store.getState().addWorkspace('Second');
+  });
+
+  it('removeWorkspace deletes ring entries for every leaf pane in the tree', () => {
+    const wsToRemove = store.getState().workspaces[1];
+    const leafId = wsToRemove.rootPane.id;
+    // Pre-seed ring entries for the leaf about to be deleted AND a survivor
+    // leaf on another workspace. After removal the survivor must stay.
+    const survivorLeafId = store.getState().workspaces[0].rootPane.id;
+    store.setState((s) => {
+      (s as unknown as { paneNotificationRing: Record<string, 'flash' | 'glow'> })
+        .paneNotificationRing = { [leafId]: 'glow', [survivorLeafId]: 'flash' };
+    });
+
+    store.getState().removeWorkspace(wsToRemove.id);
+
+    const ring = (store.getState() as unknown as { paneNotificationRing: Record<string, unknown> })
+      .paneNotificationRing;
+    expect(ring[leafId]).toBeUndefined();
+    expect(ring[survivorLeafId]).toBe('flash');
+  });
+
+  it('removeWorkspace handles a branch tree by walking every leaf', () => {
+    // Build a workspace with a synthetic branch so we exercise the
+    // collectLeafIds recursion path (not just the root-leaf case).
+    const wsToRemove = store.getState().workspaces[1];
+    store.setState((s) => {
+      const ws = s.workspaces.find((w) => w.id === wsToRemove.id);
+      if (!ws) return;
+      ws.rootPane = {
+        id: 'branch-1',
+        type: 'branch',
+        direction: 'horizontal',
+        children: [
+          { id: 'leaf-a', type: 'leaf', surfaces: [], activeSurfaceId: '' },
+          { id: 'leaf-b', type: 'leaf', surfaces: [], activeSurfaceId: '' },
+        ],
+        sizes: [50, 50],
+      };
+      (s as unknown as { paneNotificationRing: Record<string, 'flash' | 'glow'> })
+        .paneNotificationRing = { 'leaf-a': 'flash', 'leaf-b': 'glow' };
+    });
+
+    store.getState().removeWorkspace(wsToRemove.id);
+
+    const ring = (store.getState() as unknown as { paneNotificationRing: Record<string, unknown> })
+      .paneNotificationRing;
+    expect(ring['leaf-a']).toBeUndefined();
+    expect(ring['leaf-b']).toBeUndefined();
+  });
+
+  it('removeWorkspace is a no-op for the ring when paneSlice is not mounted', () => {
+    // Test store doesn't compose paneSlice — by default `paneNotificationRing`
+    // is undefined. The guarded delete must not throw.
+    const wsToRemove = store.getState().workspaces[1];
+    expect(() => store.getState().removeWorkspace(wsToRemove.id)).not.toThrow();
+  });
+
+  it('setActiveWorkspace clears ring entries for the newly activated workspace', () => {
+    const wsA = store.getState().workspaces[0];
+    const wsB = store.getState().workspaces[1];
+    store.setState((s) => {
+      (s as unknown as { paneNotificationRing: Record<string, 'flash' | 'glow'> })
+        .paneNotificationRing = {
+        [wsA.rootPane.id]: 'glow',
+        [wsB.rootPane.id]: 'flash',
+      };
+      // Seed notifications so the auto-mark-read branch executes too. Without
+      // the array, the slice would short-circuit before reaching the ring clear.
+      (s as unknown as { notifications: unknown[] }).notifications = [];
+    });
+
+    store.getState().setActiveWorkspace(wsB.id);
+
+    const ring = (store.getState() as unknown as { paneNotificationRing: Record<string, unknown> })
+      .paneNotificationRing;
+    // wsB ring cleared; wsA still present.
+    expect(ring[wsB.rootPane.id]).toBeUndefined();
+    expect(ring[wsA.rootPane.id]).toBe('glow');
+  });
+});

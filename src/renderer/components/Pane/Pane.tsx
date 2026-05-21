@@ -38,8 +38,7 @@ export type PaneRingState = 'flash' | 'glow' | null | undefined;
  *   - `notificationRingEnabled` gates the LEGACY unread-count pulse (callers
  *     fold this into `hasUnread` before passing it in).
  *   - `paneRingEnabled` gates the NEW state-machine flash/glow visual. When
- *     it's false (or undefined while T5 is unmerged) the flash/glow classes
- *     are dropped regardless of `ringState`.
+ *     it's false the flash/glow classes are dropped regardless of `ringState`.
  */
 export function composePaneClassName(opts: {
   hasUnread: boolean;
@@ -65,6 +64,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const closeSurface = useStore((s) => s.closeSurface);
   const updateSurfacePtyId = useStore((s) => s.updateSurfacePtyId);
   const markRead = useStore((s) => s.markRead);
+  const setPaneNotificationRing = useStore((s) => s.setPaneNotificationRing);
 
   // count만 가져와 불필요한 배열 참조 안정성 문제 방지
   const unreadCount = useStore((s) =>
@@ -75,20 +75,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const notificationRingEnabled = useStore((s) => s.notificationRingEnabled);
   const hasUnread = !isActive && unreadCount > 0 && notificationRingEnabled;
 
-  // ─── T11: new state-machine ring (driven by T8 listener policy) ──────────
-  // T3/T5 slice additions land separately. We read defensively so this
-  // component compiles & behaves sanely before those merges (ringState
-  // collapses to undefined → no class applied). Post-T5, `paneRingEnabled`
-  // becomes a real user-visible toggle; until then we default to true so
-  // the new visual is available as soon as the listener starts dispatching.
-  const ringState = useStore((s) => {
-    const map = (s as unknown as { paneNotificationRing?: Record<string, PaneRingState> }).paneNotificationRing;
-    return map ? map[pane.id] : undefined;
-  });
-  const paneRingEnabled = useStore((s) => {
-    const flag = (s as unknown as { paneRingEnabled?: boolean }).paneRingEnabled;
-    return flag === undefined ? true : flag;
-  });
+  // ─── T11: state-machine ring (driven by T8 listener policy) ──────────────
+  // T3 (paneNotificationRing) and T5 (paneRingEnabled) are merged — read
+  // directly from the typed store. `paneRingEnabled` defaults true in uiSlice
+  // so the new visual is on by default until the user disables it.
+  const ringState = useStore((s) => s.paneNotificationRing[pane.id]);
+  const paneRingEnabled = useStore((s) => s.paneRingEnabled);
 
   // Ctrl+Shift+H: flash the active pane
   useEffect(() => {
@@ -106,12 +98,21 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     // 최신 state에서 직접 읽어 stale closure 방지
     const { notifications } = useStore.getState();
     const surfaceIds = new Set(pane.surfaces.map((s) => s.id));
+    let markedAny = false;
     for (const n of notifications) {
       if (!n.read && n.surfaceId !== undefined && surfaceIds.has(n.surfaceId)) {
         markRead(n.id);
+        markedAny = true;
       }
     }
-  }, [pane.id, pane.surfaces, setActivePane, markRead]);
+    // Clear the visual ring only when we actually marked something read.
+    // A plain pane-focus click with no unread notifications shouldn't wipe a
+    // fresh 'flash' from a notification that arrived 50ms ago and hasn't
+    // been "seen" yet — the listener-driven flash→glow timeline owns that.
+    if (markedAny) {
+      setPaneNotificationRing(pane.id, null);
+    }
+  }, [pane.id, pane.surfaces, setActivePane, markRead, setPaneNotificationRing]);
 
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const defaultShell = useStore((s) => s.defaultShell);

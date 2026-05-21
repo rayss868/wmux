@@ -291,3 +291,114 @@ describe('Legacy notificationRingEnabled — unaffected by T11 wiring', () => {
     useStore.getState().setNotificationRingEnabled(true);
   });
 });
+
+// ─── FIX #2 — Pane handleClick clears the ring on markedAny ────────────────
+//
+// The full handler runs inside React (vitest env=node, no jsdom), so we
+// exercise the exact code path against the real zustand store instead of
+// mounting the component. The handler shape is:
+//
+//   const { notifications } = useStore.getState();
+//   const surfaceIds = new Set(pane.surfaces.map(s => s.id));
+//   let markedAny = false;
+//   for (const n of notifications) {
+//     if (!n.read && n.surfaceId !== undefined && surfaceIds.has(n.surfaceId)) {
+//       markRead(n.id);
+//       markedAny = true;
+//     }
+//   }
+//   if (markedAny) setPaneNotificationRing(pane.id, null);
+//
+// We reproduce that loop directly so a future refactor can't drift the
+// invariant.
+
+describe('Pane handleClick — clears ring when notifications were marked read (FIX #2)', () => {
+  beforeEach(() => {
+    // Reset slices touched by this test. clearNotifications is exposed on the
+    // notification slice; ring map is the paneSlice action.
+    useStore.getState().clearNotifications();
+    useStore.setState((s) => {
+      s.paneNotificationRing = {};
+    });
+  });
+
+  function simulatePaneClick(paneId: string, surfaceIds: string[]) {
+    // Direct transcription of Pane.tsx handleClick (minus setActivePane,
+    // which has its own coverage and would require a workspace tree fixture).
+    const { notifications, markRead, setPaneNotificationRing } = useStore.getState();
+    const ids = new Set(surfaceIds);
+    let markedAny = false;
+    for (const n of notifications) {
+      if (!n.read && n.surfaceId !== undefined && ids.has(n.surfaceId)) {
+        markRead(n.id);
+        markedAny = true;
+      }
+    }
+    if (markedAny) {
+      setPaneNotificationRing(paneId, null);
+    }
+    return { markedAny };
+  }
+
+  it('clears the ring entry when at least one notification was marked read', () => {
+    // Seed: one unread notification on surface 'sf-1', ring already set to glow.
+    useStore.getState().addNotification({
+      workspaceId: useStore.getState().workspaces[0].id,
+      surfaceId: 'sf-1',
+      type: 'info',
+      title: 't',
+      body: 'b',
+    });
+    useStore.getState().setPaneNotificationRing('pane-1', 'glow');
+    expect(useStore.getState().paneNotificationRing['pane-1']).toBe('glow');
+
+    const result = simulatePaneClick('pane-1', ['sf-1']);
+    expect(result.markedAny).toBe(true);
+    expect(useStore.getState().paneNotificationRing['pane-1']).toBeUndefined();
+    expect(useStore.getState().notifications[0].read).toBe(true);
+  });
+
+  it('preserves the ring entry when no unread notification matches the pane (fresh flash protection)', () => {
+    // A notification arrived 50ms ago for surface 'sf-2', listener set ring
+    // to 'flash' on pane-2. User clicks pane-1 (different surfaces) — pane-2
+    // must keep its fresh 'flash' because nothing on pane-1 got read.
+    useStore.getState().addNotification({
+      workspaceId: useStore.getState().workspaces[0].id,
+      surfaceId: 'sf-2',
+      type: 'info',
+      title: 't',
+      body: 'b',
+    });
+    useStore.getState().setPaneNotificationRing('pane-2', 'flash');
+
+    const result = simulatePaneClick('pane-1', ['sf-1']);
+    expect(result.markedAny).toBe(false);
+    // pane-2's flash survives — the click on pane-1 should NOT have touched it.
+    expect(useStore.getState().paneNotificationRing['pane-2']).toBe('flash');
+  });
+
+  it('does not clear unrelated panes when only the clicked pane has matching surfaces', () => {
+    // Two notifications on two different surfaces, two panes with rings.
+    const wsId = useStore.getState().workspaces[0].id;
+    useStore.getState().addNotification({ workspaceId: wsId, surfaceId: 'sf-1', type: 'info', title: 'a', body: '' });
+    useStore.getState().addNotification({ workspaceId: wsId, surfaceId: 'sf-2', type: 'info', title: 'b', body: '' });
+    useStore.getState().setPaneNotificationRing('pane-1', 'glow');
+    useStore.getState().setPaneNotificationRing('pane-2', 'glow');
+
+    simulatePaneClick('pane-1', ['sf-1']);
+
+    expect(useStore.getState().paneNotificationRing['pane-1']).toBeUndefined();
+    expect(useStore.getState().paneNotificationRing['pane-2']).toBe('glow');
+  });
+
+  it('clearing notifications between renders is idempotent', () => {
+    // No unread, ring entry present (left behind from earlier session, e.g.
+    // notification got cleared via panel). Click should be a no-op for ring
+    // because nothing was marked read — caller is responsible for explicit
+    // clears (markAllRead handles that case, FIX #3).
+    useStore.getState().setPaneNotificationRing('pane-1', 'glow');
+    const result = simulatePaneClick('pane-1', ['sf-1']);
+    expect(result.markedAny).toBe(false);
+    expect(useStore.getState().paneNotificationRing['pane-1']).toBe('glow');
+  });
+});

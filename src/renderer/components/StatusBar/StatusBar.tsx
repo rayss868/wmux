@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
-import type { Notification, Pane, PaneLeaf, Workspace, WorkspaceMetadata } from '../../../shared/types';
+import type { Notification, Pane, PaneLeaf, Workspace } from '../../../shared/types';
 
 /** Resolve the ptyId of the active pane's active surface */
 function getActivePtyId(rootPane: Pane | undefined, activePaneId: string): string | null {
@@ -26,16 +26,14 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
-// T9 (Notification System Expansion): WorkspaceMetadata.notificationsMuted is
-// added by T4 in a parallel worktree. To keep T9 independently mergeable we
-// read it through a structural widening cast — the property is treated as
-// optional boolean regardless of whether T4 has landed yet.
-type MutedMetadata = WorkspaceMetadata & { notificationsMuted?: boolean };
-
 /**
  * Compute the unread notification count, excluding notifications whose
  * originating workspace has `metadata.notificationsMuted === true` (CEO A4 +
  * DESIGN bell-math). Pure helper so it can be unit-tested without mounting.
+ *
+ * T4 (per-workspace notification mute) is merged — `notificationsMuted` is a
+ * first-class optional field on `WorkspaceMetadata`, so we read it directly
+ * with no structural-widening cast.
  */
 export function computeUnreadCount(
   notifications: readonly Notification[],
@@ -43,8 +41,7 @@ export function computeUnreadCount(
 ): number {
   const mutedIds = new Set<string>();
   for (const w of workspaces) {
-    const meta = w.metadata as MutedMetadata | undefined;
-    if (meta?.notificationsMuted === true) mutedIds.add(w.id);
+    if (w.metadata?.notificationsMuted === true) mutedIds.add(w.id);
   }
   let n = 0;
   for (const notif of notifications) {

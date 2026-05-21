@@ -48,10 +48,10 @@ export function createFlashFrameHandler(
  * send a follow-up `flashFrame(false)`. Guarded by `isDestroyed()` for
  * the same reason as the IPC handler.
  *
- * Returns a disposer that removes nothing on its own (Electron windows
- * are torn down by `destroy()`, which severs all listeners). The return
- * value exists so callers can document the lifecycle in a single
- * expression alongside other `attach*` helpers if needed.
+ * Returns `void`. Electron windows tear down via `destroy()`, which
+ * severs all listeners — there is no separate disposer to call. The
+ * helper is named `attach*` to match siblings like `attachWindowEvents`,
+ * not to imply a returned cleanup handle.
  */
 export function attachFlashFrameAutoClear(win: FlashFrameWindow): void {
   win.on('focus', () => {

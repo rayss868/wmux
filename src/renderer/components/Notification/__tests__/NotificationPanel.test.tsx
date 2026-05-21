@@ -5,8 +5,7 @@
  * library installed (no jsdom / happy-dom / @testing-library/react), so this
  * suite tests the panel via three strategies:
  *   1. Pure helpers exported from NotificationPanel.tsx
- *      (sortNotificationsDesc, notifTypeName, buildNotifAriaLabel,
- *      runGlobalMarkAllRead).
+ *      (sortNotificationsDesc, notifTypeName, buildNotifAriaLabel).
  *   2. React DOM Server's `renderToStaticMarkup` against the stateless
  *      `NotificationPanelView`. The store-wired container cannot be tested
  *      this way because zustand's `useSyncExternalStore` server snapshot
@@ -19,15 +18,20 @@
  * Effect-driven behaviors (Esc handler, initial focus via
  * requestAnimationFrame) require a real DOM and are documented here rather
  * than asserted directly; the strategy is captured in the run report.
+ *
+ * Phase 4 cleanup: the legacy `runGlobalMarkAllRead` resolver and its tests
+ * have been removed. T2's `markAllRead` slice action is merged, so the
+ * container now calls `useStore.getState().markAllRead()` directly. Two
+ * tests below were rewritten to exercise the live action instead of the
+ * dead resolver indirection.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   sortNotificationsDesc,
   notifTypeName,
   buildNotifAriaLabel,
-  runGlobalMarkAllRead,
   NotificationPanelView,
   type NotificationPanelViewProps,
 } from '../NotificationPanel';
@@ -133,42 +137,13 @@ describe('buildNotifAriaLabel', () => {
   });
 });
 
-// ─── runGlobalMarkAllRead resolver tests ──────────────────────────────────────
-
-describe('runGlobalMarkAllRead', () => {
-  it('calls state.markAllRead when present (T2 path)', () => {
-    const markAllRead = vi.fn();
-    const markAllReadForWorkspace = vi.fn();
-    runGlobalMarkAllRead({
-      markAllRead,
-      markAllReadForWorkspace,
-      notifications: [mkNotif('a', { workspaceId: 'w1' })],
-    });
-    expect(markAllRead).toHaveBeenCalledTimes(1);
-    expect(markAllReadForWorkspace).not.toHaveBeenCalled();
-  });
-
-  it('falls back to per-workspace iteration when markAllRead is absent', () => {
-    const markAllReadForWorkspace = vi.fn();
-    runGlobalMarkAllRead({
-      markAllReadForWorkspace,
-      notifications: [
-        mkNotif('a', { workspaceId: 'w1' }),
-        mkNotif('b', { workspaceId: 'w2' }),
-        mkNotif('c', { workspaceId: 'w1' }),
-      ],
-    });
-    expect(markAllReadForWorkspace).toHaveBeenCalledTimes(2);
-    const wsCalls = markAllReadForWorkspace.mock.calls.map((c) => c[0]).sort();
-    expect(wsCalls).toEqual(['w1', 'w2']);
-  });
-
-  it('is a no-op when there are no notifications and no global action', () => {
-    const markAllReadForWorkspace = vi.fn();
-    runGlobalMarkAllRead({ markAllReadForWorkspace, notifications: [] });
-    expect(markAllReadForWorkspace).not.toHaveBeenCalled();
-  });
-});
+// ─── Direct markAllRead store action (Phase 4 cleanup) ─────────────────────
+// The container previously routed through a `runGlobalMarkAllRead` resolver
+// that fell back to per-workspace iteration when T2's `markAllRead` action
+// was missing. T2 is now merged, so the indirection is gone — the panel
+// calls `useStore.getState().markAllRead()` directly. These tests pin the
+// contract the panel relies on so a future slice rename or accidental
+// removal of the global action gets caught immediately.
 
 // ─── Store-integration tests ──────────────────────────────────────────────────
 //
@@ -223,7 +198,7 @@ describe('NotificationPanel store contract', () => {
     expect(notifs.find((n) => n.id === 'c')?.read).toBe(false);
   });
 
-  it('global mark-all-read via runGlobalMarkAllRead clears every workspace', () => {
+  it('global markAllRead clears every notification across all workspaces', () => {
     const ws1 = useStore.getState().workspaces[0]?.id ?? 'ws-default';
     useStore.setState((s) => {
       s.notifications.push(
@@ -232,10 +207,23 @@ describe('NotificationPanel store contract', () => {
       );
     });
 
-    runGlobalMarkAllRead(useStore.getState() as never);
+    // The container calls this exact action on click of "Mark all read".
+    useStore.getState().markAllRead();
 
     const notifs = useStore.getState().notifications;
     expect(notifs.every((n) => n.read)).toBe(true);
+  });
+
+  it('global markAllRead also clears paneNotificationRing (FIX #3 lifecycle)', () => {
+    // The panel's "Mark all read" button is the only path beside per-pane
+    // click that should fully reset the visual ring state.
+    useStore.setState((s) => {
+      s.paneNotificationRing = { 'pane-x': 'flash', 'pane-y': 'glow' };
+    });
+
+    useStore.getState().markAllRead();
+
+    expect(useStore.getState().paneNotificationRing).toEqual({});
   });
 
   it('Esc keydown toggles the panel via toggleNotificationPanel', () => {

@@ -384,6 +384,39 @@ describe('createNotificationHandler (R4-R10)', () => {
     expect(harness.spies.addNotification).not.toHaveBeenCalled();
     expect(harness.spies.pushToast).not.toHaveBeenCalled();
   });
+
+  // R11d (Phase 4 Minor 7) — policy-ordering pin combination test.
+  // Mute beats every surface gate (toast/sound/ring/flashFrame) even when
+  // the window is unfocused. The taskbar flash specifically must NOT fire
+  // because that's the OS-level "look here" signal — a muted workspace
+  // explicitly rejects every "look here" channel. Only addNotification
+  // (data-preservation) is allowed through.
+  //
+  // Note: isActiveSurface is intentionally OFF here. When isActiveSurface
+  // is true the policy short-circuits to [] (no actions at all, see R4),
+  // so an "active surface + muted + unfocused" combination is degenerate
+  // — it would prove only that the active-surface rule wins, not that
+  // mute correctly suppresses flashFrame. R4b already pins active-surface
+  // is scoped to the active workspace; this test pins the next layer down.
+  it('R11d: muted workspace + window unfocused (active-surface OFF) → addNotification only, no flashFrame', () => {
+    harness.state.workspaces[0].metadata = { notificationsMuted: true };
+    // Workspace is NOT active so isActiveSurface=false; window unfocused
+    // (harness default). All surface toggles are ON to prove mute beats
+    // them all, not that they happen to be off.
+    harness.state.activeWorkspaceId = 'ws-other';
+    harness.state.toastEnabled = true;
+    harness.state.notificationSoundEnabled = true;
+    harness.state.paneRingEnabled = true;
+    harness.state.taskbarFlashEnabled = true;
+
+    handle('pty-1', { type: 'info', title: 't', body: 'b' });
+
+    expect(harness.spies.addNotification).toHaveBeenCalledTimes(1);
+    expect(harness.spies.pushToast).not.toHaveBeenCalled();
+    expect(harness.spies.playSound).not.toHaveBeenCalled();
+    expect(harness.spies.setPaneNotificationRing).not.toHaveBeenCalled();
+    expect(harness.spies.flashFrame).not.toHaveBeenCalled();
+  });
 });
 
 describe('createNotificationHandler — cleanup (R11)', () => {

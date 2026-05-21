@@ -250,6 +250,38 @@ describe('NotificationSlice — markAllRead (new)', () => {
     expect(store.getState().notifications.every((n) => n.read)).toBe(true);
     expect(store.getState().notifications).toHaveLength(1);
   });
+
+  // N2b (FIX #3) — lifecycle: markAllRead also clears paneNotificationRing.
+  // Phase 4 review found that rings stayed in 'glow' forever after user
+  // hit "Mark all read" because the slice only flipped notifications.read
+  // but left the visual ring state untouched.
+  it('clears paneNotificationRing alongside flipping read=true', () => {
+    // Seed the ring map by hand — the test store doesn't compose paneSlice,
+    // so we install the field directly. The action's `if (state.paneNotificationRing)`
+    // guard means we exercise the real branch here.
+    const store = createTestStore([makeWorkspace('ws-a')]);
+    store.setState((s) => {
+      (s as unknown as { paneNotificationRing: Record<string, 'flash' | 'glow'> })
+        .paneNotificationRing = { 'pane-1': 'flash', 'pane-2': 'glow' };
+    });
+    store.getState().addNotification({ workspaceId: 'ws-a', type: 'info', title: 'a', body: '' });
+
+    store.getState().markAllRead();
+
+    const ring = (store.getState() as unknown as { paneNotificationRing: Record<string, unknown> })
+      .paneNotificationRing;
+    expect(ring).toEqual({});
+    // Sanity — read flag still flipped.
+    expect(store.getState().notifications.every((n) => n.read)).toBe(true);
+  });
+
+  // N2c — no-throw when paneNotificationRing field is absent (the minimal
+  // test store without paneSlice still works).
+  it('is a no-op for the ring map when notificationSlice mounted without paneSlice', () => {
+    const store = createTestStore([makeWorkspace('ws-a')]);
+    store.getState().addNotification({ workspaceId: 'ws-a', type: 'info', title: 'a', body: '' });
+    expect(() => store.getState().markAllRead()).not.toThrow();
+  });
 });
 
 describe('NotificationSlice — jumpToUnread (new)', () => {
