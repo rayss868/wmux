@@ -146,4 +146,66 @@ describe('paneSlice — event publication', () => {
       expect(state['clearPaneMetadata']).toBeUndefined();
     });
   });
+
+  describe('paneNotificationRing', () => {
+    it('starts empty', () => {
+      expect(store.getState().paneNotificationRing).toEqual({});
+    });
+
+    it('setPaneNotificationRing(p, "flash") adds entry', () => {
+      store.getState().setPaneNotificationRing(rootPaneId, 'flash');
+      expect(store.getState().paneNotificationRing[rootPaneId]).toBe('flash');
+    });
+
+    it('setPaneNotificationRing(p, "glow") updates entry', () => {
+      store.getState().setPaneNotificationRing(rootPaneId, 'flash');
+      store.getState().setPaneNotificationRing(rootPaneId, 'glow');
+      expect(store.getState().paneNotificationRing[rootPaneId]).toBe('glow');
+    });
+
+    it('setPaneNotificationRing(p, null) removes entry and keeps the map sparse', () => {
+      store.getState().setPaneNotificationRing(rootPaneId, 'flash');
+      store.getState().setPaneNotificationRing(rootPaneId, null);
+      expect(store.getState().paneNotificationRing[rootPaneId]).toBeUndefined();
+      expect(Object.prototype.hasOwnProperty.call(store.getState().paneNotificationRing, rootPaneId)).toBe(false);
+    });
+
+    it('closePane clears the deleted pane\'s ring entry', () => {
+      store.getState().splitPane(rootPaneId, 'horizontal');
+      const newPaneId = store.getState().workspaces[0].activePaneId;
+      store.getState().setPaneNotificationRing(newPaneId, 'flash');
+      expect(store.getState().paneNotificationRing[newPaneId]).toBe('flash');
+
+      store.getState().closePane(newPaneId);
+      expect(store.getState().paneNotificationRing[newPaneId]).toBeUndefined();
+      expect(Object.prototype.hasOwnProperty.call(store.getState().paneNotificationRing, newPaneId)).toBe(false);
+    });
+
+    it('closePane does NOT touch other panes\' ring entries', () => {
+      store.getState().splitPane(rootPaneId, 'horizontal');
+      const wsAfterFirst = store.getState().workspaces[0];
+      const newPaneId = wsAfterFirst.activePaneId;
+
+      // After split, originalCopy and newPane are siblings. Grab the sibling id.
+      const branch = wsAfterFirst.rootPane;
+      if (branch.type !== 'branch') throw new Error('expected branch after split');
+      const siblingId = branch.children.find((c) => c.id !== newPaneId)!.id;
+
+      store.getState().setPaneNotificationRing(newPaneId, 'flash');
+      store.getState().setPaneNotificationRing(siblingId, 'glow');
+
+      store.getState().closePane(newPaneId);
+
+      expect(store.getState().paneNotificationRing[newPaneId]).toBeUndefined();
+      expect(store.getState().paneNotificationRing[siblingId]).toBe('glow');
+    });
+
+    it('closePane with no ring entry is a no-op (no throw)', () => {
+      store.getState().splitPane(rootPaneId, 'horizontal');
+      const newPaneId = store.getState().workspaces[0].activePaneId;
+      // newPaneId has no ring entry — closing it must not throw.
+      expect(() => store.getState().closePane(newPaneId)).not.toThrow();
+      expect(store.getState().paneNotificationRing[newPaneId]).toBeUndefined();
+    });
+  });
 });

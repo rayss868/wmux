@@ -41,6 +41,10 @@ export interface PaneSlice {
   updatePaneSizes: (branchId: string, sizes: number[]) => void;
   resizeActivePane: (direction: 'left' | 'right' | 'up' | 'down', amount: number) => void;
   equalizePaneSizes: () => void;
+  // Sparse map of per-pane visual notification rings. Missing entry = no ring.
+  // T11 will consume this for the flash→glow CSS treatment around each pane.
+  paneNotificationRing: Record<string, 'flash' | 'glow'>;
+  setPaneNotificationRing: (paneId: string, ring: 'flash' | 'glow' | null) => void;
 }
 
 function findPane(root: Pane, id: string): Pane | null {
@@ -76,6 +80,16 @@ function getLeafPanes(root: Pane): PaneLeaf[] {
 }
 
 export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]], [], PaneSlice> = (set, get) => ({
+  paneNotificationRing: {},
+
+  setPaneNotificationRing: (paneId, ring) => set((state: StoreState) => {
+    if (ring === null) {
+      delete state.paneNotificationRing[paneId];
+      return;
+    }
+    state.paneNotificationRing[paneId] = ring;
+  }),
+
   splitPane: (paneId, direction, workspaceId) => {
     let event: { wsId: string; newPaneId: string; branchId: string; previousActiveId: string } | null = null;
     let blockedAtCap = false;
@@ -184,6 +198,10 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       if (leaves.length > 0 && !leaves.some((l) => l.id === ws.activePaneId)) {
         ws.activePaneId = leaves[0].id;
       }
+
+      // CEO A7: drop ring state for the deleted pane so a re-used paneId (or stale
+      // selector) can't render a phantom ring on a pane that no longer exists.
+      delete state.paneNotificationRing[paneId];
 
       event = {
         wsId: ws.id,
