@@ -1,6 +1,7 @@
 import { BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 import { platformChoice } from '../../shared/platform';
+import { attachFlashFrameAutoClear } from './flashFrame';
 
 // OS-aware window-icon extension. Mirrors tray.ts so the same generated asset
 // set (icon.ico / icon.icns / icon.png) is used in both places.
@@ -81,6 +82,11 @@ export function createWindow(): BrowserWindow {
   if (process.env.NODE_ENV === 'development') {
     mainWindow.webContents.openDevTools();
   }
+
+  // T6 Notification System Expansion — clear any active taskbar attention
+  // flash when the user focuses the window. The renderer is therefore not
+  // required to send a matching `flashFrame(false)` after the user reacts.
+  attachFlashFrameAutoClear(mainWindow);
 
   return mainWindow;
 }

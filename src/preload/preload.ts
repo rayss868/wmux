@@ -240,6 +240,16 @@ const electronAPI = {
   },
   window: {
     hide: () => ipcRenderer.send(IPC.WINDOW_HIDE),
+    // T6 Notification System Expansion — recall the user via the Windows
+    // taskbar attention flash (dock bounce on macOS) when a notification
+    // arrives while the window is unfocused. Main-side guard:
+    // `BrowserWindow.isDestroyed()` is checked before the native call, so
+    // post-shutdown sends are silently dropped. Main also clears the flash
+    // automatically on `'focus'`, so callers do not need to send a paired
+    // `flashFrame(false)` after the user reacts.
+    flashFrame: (on: boolean) => {
+      ipcRenderer.send(IPC.WINDOW_FLASH_FRAME, on);
+    },
   },
   events: {
     /**

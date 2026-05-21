@@ -18,6 +18,7 @@ import { registerMetadataHandlers } from './handlers/metadata.handler';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
 import { registerFsHandlers } from './handlers/fs.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
+import { createFlashFrameHandler } from '../window/flashFrame';
 import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { eventBus } from '../events/EventBus';
@@ -66,6 +67,21 @@ export function registerAllHandlers(
   ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
   ipcMain.on(IPC.WINDOW_HIDE, onWindowHide);
 
+  // Windows taskbar attention recall (T6 of the Notification System
+  // Expansion). Renderer fires this from `useNotificationListener` when a
+  // notification arrives AND the window is unfocused. The focus auto-clear
+  // listener is attached at window construction in `createWindow.ts`, so the
+  // renderer is not required to send a matching `flashFrame(false)`.
+  const flashFrame = createFlashFrameHandler(getWindow);
+  const onFlashFrame = (_event: Electron.IpcMainEvent, on: unknown): void => {
+    // Trust boundary — coerce the renderer-supplied payload to boolean
+    // instead of forwarding `undefined`/`null`/objects into Electron's
+    // native flashFrame, which throws on non-boolean arguments.
+    flashFrame(on === true);
+  };
+  ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
+  ipcMain.on(IPC.WINDOW_FLASH_FRAME, onFlashFrame);
+
   // EventBus publish from renderer (one-way). Validates the event type and
   // workspaceId at the trust boundary so a misbehaving renderer can't poison
   // the ring with arbitrary shapes; type-specific fields ride through as-is.
@@ -95,5 +111,6 @@ export function registerAllHandlers(
     if (cleanupMcp) cleanupMcp();
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
+    ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
   };
 }

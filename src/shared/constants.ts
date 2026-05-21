@@ -63,6 +63,13 @@ export const IPC = {
   EVENTS_PUBLISH: 'events:publish',
   // Window control
   WINDOW_HIDE: 'window:hide',
+  // Windows taskbar attention recall. Renderer asks main to flash the
+  // taskbar entry when an unfocused window receives a notification (T6 of
+  // the Notification System Expansion). `on=true` starts the flash;
+  // `on=false` clears it. Main also auto-clears on the BrowserWindow
+  // `'focus'` event so a user clicking the window dismisses the flash
+  // even if the renderer never sends `false`.
+  WINDOW_FLASH_FRAME: 'window:flashFrame',
   // MCP integration status / management (Settings panel + CLI parity)
   MCP_CHECK: 'mcp:check',
   MCP_REREGISTER: 'mcp:reregister',
