@@ -7,7 +7,7 @@ import { app } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
 
-interface DaemonInfo {
+export interface DaemonInfo {
   pid: number;
   authToken: string;
   pipeName: string;
@@ -27,6 +27,113 @@ function isProcessAlive(pid: number): boolean {
     } catch { return false; }
   }
   try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+/**
+ * Look up the process image name (executable basename) for a PID, so the
+ * launcher can verify a PID actually belongs to wmux before sending SIGKILL.
+ *
+ * Critical for the "alive but unresponsive" branch: after a crash, the OS
+ * may reuse the daemon's PID for an unrelated user process (Chrome, an
+ * IDE, anything). Killing whichever process owns the recycled PID is a
+ * tier-1 "wtf is wmux doing" bug.
+ *
+ * Returns null when lookup fails — callers must treat null as "don't kill".
+ */
+function getProcessImageName(pid: number): string | null {
+  if (process.platform === 'win32') {
+    try {
+      const { execFileSync } = require('child_process');
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const tasklist = path.join(systemRoot, 'System32', 'tasklist.exe');
+      const result = execFileSync(tasklist, ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
+        encoding: 'utf-8', timeout: 3000, windowsHide: true,
+      });
+      // tasklist /fo csv /nh format:
+      //   "image.exe","PID","sessionName","sessionNum","memUsage"
+      const match = result.match(/^"([^"]+)"/);
+      return match ? match[1] : null;
+    } catch { return null; }
+  }
+  // Linux: /proc/<pid>/comm carries the executable name (truncated to 15
+  // bytes). Fast path because /proc reads are basically free.
+  if (process.platform === 'linux') {
+    try {
+      return fs.readFileSync(`/proc/${pid}/comm`, 'utf-8').trim();
+    } catch { return null; }
+  }
+  // macOS / other POSIX without /proc: shell out to `ps`. The `comm=`
+  // format spec strips the header and emits just the executable name.
+  // (Codex review #5 — without this branch, Darwin lookups always
+  // returned null and the launcher threw on every unresponsive daemon
+  // instead of recovering.)
+  try {
+    const { execFileSync } = require('child_process');
+    const result = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], {
+      encoding: 'utf-8', timeout: 3000,
+    });
+    const trimmed = result.trim();
+    if (!trimmed) return null;
+    // `ps -o comm=` returns the full path on macOS; the basename
+    // matches the expected wmux image more reliably across builds.
+    return path.basename(trimmed);
+  } catch { return null; }
+}
+
+/**
+ * Read a process's full command line, so callers can verify it actually
+ * carries the daemon-script path before treating it as a wmux daemon.
+ *
+ * This is the second safety net for the kill path: image basename alone
+ * ("electron.exe" in dev) collides with the main process itself and with
+ * any other Electron-based app the user happens to be running. Adding
+ * "did this process get spawned with the daemon script as argv[1]"
+ * narrows the false-positive surface dramatically.
+ *
+ * On Windows uses PowerShell + CIM (WMI replacement) — wmic is being
+ * deprecated and this path runs at most once per ensureDaemon() call.
+ * Returns null on any failure; callers must treat null as "can't verify".
+ */
+function getProcessCommandLine(pid: number): string | null {
+  if (process.platform === 'win32') {
+    try {
+      const { execFileSync } = require('child_process');
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const powershell = path.join(
+        systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+      );
+      // Single quotes around the filter so the parser doesn't expand
+      // anything; -NoProfile keeps startup cheap.
+      const result = execFileSync(
+        powershell,
+        [
+          '-NoProfile', '-Command',
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue).CommandLine`,
+        ],
+        { encoding: 'utf-8', timeout: 5000, windowsHide: true },
+      );
+      const trimmed = result.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    } catch { return null; }
+  }
+  // Linux: /proc/<pid>/cmdline carries the argv joined by NUL.
+  if (process.platform === 'linux') {
+    try {
+      const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8');
+      return raw.replace(/\0/g, ' ').trim() || null;
+    } catch { return null; }
+  }
+  // macOS / other POSIX without /proc: shell out to `ps`. (Codex
+  // review #5 — Darwin builds need this path so the daemon verifier
+  // can confirm cmdline carries the daemon-script path.)
+  try {
+    const { execFileSync } = require('child_process');
+    const result = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf-8', timeout: 3000,
+    });
+    const trimmed = result.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch { return null; }
 }
 
 function pingDaemon(pipeName: string, token: string, timeoutMs = 3000): Promise<boolean> {
@@ -216,6 +323,131 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
       if (alive) {
         console.log(`[launcher] Daemon already running (PID: ${existingPid})`);
         return { pid: existingPid, authToken: token, pipeName, spawned: false };
+      }
+    }
+
+    // PID is alive but we cannot talk to it: either the auth token is
+    // missing or the daemon's event loop is wedged (the `DaemonRespawnController`
+    // health-probe path lands here after `client.disconnectSync()`).
+    //
+    // Without terminating it first, the "clean stale files + spawn"
+    // branch below would leave the original daemon process running,
+    // still holding every PTY child it owns, while a second daemon
+    // spawns and races for the same lock/pipe state.
+    //
+    // BUT — after a crash, daemon.pid may be stale and the OS may have
+    // reused that PID for an unrelated user process (Chrome, an IDE,
+    // an unrelated Electron app). Sending SIGKILL blindly would take
+    // out whatever now owns the recycled PID. Verify the process image
+    // matches the wmux executable before killing. wmux daemons always
+    // run via `process.execPath` (Electron in dev, the packaged exe in
+    // prod with `ELECTRON_RUN_AS_NODE=1`), so the image basename of a
+    // genuine daemon equals `path.basename(process.execPath)`. If it
+    // doesn't match, treat the PID as a stale-reuse victim and skip
+    // the kill — the launcher still cleans the stale files below and
+    // spawns a fresh daemon, so the user-visible recovery is unchanged.
+    //
+    // (Codex review #2/#3/#4 hardening sequence on the original issue
+    // #54 fix.) Three categories the gate logic must distinguish:
+    //
+    //   (a) Verified-daemon → kill, then spawn. Safe because we know
+    //       what we're killing.
+    //   (b) Verified-stale-reuse (we are sure the PID is NOT our daemon
+    //       anymore — it's ourselves, an unrelated program, or another
+    //       Electron app whose cmdline doesn't carry the daemon script
+    //       path) → don't kill, but the stale-files cleanup + spawn
+    //       path below is safe because the actual daemon is gone.
+    //   (c) Unverified-live (process is alive AND has the wmux image
+    //       basename, but we couldn't read its image or command line at
+    //       all) → refuse to act. Spawning over an unverified live
+    //       daemon would orphan its PTYs and produce duplicate sessions.
+    //       Throw so the respawn controller surfaces the failure via
+    //       its budget + IPC, instead of silently corrupting state.
+    const expectedImage = path.basename(process.execPath);
+    // Markers must cover ALL the daemon-script candidate paths
+    // spawnDaemon() picks from, in both `/` and `\\` form (Windows
+    // command lines may carry either). Without the bare
+    // `daemon/index.js` variant, a daemon spawned from the fallback
+    // tsc-output layout would fail cmdline verification and the
+    // launcher would silently spawn a second daemon over the live one.
+    // (Codex review #5 finding.)
+    const daemonScriptMarkers = [
+      'daemon-bundle',
+      'daemon/daemon/index.js',
+      'daemon\\daemon\\index.js',
+      'daemon/index.js',
+      'daemon\\index.js',
+    ];
+    if (existingPid === process.pid) {
+      // (b) PID file points back at ourselves — the real daemon must be
+      // gone (the OS recycled its PID into us). Safe to clean + spawn.
+      console.warn(
+        `[launcher] daemon.pid=${existingPid} equals current process pid — stale, cleaning + spawning fresh`,
+      );
+    } else {
+      const imageName = getProcessImageName(existingPid);
+      if (imageName === null) {
+        // (c) Could not even read the image — refuse.
+        throw new Error(
+          `[launcher] daemon.pid=${existingPid} alive but image lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone.`,
+        );
+      }
+      if (imageName.toLowerCase() !== expectedImage.toLowerCase()) {
+        // (b) Different program owns this PID now — daemon is gone.
+        console.warn(
+          `[launcher] PID ${existingPid} image "${imageName}" != "${expectedImage}" — stale-PID reuse by another program, cleaning + spawning fresh`,
+        );
+      } else {
+        // Image matches — could be the real daemon or another Electron
+        // app. Use the command line to decide.
+        const cmdline = getProcessCommandLine(existingPid);
+        if (cmdline === null) {
+          // (c) Lookup failed — refuse, even though image matched.
+          throw new Error(
+            `[launcher] daemon.pid=${existingPid} alive (image "${imageName}" matches wmux) but command-line lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone.`,
+          );
+        }
+        const cmdlineMatches = daemonScriptMarkers.some((m) => cmdline.includes(m));
+        if (!cmdlineMatches) {
+          // (b) Same image but different app (e.g. another Electron
+          // tool). Don't kill, but the cleanup path below is safe.
+          console.warn(
+            `[launcher] PID ${existingPid} image matches but cmdline does not reference daemon script — stale-PID reuse by sibling Electron app, cleaning + spawning fresh`,
+          );
+        } else {
+          // (a) Verified wmux daemon → kill before respawning.
+          console.warn(
+            `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive — terminating before respawn`,
+          );
+          let killSucceeded = true;
+          try {
+            process.kill(existingPid, 'SIGKILL');
+          } catch (err: unknown) {
+            const code = (err as NodeJS.ErrnoException | undefined)?.code;
+            if (code === 'ESRCH') {
+              // ESRCH = process died between isProcessAlive and kill.
+              // Benign race — we wanted it gone and it is.
+            } else {
+              // EPERM (Windows: Access Denied), EINVAL, anything else:
+              // we asked the OS to kill the verified daemon and it
+              // refused. Falling through to "clean stale files + spawn"
+              // would now produce two live daemons fighting over the
+              // pipe. Surface the failure so the controller can budget
+              // and retry / give up loudly. (Codex review #5 finding.)
+              killSucceeded = false;
+              console.warn(`[launcher] failed to terminate PID ${existingPid}:`, err);
+              throw new Error(
+                `[launcher] verified wmux daemon at PID ${existingPid} alive but SIGKILL failed (${code ?? 'unknown'}); refusing to spawn a second daemon. Resolve the kill failure manually then retry.`,
+              );
+            }
+          }
+          if (killSucceeded) {
+            // Brief settle so the named-pipe handle on the dying daemon's
+            // side releases before spawnDaemon's first `createServer`
+            // listen attempt.
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          }
+        }
       }
     }
   }
