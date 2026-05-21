@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
-import type { Pane, PaneLeaf } from '../../../shared/types';
+import type { Notification, Pane, PaneLeaf, Workspace, WorkspaceMetadata } from '../../../shared/types';
 
 /** Resolve the ptyId of the active pane's active surface */
 function getActivePtyId(rootPane: Pane | undefined, activePaneId: string): string | null {
@@ -26,12 +26,95 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
+// T9 (Notification System Expansion): WorkspaceMetadata.notificationsMuted is
+// added by T4 in a parallel worktree. To keep T9 independently mergeable we
+// read it through a structural widening cast — the property is treated as
+// optional boolean regardless of whether T4 has landed yet.
+type MutedMetadata = WorkspaceMetadata & { notificationsMuted?: boolean };
+
+/**
+ * Compute the unread notification count, excluding notifications whose
+ * originating workspace has `metadata.notificationsMuted === true` (CEO A4 +
+ * DESIGN bell-math). Pure helper so it can be unit-tested without mounting.
+ */
+export function computeUnreadCount(
+  notifications: readonly Notification[],
+  workspaces: readonly Workspace[],
+): number {
+  const mutedIds = new Set<string>();
+  for (const w of workspaces) {
+    const meta = w.metadata as MutedMetadata | undefined;
+    if (meta?.notificationsMuted === true) mutedIds.add(w.id);
+  }
+  let n = 0;
+  for (const notif of notifications) {
+    if (!notif.read && !mutedIds.has(notif.workspaceId)) n++;
+  }
+  return n;
+}
+
+/**
+ * Format the bell badge contents. >= 1000 clips to "● 999+" per DESIGN D8
+ * (no "1k+", no "∞"). 0 returns null — caller hides the badge entirely.
+ */
+export function formatBellContent(unreadCount: number): string | null {
+  if (unreadCount <= 0) return null;
+  if (unreadCount >= 1000) return '● 999+';
+  return `● ${unreadCount}`;
+}
+
+/** ARIA label, with correct singular/plural per a11y spec. */
+export function formatBellAriaLabel(unreadCount: number): string {
+  const noun = unreadCount === 1 ? 'notification' : 'notifications';
+  return `${unreadCount} unread ${noun}, click to open panel`;
+}
+
+interface NotificationBellBadgeProps {
+  unreadCount: number;
+  onActivate: () => void;
+}
+
+/**
+ * Presentational bell badge. Extracted from StatusBar so the static-markup
+ * test in __tests__/StatusBar.test.tsx can assert role / aria-label / focus
+ * classes without mounting the full StatusBar tree (vitest runs in `node`
+ * env — no jsdom).
+ *
+ * Renders nothing when unreadCount <= 0 (matches pre-T9 behavior where the
+ * bell hid entirely on empty count).
+ */
+export function NotificationBellBadgeView({ unreadCount, onActivate }: NotificationBellBadgeProps) {
+  const label = formatBellContent(unreadCount);
+  if (label === null) return null;
+  const ariaLabel = formatBellAriaLabel(unreadCount);
+  return (
+    <button
+      type="button"
+      onClick={onActivate}
+      aria-label={ariaLabel}
+      title={ariaLabel}
+      data-testid="statusbar-notification-bell"
+      className="text-[var(--accent-blue)] hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent-blue)] focus-visible:outline-offset-1 transition-colors px-1.5 py-0.5 min-w-[24px] min-h-[24px] inline-flex items-center justify-center rounded-sm"
+    >
+      {label}
+    </button>
+  );
+}
+
 export default function StatusBar() {
   const t = useT();
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const workspaces = useStore((s) => s.workspaces);
   const activeWs = workspaces.find((w) => w.id === activeWorkspaceId);
-  const unreadCount = useStore((s) => s.notifications.filter((n) => !n.read).length);
+  // T9: derive unreadCount from workspaces + notifications, excluding muted
+  // workspaces. Read the source slices (stable refs under immer) and compute
+  // the primitive in useMemo so consumers re-render only when the count changes.
+  const notifications = useStore((s) => s.notifications);
+  const unreadCount = useMemo(
+    () => computeUnreadCount(notifications, workspaces),
+    [notifications, workspaces],
+  );
+  const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
   const toggleSettingsPanel = useStore((s) => s.toggleSettingsPanel);
   const tokenDataByPty = useStore((s) => s.tokenDataByPty);
 
@@ -124,11 +207,7 @@ export default function StatusBar() {
             {'\u26A1'} {formatTokenCount(activeTokenData.totalTokens)} tokens {'\u00B7'} ${activeTokenData.totalCost.toFixed(2)}
           </span>
         )}
-        {unreadCount > 0 && (
-          <span className="text-[var(--accent-blue)]">
-            ● {unreadCount}
-          </span>
-        )}
+        <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {memUsage && <span>{memUsage}</span>}
         <span>{timeStr}</span>
         <button
