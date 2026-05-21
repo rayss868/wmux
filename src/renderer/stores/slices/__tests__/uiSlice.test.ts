@@ -172,6 +172,76 @@ describe('UISlice — first-run + cheat sheet flags', () => {
   });
 });
 
+// Notification surface toggles (T5). Distinct knobs so users can quiet
+// individual surfaces (pane ring / ring flash / taskbar flash / sound choice)
+// without flipping the underlying notification feature flag. Mirrors the
+// non-persisting shape of notificationRingEnabled / notificationSoundEnabled
+// rather than the IPC-persisting toastEnabled. The dispatch layer (T3/T4)
+// and main flashFrame hook (T6) read these flags before firing their
+// respective side effects.
+describe('UISlice — notification surface toggles (T5)', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+  });
+
+  // ─── Defaults ───────────────────────────────────────────────────────────
+  // Defaults must light up every surface so notifications "just work" on a
+  // fresh install. Users opt out per surface from SettingsPanel; we never
+  // ship with notifications dark by default.
+  it('paneRingEnabled defaults to true', () => {
+    expect(store.getState().paneRingEnabled).toBe(true);
+  });
+
+  it('paneFlashEnabled defaults to true', () => {
+    expect(store.getState().paneFlashEnabled).toBe(true);
+  });
+
+  it('taskbarFlashEnabled defaults to true', () => {
+    expect(store.getState().taskbarFlashEnabled).toBe(true);
+  });
+
+  it('notificationSoundChoice defaults to \'default\'', () => {
+    expect(store.getState().notificationSoundChoice).toBe('default');
+  });
+
+  // ─── Setter flips ───────────────────────────────────────────────────────
+  // Each setter must accept false to actually quiet its surface — without
+  // this round-trip the SettingsPanel toggle is purely cosmetic.
+  it('setPaneRingEnabled(false) flips paneRingEnabled to false', () => {
+    store.getState().setPaneRingEnabled(false);
+    expect(store.getState().paneRingEnabled).toBe(false);
+  });
+
+  it('setPaneFlashEnabled(false) flips paneFlashEnabled to false', () => {
+    store.getState().setPaneFlashEnabled(false);
+    expect(store.getState().paneFlashEnabled).toBe(false);
+  });
+
+  it('setTaskbarFlashEnabled(false) flips taskbarFlashEnabled to false', () => {
+    store.getState().setTaskbarFlashEnabled(false);
+    expect(store.getState().taskbarFlashEnabled).toBe(false);
+  });
+
+  // ─── notificationSoundChoice accepts both literals ─────────────────────
+  // 'none' is the user-facing "mute the cue but keep the feature on" knob;
+  // 'default' returns to the bundled cue. The setter is the only path that
+  // mutates this field, so both literals must round-trip cleanly.
+  it('setNotificationSoundChoice(\'none\') stores \'none\'', () => {
+    store.getState().setNotificationSoundChoice('none');
+    expect(store.getState().notificationSoundChoice).toBe('none');
+  });
+
+  it('setNotificationSoundChoice(\'default\') restores \'default\' after \'none\'', () => {
+    store.getState().setNotificationSoundChoice('none');
+    expect(store.getState().notificationSoundChoice).toBe('none');
+
+    store.getState().setNotificationSoundChoice('default');
+    expect(store.getState().notificationSoundChoice).toBe('default');
+  });
+});
+
 describe('UISlice — multiview', () => {
   // toggleMultiviewWorkspace reads state.activeWorkspaceId, which lives on
   // WorkspaceSlice. The test store overlays an activeWorkspaceId field after
