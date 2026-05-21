@@ -22,6 +22,40 @@ interface PaneProps {
   isWorkspaceVisible?: boolean;
 }
 
+/**
+ * Ring state produced by the T8 notification listener policy and stored in
+ * paneSlice's `paneNotificationRing[paneId]`. `flash` is a one-shot 500ms
+ * transition (newly arrived); `glow` is the steady "still unseen" indicator.
+ */
+export type PaneRingState = 'flash' | 'glow' | null | undefined;
+
+/**
+ * Pure className composer for the pane container. Extracted so the wiring
+ * is testable without mounting the full Pane (Terminal / SurfaceTabs pull
+ * in xterm.js, electronAPI mocks, etc).
+ *
+ * Toggle model (OPTION C — see T11 brief):
+ *   - `notificationRingEnabled` gates the LEGACY unread-count pulse (callers
+ *     fold this into `hasUnread` before passing it in).
+ *   - `paneRingEnabled` gates the NEW state-machine flash/glow visual. When
+ *     it's false (or undefined while T5 is unmerged) the flash/glow classes
+ *     are dropped regardless of `ringState`.
+ */
+export function composePaneClassName(opts: {
+  hasUnread: boolean;
+  ringState: PaneRingState;
+  paneRingEnabled: boolean;
+  flashing: boolean;
+}): string {
+  const { hasUnread, ringState, paneRingEnabled, flashing } = opts;
+  const classes = ['flex', 'flex-col', 'h-full', 'w-full', 'relative', 'box-border'];
+  if (hasUnread) classes.push('notification-ring');
+  if (paneRingEnabled && ringState === 'flash') classes.push('pane-ring-flash');
+  if (paneRingEnabled && ringState === 'glow') classes.push('pane-ring-glow');
+  if (flashing) classes.push('pane-flash');
+  return classes.join(' ');
+}
+
 export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true }: PaneProps) {
   const t = useT();
   const [flashing, setFlashing] = useState(false);
@@ -40,6 +74,21 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   );
   const notificationRingEnabled = useStore((s) => s.notificationRingEnabled);
   const hasUnread = !isActive && unreadCount > 0 && notificationRingEnabled;
+
+  // ─── T11: new state-machine ring (driven by T8 listener policy) ──────────
+  // T3/T5 slice additions land separately. We read defensively so this
+  // component compiles & behaves sanely before those merges (ringState
+  // collapses to undefined → no class applied). Post-T5, `paneRingEnabled`
+  // becomes a real user-visible toggle; until then we default to true so
+  // the new visual is available as soon as the listener starts dispatching.
+  const ringState = useStore((s) => {
+    const map = (s as unknown as { paneNotificationRing?: Record<string, PaneRingState> }).paneNotificationRing;
+    return map ? map[pane.id] : undefined;
+  });
+  const paneRingEnabled = useStore((s) => {
+    const flag = (s as unknown as { paneRingEnabled?: boolean }).paneRingEnabled;
+    return flag === undefined ? true : flag;
+  });
 
   // Ctrl+Shift+H: flash the active pane
   useEffect(() => {
@@ -94,7 +143,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
   return (
     <div
-      className={`flex flex-col h-full w-full relative box-border ${hasUnread ? 'notification-ring' : ''} ${flashing ? 'pane-flash' : ''}`}
+      className={composePaneClassName({ hasUnread, ringState, paneRingEnabled, flashing })}
       style={{
         border: `1px solid ${isActive ? 'var(--accent-cursor)' : 'var(--bg-surface)'}`,
       }}
