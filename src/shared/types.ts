@@ -148,6 +148,12 @@ export interface WorkspaceMetadata {
   progress?: number;
   agentName?: string;
   agentStatus?: AgentStatus;
+  // Per-workspace notification mute (Notification System Expansion T4).
+  // Policy A4: "surface off, data preserved" — muted workspaces still
+  // record notifications in the panel, but the bell badge math excludes
+  // them, and the listener (T7) skips toast/sound/ring/flashFrame.
+  // undefined === false === not muted.
+  notificationsMuted?: boolean;
 }
 
 // === Agent status ===

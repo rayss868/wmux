@@ -84,3 +84,107 @@ describe('workspaceSlice — workspace.metadata.changed publication (review fix 
     // follow-up (see #18) — for now any update emits.
   });
 });
+
+// T4 — Notification System Expansion: per-workspace mute lives on
+// WorkspaceMetadata.notificationsMuted, written through the existing
+// generic updateWorkspaceMetadata setter (no new action needed).
+// Policy A4: surface off, data preserved — bell math and the T7 listener
+// consult this flag; the notification panel still records muted entries.
+describe('workspaceSlice — per-workspace notification mute (T4)', () => {
+  let store: ReturnType<typeof createTestStore>;
+  let wsId: string;
+
+  beforeEach(() => {
+    publishCalls.length = 0;
+    store = createTestStore();
+    wsId = store.getState().workspaces[0]?.id ?? '';
+    if (!wsId) {
+      store.getState().addWorkspace('Test');
+      wsId = store.getState().workspaces[0].id;
+    }
+  });
+
+  it('setting mute=true writes metadata.notificationsMuted = true', () => {
+    store.getState().updateWorkspaceMetadata(wsId, { notificationsMuted: true });
+
+    const ws = store.getState().workspaces.find((w) => w.id === wsId);
+    expect(ws?.metadata?.notificationsMuted).toBe(true);
+  });
+
+  it('setting mute=false writes metadata.notificationsMuted = false', () => {
+    store.getState().updateWorkspaceMetadata(wsId, { notificationsMuted: false });
+
+    const ws = store.getState().workspaces.find((w) => w.id === wsId);
+    expect(ws?.metadata?.notificationsMuted).toBe(false);
+  });
+
+  it('initializes metadata object when none exists, then sets mute', () => {
+    // Sanity: fresh workspace has no metadata object yet (createWorkspace
+    // leaves it undefined). updateWorkspaceMetadata is responsible for
+    // initializing it — this guards that contract for the mute field too.
+    const before = store.getState().workspaces.find((w) => w.id === wsId);
+    expect(before?.metadata).toBeUndefined();
+
+    store.getState().updateWorkspaceMetadata(wsId, { notificationsMuted: true });
+
+    const after = store.getState().workspaces.find((w) => w.id === wsId);
+    expect(after?.metadata).toBeDefined();
+    expect(after?.metadata?.notificationsMuted).toBe(true);
+  });
+
+  it('does not disturb other metadata fields when toggling mute', () => {
+    // Seed unrelated metadata first.
+    store.getState().updateWorkspaceMetadata(wsId, {
+      cwd: 'D:/wmux',
+      gitBranch: 'main',
+      lastNotification: 1234567890,
+    });
+
+    // Then flip mute.
+    store.getState().updateWorkspaceMetadata(wsId, { notificationsMuted: true });
+
+    const ws = store.getState().workspaces.find((w) => w.id === wsId);
+    expect(ws?.metadata?.cwd).toBe('D:/wmux');
+    expect(ws?.metadata?.gitBranch).toBe('main');
+    expect(ws?.metadata?.lastNotification).toBe(1234567890);
+    expect(ws?.metadata?.notificationsMuted).toBe(true);
+
+    // And clearing mute leaves the rest intact.
+    store.getState().updateWorkspaceMetadata(wsId, { notificationsMuted: false });
+    const ws2 = store.getState().workspaces.find((w) => w.id === wsId);
+    expect(ws2?.metadata?.cwd).toBe('D:/wmux');
+    expect(ws2?.metadata?.gitBranch).toBe('main');
+    expect(ws2?.metadata?.lastNotification).toBe(1234567890);
+    expect(ws2?.metadata?.notificationsMuted).toBe(false);
+  });
+
+  it('setting mute on a non-existent workspaceId is a silent no-op (no throw)', () => {
+    expect(() =>
+      store.getState().updateWorkspaceMetadata('does-not-exist', { notificationsMuted: true }),
+    ).not.toThrow();
+
+    // And nothing was published.
+    expect(publishCalls).toHaveLength(0);
+
+    // And the real workspace is unaffected.
+    const ws = store.getState().workspaces.find((w) => w.id === wsId);
+    expect(ws?.metadata?.notificationsMuted).toBeUndefined();
+  });
+
+  it('toggling true → false → true preserves correct state across cycles', () => {
+    store.getState().updateWorkspaceMetadata(wsId, { notificationsMuted: true });
+    expect(
+      store.getState().workspaces.find((w) => w.id === wsId)?.metadata?.notificationsMuted,
+    ).toBe(true);
+
+    store.getState().updateWorkspaceMetadata(wsId, { notificationsMuted: false });
+    expect(
+      store.getState().workspaces.find((w) => w.id === wsId)?.metadata?.notificationsMuted,
+    ).toBe(false);
+
+    store.getState().updateWorkspaceMetadata(wsId, { notificationsMuted: true });
+    expect(
+      store.getState().workspaces.find((w) => w.id === wsId)?.metadata?.notificationsMuted,
+    ).toBe(true);
+  });
+});
