@@ -7,11 +7,13 @@ export interface NotificationSlice {
   notifications: Notification[];
   addNotification: (notification: Omit<Notification, 'id' | 'timestamp' | 'read'>) => void;
   markRead: (id: string) => void;
+  markAllRead: () => void;
   markAllReadForWorkspace: (workspaceId: string) => void;
+  jumpToUnread: () => string | null;
   clearNotifications: () => void;
 }
 
-export const createNotificationSlice: StateCreator<StoreState, [['zustand/immer', never]], [], NotificationSlice> = (set) => ({
+export const createNotificationSlice: StateCreator<StoreState, [['zustand/immer', never]], [], NotificationSlice> = (set, get) => ({
   notifications: [],
 
   addNotification: (notification) => set((state: StoreState) => {
@@ -21,7 +23,7 @@ export const createNotificationSlice: StateCreator<StoreState, [['zustand/immer'
       timestamp: Date.now(),
       read: false,
     });
-    // 500개 초과 시 읽은 오래된 알림 제거
+    // Cap 500 chosen for daemon long-running sessions; eviction prefers read entries (line 26-32).
     if (state.notifications.length > 500) {
       const readOld = state.notifications.findIndex((n) => n.read);
       if (readOld !== -1) {
@@ -44,11 +46,31 @@ export const createNotificationSlice: StateCreator<StoreState, [['zustand/immer'
     if (notif) notif.read = true;
   }),
 
+  markAllRead: () => set((state: StoreState) => {
+    for (const n of state.notifications) {
+      n.read = true;
+    }
+  }),
+
   markAllReadForWorkspace: (workspaceId) => set((state: StoreState) => {
     for (const n of state.notifications) {
       if (n.workspaceId === workspaceId) n.read = true;
     }
   }),
+
+  jumpToUnread: () => {
+    const state = get();
+    const alive = new Set(state.workspaces.map((w) => w.id));
+    let best: Notification | null = null;
+    for (const n of state.notifications) {
+      if (n.read) continue;
+      if (!alive.has(n.workspaceId)) continue;
+      if (best === null || n.timestamp > best.timestamp) {
+        best = n;
+      }
+    }
+    return best ? best.workspaceId : null;
+  },
 
   clearNotifications: () => set((state: StoreState) => {
     state.notifications = [];
