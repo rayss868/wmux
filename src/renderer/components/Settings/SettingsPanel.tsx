@@ -1298,6 +1298,242 @@ function TabAppearance() {
   );
 }
 
+// ─── Notifications tab (pure presentational + container) ────────────────────
+//
+// The view is split into a pure `NotificationsView` component (props in, JSX
+// out) and a `TabNotifications` container that wires the view to the store.
+//
+// Why split? The repo's vitest config runs in a `node` env without a DOM
+// library, so the existing test pattern (see SettingsPanel.firstRunSection
+// test) drives presentational components through `renderToStaticMarkup` and
+// exercises handlers directly. Extracting the view keeps that test surface.
+
+/** Minimal workspace summary the notifications view needs — name + mute flag. */
+export interface NotificationsViewWorkspaceRow {
+  id: string;
+  name: string;
+  muted: boolean;
+}
+
+export interface NotificationsViewProps {
+  // Existing notification toggles
+  notificationSoundEnabled: boolean;
+  onToggleNotificationSound: () => void;
+  toastEnabled: boolean;
+  onChangeToastEnabled: (v: boolean) => void;
+  notificationRingEnabled: boolean;
+  onChangeNotificationRingEnabled: (v: boolean) => void;
+
+  // T12 — 4 new toggles
+  paneRingEnabled: boolean;
+  onChangePaneRingEnabled: (v: boolean) => void;
+  paneFlashEnabled: boolean;
+  onChangePaneFlashEnabled: (v: boolean) => void;
+  taskbarFlashEnabled: boolean;
+  onChangeTaskbarFlashEnabled: (v: boolean) => void;
+  notificationSoundChoice: 'default' | 'none';
+  onChangeNotificationSoundChoice: (choice: 'default' | 'none') => void;
+
+  // T12 — per-workspace mute list
+  workspaces: NotificationsViewWorkspaceRow[];
+  onChangeWorkspaceMuted: (workspaceId: string, muted: boolean) => void;
+
+  // Translator — injected so the pure view can render with the live
+  // `useT()` translator in production and a static stub in tests.
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}
+
+/**
+ * Pure presentational notifications settings block.
+ *
+ * Renders the global notification toggles (sound, toast, ring + 3 new T12
+ * toggles + 1 sound-choice radio group) followed by the per-workspace mute
+ * list. Exported so tests can drive it through `renderToStaticMarkup`.
+ */
+export function NotificationsView(props: NotificationsViewProps) {
+  const {
+    notificationSoundEnabled, onToggleNotificationSound,
+    toastEnabled, onChangeToastEnabled,
+    notificationRingEnabled, onChangeNotificationRingEnabled,
+    paneRingEnabled, onChangePaneRingEnabled,
+    paneFlashEnabled, onChangePaneFlashEnabled,
+    taskbarFlashEnabled, onChangeTaskbarFlashEnabled,
+    notificationSoundChoice, onChangeNotificationSoundChoice,
+    workspaces, onChangeWorkspaceMuted,
+    t,
+  } = props;
+
+  return (
+    <div className="flex flex-col gap-4" data-testid="notifications-settings-section">
+      {/* Global behavior */}
+      <div className="flex flex-col gap-2">
+        <SectionLabel label={t('settings.notificationBehavior')} />
+        <SettingRow label={t('settings.sound')} description={t('settings.soundDesc')}>
+          <Toggle
+            checked={notificationSoundEnabled}
+            onChange={() => onToggleNotificationSound()}
+            label={t('settings.sound')}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.toast')} description={t('settings.toastDesc')}>
+          <Toggle
+            checked={toastEnabled}
+            onChange={onChangeToastEnabled}
+            label={t('settings.toast')}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.ring')} description={t('settings.ringDesc')}>
+          <Toggle
+            checked={notificationRingEnabled}
+            onChange={onChangeNotificationRingEnabled}
+            label={t('settings.ring')}
+          />
+        </SettingRow>
+
+        {/* T12 — Pane ring */}
+        <SettingRow label={t('settings.paneRing')} description={t('settings.paneRingDesc')}>
+          <Toggle
+            checked={paneRingEnabled}
+            onChange={onChangePaneRingEnabled}
+            label={t('settings.paneRing')}
+          />
+        </SettingRow>
+
+        {/* T12 — Pane flash */}
+        <SettingRow label={t('settings.paneFlash')} description={t('settings.paneFlashDesc')}>
+          <Toggle
+            checked={paneFlashEnabled}
+            onChange={onChangePaneFlashEnabled}
+            label={t('settings.paneFlash')}
+          />
+        </SettingRow>
+
+        {/* T12 — Taskbar flash */}
+        <SettingRow label={t('settings.taskbarFlash')} description={t('settings.taskbarFlashDesc')}>
+          <Toggle
+            checked={taskbarFlashEnabled}
+            onChange={onChangeTaskbarFlashEnabled}
+            label={t('settings.taskbarFlash')}
+          />
+        </SettingRow>
+
+        {/* T12 — Notification sound choice (radio group, not a toggle) */}
+        <div
+          className="px-3 py-2.5 rounded-lg"
+          style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+          data-testid="notification-sound-choice-row"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0 mr-3">
+              <p className="text-sm text-[color:var(--text-main)]" id="notification-sound-choice-label">
+                {t('settings.notificationSoundChoice')}
+              </p>
+              <p
+                className="text-[11px] text-[color:var(--text-muted)] mt-0.5"
+                id="notification-sound-choice-desc"
+              >
+                {t('settings.notificationSoundChoiceDesc')}
+              </p>
+            </div>
+            <div
+              role="radiogroup"
+              aria-labelledby="notification-sound-choice-label"
+              aria-describedby="notification-sound-choice-desc"
+              className="flex items-center gap-3 shrink-0"
+            >
+              <label className="flex items-center gap-1.5 text-xs text-[color:var(--text-sub)] cursor-pointer">
+                <input
+                  type="radio"
+                  name="notification-sound-choice"
+                  value="default"
+                  checked={notificationSoundChoice === 'default'}
+                  aria-describedby="notification-sound-choice-desc"
+                  onChange={() => onChangeNotificationSoundChoice('default')}
+                />
+                {t('settings.notificationSoundChoiceDefault')}
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-[color:var(--text-sub)] cursor-pointer">
+                <input
+                  type="radio"
+                  name="notification-sound-choice"
+                  value="none"
+                  checked={notificationSoundChoice === 'none'}
+                  aria-describedby="notification-sound-choice-desc"
+                  onChange={() => onChangeNotificationSoundChoice('none')}
+                />
+                {t('settings.notificationSoundChoiceNone')}
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* T12 — Per-workspace mute list */}
+      <div className="flex flex-col gap-2" data-testid="per-workspace-mute-section">
+        <SectionLabel label={t('settings.perWorkspaceNotifications')} />
+        <p className="text-[11px] text-[color:var(--text-muted)] px-1">
+          {t('settings.perWorkspaceNotificationsDesc')}
+        </p>
+        {workspaces.length === 0 ? (
+          <p
+            className="text-[11px] text-[color:var(--text-muted)] px-3 py-2 rounded-lg"
+            style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+            data-testid="per-workspace-mute-empty"
+          >
+            {t('settings.perWorkspaceNotificationsEmpty')}
+          </p>
+        ) : (
+          <div
+            className="rounded-lg overflow-hidden flex flex-col"
+            style={{
+              backgroundColor: 'var(--bg-mantle)',
+              border: '1px solid var(--bg-surface)',
+              maxHeight: 240,
+              overflowY: 'auto',
+            }}
+          >
+            {workspaces.map((ws, idx) => {
+              const labelId = `workspace-mute-label-${ws.id}`;
+              const descId = `workspace-mute-desc-${ws.id}`;
+              return (
+                <label
+                  key={ws.id}
+                  htmlFor={`workspace-mute-${ws.id}`}
+                  className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-[color:var(--bg-surface)] transition-colors"
+                  style={{
+                    borderTop: idx === 0 ? 'none' : '1px solid var(--bg-surface)',
+                  }}
+                  data-testid={`per-workspace-mute-row-${ws.id}`}
+                >
+                  <div className="min-w-0 mr-3">
+                    <p className="text-sm text-[color:var(--text-main)] truncate" id={labelId}>
+                      {t('settings.muteWorkspace', { name: ws.name })}
+                    </p>
+                    <p className="text-[10px] text-[color:var(--text-muted)] font-mono truncate" id={descId}>
+                      {ws.name}
+                    </p>
+                  </div>
+                  <input
+                    id={`workspace-mute-${ws.id}`}
+                    type="checkbox"
+                    checked={ws.muted}
+                    aria-labelledby={labelId}
+                    aria-describedby={descId}
+                    onChange={(e) => onChangeWorkspaceMuted(ws.id, e.target.checked)}
+                    data-testid={`per-workspace-mute-checkbox-${ws.id}`}
+                    className="shrink-0 accent-[color:var(--accent-blue)] cursor-pointer"
+                    style={{ width: 16, height: 16 }}
+                  />
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TabNotifications() {
   const t = useT();
   const notificationSoundEnabled  = useStore((s) => s.notificationSoundEnabled);
@@ -1307,31 +1543,48 @@ function TabNotifications() {
   const notificationRingEnabled   = useStore((s) => s.notificationRingEnabled);
   const setNotificationRingEnabled = useStore((s) => s.setNotificationRingEnabled);
 
+  // T12 fields
+  const paneRingEnabled          = useStore((s) => s.paneRingEnabled);
+  const setPaneRingEnabled       = useStore((s) => s.setPaneRingEnabled);
+  const paneFlashEnabled         = useStore((s) => s.paneFlashEnabled);
+  const setPaneFlashEnabled      = useStore((s) => s.setPaneFlashEnabled);
+  const taskbarFlashEnabled      = useStore((s) => s.taskbarFlashEnabled);
+  const setTaskbarFlashEnabled   = useStore((s) => s.setTaskbarFlashEnabled);
+  const notificationSoundChoice  = useStore((s) => s.notificationSoundChoice);
+  const setNotificationSoundChoice = useStore((s) => s.setNotificationSoundChoice);
+
+  const workspaces = useStore((s) => s.workspaces);
+  const updateWorkspaceMetadata = useStore((s) => s.updateWorkspaceMetadata);
+
+  const workspaceRows: NotificationsViewWorkspaceRow[] = useMemo(
+    () => workspaces.map((ws) => ({
+      id: ws.id,
+      name: ws.name,
+      muted: ws.metadata?.notificationsMuted ?? false,
+    })),
+    [workspaces],
+  );
+
   return (
-    <div className="flex flex-col gap-2">
-      <SectionLabel label={t('settings.notificationBehavior')} />
-      <SettingRow label={t('settings.sound')} description={t('settings.soundDesc')}>
-        <Toggle
-          checked={notificationSoundEnabled}
-          onChange={() => toggleNotificationSound()}
-          label={t('settings.sound')}
-        />
-      </SettingRow>
-      <SettingRow label={t('settings.toast')} description={t('settings.toastDesc')}>
-        <Toggle
-          checked={toastEnabled}
-          onChange={setToastEnabled}
-          label={t('settings.toast')}
-        />
-      </SettingRow>
-      <SettingRow label={t('settings.ring')} description={t('settings.ringDesc')}>
-        <Toggle
-          checked={notificationRingEnabled}
-          onChange={setNotificationRingEnabled}
-          label={t('settings.ring')}
-        />
-      </SettingRow>
-    </div>
+    <NotificationsView
+      t={t}
+      notificationSoundEnabled={notificationSoundEnabled}
+      onToggleNotificationSound={toggleNotificationSound}
+      toastEnabled={toastEnabled}
+      onChangeToastEnabled={setToastEnabled}
+      notificationRingEnabled={notificationRingEnabled}
+      onChangeNotificationRingEnabled={setNotificationRingEnabled}
+      paneRingEnabled={paneRingEnabled}
+      onChangePaneRingEnabled={setPaneRingEnabled}
+      paneFlashEnabled={paneFlashEnabled}
+      onChangePaneFlashEnabled={setPaneFlashEnabled}
+      taskbarFlashEnabled={taskbarFlashEnabled}
+      onChangeTaskbarFlashEnabled={setTaskbarFlashEnabled}
+      notificationSoundChoice={notificationSoundChoice}
+      onChangeNotificationSoundChoice={setNotificationSoundChoice}
+      workspaces={workspaceRows}
+      onChangeWorkspaceMuted={(id, muted) => updateWorkspaceMetadata(id, { notificationsMuted: muted })}
+    />
   );
 }
 
