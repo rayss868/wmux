@@ -117,20 +117,11 @@
 - **Depends on:** None.
 - **Priority:** P3 (purely a maintenance nit)
 
-## (P3) Pre-existing daemon ProcessMonitor flake
-- **What:** `src/daemon/__tests__/ProcessMonitor.test.ts > watch calls onDead
-  when process does not exist` times out under CPU-contention conditions in
-  the full vitest suite, but passes 11/11 in isolation.
-- **Why:** Flake is purely a CPU-contention timeout in the Windows process
-  probe. Surfaces in ~1 in 5 full-suite runs. Completely unrelated to
-  notification work but flagged in three separate Phase 3 reviews (T9, T11,
-  T12) so worth tracking.
-- **Pros:** Reduces CI flake noise + future review confusion.
-- **Cons:** Daemon process probing is timing-sensitive; lengthening timeout
-  may mask a real regression. Investigation required first.
-- **Context:** `src/daemon/__tests__/ProcessMonitor.test.ts` line ~24 onwards.
-  Likely fix: bump the timeout (currently 5000ms; full-suite run takes ~14s
-  for the daemon block alone). Verify the test still catches an actual dead
-  process.
-- **Depends on:** None.
-- **Priority:** P3 (CI hygiene)
+<!-- (P3) Pre-existing daemon ProcessMonitor flake — RESOLVED 2026-05-22.
+     Root cause: watch() relied on the CHECK_INTERVAL_MS setInterval tick
+     for the first probe; under CPU contention a 50ms interval + two tasklist
+     execs (1-6s each) could exceed the test's 5s default it() timeout.
+     Fix: watch() now triggers an immediate first runBatchCheck (production
+     code) AND the test's outer it() timeout is bumped to 20s with a 15s
+     vi.waitFor budget. Verified stable across 5 consecutive full-suite runs. -->
+

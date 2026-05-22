@@ -31,14 +31,18 @@ describe('ProcessMonitor', () => {
       // Watch a PID that does not exist
       monitor.watch('sess-fake', 99999999, onDead);
 
-      // Wait for the async check to complete
+      // Wait for the async check to complete. On Windows, watch() now triggers
+      // an immediate first runBatchCheck (ProcessMonitor.ts), but tasklist
+      // exec under CI CPU contention can take 1-6s per call and the cycle
+      // does two of them (batch + per-PID re-verify). 15s buffer keeps this
+      // robust against parallel-suite latency without masking real bugs.
       await vi.waitFor(() => {
         expect(onDead).toHaveBeenCalledTimes(1);
-      }, { timeout: 5000 });
+      }, { timeout: 15000 });
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
     }
-  });
+  }, 20000); // outer it() timeout — must exceed waitFor's 15s budget
 
   it('unwatch stops monitoring a session', async () => {
     monitor = new ProcessMonitor();
