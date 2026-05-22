@@ -823,6 +823,27 @@ app.on('before-quit', async (e) => {
   destroyTray();
 
   app.quit(); // re-trigger quit — isQuitting flag skips preventDefault
+
+  // Hard-exit guarantee against helper-orphan zombies. If `app.quit()` does
+  // not finalize within 1.5s — pipeServer.stop() hanging on a stuck pipe,
+  // a detached webview blocking will-quit, ConPTY/OSC 7 finalization
+  // stalling, or any future cleanup path that races a daemon disconnect —
+  // force the process down so no Electron helper survives as an orphan.
+  //
+  // The graceful path (will-quit → quit → exit) almost always completes
+  // well under 1.5s; this timer only fires when something hangs. unref()
+  // makes the timer non-blocking so a normal quit isn't held open by it.
+  //
+  // Without this, dev (`npm start`) Ctrl+C and prod tray-Quit both leak
+  // helper processes (renderer / GPU / utility) — observed locally as
+  // 16-helper orphans dating back days and reproducible by repeated start
+  // + quit cycles. See user dogfood 2026-05-22 zombie cleanup audit.
+  const forceExitTimer = setTimeout(() => {
+    console.warn('[Main] app.quit() did not finalize in 1.5s — forcing app.exit(0)');
+    logLine('warn', 'main', 'before-quit force-exit fallback fired (1.5s)');
+    app.exit(0);
+  }, 1500);
+  forceExitTimer.unref();
 });
 
 // Windows-specific: handle OS shutdown/logoff/restart.
