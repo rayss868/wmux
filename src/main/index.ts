@@ -8,7 +8,7 @@ process.on('uncaughtException', (err) => {
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron';
-import { createWindow } from './window/createWindow';
+import { createWindow, loadMainRenderer } from './window/createWindow';
 import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
 import { registerAllHandlers } from './ipc/registerHandlers';
@@ -382,9 +382,22 @@ app.on('ready', async () => {
       : path.join(__dirname, '..', '..', 'assets', 'icon.png'),
   });
 
-  mainWindow = createWindow();
-  console.log(`[Main] Window created: ${!!mainWindow}`);
-  logLine('info', 'main', `window created: present=${!!mainWindow}`);
+  // First-launch race fix: create the BrowserWindow but DEFER renderer
+  // navigation until after the daemon bootstrap completes below. Loading
+  // the renderer here used to race the LOCAL→DAEMON handler swap inside
+  // `DaemonRespawnController.bootstrap()` — on fresh PCs the daemon spawn
+  // stretches into hundreds of ms (Defender realtime scan + ASAR cold
+  // cache + ConPTY cold start), and any `pty.write` issued from a renderer
+  // that mounted in LOCAL mode but reached the DAEMON-swapped handler
+  // silently dropped because `sessionPipes.get('pty-N')` is undefined.
+  // Symptom: "first keystroke doesn't register" / "only the first
+  // keystroke registers" on cold-start. Deferring navigation closes the
+  // race window at the cost of a brief solid-color window during the
+  // first daemon spawn — `backgroundColor: '#1e1e2e'` keeps that visible
+  // bridge inoffensive.
+  mainWindow = createWindow({ deferLoad: true });
+  console.log(`[Main] Window created (renderer load deferred): ${!!mainWindow}`);
+  logLine('info', 'main', `window created (deferred): present=${!!mainWindow}`);
 
   // Relay renderer console messages (warn + error) into the persistent log
   // file so renderer-side instrumentation (e.g. useTerminal scrollback
@@ -525,7 +538,24 @@ app.on('ready', async () => {
   // mainWindow.reload() recovery paths (renderer crash, unresponsive,
   // did-fail-load) still get a truthful answer instead of deadlocking
   // on a one-shot event the previous preload instance consumed.
+  // Order matters: mark ready BEFORE loading the renderer so the very
+  // first `daemon.whenReady()` invoke from the renderer resolves on its
+  // synchronous path (no pending-resolver queueing) and AppLayout can
+  // reconcile immediately against the now-stable handler topology.
   markDaemonReady();
+
+  // First-launch race fix companion: now that `cleanupHandlers` reflects
+  // the final daemon-vs-local handler topology and `markDaemonReady()`
+  // has unblocked future `daemon.whenReady()` calls, it is safe to load
+  // the renderer. Every subsequent `pty.create` from the renderer will
+  // be routed by the correct handler and produce a correctly-formatted
+  // id (`daemon-XX` in daemon mode, `pty-N` in local mode) — eliminating
+  // the LOCAL-id-into-DAEMON-handler silent-drop race documented above
+  // the `createWindow({ deferLoad: true })` call.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    loadMainRenderer(mainWindow);
+    logLine('info', 'main', 'renderer load triggered after daemon bootstrap');
+  }
 
   // Handle system sleep/wake — verify PTY processes survived.
   //

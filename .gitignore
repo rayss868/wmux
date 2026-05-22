@@ -107,6 +107,7 @@ Thumbs.db
 .claude/
 .context/
 .gstack/
+.team/
 
 # Private roadmap / strategy docs (not for public repo)
 docs/EDITIONS.md

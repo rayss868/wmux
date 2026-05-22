@@ -8,7 +8,43 @@ import { attachFlashFrameAutoClear } from './flashFrame';
 const iconExt = platformChoice<string>({ win: 'ico', mac: 'icns', linux: 'png', default: 'png' });
 const iconFile = `icon.${iconExt}`;
 
-export function createWindow(): BrowserWindow {
+/**
+ * Load the main renderer (Vite dev server in development, packaged HTML file
+ * in production) into an existing BrowserWindow.
+ *
+ * Exposed as a standalone export so the first-launch path in `app.on('ready')`
+ * can DEFER navigation until after `DaemonRespawnController.bootstrap()`
+ * finishes. Loading the renderer before the daemon is connected opens a
+ * race window where the renderer mounts in LOCAL mode (pty-N ids) while the
+ * IPC handler swap to DAEMON mode happens mid-mount — subsequent
+ * `pty.write` calls then carry LOCAL-prefix ids into the DAEMON handler,
+ * which silently drops them inside `DaemonClient.writeToSession` because
+ * `sessionPipes.get('pty-N')` is undefined. Symptom: "first keystroke
+ * doesn't register" or "only the first keystroke registers" on cold-start
+ * over fresh installs, where Defender realtime scan + ASAR cold cache push
+ * daemon spawn into the hundreds-of-ms range.
+ */
+export function loadMainRenderer(mainWindow: BrowserWindow): void {
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+  } else {
+    mainWindow.loadFile(
+      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
+    );
+  }
+}
+
+/**
+ * Create the main BrowserWindow with all wmux-specific webPreferences,
+ * security hardening, and event wiring.
+ *
+ * Pass `opts.deferLoad: true` to skip the renderer navigation. The caller
+ * MUST then call `loadMainRenderer(window)` once it is safe to mount the
+ * renderer — see `loadMainRenderer` for the rationale. The macOS
+ * `app.on('activate')` re-open path leaves `deferLoad` unset because the
+ * daemon is already healthy by the time activate fires.
+ */
+export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow {
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -27,12 +63,8 @@ export function createWindow(): BrowserWindow {
     },
   });
 
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
-  } else {
-    mainWindow.loadFile(
-      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
-    );
+  if (!opts.deferLoad) {
+    loadMainRenderer(mainWindow);
   }
 
   // CSP header — production only.
