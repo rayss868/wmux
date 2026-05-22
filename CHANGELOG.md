@@ -5,6 +5,72 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.1] — 2026-05-22 — Notification system expansion + CI hardening
+
+Five-surface notification system (StatusBar bell, pane border ring, Windows
+taskbar flash, in-app toast, sidebar dot) with per-workspace mute, four new
+user settings, and a pure-function policy refactor of the notification
+dispatcher. Two CI hardening fixes also land.
+
+### Added
+
+- **NotificationBell on StatusBar.** The existing `● {unreadCount}` element is
+  now a clickable accessible button (native `<button>`, dynamic `aria-label`,
+  focus-visible outline, 24x24 minimum click area, 999+ clipping). Click opens
+  the notification panel.
+- **Pane NotificationRing.** Per-pane state machine: flash 500ms → glow steady
+  → cleared on focus or read. Honors `prefers-reduced-motion` (instant
+  transitions) and `forced-colors: active` (Windows high-contrast 2px border).
+- **Auto-markRead on pane focus.** Clicking a pane marks its notifications read
+  and clears the ring entry — but only if at least one notification was
+  actually marked, so plain focus clicks don't wipe a fresh flash.
+- **Relative time format in NotificationPanel.** Replaces `hh:mm` with
+  `just now` / `Xm ago` / `Xh ago` / `Xd ago` / local date. Future-skew safe.
+- **Taskbar flashFrame on Windows.** Window unfocused + new notification
+  arrives → taskbar flashes for attention. Auto-clears on window focus.
+  `BrowserWindow.isDestroyed()` guard prevents Electron throw.
+- **Per-workspace mute.** Each workspace can be muted from SettingsPanel.
+  Muted workspaces still record notifications in the panel; bell badge
+  excludes them; toast/sound/ring/flashFrame are suppressed.
+- **Four new settings toggles.** Pane ring on/off, pane flash on/off,
+  taskbar flash on/off, notification sound choice (default/none).
+- **`markAllRead()` global + `jumpToUnread()` selector.** Global mark-all
+  button in NotificationPanel (separate from the existing per-workspace one).
+  `jumpToUnread` navigates to the most recent unread workspace without
+  marking read.
+- **NotificationPanel a11y.** `role="dialog"`, initial focus on first unread,
+  Esc closes, Tab cycles, screen-reader announces "{type}, {title},
+  {timeAgo}, {read|unread}" per row.
+
+### Fixed
+
+- **Notification ring lifecycle.** Ring entries are now cleared on every
+  user-action read path (`Pane.handleClick`, `markAllRead`,
+  `setActiveWorkspace`, `removeWorkspace`) so panes can no longer get stuck
+  in 'glow' after the user already handled the notification.
+- **Listener refactor.** `useNotificationListener` is now a thin IPC
+  dispatcher that delegates decisions to `useNotificationPolicy` (pure
+  function, testable in isolation). Replaces the module-scope mutable
+  `lastSoundTime` map with `createThrottler(ms)` closures (per-NotificationType
+  for sound, global 500ms for flashFrame burst protection).
+- **`runSnapshotOnce` test 7-day time bomb.** The test used a hardcoded
+  `lastActivity: '2026-05-15T00:00:00Z'` for a suspended session, which
+  `SUSPENDED_TTL_HOURS = 168` pruned exactly 7 days later. Test now uses a
+  dynamic `Date.now() - 1h` so the fixture never expires.
+- **`ProcessMonitor` CI flake.** `watch()` left the first probe to the first
+  `setInterval` tick; under CI CPU contention two `tasklist` execs could
+  exceed the test's 5s timeout. `watch()` now triggers an immediate first
+  probe (production benefit: dead-PID detection is no longer up-to-5s
+  delayed). Test timeout bumped to 20s with documented latency reasoning.
+
+### Internal
+
+- 12 IRON-RULE regression tests lock down previously untested but correct
+  behavior in the notification stack (cap eviction, throttle, target
+  resolution, active-surface skip, toggle plumbing).
+- Test suite total: 1665 tests, 136 files. Five consecutive stable
+  full-suite runs verified post-fix.
+
 ## [2.10.0] — 2026-05-18 — tmux prefix expansion + 16 new locales
 
 This release rounds out the tmux-style prefix layer with pass-through and three new
