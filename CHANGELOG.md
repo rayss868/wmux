@@ -5,6 +5,51 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.2] — 2026-05-22 — First-launch input race fix + helper-orphan cleanup
+
+Two prod-only bugs surfaced during fresh-PC dogfood of v2.10.1. Neither
+reproduced under dev (`npm start`) because the vite dev-server load delay
+hides the underlying daemon-bootstrap timing.
+
+### Fixed
+
+- **First-launch keystroke loss on fresh installs.** v2.10.1's
+  `DaemonRespawnController` introduced a race between renderer mount and
+  the LOCAL→DAEMON IPC handler swap. On cold-start PCs the daemon spawn
+  stretches into hundreds of ms (Defender realtime scan + ASAR cold cache
+  + ConPTY cold start), wide enough for the renderer to mount and reach
+  handler-swap mid-startup. Any `pty.write` that carried a LOCAL-prefix
+  id (`pty-N`) into the DAEMON handler was silently dropped because
+  `sessionPipes.get('pty-N')` is undefined — manifesting as "the first
+  keystroke does not register" or "only the first keystroke registers"
+  on the very first session. Fix splits renderer navigation out of
+  `createWindow()` into a standalone `loadMainRenderer()` export and
+  defers the call until after `bootstrap()` returns and
+  `markDaemonReady()` has unblocked `daemon.whenReady()`. Every
+  `pty.create` from the renderer now hits a stable handler topology and
+  produces a correctly-prefixed id. The macOS `app.on('activate')`
+  re-open path keeps the immediate-load default because the daemon is
+  already healthy by then.
+
+- **Helper-orphan zombies on quit.** `before-quit` has five awaits
+  (renderer save, sleep, daemon shutdown race up to 8s, disconnect,
+  cleanup) before `app.quit()`. Any hang (stuck `pipeServer.stop()`,
+  detached webview blocking `will-quit`, ConPTY/OSC 7 finalization
+  stall) leaves Electron's renderer / GPU / utility helpers as orphans.
+  On Windows the dev `npm start` Ctrl+C path also leaks helpers because
+  SIGINT only reaches `npm.exe`, not the electron tree. Reproduced
+  locally as 20-helper orphan buildup spanning days. Add a 1.5s
+  `setTimeout` after `app.quit()` that calls `app.exit(0)` if the
+  graceful path has not finalized; `unref()` keeps the timer
+  non-blocking so a normal sub-second quit isn't held open. The
+  graceful path is unchanged — this only fires on hang.
+
+### Internal
+
+- `.team/` added to `.gitignore` so worktree coordination metadata
+  cannot leak into future commits — matches the existing `.claude/` /
+  `.gstack/` exclusions (Codex `/codex review` P2 finding).
+
 ## [2.10.1] — 2026-05-22 — Notification system expansion + CI hardening
 
 Five-surface notification system (StatusBar bell, pane border ring, Windows
