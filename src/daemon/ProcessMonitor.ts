@@ -105,6 +105,10 @@ export class ProcessMonitor {
     this.unwatch(sessionId);
     this.watchedPids.set(sessionId, { pid, onDead });
     this.ensureBatchInterval();
+    // Immediate first check so a PID that is already dead at watch() time
+    // doesn't have to wait CHECK_INTERVAL_MS for the first interval tick.
+    // batchRunning guards against concurrent overlap with a running cycle.
+    void this.runBatchCheck();
   }
 
   /** Stop monitoring a specific session. */
