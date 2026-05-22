@@ -106,6 +106,18 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (state.workspaces.length <= 1) return;
       const idx = state.workspaces.findIndex((w: Workspace) => w.id === id);
       if (idx === -1) return;
+      // Drop ring state for every leaf pane in the removed workspace. closePane
+      // covers the user-driven path; this mirrors the same invariant for
+      // workspace-level deletion (Sidebar X, Ctrl+Shift+W, SettingsPanel reset)
+      // so stale paneIds can't render a phantom ring after their tree is gone.
+      if (state.paneNotificationRing) {
+        const removedWs = state.workspaces[idx];
+        const collectLeafIdsFromPane = (p: Pane): string[] =>
+          p.type === 'leaf' ? [p.id] : p.children.flatMap(collectLeafIdsFromPane);
+        for (const pid of collectLeafIdsFromPane(removedWs.rootPane)) {
+          delete state.paneNotificationRing[pid];
+        }
+      }
       state.workspaces.splice(idx, 1);
       if (state.activeWorkspaceId === id) {
         state.activeWorkspaceId = state.workspaces[Math.min(idx, state.workspaces.length - 1)].id;
@@ -124,6 +136,21 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (Array.isArray(state.notifications)) {
         for (const n of state.notifications) {
           if (n.workspaceId === id && !n.read) n.read = true;
+        }
+      }
+      // Same lifecycle clear for the visual ring — once a workspace is
+      // activated and its notifications auto-mark as read, the per-pane
+      // ring state must also collapse, otherwise rings stay 'glow'
+      // forever on the newly visible workspace. paneSlice is also
+      // guarded for tests that mount workspaceSlice in isolation.
+      if (state.paneNotificationRing) {
+        const activatedWs = state.workspaces.find((w: Workspace) => w.id === id);
+        if (activatedWs) {
+          const collectLeafIdsFromPane = (p: Pane): string[] =>
+            p.type === 'leaf' ? [p.id] : p.children.flatMap(collectLeafIdsFromPane);
+          for (const pid of collectLeafIdsFromPane(activatedWs.rootPane)) {
+            delete state.paneNotificationRing[pid];
+          }
         }
       }
       // multiviewIds is intentionally preserved here. AppLayout renders the

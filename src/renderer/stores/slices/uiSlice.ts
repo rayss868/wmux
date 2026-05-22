@@ -101,6 +101,39 @@ export interface UISlice {
   notificationRingEnabled: boolean;
   setNotificationRingEnabled: (enabled: boolean) => void;
 
+  // ─── Notification surface toggles (T5) ───────────────────────────────────
+  // Distinct knobs so users can quiet individual surfaces without disabling
+  // the underlying notification feature. Mirrors the non-persisting shape of
+  // notificationRingEnabled / notificationSoundEnabled rather than the
+  // IPC-persisting toastEnabled — the SettingsPanel reset path lives in the
+  // same family as the other notification toggles.
+  //
+  // paneRingEnabled: master gate for the pane border ring animation that
+  //   triggers on notifications. When false, NotifyEvents that would normally
+  //   light up a pane border are dropped at the renderer dispatch layer.
+  // paneFlashEnabled: controls the flash sub-animation on top of the ring.
+  //   When false, the ring stays in a static glow rather than pulsing.
+  //   Independent of paneRingEnabled — both can be on/off in any combo.
+  // taskbarFlashEnabled: gates the Electron window.flashFrame() call from
+  //   the main process. The main-side hook (T6) reads this flag through the
+  //   notification dispatch payload.
+  // notificationSoundChoice: 'default' picks the bundled cue; 'none' suppresses
+  //   sound regardless of notificationSoundEnabled. We keep both flags because
+  //   the boolean is the "feature gate" while the choice is the "selected cue".
+  //   Per DESIGN review, the toggle UI exposes the choice; advanced users keep
+  //   the boolean as a master mute.
+  paneRingEnabled: boolean;
+  setPaneRingEnabled: (enabled: boolean) => void;
+
+  paneFlashEnabled: boolean;
+  setPaneFlashEnabled: (enabled: boolean) => void;
+
+  taskbarFlashEnabled: boolean;
+  setTaskbarFlashEnabled: (enabled: boolean) => void;
+
+  notificationSoundChoice: 'default' | 'none';
+  setNotificationSoundChoice: (choice: 'default' | 'none') => void;
+
   // ─── Multiview ─────────────────────────────────────────────────────────
   multiviewIds: string[];
   toggleMultiviewWorkspace: (wsId: string) => void;
@@ -425,6 +458,31 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setNotificationRingEnabled: (enabled) => set((state) => {
     state.notificationRingEnabled = enabled;
+  }),
+
+  // ─── Notification surface toggles (T5) ───────────────────────────────────
+  paneRingEnabled: true,
+
+  setPaneRingEnabled: (enabled) => set((state) => {
+    state.paneRingEnabled = enabled;
+  }),
+
+  paneFlashEnabled: true,
+
+  setPaneFlashEnabled: (enabled) => set((state) => {
+    state.paneFlashEnabled = enabled;
+  }),
+
+  taskbarFlashEnabled: true,
+
+  setTaskbarFlashEnabled: (enabled) => set((state) => {
+    state.taskbarFlashEnabled = enabled;
+  }),
+
+  notificationSoundChoice: 'default',
+
+  setNotificationSoundChoice: (choice) => set((state) => {
+    state.notificationSoundChoice = choice;
   }),
 
   // ─── Multiview ─────────────────────────────────────────────────────────

@@ -262,3 +262,49 @@ html, body, #root {
   animation: pane-flash 0.5s ease-out forwards;
   z-index: 100;
 }
+
+/* ─── T11: state-machine notification ring (DESIGN D3) ──────────────────────
+ * Two new classes driven by paneSlice.paneNotificationRing[paneId]:
+ *   .pane-ring-flash — one-shot 500ms transition when a notification arrives
+ *   .pane-ring-glow  — steady subtle indicator while the user hasn't visited
+ *
+ * Both compose over Pane.tsx's inline `border` style. border-color overrides
+ * use !important because Pane sets `border` inline (inline styles outrank
+ * any external selector specificity); box-shadow / opacity have no inline
+ * competition and don't need !important.
+ *
+ * The legacy `.notification-ring` (unread-count pulse) and `.pane-flash`
+ * (Ctrl+Shift+H flash) rules above are intentionally untouched — they're
+ * independent visual channels gated by their own toggles. */
+.pane-ring-flash {
+  border-color: var(--accent-blue) !important;
+  box-shadow: 0 0 0 2px var(--accent-blue) inset;
+  transition: box-shadow 500ms ease-out;
+}
+
+.pane-ring-glow {
+  border-color: var(--accent-blue) !important;
+  opacity: 0.6;
+}
+
+/* Reduced motion: drop the transition so the border flip is instant. The
+ * box-shadow / border-color end states still convey the ring; only the
+ * 500ms ease-out is suppressed. */
+@media (prefers-reduced-motion: reduce) {
+  .pane-ring-flash {
+    transition: none;
+  }
+}
+
+/* Forced-colors (Windows high-contrast): opacity-based glow disappears
+ * against system-managed colors, so promote to a visible 2px border and
+ * neutralize the opacity dim. */
+@media (forced-colors: active) {
+  .pane-ring-glow {
+    opacity: 1;
+    border-width: 2px !important;
+  }
+  .pane-ring-flash {
+    border-width: 2px !important;
+  }
+}
