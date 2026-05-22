@@ -71,6 +71,11 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
   // session 019e2af8.
   it('merges cap-skipped sessions from existing sessions.json into the save', async () => {
     const sessionsFile = path.join(tmpDir, 'sessions.json');
+    // lastActivity is dynamic so SUSPENDED_TTL_HOURS (7 days in StateWriter.load)
+    // never expires this fixture. The original hardcoded '2026-05-15' silently
+    // expired exactly 7 days later and broke this test on every CI run after
+    // 2026-05-22T00:00Z, regardless of any code change.
+    const recentIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     fs.writeFileSync(
       sessionsFile,
       JSON.stringify({
@@ -85,8 +90,8 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
             cols: 80,
             rows: 24,
             pid: 999,
-            createdAt: '2026-05-15T00:00:00Z',
-            lastActivity: '2026-05-15T00:00:00Z',
+            createdAt: recentIso,
+            lastActivity: recentIso,
             deadTtlHours: 24,
           },
         ],
