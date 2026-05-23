@@ -28,12 +28,71 @@ export interface CriticalEvent {
 type AgentEventCallback = (event: AgentEvent) => void;
 type CriticalEventCallback = (event: CriticalEvent) => void;
 
+// SLUG-form agent identifier. Lowercase, no whitespace. Used as the
+// canonical key shared with hook-based signals (integrations/<agent>/).
+// HookSignalRouter dedup matches AgentDetector emissions against bridge
+// signals on this slug, so the two MUST stay in lock-step. New agents
+// added here must also be added to integrations/shared/signal-types.ts
+// (AgentSlug union) and to any HookSignalRouter dedup table.
+export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot';
+
 interface AgentPattern {
+  /** Display name. Surfaced in UI ("Claude Code", "Codex CLI"). */
   agent: string;
+  /** Canonical slug. Stable, lowercase, no whitespace. Matches hook signals. */
+  slug: AgentSlug;
   // An optional "gate" regex: patterns are only checked if the gate has
   // previously matched in this session, confirming the agent is active.
   gate?: RegExp;
   patterns: { regex: RegExp; status: AgentEvent['status']; message: string }[];
+}
+
+/**
+ * Map display name → slug. Used by consumers that have an AgentEvent in
+ * hand (which carries the display name) and need to derive the canonical
+ * slug for dedup against hook signals.
+ */
+export function agentDisplayToSlug(display: string): AgentSlug | undefined {
+  switch (display) {
+    case 'Claude Code': return 'claude';
+    case 'Codex CLI': return 'codex';
+    case 'Gemini CLI': return 'gemini';
+    case 'Aider': return 'aider';
+    case 'OpenCode': return 'opencode';
+    case 'GitHub Copilot CLI': return 'copilot';
+    default: return undefined;
+  }
+}
+
+/**
+ * Map an `AgentEvent.status` to the canonical hook-signal kind that the
+ * dedup ledger uses. Required because AgentDetector emits status names
+ * ('waiting', 'complete', ...) whereas HookSignalRouter dedup keys are
+ * built from hook kinds ('agent.stop', 'agent.activity', ...).
+ *
+ * 'waiting' AND 'complete' both map to 'agent.stop' because both
+ * conceptually represent the same user-visible event ("task finished,
+ * ready for next input"). The status is a finer-grained distinction
+ * the renderer uses for icon variation; for dedup it collapses to one.
+ *
+ * Returns `null` for status values that have no corresponding hook
+ * kind. Caller skips dedup wiring in that case.
+ *
+ * (claude review 2026-05-23 P1 #2 — required before PTYBridge wiring
+ * lands in Phase 1.5.)
+ */
+export function agentStatusToSignalKind(
+  status: AgentEventStatus,
+): 'agent.stop' | 'agent.activity' | null {
+  switch (status) {
+    case 'waiting':
+    case 'complete':
+      return 'agent.stop';
+    case 'running':
+      return 'agent.activity';
+    default:
+      return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -45,6 +104,7 @@ const AGENT_PATTERNS: AgentPattern[] = [
   // Gate: Claude Code startup banner (matches once to activate detection)
   {
     agent: 'Claude Code',
+    slug: 'claude',
     gate: /Claude Code|claude-code|╭.*Claude/,
     patterns: [
       // Waiting — Claude Code's unique idle prompt fragments.
@@ -62,6 +122,7 @@ const AGENT_PATTERNS: AgentPattern[] = [
   // ── Aider ─────────────────────────────────────────────────────────────────
   {
     agent: 'Aider',
+    slug: 'aider',
     gate: /aider v|aider --/,
     patterns: [
       { regex: /^aider>\s*$/,                    status: 'waiting',   message: 'Waiting for input' },
@@ -72,6 +133,7 @@ const AGENT_PATTERNS: AgentPattern[] = [
   // ── Codex CLI ─────────────────────────────────────────────────────────────
   {
     agent: 'Codex CLI',
+    slug: 'codex',
     gate: /codex |OpenAI Codex/,
     patterns: [
       { regex: /^codex>\s*$/,                    status: 'waiting',   message: 'Waiting for input' },
@@ -81,6 +143,7 @@ const AGENT_PATTERNS: AgentPattern[] = [
   // ── Gemini CLI ────────────────────────────────────────────────────────────
   {
     agent: 'Gemini CLI',
+    slug: 'gemini',
     gate: /gemini |Gemini CLI/,
     patterns: [
       { regex: /^gemini>\s*$/,                   status: 'waiting',   message: 'Waiting for input' },
@@ -90,6 +153,7 @@ const AGENT_PATTERNS: AgentPattern[] = [
   // ── OpenCode ──────────────────────────────────────────────────────────────
   {
     agent: 'OpenCode',
+    slug: 'opencode',
     gate: /opencode/,
     patterns: [
       { regex: /^opencode>\s*$/,                 status: 'waiting',   message: 'Waiting for input' },
@@ -99,6 +163,7 @@ const AGENT_PATTERNS: AgentPattern[] = [
   // ── GitHub Copilot CLI ────────────────────────────────────────────────────
   {
     agent: 'GitHub Copilot CLI',
+    slug: 'copilot',
     gate: /gh copilot|copilot-cli/,
     patterns: [
       { regex: /^copilot>\s*$/,                  status: 'waiting',   message: 'Waiting for input' },
