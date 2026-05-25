@@ -75,6 +75,54 @@ describe('events.rpc — events.poll', () => {
     }
   });
 
+  it('accepts agent.lifecycle filter (new event type)', async () => {
+    eventBus.emit({
+      type: 'agent.lifecycle',
+      workspaceId: 'ws-1',
+      ptyId: 'pty-1',
+      kind: 'agent.stop',
+      source: 'hook',
+      agent: 'claude',
+      decision: 'emit',
+    });
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p-other' });
+
+    const router = setupRouter();
+    const res = await router.dispatch({
+      id: 'lifecycle',
+      method: 'events.poll',
+      params: { types: ['agent.lifecycle'] },
+    });
+
+    if (res.ok) {
+      const result = res.result as { events: { type: string; source?: string }[] };
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0]).toMatchObject({ type: 'agent.lifecycle', source: 'hook' });
+    }
+  });
+
+  it('accepts workspace.metadata.changed filter (pre-existing gap closed)', async () => {
+    eventBus.emit({
+      type: 'workspace.metadata.changed',
+      workspaceId: 'ws-1',
+      metadata: { cwd: '/repo' },
+      patch: { cwd: '/repo' },
+    });
+
+    const router = setupRouter();
+    const res = await router.dispatch({
+      id: 'wsmeta',
+      method: 'events.poll',
+      params: { types: ['workspace.metadata.changed'] },
+    });
+
+    if (res.ok) {
+      const result = res.result as { events: { type: string }[] };
+      expect(result.events).toHaveLength(1);
+      expect(result.events[0].type).toBe('workspace.metadata.changed');
+    }
+  });
+
   it('clamps cursor to non-negative integer', async () => {
     eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
 

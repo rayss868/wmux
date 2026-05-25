@@ -361,9 +361,18 @@ server.tool(
   {
     cursor: z.number().int().nonnegative().optional().describe('Last seen seq number. Default 0 = replay all events still in the ring.'),
     types: z
-      .array(z.enum(['pane.created', 'pane.closed', 'pane.focused', 'pane.metadata.changed', 'process.started', 'process.exited']))
+      .array(z.enum([
+        'pane.created',
+        'pane.closed',
+        'pane.focused',
+        'pane.metadata.changed',
+        'workspace.metadata.changed',
+        'process.started',
+        'process.exited',
+        'agent.lifecycle',
+      ]))
       .optional()
-      .describe('Filter to specific event types. Omit to receive all types.'),
+      .describe('Filter to specific event types. Omit to receive all types. `agent.lifecycle` fires when an inner Claude Code (or other supported agent) finishes a turn; carries ptyId, kind (agent.stop|agent.subagent_stop), source (hook|detector), agent slug, and decision (emit|dedup).'),
     max: z.number().int().positive().max(1024).optional().describe('Max events to return per poll. Default 256.'),
   },
   async ({ cursor, types, max }) => {

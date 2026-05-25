@@ -40,6 +40,27 @@ describe('HookSignalRouter', () => {
       expect(hookDecision).toBe('dedup');
     });
 
+    it('detector-then-detector (same kind, within window): second deduped (Aider complete+waiting case)', () => {
+      // Aider emits status='complete' on "Applied edit to ..." then
+      // status='waiting' on the "aider> " prompt for one turn. Both
+      // collapse to kind='agent.stop' inside PTYBridge — without dedup
+      // here, both stream `decision:'emit'` and an orchestrator filtering
+      // on emit would run follow-up twice (codex round-3 P2).
+      const ptyId = 'p1';
+      const d1 = router.recordDetector('claude', 'agent.stop', ptyId, 1000);
+      expect(d1).toBe('emit');
+      const d2 = router.recordDetector('claude', 'agent.stop', ptyId, 2000);
+      expect(d2).toBe('dedup');
+    });
+
+    it('detector-then-detector (same kind, OUTSIDE window): both emit', () => {
+      const ptyId = 'p1';
+      const d1 = router.recordDetector('claude', 'agent.stop', ptyId, 0);
+      expect(d1).toBe('emit');
+      const d2 = router.recordDetector('claude', 'agent.stop', ptyId, DEFAULT_DEDUP_WINDOW_MS + 1);
+      expect(d2).toBe('emit');
+    });
+
     it('both within window, DIFFERENT kinds: both emit', () => {
       const ptyId = 'p1';
       const d1 = router.recordHook(makeSignal({ kind: 'agent.stop' }), ptyId, 1000);

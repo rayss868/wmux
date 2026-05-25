@@ -128,9 +128,24 @@ export class HookSignalRouter {
    * Record an AgentDetector emission and ask whether to proceed. Called
    * BEFORE sendNotification by PTYBridge's onEvent handler.
    *
-   * Detector loses to a recent hook of the SAME kind. Different kinds
-   * (e.g. detector saw "waiting" prompt, hook fired Stop) emit
-   * independently — they're different user-visible events.
+   * Suppresses (`dedup`) when any recent emission for the same
+   * (agent, pty, kind) tuple exists within the dedup window, regardless
+   * of source. Two cases this covers:
+   *   1. hook → detector: hook is canonical, detector is redundant.
+   *   2. detector → detector: e.g. Aider emits "Applied edit to ..."
+   *      (status='complete') and then "aider> " (status='waiting') for
+   *      a single turn; both collapse to `kind: 'agent.stop'` and would
+   *      otherwise stream two `decision:'emit'` lifecycle events for one
+   *      turn — orchestrators filtering on emit would run follow-up
+   *      twice. Codex round-3 catch.
+   *
+   * Different kinds (e.g. detector saw "waiting" prompt, hook fired
+   * Stop) still emit independently — those are different user-visible
+   * events. Different (slug, ptyId) tuples are independent too.
+   *
+   * The ledger is NOT refreshed on dedup, so a third same-kind emission
+   * 8s into the original 10s window still defers (no rolling window
+   * extension). Refreshing only happens on `emit`.
    */
   recordDetector(
     slug: AgentSlug,
@@ -142,13 +157,9 @@ export class HookSignalRouter {
     const recent = this.ledger.get(key);
     if (
       recent &&
-      recent.source === 'hook' &&
       recent.kind === kind &&
       now - recent.ts < this.windowMs
     ) {
-      // Hook already won. Suppress detector emit. Don't overwrite the
-      // ledger — leave the hook record so a subsequent detector emit
-      // of the same kind also defers correctly.
       return 'dedup';
     }
     this.ledger.set(key, { kind, ts: now, source: 'detector' });
