@@ -5,6 +5,37 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.0] — 2026-05-26 — Orchestrator substrate + Claude Code hook plugin
+
+Lands the substrate piece that the new [`@wmux/orchestrator`](https://github.com/openwong2kim/wmux-orchestrator) npm SDK consumes, plus the Claude Code hook plugin integration that delivers sub-200ms agent-completion signals (vs the heuristic regex detector). Minor version bump because the new `agent.lifecycle` event type is additive — no breaking changes vs v2.10.x clients.
+
+### Added
+
+- **`agent.lifecycle` EventBus tee from hook + detector sources (#63).** New `WmuxEventType` `agent.lifecycle` streams whenever a supported inner agent (Claude Code today; others via the `integrations/<slug>` bridge later) finishes a turn or subagent span. Tee sites:
+  - `hooks.rpc.ts` — Claude Code Stop / SubagentStop hooks fire RPCs that emit the event with `source: 'hook'`. Sub-200ms, deterministic. Both `emit` and `dedup` decisions stream so observers can compare.
+  - `PTYBridge.ts` AgentDetector — regex-based fallback for any agent, emits with `source: 'detector'` (~1-2s lag).
+  - `DaemonNotificationRouter.emitDetectorLifecycle` — daemon-backed PTYs (the default production path) — sync `recordDetector` call before async workspace.list resolution so dedup timing matches local-mode.
+  Carries `ptyId`, `kind` (`agent.stop` | `agent.subagent_stop`), `source`, `agent` slug, `decision` (`emit` | `dedup`). Polled via the existing `wmux_events_poll` MCP tool with the type filter extended.
+
+- **Claude Code hook plugin Phase 1 integration backbone (#60).** Adds the `integrations/claude-code/hook-plugin/` directory that bridges Claude Code's hook events into wmux's signal pipeline. Foundation for the structured agent observability surface.
+
+- **Phase 1.5 signal-health + Phase 2 usage-meter + env-first routing (#61).** Per-pane signal-health plumbing (~140 LOC across substrate only — proxy metric layers like cumulative / percent / banner were dropped after the Codex review). 5-hour and 7-day usage windows. Env-first hook routing fix so `WMUX_HOOK_TARGET` overrides config-derived destinations.
+
+### Fixed
+
+- **NOTICE files preserved for Apache 2.0 §4(d) compliance (#62).** Bundled third-party NOTICE files now survive the electron-forge pack step, satisfying the Apache 2.0 attribution clause for the dependencies that ship one.
+
+### Documentation
+
+- README: SmartScreen install guidance for the unsigned installer (#66).
+- README: pointer to the new `@wmux/orchestrator` SDK in the MCP integration section (#67).
+
+### Compatibility
+
+- No breaking changes vs v2.10.x. Existing MCP clients keep working.
+- New `agent.lifecycle` event type is additive — clients that don't filter for it won't see it.
+- `@wmux/orchestrator` v0.1.x requires wmux ≥ 2.11.0 (the version this `agent.lifecycle` tee actually ships in — the SDK README mention of "≥ 2.10" was off by one).
+
 ## [2.10.2] — 2026-05-22 — First-launch input race fix + helper-orphan cleanup
 
 Two prod-only bugs surfaced during fresh-PC dogfood of v2.10.1. Neither
