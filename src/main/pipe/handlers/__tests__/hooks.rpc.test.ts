@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { resolvePtyIdForCwd, resolvePtyIdForSignal, extractUsageFromPayload } from '../hooks.rpc';
+import {
+  resolvePtyIdForCwd,
+  resolvePtyIdForSignal,
+  extractUsageFromPayload,
+  findWorkspaceIdForPty,
+} from '../hooks.rpc';
 import type { AgentSignal } from '../../../../../integrations/shared/signal-types';
 
 function signal(overrides: Partial<AgentSignal>): AgentSignal {
@@ -223,5 +228,34 @@ describe('extractUsageFromPayload', () => {
       usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     });
     expect(got).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+  });
+});
+
+describe('findWorkspaceIdForPty', () => {
+  const workspaces = [
+    { id: 'ws-a', name: 'A', activePtyId: 'p1', ptyIds: ['p1', 'p2'] },
+    { id: 'ws-b', name: 'B', activePtyId: 'p3', ptyIds: ['p3'] },
+    { id: 'ws-c', name: 'C', metadata: { cwd: '/x' } }, // no ptyIds
+  ];
+
+  it('finds workspace by activePtyId', () => {
+    expect(findWorkspaceIdForPty('p1', workspaces)).toBe('ws-a');
+    expect(findWorkspaceIdForPty('p3', workspaces)).toBe('ws-b');
+  });
+
+  it('finds workspace by non-active ptyIds entry', () => {
+    expect(findWorkspaceIdForPty('p2', workspaces)).toBe('ws-a');
+  });
+
+  it('returns null for unknown ptyId (race: pane closed between resolve and emit)', () => {
+    expect(findWorkspaceIdForPty('p-missing', workspaces)).toBeNull();
+  });
+
+  it('returns null when no workspaces have ptyIds', () => {
+    expect(findWorkspaceIdForPty('p1', [{ id: 'w', name: 'empty' }])).toBeNull();
+  });
+
+  it('returns null for empty workspace list', () => {
+    expect(findWorkspaceIdForPty('p1', [])).toBeNull();
   });
 });

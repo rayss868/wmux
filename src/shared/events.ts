@@ -26,6 +26,7 @@
 // implies causal order across producer boundaries.
 
 import type { PaneMetadata, WorkspaceMetadata } from './types';
+import type { AgentSlug } from '../../integrations/shared/signal-types';
 
 export type WmuxEventType =
   | 'pane.created'
@@ -34,7 +35,8 @@ export type WmuxEventType =
   | 'pane.metadata.changed'
   | 'workspace.metadata.changed'
   | 'process.started'
-  | 'process.exited';
+  | 'process.exited'
+  | 'agent.lifecycle';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -44,6 +46,7 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'workspace.metadata.changed',
   'process.started',
   'process.exited',
+  'agent.lifecycle',
 ] as const;
 
 export interface WmuxEventBase {
@@ -112,6 +115,49 @@ export interface ProcessExitedEvent extends WmuxEventBase {
   signal?: string;
 }
 
+/**
+ * Fires when an inner agent (Claude Code, etc.) finishes a turn or subagent
+ * spans. Sourced from either the Claude Code hook bridge (`source:'hook'`,
+ * deterministic, sub-200ms) or the regex-based AgentDetector
+ * (`source:'detector'`, heuristic, ~1-2s lag). Both sources stream so the
+ * caller can compare and choose; the dedup ledger inside HookSignalRouter
+ * decides whether a fan-out notification fires, and `decision` reflects
+ * that outcome — but the event itself is emitted regardless so external
+ * consumers (orchestrator clients) see both signals for forensic / replay
+ * purposes.
+ *
+ * Intentionally omitted: `agent.activity` (per-tool-call) and
+ * `agent.session_start`. activity events can fire 5-30 times per turn per
+ * pane; including them would overrun the 1024 ring on any multi-pane
+ * workflow. Consumers who need activity granularity should subscribe to
+ * SIGNAL_HEALTH_UPDATE in-renderer instead.
+ *
+ * Carries `ptyId` only, not `paneId`. Resolving paneId from ptyId requires
+ * a renderer-side workspace.list round-trip; orchestrators that know which
+ * ptyId they spawned can filter directly. If a caller needs paneId they
+ * can pull it from `pane.list` once and cache.
+ */
+export interface AgentLifecycleEvent extends WmuxEventBase {
+  type: 'agent.lifecycle';
+  ptyId: string;
+  /**
+   * 'agent.stop' = turn finished. 'agent.subagent_stop' = nested subagent
+   * (e.g. /team coordinator) returned. Other AgentSignalKind values are
+   * NOT emitted here — see the doc comment above for rationale.
+   */
+  kind: 'agent.stop' | 'agent.subagent_stop';
+  source: 'hook' | 'detector';
+  agent: AgentSlug;
+  /**
+   * 'emit' = HookSignalRouter decided to fan out a notification.
+   * 'dedup' = a same-pane same-kind signal already emitted within the
+   * dedup window, so no notification fired. The lifecycle event itself
+   * is published either way for observability; consumers that only want
+   * "first-of-kind" signals filter on `decision === 'emit'`.
+   */
+  decision: 'emit' | 'dedup';
+}
+
 export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
@@ -119,7 +165,8 @@ export type WmuxEvent =
   | PaneMetadataChangedEvent
   | WorkspaceMetadataChangedEvent
   | ProcessStartedEvent
-  | ProcessExitedEvent;
+  | ProcessExitedEvent
+  | AgentLifecycleEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;

@@ -43,6 +43,7 @@ import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import { sendNotification } from '../../notification/sendNotification';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import { eventBus } from '../../events/EventBus';
 import { IPC } from '../../../shared/constants';
 import {
   isAgentSignal,
@@ -159,6 +160,31 @@ export function registerHooksRpc(
     }
 
     const decision = hookRouter.recordHook(signal, ptyId);
+
+    // 6. Tee to EventBus for external observers (orchestrator clients via
+    //    `wmux_events_poll`). Emits BOTH 'emit' and 'dedup' decisions so
+    //    a forensic consumer can see the dedup ledger's behavior; the
+    //    fan-out notification below is the only side effect gated on
+    //    `decision === 'emit'`. Strictly additive — does not change
+    //    sendNotification / SIGNAL_HEALTH_UPDATE / TOKEN_UPDATE flow.
+    //
+    //    Carries ptyId only (no paneId). The workspaceId attached here is
+    //    the one that owns the resolved ptyId — needed so events.poll
+    //    workspace filtering works for orchestrator clients scoped to a
+    //    single claimed workspace.
+    const workspaceId = findWorkspaceIdForPty(ptyId, workspaces);
+    if (workspaceId) {
+      eventBus.emit({
+        type: 'agent.lifecycle',
+        workspaceId,
+        ptyId,
+        kind: signal.kind,
+        source: 'hook',
+        agent: signal.agent,
+        decision,
+      });
+    }
+
     if (decision === 'dedup') {
       // Hook arrived too late — detector already emitted. We measured
       // the latency (above) but don't fan out a second time.
@@ -364,6 +390,27 @@ export function resolvePtyIdForCwd(
   }
 
   return bestPtyId;
+}
+
+/**
+ * Reverse lookup: given a ptyId we already resolved via
+ * `resolvePtyIdForSignal`, find the workspaceId that owns it. Used by the
+ * `agent.lifecycle` event tee to attach workspace scope so external
+ * orchestrators can filter `events.poll` to their claimed workspace.
+ *
+ * Returns null when the ptyId is no longer in any workspace (race: pane
+ * closed between resolve and emit). Caller skips the emit in that case —
+ * an event with a stale workspaceId would route to the wrong subscriber.
+ */
+export function findWorkspaceIdForPty(
+  ptyId: string,
+  workspaces: WorkspaceListEntry[],
+): string | null {
+  for (const w of workspaces) {
+    if (w.activePtyId === ptyId) return w.id;
+    if (w.ptyIds && w.ptyIds.includes(ptyId)) return w.id;
+  }
+  return null;
 }
 
 /**

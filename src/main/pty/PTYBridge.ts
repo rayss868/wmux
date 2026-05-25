@@ -1,7 +1,7 @@
 import { BrowserWindow } from 'electron';
 import { PTYManager } from './PTYManager';
 import { OscParser } from './OscParser';
-import { AgentDetector } from './AgentDetector';
+import { AgentDetector, agentDisplayToSlug } from './AgentDetector';
 import { TokenTracker } from './TokenTracker';
 import { ActivityMonitor } from './ActivityMonitor';
 import { toastManager } from '../pipe/handlers/notify.rpc';
@@ -305,6 +305,30 @@ export class PTYBridge {
           const body = status === 'waiting' ? 'Ready for input' : 'Task finished';
           sendNotification(win, ptyId, { type: 'agent', title, body });
           toastManager.show(title, body);
+
+          // Tee to EventBus for external observers (orchestrator clients).
+          // Both 'waiting' and 'complete' collapse to kind:'agent.stop' —
+          // they represent the same user-visible event ("turn finished,
+          // ready for next input"), matching the hook-side dedup mapping
+          // in HookSignalRouter. `decision:'emit'` because the detector
+          // path here is the one that actually fired sendNotification
+          // above (if hook had won the dedup race, the detector callback
+          // would not have run). Skip when workspaceId is unknown — same
+          // gate as the process.started emit above.
+          if (instance.workspaceId) {
+            const slug = agentDisplayToSlug(agentEvent.agent);
+            if (slug) {
+              eventBus.emit({
+                type: 'agent.lifecycle',
+                workspaceId: instance.workspaceId,
+                ptyId,
+                kind: 'agent.stop',
+                source: 'detector',
+                agent: slug,
+                decision: 'emit',
+              });
+            }
+          }
         }
       } catch (err) {
         console.warn('[PTYBridge] onEvent callback error:', err);
