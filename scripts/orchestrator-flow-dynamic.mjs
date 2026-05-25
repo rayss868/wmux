@@ -59,19 +59,24 @@ const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-orch-dyn-'));
 const AUTH_TOKEN_PATH = path.join(TEST_HOME, '.wmux-auth-token');
 
 let appProc;
-const cleanup = () => {
+// Awaitable variant — resolves AFTER the SIGKILL deadline + temp HOME
+// removal so callers that want to exit cleanly don't race the timer and
+// leak `wmux-orch-dyn-*` directories. The previous fire-and-forget
+// setTimeout never ran when the main flow exited 500ms later (codex P3).
+const cleanup = () => new Promise((resolve) => {
   if (appProc && !appProc.killed) {
     try { appProc.kill('SIGTERM'); } catch {}
   }
   setTimeout(() => {
     if (appProc && !appProc.killed) { try { appProc.kill('SIGKILL'); } catch {} }
     try { fs.rmSync(TEST_HOME, { recursive: true, force: true }); } catch {}
+    resolve();
   }, 1500);
-};
+});
 process.on('exit', () => {
   if (appProc && !appProc.killed) { try { appProc.kill('SIGKILL'); } catch {} }
 });
-process.on('SIGINT', () => { cleanup(); setTimeout(() => process.exit(130), 2000); });
+process.on('SIGINT', async () => { await cleanup(); process.exit(130); });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const waitFor = async (label, fn, timeoutMs = 30000, intervalMs = 200) => {
@@ -313,11 +318,12 @@ const check = (name, ok, detail) => {
   }
   console.log('──────────────────────────────────────────');
 
-  cleanup();
-  await sleep(500);
+  // Await the full cleanup (SIGTERM → 1.5s grace → SIGKILL + temp HOME rm)
+  // so we don't leak the wmux-orch-dyn-* temp dir on success.
+  await cleanup();
   process.exit(failed > 0 ? 1 : 0);
-})().catch((err) => {
+})().catch(async (err) => {
   console.error('Fatal:', err);
-  cleanup();
-  setTimeout(() => process.exit(1), 1500);
+  await cleanup();
+  process.exit(1);
 });

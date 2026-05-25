@@ -518,7 +518,7 @@ app.on('ready', async () => {
       // and this router translates them into the same renderer-facing
       // IPC signals PTYBridge produces in local mode.
       daemonNotificationRouter?.stop();
-      daemonNotificationRouter = new DaemonNotificationRouter(client, () => mainWindow);
+      daemonNotificationRouter = new DaemonNotificationRouter(client, () => mainWindow, () => hookSignalRouter);
       daemonNotificationRouter.start();
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('daemon:connected');

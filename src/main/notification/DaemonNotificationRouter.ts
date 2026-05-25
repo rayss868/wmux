@@ -1,11 +1,16 @@
 import type { BrowserWindow } from 'electron';
 import type { DaemonClient } from '../DaemonClient';
 import type { AgentStatus } from '../../shared/types';
+import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { IPC } from '../../shared/constants';
 import { sendNotification } from './sendNotification';
 import { recentlySuppressed, clearPty as clearSuppression } from './idleSuppression';
 import { broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
 import { toastManager } from '../pipe/handlers/notify.rpc';
+import { eventBus } from '../events/EventBus';
+import { findWorkspaceIdForPty } from '../pipe/handlers/hooks.rpc';
+import { sendToRenderer } from '../pipe/handlers/_bridge';
+import { agentDisplayToSlug } from '../pty/AgentDetector';
 
 // Mirrors PTYBridge.AGENT_EVENT_SUPPRESSION_MS — same dedup semantics across
 // daemon and local modes.
@@ -43,6 +48,15 @@ interface CriticalEventPayload {
  * PTYBridge does — AgentDetector lives inside the daemon process and resets
  * itself on each new burst via the bridge wiring, not from main.
  */
+// Matches the renderer's workspace.list shape — `name` is required by the
+// signature of `findWorkspaceIdForPty` even though we only read id/ptyIds.
+interface WorkspaceListEntry {
+  id: string;
+  name: string;
+  activePtyId?: string | null;
+  ptyIds?: string[];
+}
+
 export class DaemonNotificationRouter {
   private cleanups: Array<() => void> = [];
   private lastAgentEventAt = new Map<string, number>();
@@ -50,7 +64,66 @@ export class DaemonNotificationRouter {
   constructor(
     private daemonClient: DaemonClient,
     private getWindow: () => BrowserWindow | null,
+    // Optional. When supplied, daemon-sourced detector lifecycle events go
+    // through the same `recordDetector` dedup ledger as the local PTYBridge
+    // path so hook+detector pairs collapse to one emit / one dedup. Without
+    // it we still emit (decision:'emit'), which is the legacy fallback.
+    private getHookRouter?: () => HookSignalRouter | null,
   ) {}
+
+  /**
+   * Pull the current workspace list from the renderer so we can resolve the
+   * daemon `sessionId` (= ptyId) to its owning workspace for `events.poll`
+   * scoping. Best-effort — returns null on any IPC failure, in which case
+   * the caller skips the EventBus tee (a stray-workspaced lifecycle event
+   * would route to the wrong subscriber, so dropping is safer).
+   */
+  private async resolveWorkspaceIdForPty(ptyId: string): Promise<string | null> {
+    try {
+      const result = (await sendToRenderer(this.getWindow, 'workspace.list')) as unknown;
+      if (!Array.isArray(result)) return null;
+      return findWorkspaceIdForPty(ptyId, result as WorkspaceListEntry[]);
+    } catch (err) {
+      console.warn('[DaemonNotificationRouter] workspace.list resolve failed:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Mirror of PTYBridge's detector-source `agent.lifecycle` emit for the
+   * daemon-backed PTY path. Resolves workspaceId via the renderer, calls
+   * `recordDetector` for ledger consistency, then emits the lifecycle
+   * event. Skips silently when:
+   *   - workspaceId can't be resolved (renderer transient unavailable,
+   *     or PTY closed mid-flight) — better to drop than route wrong
+   *   - the agent display name has no canonical slug (unknown agent)
+   *
+   * No throw path — daemon notification flow is best-effort and a tee
+   * failure must never break the toast/sidebar update.
+   */
+  private async emitDetectorLifecycle(ptyId: string, agentName: string): Promise<void> {
+    try {
+      const slug = agentDisplayToSlug(agentName);
+      if (!slug) return;
+      const workspaceId = await this.resolveWorkspaceIdForPty(ptyId);
+      if (!workspaceId) return;
+      const hookRouter = this.getHookRouter?.() ?? null;
+      const decision = hookRouter
+        ? hookRouter.recordDetector(slug, 'agent.stop', ptyId)
+        : 'emit';
+      eventBus.emit({
+        type: 'agent.lifecycle',
+        workspaceId,
+        ptyId,
+        kind: 'agent.stop',
+        source: 'detector',
+        agent: slug,
+        decision,
+      });
+    } catch (err) {
+      console.warn('[DaemonNotificationRouter] emitDetectorLifecycle error:', err);
+    }
+  }
 
   start(): void {
     const onAgent = (payload: { sessionId: string; event: unknown }) => {
@@ -69,6 +142,17 @@ export class DaemonNotificationRouter {
           const body = ev.status === 'waiting' ? 'Ready for input' : 'Task finished';
           sendNotification(win, payload.sessionId, { type: 'agent', title, body });
           toastManager.show(title, body);
+
+          // Tee to EventBus for external observers (orchestrator clients via
+          // `wmux_events_poll`). The local-mode mirror of this lives in
+          // PTYBridge.onEvent; codex round-2 catch was that without this
+          // branch, daemon-backed panes (the default production path) emit
+          // ZERO detector-sourced `agent.lifecycle` events even though the
+          // detector inside the daemon is fully alive. Workspace resolution
+          // and ledger update fire-and-forget — we don't await before
+          // returning from the IPC handler, so the toast/sendNotification
+          // path above is never blocked on a renderer round-trip.
+          void this.emitDetectorLifecycle(payload.sessionId, ev.agent);
         }
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:agent error:', err);
