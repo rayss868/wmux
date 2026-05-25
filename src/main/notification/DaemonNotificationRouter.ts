@@ -91,12 +91,21 @@ export class DaemonNotificationRouter {
 
   /**
    * Mirror of PTYBridge's detector-source `agent.lifecycle` emit for the
-   * daemon-backed PTY path. Resolves workspaceId via the renderer, calls
-   * `recordDetector` for ledger consistency, then emits the lifecycle
-   * event. Skips silently when:
+   * daemon-backed PTY path. Skips silently when:
+   *   - the agent display name has no canonical slug (unknown agent)
    *   - workspaceId can't be resolved (renderer transient unavailable,
    *     or PTY closed mid-flight) — better to drop than route wrong
-   *   - the agent display name has no canonical slug (unknown agent)
+   *
+   * Ordering matters: `recordDetector` is called SYNCHRONOUSLY first so
+   * the ledger write happens at the same moment the local-mode
+   * PTYBridge.onEvent path would have written it (codex round-2/3
+   * cross-model catch). If we awaited workspace.list first, daemon-mode
+   * dedup would race a hook arriving in the 50-200ms IPC window — local
+   * vs daemon mode would then produce different decision distributions
+   * for the same user scenario. With sync recordDetector + async
+   * workspace.list, ledger timing is parity; only the EventBus emit is
+   * delayed (and gated on workspace resolution, since an event with the
+   * wrong scope would route to the wrong subscriber).
    *
    * No throw path — daemon notification flow is best-effort and a tee
    * failure must never break the toast/sidebar update.
@@ -105,12 +114,19 @@ export class DaemonNotificationRouter {
     try {
       const slug = agentDisplayToSlug(agentName);
       if (!slug) return;
-      const workspaceId = await this.resolveWorkspaceIdForPty(ptyId);
-      if (!workspaceId) return;
+      // Sync ledger write first — parity with PTYBridge local-mode timing.
+      // recordDetector is cheap (in-memory Map ops); it must precede the
+      // ~50-200ms workspace.list round-trip to match local-mode semantics.
       const hookRouter = this.getHookRouter?.() ?? null;
       const decision = hookRouter
         ? hookRouter.recordDetector(slug, 'agent.stop', ptyId)
         : 'emit';
+      // Now do the workspace lookup. If it fails or returns null we drop
+      // the event entirely (event without scope = wrong subscriber routing)
+      // but the ledger write already happened — a subsequent hook for the
+      // same turn will still see the dedup record.
+      const workspaceId = await this.resolveWorkspaceIdForPty(ptyId);
+      if (!workspaceId) return;
       eventBus.emit({
         type: 'agent.lifecycle',
         workspaceId,

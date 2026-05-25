@@ -165,8 +165,21 @@ export function registerHooksRpc(
     //    `wmux_events_poll`). Emits BOTH 'emit' and 'dedup' decisions so
     //    a forensic consumer can see the dedup ledger's behavior; the
     //    fan-out notification below is the only side effect gated on
-    //    `decision === 'emit'`. Strictly additive — does not change
-    //    sendNotification / SIGNAL_HEALTH_UPDATE / TOKEN_UPDATE flow.
+    //    `decision === 'emit'`.
+    //
+    //    NOTE: This is additive at the EVENT-TEE level but the wider PR
+    //    also wires detector emits into the ledger (PTYBridge.onEvent +
+    //    DaemonNotificationRouter), which activates `recordHook`'s
+    //    detector-dedup branch (HookSignalRouter.ts L109). Before this
+    //    PR, `recordDetector` had no production caller and that branch
+    //    was effectively dead code. After: when the detector fires
+    //    ~50-100ms ahead of the hook (typical), the hook now returns
+    //    'dedup' and the `if (decision === 'dedup') return` above
+    //    suppresses the SECOND sendNotification for the same turn.
+    //    This collapses a latent double-toast that was always possible
+    //    when hook+detector both ran, and is the intended consequence
+    //    of round-2 cross-model review feedback — not an accident.
+    //    SIGNAL_HEALTH_UPDATE and TOKEN_UPDATE are unchanged.
     //
     //    Carries ptyId only (no paneId). The workspaceId attached here is
     //    the one that owns the resolved ptyId — needed so events.poll
