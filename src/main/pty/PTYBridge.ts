@@ -10,6 +10,7 @@ import { updateCwd, removeCwd, updateBranch, removeBranch, broadcastMetadataUpda
 import { sendNotification } from '../notification/sendNotification';
 import { recentlySuppressed, clearPty as clearSuppression } from '../notification/idleSuppression';
 import { eventBus } from '../events/EventBus';
+import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import type { AgentStatus } from '../../shared/types';
 
 // How long after an AgentDetector event to suppress the ActivityMonitor idle
@@ -51,6 +52,16 @@ export class PTYBridge {
   constructor(
     private ptyManager: PTYManager,
     private getWindow: () => BrowserWindow | null,
+    // Optional lazy accessor for the shared HookSignalRouter. Used to call
+    // `recordDetector` before emitting an `agent.lifecycle` event from the
+    // detector path so the ledger sees both sides of the dedup window
+    // (otherwise back-to-back hook+detector events would both stream
+    // `decision:'emit'` and orchestrators filtering on that would run a
+    // follow-up twice). Lazy because PTYBridge is constructed before
+    // HookSignalRouter in main/index.ts boot order; the closure captures
+    // the binding by reference. Tests pass `undefined` and fall through to
+    // a bare 'emit' decision — the test rig has no hook bridge anyway.
+    private getHookRouter?: () => HookSignalRouter | null,
   ) {
     this.ptyManager.onDispose((ptyId) => this.cleanupInstance(ptyId));
     // Activity-based fallback: fires when sustained output drops to idle.
@@ -310,14 +321,23 @@ export class PTYBridge {
           // Both 'waiting' and 'complete' collapse to kind:'agent.stop' —
           // they represent the same user-visible event ("turn finished,
           // ready for next input"), matching the hook-side dedup mapping
-          // in HookSignalRouter. `decision:'emit'` because the detector
-          // path here is the one that actually fired sendNotification
-          // above (if hook had won the dedup race, the detector callback
-          // would not have run). Skip when workspaceId is unknown — same
+          // in HookSignalRouter. Call `recordDetector` before emitting
+          // so the ledger sees this side of the dedup window: a hook+
+          // detector pair for the same turn now resolves to one 'emit'
+          // and one 'dedup', not two emits. Without this, an orchestrator
+          // filtering on `decision === 'emit'` would re-run follow-up
+          // work twice on the standard plugin-plus-detector setup. The
+          // existing sendNotification/toast above is unchanged — that
+          // dedup gate lives in the hook path, not here, and is
+          // pre-existing scope. Skip when workspaceId is unknown — same
           // gate as the process.started emit above.
           if (instance.workspaceId) {
             const slug = agentDisplayToSlug(agentEvent.agent);
             if (slug) {
+              const hookRouter = this.getHookRouter?.() ?? null;
+              const decision = hookRouter
+                ? hookRouter.recordDetector(slug, 'agent.stop', ptyId)
+                : 'emit';
               eventBus.emit({
                 type: 'agent.lifecycle',
                 workspaceId: instance.workspaceId,
@@ -325,7 +345,7 @@ export class PTYBridge {
                 kind: 'agent.stop',
                 source: 'detector',
                 agent: slug,
-                decision: 'emit',
+                decision,
               });
             }
           }

@@ -32,6 +32,7 @@ vi.mock('../../notification/sendNotification', () => ({
 
 import { PTYBridge } from '../PTYBridge';
 import type { PTYManager, PTYInstance } from '../PTYManager';
+import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { eventBus } from '../../events/EventBus';
 
 interface MockProcess {
@@ -60,7 +61,7 @@ function makeMockManager(instance: PTYInstance) {
   } as unknown as PTYManager;
 }
 
-function makeBridge(opts: { workspaceId?: string } = {}) {
+function makeBridge(opts: { workspaceId?: string; hookRouter?: HookSignalRouter | null } = {}) {
   const proc = makeMockProcess();
   const instance: PTYInstance = {
     id: 'pty-1',
@@ -71,9 +72,18 @@ function makeBridge(opts: { workspaceId?: string } = {}) {
   } as PTYInstance;
   const manager = makeMockManager(instance);
   const win = { isDestroyed: () => false, webContents: { send: vi.fn() } };
-  const bridge = new PTYBridge(manager, () => win as never);
+  const routerForClosure = opts.hookRouter;
+  const getHookRouter = routerForClosure !== undefined ? () => routerForClosure : undefined;
+  const bridge = new PTYBridge(manager, () => win as never, getHookRouter);
   bridge.setupDataForwarding('pty-1');
   return { bridge, proc };
+}
+
+function stubHookRouter(decision: 'emit' | 'dedup'): HookSignalRouter {
+  return {
+    recordDetector: vi.fn().mockReturnValue(decision),
+    recordHook: vi.fn().mockReturnValue('emit'),
+  } as unknown as HookSignalRouter;
 }
 
 function pollLifecycle() {
@@ -155,5 +165,40 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     expect(mocks.toastManager.show).toHaveBeenCalled();
     // And tee emitted.
     expect(pollLifecycle().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('honors HookSignalRouter dedup — detector after hook returns decision:"dedup"', () => {
+    // Codex P2 catch: without recordDetector, hook+detector pairs both emit
+    // with decision:'emit' and orchestrators filtering on emit run follow-up
+    // twice. Stub the router to simulate "hook already fired" → recordDetector
+    // returns 'dedup' → emitted event carries that decision through.
+    const router = stubHookRouter('dedup');
+    const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+
+    const events = pollLifecycle();
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events[0]).toMatchObject({
+      type: 'agent.lifecycle',
+      source: 'detector',
+      decision: 'dedup',
+    });
+    expect(router.recordDetector).toHaveBeenCalledWith('claude', 'agent.stop', 'pty-1');
+  });
+
+  it('honors HookSignalRouter — detector wins when no recent hook returns decision:"emit"', () => {
+    const router = stubHookRouter('emit');
+    const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+
+    const events = pollLifecycle();
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events[0]).toMatchObject({ source: 'detector', decision: 'emit' });
   });
 });

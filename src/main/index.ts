@@ -171,7 +171,12 @@ if (!gotLock) {
 
 const ptyManager = new PTYManager();
 let mainWindow: BrowserWindow | null = null;
-const ptyBridge = new PTYBridge(ptyManager, () => mainWindow);
+// Forward-declared: PTYBridge captures this binding by reference and reads it
+// at runtime (after the actual HookSignalRouter is constructed further down
+// in this file). Lets the detector tee call `recordDetector` on emit without
+// reordering hook/router boot earlier than the PTY layer.
+let hookSignalRouter: HookSignalRouter | null = null;
+const ptyBridge = new PTYBridge(ptyManager, () => mainWindow, () => hookSignalRouter);
 const autoUpdater = new AutoUpdater(() => mainWindow);
 
 const rpcRouter = new RpcRouter();
@@ -336,7 +341,7 @@ function attachWindowRecovery(win: BrowserWindow): void {
 // observability. Single instance per process, shared with PTYBridge
 // once detector-side wiring lands (see plan Phase 1.5).
 const signalLatencyMeter = new SignalLatencyMeter();
-const hookSignalRouter = new HookSignalRouter({ latencyMeter: signalLatencyMeter });
+hookSignalRouter = new HookSignalRouter({ latencyMeter: signalLatencyMeter });
 
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
