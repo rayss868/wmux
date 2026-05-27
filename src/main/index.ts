@@ -32,6 +32,10 @@ import { registerCompanyRpc } from './pipe/handlers/company.rpc';
 import { registerEventsRpc } from './pipe/handlers/events.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
+import { ShadowRejectionLogger } from './audit/shadowRejectionLog';
+import { LegacyTrafficCounter } from './audit/legacyTrafficCounter';
+import { ApprovalQueue } from './mcp/ApprovalQueue';
+import { resolveEnforcementMode } from './mcp/enforcementMode';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
@@ -393,6 +397,69 @@ rpcRouter.setLegacyContactRecorder(() => {
       /* trust-store writes are best-effort; never block RPC */
     });
 });
+
+// Phase 2.2 enforcement substrate (shadow mode). Trust lookups consult the
+// existing plugin-trust.json store; would-be rejections are appended to
+// `~/.wmux/shadow-rejections.log` for the v3.0 dogfood window before the
+// pre-commit-6 flip turns rejections into hard RPC failures.
+const shadowRejectionLogger = new ShadowRejectionLogger();
+rpcRouter.setTrustLookup((clientName) =>
+  getPluginTrustStore().get(clientName),
+);
+rpcRouter.setShadowRejectionSink((entry) => {
+  shadowRejectionLogger.append(entry);
+});
+
+// Per-method legacy traffic counter (Phase 2.2 pre-commit 4). Milestone
+// crossings (1st, 10th, 100th, 1000th, 10000th call) emit a summary row to
+// the shadow audit log. The trust-DB write above remains process-once and
+// independent — this counter is purely audit telemetry.
+const legacyTrafficCounter = new LegacyTrafficCounter({
+  sink: ({ method, count }) => {
+    shadowRejectionLogger.appendLegacyTraffic({ method, count });
+  },
+});
+rpcRouter.setLegacyTrafficCounter(legacyTrafficCounter);
+
+// Phase 2.2 pre-commit 6: enforcement mode + approval queue.
+// Production wmux defaults to `enforce`; dev (electron-forge / npm start)
+// defaults to `shadow` so a bad delta doesn't lock the developer out.
+// Override via `mcp.mode` in `~/.wmux/config.json`.
+const isDevEnvironment = !app.isPackaged || process.env.NODE_ENV === 'development';
+const enforcementMode = resolveEnforcementMode({ isDev: isDevEnvironment });
+rpcRouter.setEnforcementMode(enforcementMode);
+
+const approvalQueue = new ApprovalQueue(getPluginTrustStore(), {
+  openPrompt: (info) => {
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.webContents.send(IPC.PERMISSION_PROMPT_OPEN, info);
+    } catch {
+      /* renderer might be mid-reload — the next request will surface */
+    }
+  },
+});
+rpcRouter.setApprovalQueue(approvalQueue);
+
+ipcMain.handle(
+  IPC.PERMISSION_PROMPT_RESOLVE,
+  async (_event, payload: { promptId: string; approved: boolean }) => {
+    if (
+      !payload ||
+      typeof payload.promptId !== 'string' ||
+      typeof payload.approved !== 'boolean'
+    ) {
+      return { ok: false, error: 'invalid permission prompt payload' };
+    }
+    await approvalQueue.resolvePrompt(payload.promptId, payload.approved);
+    return { ok: true };
+  },
+);
+
+console.log(
+  `[Main] Phase 2.2 enforcement mode: ${enforcementMode} (dev=${isDevEnvironment})`,
+);
 
 // IPC: webview CDP registration
 ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, webContentsId: number) => {
