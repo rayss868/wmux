@@ -5,7 +5,13 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — Daemon lifecycle hardening
+## [2.12.0] — 2026-05-28 — MCP plugin permission enforcement + daemon lifecycle hardening
+
+Lands the active enforcement layer for the Phase 2.1 MCP plugin substrate (PR #71) alongside a wave of lifecycle, identity, and UX hardening (PR #72/#74/#75). Plugins now have their declared capabilities verified on every RPC; the daemon self-shuts when idle and recovers from AV-blocked PID verification; a frozen `WMUX_WORKSPACE_ID` env can no longer leave in-pane MCP servers permanently stuck on a stale identity; xterm light themes are now WCAG-AA legible for true-color RGB white output; and keyboard pane/surface navigation finally moves DOM focus along with the visual marker.
+
+Minor version bump (v2.11.0 → v2.12.0) because Phase 2.2 adds the `RpcRejection` discriminated union to `RpcResponse`'s failure arm, the `daemon.idleShutdownMinutes` config, and the `mcp.mode` config flag. All additive; existing v2.11.x callers keep working.
+
+### Daemon lifecycle hardening (#72)
 
 Closes four gaps in the wmux daemon lifecycle: an orphan daemon that survives forever in RAM after a forced wmux quit, a boot-block when anti-virus prevents PID verification, an opaque "daemon could not start" error after the respawn budget exhausts, and a transient first-ping race during cold-boot. Combined effect: the "1 wmux ≙ 1 daemon" invariant is now self-healing instead of relying on the next clean shutdown.
 
@@ -32,7 +38,7 @@ Closes four gaps in the wmux daemon lifecycle: an orphan daemon that survives fo
 
 - New `idleShutdown.test.ts` (source-level invariants for the daemon main wiring), new idle-flow test cases in `Watchdog.test.ts`, new `getConnectionCount` / `getLastDisconnectAt` lifecycle test in `DaemonPipeServer.test.ts`, new `lastError` propagation test in `DaemonRespawnController.test.ts`, and `scripts/daemon-idle-shutdown-dynamic.mjs` for the end-to-end path.
 
-## [Unreleased] — Workspace identity drift fix (daemon-lifecycle-hardening)
+### Workspace identity drift fix (#72)
 
 Fixes a serious multi-agent bug: an in-pane MCP server (e.g. Claude Code) could get permanently stuck reporting a workspace id that no longer exists — `a2a.whoami` returning `no workspace found for ws-…` and `terminal_send` rejecting with `not owned by workspace … (actual owner: …)`. Every identity-gated MCP call (A2A, `terminal_*`, browser routing) failed until the MCP server was restarted. Triggered when a workspace id is re-minted (daemon respawn / session restore) while the shell process — and its frozen `WMUX_WORKSPACE_ID` env — lives on.
 
@@ -46,7 +52,7 @@ Fixes a serious multi-agent bug: an in-pane MCP server (e.g. Claude Code) could 
 - `a2a.resolve.identity` returns PID → **current** workspaceId (resolved live), legacy `ws-`-prefixed pid-map entries pass through for one cycle, and ptyIds with no live owner are omitted (no phantom mappings).
 - `docs/PROTOCOL.md §6.1` reordered: path B (live PID-walk) is now preferred over path A (stale-prone env hint); added the `ptyId`-anchor and self-heal notes.
 
-## [Unreleased] — Phase 2.2 MCP plugin permission enforcement
+### Phase 2.2 MCP plugin permission enforcement (#71)
 
 Lands the active enforcement layer on top of the Phase 2.1 record-only identity + grammar substrate (PR #48) and the spec-side default rules (PR #68). Plugins that declare a capability set via `mcp.declarePermissions` now have those declarations verified against every RPC they issue; mismatches return a structured `RpcRejection` describing the per-path failure, and unconfirmed declarations surface a user-approval prompt before the call can proceed.
 
@@ -78,6 +84,27 @@ Lands the active enforcement layer on top of the Phase 2.1 record-only identity 
 - Plugins SHOULD retry on `rejection.pendingApproval.promptId` with 1–5 s backoff. The substrate doesn't pin a socket waiting for the user (50-connection cap; OAuth `authorization_pending` precedent).
 - `meta.write:custom.foo` matches the EXACT path `custom.foo`. Declare `meta.write:custom.foo.*` or `meta.write:custom.foo.**` to cover the subtree.
 - `events.poll` is `partial`-mode multi-path: subscribing to mixed-allowed topics returns the allowed subset with a `paths-partially-allowed` rejection on the failure arm carrying both `allowed` and `rejected` lists. `pane.setMetadata` and `pane.clearMetadata` are `all-or-nothing`.
+
+### Light xterm theme contrast (#74)
+
+Claude Code (and several other TUI apps) emit foreground text as true-color RGB white (`#FFFFFF`). Those escape sequences bypass our `sandstone-light` / `paper-light` xterm palettes, so the literal white rendered directly on hinomaru's cream background (`#FAF8F5`) and read as invisible — users could not see Claude Code's output at all on hinomaru/taegeuk.
+
+### Fixed
+
+- **xterm `minimumContrastRatio` set to `4.5` (WCAG AA) on light themes.** Detected via `isLight(background)` on the resolved palette; covers built-in light themes and any custom palette a user configures to a light tone. Dark themes keep the default ratio of `1` so intentionally subtle dimmed foregrounds (e.g. catppuccin-mocha's `text-muted`) remain unmodified.
+- Applied at both the initial `new Terminal({...})` site **and** the runtime theme-switch effect, so toggling between themes inside a live session takes effect without remounting the terminal.
+
+### Keyboard pane navigation DOM focus (#75)
+
+Switching panes with the keyboard moved the red active border but typing still landed in the previously focused pane. xterm routes keystrokes from whichever `<textarea>` currently holds DOM focus; navigation paths (`focusPaneDirection`, `cyclePane`, surface-tab switches, RPC `pane.focus`) only updated state, never called `terminal.focus()`. Mouse clicks were unaffected because the click focuses the target xterm DOM for free — so only keyboard paths were broken.
+
+### Fixed
+
+- **`useActivePaneFocus` central hook (`src/renderer/hooks/useActivePaneFocus.ts`)** — subscribes to the resolved active terminal (workspace + pane + surface) and pulls DOM focus onto that xterm whenever the target changes, closing every state-only switch path in one place rather than patching four call sites. Retries across a few animation frames so a freshly split pane's xterm still gets focus once `useTerminal` registers it. Declines non-terminal surfaces (browser/editor).
+
+### Test
+
+- New `src/renderer/hooks/__tests__/useActivePaneFocus.test.ts` — 11 cases on the pure resolution logic (`resolveActivePanePtyId`), including pane-switch and same-pane tab-switch coverage that directly pins this bug, plus browser/editor/empty-ptyId rejection. The DOM-focus application half (`terminal.focus()` + rAF retry) needs a browser harness the node-env vitest lacks and is verified by dogfood.
 
 ## [2.11.0] — 2026-05-26 — Orchestrator substrate + Claude Code hook plugin
 
