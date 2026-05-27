@@ -8,6 +8,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { t } from '../i18n';
 import { XTERM_THEMES, extractXtermColors, type ThemeId, type BuiltinThemeId } from '../themes';
+import { isLight } from '../tailwindPalette';
 import { isDaemonModeActive } from '../daemon/daemonMode';
 import { pastePtyChunked, chunkOnDataIfNeeded } from '../utils/clipboardChunk';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
@@ -145,6 +146,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const xtermTheme = theme === 'custom' && customThemeColors
     ? extractXtermColors(customThemeColors)
     : XTERM_THEMES[theme as BuiltinThemeId] ?? XTERM_THEMES['catppuccin-mocha'];
+  // On light backgrounds (hinomaru, taegeuk, light custom palettes), apps that
+  // emit true-color white text (e.g. Claude Code, some TUI tools) bypass our
+  // palette mapping and render as literally #FFFFFF — invisible on a cream
+  // background. Enforce WCAG AA contrast (4.5:1) on light themes so xterm
+  // auto-darkens those foregrounds. Dark themes keep the default (1 = no
+  // enforcement) to preserve intentionally subtle dimmed text.
+  const minimumContrastRatio = xtermTheme.background && isLight(xtermTheme.background) ? 4.5 : 1;
 
   const fit = useCallback(() => {
     const container = containerRef.current;
@@ -181,6 +189,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       scrollOnUserInput: false,
       fontFamily: `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`,
       theme: xtermTheme,
+      minimumContrastRatio,
       allowProposedApi: true,
       // Enable xterm 6's Windows-aware ConPTY reflow path. ConPTY emits
       // spurious row-change events on resize; the dedicated reflow logic
@@ -885,6 +894,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminalRef.current.options.fontSize = terminalFontSize;
     terminalRef.current.options.fontFamily = `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`;
     terminalRef.current.options.theme = xtermTheme;
+    terminalRef.current.options.minimumContrastRatio = minimumContrastRatio;
     // Selection-preservation guard — see ResizeObserver above.
     if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
       console.debug('[Terminal] font/theme fit skipped — active selection');
@@ -905,7 +915,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       return;
     }
     fitAddonRef.current?.fit();
-  }, [terminalFontSize, terminalFontFamily, xtermTheme, containerRef]);
+  }, [terminalFontSize, terminalFontFamily, xtermTheme, minimumContrastRatio, containerRef]);
 
   // Manage WebGL lifecycle based on visibility.
   // Load WebGL when visible (GPU-accelerated rendering), dispose when hidden
