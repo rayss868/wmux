@@ -181,6 +181,17 @@ export class PTYBridge {
     this.middlewareStacks.delete(ptyId);
     removeCwd(ptyId);
     removeBranch(ptyId);
+
+    // Prune HookSignalRouter ledger entries for this PTY. Without this,
+    // ledger entries (one per slug × kind seen) linger forever and the
+    // map grows monotonically across PTY spawn/dispose cycles. Bridge
+    // already owns the hookRouter reference so the call is local.
+    try {
+      this.getHookRouter?.()?.dropPty(ptyId);
+    } catch (err) {
+      console.warn('[PTYBridge] hookRouter.dropPty error:', err);
+    }
+
     this.ptyManager.remove(ptyId);
   }
 
