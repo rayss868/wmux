@@ -57,9 +57,23 @@ interface WorkspaceListEntry {
   ptyIds?: string[];
 }
 
+/**
+ * TTL for the workspace.list IPC cache (ms). The workspace tree is reshaped
+ * only by user action (create/delete/rename), which is rare — but agent
+ * lifecycle events fan in continuously during multi-pane work. A 2s window
+ * is long enough to coalesce bursts of events from one turn while remaining
+ * short enough that any UI mutation reflects in under a UX heartbeat. The
+ * cache is also actively invalidated on `workspace.metadata.changed`
+ * EventBus emits, so the TTL is the worst-case staleness for surfaces that
+ * don't publish to that event (workspace create/delete go through other
+ * paths that we conservatively rely on the TTL to catch).
+ */
+const WORKSPACE_LIST_CACHE_TTL_MS = 2_000;
+
 export class DaemonNotificationRouter {
   private cleanups: Array<() => void> = [];
   private lastAgentEventAt = new Map<string, number>();
+  private workspaceCache: { value: WorkspaceListEntry[]; ts: number } | null = null;
 
   constructor(
     private daemonClient: DaemonClient,
@@ -69,6 +83,9 @@ export class DaemonNotificationRouter {
     // path so hook+detector pairs collapse to one emit / one dedup. Without
     // it we still emit (decision:'emit'), which is the legacy fallback.
     private getHookRouter?: () => HookSignalRouter | null,
+    // Optional clock override. Used by tests so cache-TTL behavior can be
+    // exercised deterministically without faking globals.
+    private now: () => number = Date.now,
   ) {}
 
   /**
@@ -77,16 +94,39 @@ export class DaemonNotificationRouter {
    * scoping. Best-effort — returns null on any IPC failure, in which case
    * the caller skips the EventBus tee (a stray-workspaced lifecycle event
    * would route to the wrong subscriber, so dropping is safer).
+   *
+   * The result is cached for `WORKSPACE_LIST_CACHE_TTL_MS`. Without this,
+   * every detector-sourced `agent.lifecycle` emit triggered a fresh
+   * round-trip — for a 5-pane × 10-turn session that was 50 unnecessary
+   * IPC hops worth of pure latency. The cache is also wiped on
+   * `workspace.metadata.changed` EventBus emits so user-visible workspace
+   * mutations don't have to wait out the full TTL.
    */
   private async resolveWorkspaceIdForPty(ptyId: string): Promise<string | null> {
+    const cached = this.workspaceCache;
+    if (cached && this.now() - cached.ts < WORKSPACE_LIST_CACHE_TTL_MS) {
+      return findWorkspaceIdForPty(ptyId, cached.value);
+    }
     try {
       const result = (await sendToRenderer(this.getWindow, 'workspace.list')) as unknown;
       if (!Array.isArray(result)) return null;
-      return findWorkspaceIdForPty(ptyId, result as WorkspaceListEntry[]);
+      const list = result as WorkspaceListEntry[];
+      this.workspaceCache = { value: list, ts: this.now() };
+      return findWorkspaceIdForPty(ptyId, list);
     } catch (err) {
       console.warn('[DaemonNotificationRouter] workspace.list resolve failed:', err);
       return null;
     }
+  }
+
+  /**
+   * Drop the cached workspace.list result. Called from the
+   * `workspace.metadata.changed` subscription registered in `start()`, and
+   * exposed for tests that exercise invalidation without involving the
+   * EventBus.
+   */
+  invalidateWorkspaceCache(): void {
+    this.workspaceCache = null;
   }
 
   /**
@@ -259,6 +299,16 @@ export class DaemonNotificationRouter {
     this.daemonClient.on('session:died', onSessionEnd);
     this.daemonClient.on('session:destroyed', onSessionEnd);
 
+    // Invalidate the workspace.list cache whenever a workspace's metadata
+    // mutates. Workspace creation/deletion does not currently publish to
+    // this event, so the TTL is the worst-case staleness for those paths
+    // (UI flow rarely overlaps a sub-2s race with notification routing).
+    const unsubscribeMeta = eventBus.subscribe((event) => {
+      if (event.type === 'workspace.metadata.changed') {
+        this.invalidateWorkspaceCache();
+      }
+    });
+
     this.cleanups.push(
       () => this.daemonClient.off('session:agent', onAgent),
       () => this.daemonClient.off('session:active', onActive),
@@ -266,6 +316,7 @@ export class DaemonNotificationRouter {
       () => this.daemonClient.off('session:critical', onCritical),
       () => this.daemonClient.off('session:died', onSessionEnd),
       () => this.daemonClient.off('session:destroyed', onSessionEnd),
+      unsubscribeMeta,
     );
   }
 
@@ -275,5 +326,6 @@ export class DaemonNotificationRouter {
     }
     this.cleanups.length = 0;
     this.lastAgentEventAt.clear();
+    this.workspaceCache = null;
   }
 }
