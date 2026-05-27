@@ -178,6 +178,32 @@ export class HookSignalRouter {
   }
 
   /**
+   * Drop every ledger entry for a given ptyId. Called from PTYBridge's
+   * cleanupInstance when a PTY is disposed (UI close, MCP destroy, exit)
+   * so the ledger doesn't accumulate dead-ptyId entries over a long
+   * daemon lifetime.
+   *
+   * Keys are formed as `${slug}:${ptyId}:${kind}` in `key()`. ptyIds are
+   * UUIDs in production and never contain `:`, so the substring check
+   * `:${ptyId}:` is unambiguous; agent slugs and signal kinds are bound
+   * to a finite enum that also never contains `:`.
+   *
+   * Returns the number of entries removed (testing aid, not a contract).
+   */
+  dropPty(ptyId: string): number {
+    if (!ptyId) return 0;
+    const needle = `:${ptyId}:`;
+    let removed = 0;
+    for (const k of this.ledger.keys()) {
+      if (k.includes(needle)) {
+        this.ledger.delete(k);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  /**
    * Ledger key includes `kind` (codex review round 2, P1 #7). Without it,
    * an `agent.activity` event would overwrite a recent `agent.stop`
    * entry on the same (slug, ptyId), defeating dedup for the case where

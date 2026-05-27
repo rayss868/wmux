@@ -166,4 +166,41 @@ describe('HookSignalRouter', () => {
       expect(d).toBe('emit');
     });
   });
+
+  describe('dropPty', () => {
+    it('removes every entry for the given ptyId, keeps other PTYs intact', () => {
+      // Populate ledger across two PTYs, multiple agents and kinds.
+      router.recordDetector('claude', 'agent.stop', 'pty-a', 1000);
+      router.recordDetector('claude', 'agent.activity', 'pty-a', 1000);
+      router.recordDetector('codex', 'agent.stop', 'pty-a', 1000);
+      router.recordDetector('claude', 'agent.stop', 'pty-b', 1000);
+
+      const removed = router.dropPty('pty-a');
+      expect(removed).toBe(3);
+
+      // pty-a entries gone — fresh emit decision allowed within window.
+      expect(router.recordDetector('claude', 'agent.stop', 'pty-a', 1100)).toBe('emit');
+      expect(router.recordDetector('codex', 'agent.stop', 'pty-a', 1100)).toBe('emit');
+
+      // pty-b entry preserved — same kind within window still deduped.
+      expect(router.recordDetector('claude', 'agent.stop', 'pty-b', 1100)).toBe('dedup');
+    });
+
+    it('returns 0 for an unknown ptyId and never throws on empty input', () => {
+      expect(router.dropPty('never-seen')).toBe(0);
+      expect(router.dropPty('')).toBe(0);
+    });
+
+    it('does not partial-match prefixes (substring guard)', () => {
+      // Guard against accidental prefix collisions — if dropPty used
+      // `startsWith(ptyId)` or similar, dropping `p1` would nuke `p10`.
+      router.recordDetector('claude', 'agent.stop', 'p1', 1000);
+      router.recordDetector('claude', 'agent.stop', 'p10', 1000);
+
+      expect(router.dropPty('p1')).toBe(1);
+
+      // p10 entry survives, same kind within window still deduped.
+      expect(router.recordDetector('claude', 'agent.stop', 'p10', 1100)).toBe('dedup');
+    });
+  });
 });
