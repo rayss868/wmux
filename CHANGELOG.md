@@ -5,6 +5,46 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.0] — 2026-05-29 — OSC 133 EventBus tee + agent.awaiting_input lifecycle
+
+Extends the `agent.lifecycle` event in `wmux_events_poll` with two new substrate signals so orchestrator SDKs and any MCP consumer can react to shell command lifecycle and agent approval prompts without polling `terminal_read_events`. Both signals are wired BOTH on the local-mode PTYBridge path AND on the daemon-mode DaemonNotificationRouter path (the default production path).
+
+Minor version bump (v2.12.0 → v2.13.0) because the `AgentLifecycleEvent` payload gains a new `source: 'osc133'` enum value, a new `kind: 'agent.awaiting_input'` enum value, a nullable `agent` field (only null when `source === 'osc133'`), and an optional `exitCode` field. The `AgentStatus` union also gains `'awaiting_input'`. All additive — existing v2.12.x consumers that switch on the previous enum values keep working unchanged.
+
+### Two new lifecycle signals (#76)
+
+- **`source: 'osc133'`** — every OSC 133 D shell-integration marker (e.g. from PowerShell, bash with VS Code shell integration, Ghostty, any CLI wrapped with prompt instrumentation) now tees onto the EventBus as `kind: 'agent.stop'` with the parsed `exitCode`. Latency-zero, shell-agnostic: orchestrators waiting on `npm install` / `pytest` / `make` / any CLI no longer need a heuristic detector. `agent` is set to the AgentDetector last-known slug when one is gated, otherwise `null`. OSC 133 events bypass the `HookSignalRouter` dedup ledger (always `decision: 'emit'`) — they represent shell command lifecycle, not agent-turn boundaries.
+
+- **`kind: 'agent.awaiting_input'`** — `AgentDetector` now emits a distinct lifecycle kind when an agent surfaces a y/N or approval prompt mid-turn (Claude Code patterns `Do you want to proceed?` and `Allow tool use for <Tool>`). Distinct from `agent.stop`: orchestrators that auto-approve trusted operations can react to this kind to feed pre-approved answers without waiting for the turn to end. Routed through the same dedup ledger used for `agent.stop`.
+
+### Added
+
+- **`AgentLifecycleEvent.source` enum** — `'hook' | 'detector' | 'osc133'`.
+- **`AgentLifecycleEvent.kind` enum** — `'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input'`.
+- **`AgentLifecycleEvent.exitCode?: number | null`** — present on `source: 'osc133'` events; absent on hook / detector sources.
+- **`AgentStatus = … | 'awaiting_input'`** — sidebar renders the new state as a yellow dot with the `workspace.agentAwaitingInput` label (en + ko translated; 21 other locales fall through `Partial<TranslationMap>` to en).
+- **`AgentSignalKind = … | 'agent.awaiting_input'`** — detector-only kind today; hook bridges are not expected to emit it but the union now admits it so dedup ledger entries share one shape.
+- **`scripts/osc133-awaiting-input-dynamic.mjs`** — end-to-end verification that spawns the packaged Electron app, exercises the **daemon-mode** path (the default production path), and asserts the new EventBus tee signals show up via `wmux_events_poll`. Result on this branch: 15/15 checks pass with a `daemon-`-prefixed `ptyId`, confirming the daemon-path emit reaches the main process EventBus.
+
+### Fixed
+
+- **Daemon-mode OSC 133 + awaiting_input mirror** — the first cut wired the tee only on `PTYBridge` (the local-mode path). Daemon-backed PTYs — the default production path — parsed OSC 133 markers in `DaemonPTYBridge` and appended them to `PromptEventLog` but never forwarded them up to the main process, so consumers saw `source: 'osc133'` events in tests but never in real-world sessions. `DaemonNotificationRouter` now subscribes to a new `session:prompt` daemon broadcast and emits the EventBus tee from the production path. The `awaiting_input` lifecycle had the same gap; both are fixed together. Caught by Codex round-1 P1 review and verified end-to-end against the packaged build.
+- **OSC 133 agent-attribution race** — `emitOsc133Lifecycle` now snapshots the cached agent slug **before** awaiting `workspace.list`. The shell can emit `OSC 133;D` and then redraw the prompt in the same burst (firing a new `session:agent` event); without the pre-await snapshot, the OSC 133 emit would carry the **next** turn's agent slug. Matches the PTYBridge local-mode case 133 path, which reads `agentDetector.getLastAgent()` synchronously before any emit. Caught by Codex round-2 P2.
+- **Approval-prompt regex tightened to whole-line anchors** — `Do you want to proceed?` and `Allow tool use for <Tool>` are now anchored at both ends of the line, with only whitespace and Claude TUI box-drawing glyphs (`│ ║ ┃ ═ ━ ─ ┄ ┅ ┆ ┇ ┈ ┉ ╭ ╮ ╯ ╰ ╔ ╗ ╝ ╚ ┌ ┐ ┘ └ ·`) admitted as padding. Conversational mentions in agent output such as `Answer Do you want to proceed? with caution` or `Please click Allow tool use for Bash` no longer emit `agent.awaiting_input` — false positives are costly here because orchestrators may auto-feed approval responses. Codex rounds 1 → 5 progressively tightened this from an unanchored phrase match to a full-line anchor with canonical MCP tool-name grammar `mcp__<server>__<tool>` (two `__` separators required, hyphens permitted, single-underscore identifiers rejected).
+
+### Changed
+
+- `WmuxEventType` is **unchanged**; `agent.lifecycle` was already present in v2.12.x. Only the payload shape grows.
+- `wmux_events_poll` MCP tool description updated to enumerate the three sources, new kind, and `exitCode` field so MCP-aware orchestrators discover the surface from introspection alone.
+- `DaemonEvent.type` gains a `'prompt.event'` variant — the daemon-side broadcast carrying parsed OSC 133 PromptEvents to the main process.
+
+### Test
+
+- New `DaemonNotificationRouter.lifecycle.test.ts` (10 cases) covering detector `awaiting_input` emit, regression on `waiting` / `complete`, OSC 133 exitCode parsing, missing-suffix path, non-D ignore, agent slug cache, `HookSignalRouter` bypass for OSC 133, and `session:died` cache invalidation. Plus a race-fix test that mocks a deferred `workspace.list` and verifies the OSC 133 emit carries the **pre-await** snapshot, not the post-burst cache value.
+- New cases in `PTYBridge.lifecycle.test.ts` covering local-mode OSC 133 (exit code 0 / 1, no-suffix, A/B/C ignore, workspaceId gate, gated agent slug, dedup bypass), local-mode `awaiting_input` detection, regex false-positive immunity for mid-line `Do you want to proceed?` and `Allow tool use for`, regex true-positive on boxed prompts including corner glyphs (`╮`, `─`), canonical MCP tool name matching (`mcp__github__create_issue`, `mcp__context7__get-library-docs`), and rejection of non-canonical single-underscore names.
+- Full suite: 2003/2004 (the one failure is `StateWriter.test.ts:102` — the known cross-OS runner-load timeout flake first observed during v2.12.0 ship, independent of this PR; passes cleanly on rerun).
+- 5 rounds of Codex independent review: round 1 caught the two daemon-path P1 architectural gaps, rounds 2 – 5 progressively tightened detector regex correctness. All rounds passed the merge gate.
+
 ## [2.12.0] — 2026-05-28 — MCP plugin permission enforcement + daemon lifecycle hardening
 
 Lands the active enforcement layer for the Phase 2.1 MCP plugin substrate (PR #71) alongside a wave of lifecycle, identity, and UX hardening (PR #72/#74/#75). Plugins now have their declared capabilities verified on every RPC; the daemon self-shuts when idle and recovers from AV-blocked PID verification; a frozen `WMUX_WORKSPACE_ID` env can no longer leave in-pane MCP servers permanently stuck on a stale identity; xterm light themes are now WCAG-AA legible for true-color RGB white output; and keyboard pane/surface navigation finally moves DOM focus along with the visual marker.
