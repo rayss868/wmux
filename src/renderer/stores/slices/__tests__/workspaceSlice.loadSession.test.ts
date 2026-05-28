@@ -428,6 +428,31 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
     expect(ids).toContain('kb-default-f7'); // back-filled from DEFAULT_CUSTOM_KEYBINDINGS
   });
 
+  it('does NOT back-fill a default whose key a saved binding already repurposed under a different id', () => {
+    // Runtime lookup is by key (first match wins), so resurrecting kb-default-f7
+    // ahead of a user's own F7 binding would shadow it. Guard against that.
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ customKeybindings: [{ id: 'kb-user-f7', key: 'F7', label: 'My F7', command: 'vim', sendEnter: true }] })
+    );
+    const kbs = store.getState().customKeybindings as { id: string; key: string }[];
+    const f7Bindings = kbs.filter((k) => k.key === 'F7');
+    expect(f7Bindings).toHaveLength(1); // built-in NOT back-filled — no key collision shadow
+    expect(f7Bindings[0].id).toBe('kb-user-f7');
+    expect(kbs.map((k) => k.id)).not.toContain('kb-default-f7');
+  });
+
+  it('places saved entries before back-filled defaults so saved bindings win the key lookup', () => {
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ customKeybindings: [{ id: 'kb-user-1', key: 'F9', label: 'Mine', command: 'ls', sendEnter: true }] })
+    );
+    const kbs = store.getState().customKeybindings as { id: string }[];
+    // kb-user-1 (F9, no collision with F7 default) first, kb-default-f7 back-filled after.
+    expect(kbs[0].id).toBe('kb-user-1');
+    expect(kbs.map((k) => k.id)).toContain('kb-default-f7');
+  });
+
   it('keeps the saved (edited) default keybinding rather than the built-in on id collision', () => {
     const store = createTestStore();
     store.getState().loadSession(

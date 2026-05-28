@@ -297,16 +297,25 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (data.notificationRingEnabled != null) state.notificationRingEnabled = data.notificationRingEnabled;
       if (data.customKeybindings) {
         // Merge saved keybindings with current built-in defaults (mirrors the
-        // layoutTemplates merge below). Saved entries win on id collision so a
-        // user's edit to a default binding is preserved; built-in defaults
-        // (id 'kb-default-*') the saved session predates are back-filled so
-        // shipping a new default never silently drops it on a cross-version
-        // upgrade. Trade-off (same as the prefixConfig merge): a default the
-        // user deleted is re-added on next load — acceptable until a tombstone
-        // schema exists.
+        // layoutTemplates merge below). Built-in defaults (id 'kb-default-*')
+        // the saved session predates are back-filled so shipping a new default
+        // never silently drops it on a cross-version upgrade.
+        //
+        // The runtime lookup matches by KEY (useKeyboard:
+        // customKeybindings.find((kb) => kb.key === pressed), first match
+        // wins), so we (a) keep saved entries FIRST and (b) back-fill a default
+        // only when neither its id NOR its key is already taken by a saved
+        // entry. Otherwise resurrecting a default would shadow a user binding
+        // that repurposed the same key under a different id. Trade-off (same as
+        // the prefixConfig merge): a default the user deleted outright — with
+        // no replacement on that key — is re-added on next load. Acceptable
+        // until a removed-defaults tombstone schema exists.
         const savedIds = new Set(data.customKeybindings.map((k) => k.id));
-        const missingDefaults = DEFAULT_CUSTOM_KEYBINDINGS.filter((k) => !savedIds.has(k.id));
-        state.customKeybindings = [...missingDefaults.map((k) => ({ ...k })), ...data.customKeybindings];
+        const savedKeys = new Set(data.customKeybindings.map((k) => k.key));
+        const missingDefaults = DEFAULT_CUSTOM_KEYBINDINGS.filter(
+          (k) => !savedIds.has(k.id) && !savedKeys.has(k.key),
+        );
+        state.customKeybindings = [...data.customKeybindings, ...missingDefaults.map((k) => ({ ...k }))];
       }
       if (data.autoUpdateEnabled != null) {
         state.autoUpdateEnabled = data.autoUpdateEnabled;
