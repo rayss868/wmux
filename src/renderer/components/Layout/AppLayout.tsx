@@ -203,6 +203,13 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     cheatSheetDismissed: state.cheatSheetDismissed,
     floatingPanePtyId: state.floatingPanePtyId ?? undefined,
     prefixConfig: state.prefixConfig,
+    // Persist user-created layout templates + recent commands so they survive
+    // restart. loadSession (workspaceSlice) reads these back; builtins are
+    // re-seeded from BUILTIN_TEMPLATES on load, so we exclude them here to
+    // avoid bloat and stale duplicates. recentCommands follows the optional-
+    // field convention (omit when empty) used above for tokenDataByPty.
+    layoutTemplates: state.layoutTemplates.filter((t) => !t.builtin),
+    recentCommands: state.recentCommands.length > 0 ? state.recentCommands : undefined,
   };
 }
 

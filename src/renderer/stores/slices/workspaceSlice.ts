@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, generateId, BUILTIN_TEMPLATES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata } from '../../../shared/types';
+import { createWorkspace, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata } from '../../../shared/types';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
@@ -295,7 +295,19 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         window.electronAPI.settings.setToastEnabled(data.toastEnabled);
       }
       if (data.notificationRingEnabled != null) state.notificationRingEnabled = data.notificationRingEnabled;
-      if (data.customKeybindings) state.customKeybindings = data.customKeybindings;
+      if (data.customKeybindings) {
+        // Merge saved keybindings with current built-in defaults (mirrors the
+        // layoutTemplates merge below). Saved entries win on id collision so a
+        // user's edit to a default binding is preserved; built-in defaults
+        // (id 'kb-default-*') the saved session predates are back-filled so
+        // shipping a new default never silently drops it on a cross-version
+        // upgrade. Trade-off (same as the prefixConfig merge): a default the
+        // user deleted is re-added on next load — acceptable until a tombstone
+        // schema exists.
+        const savedIds = new Set(data.customKeybindings.map((k) => k.id));
+        const missingDefaults = DEFAULT_CUSTOM_KEYBINDINGS.filter((k) => !savedIds.has(k.id));
+        state.customKeybindings = [...missingDefaults.map((k) => ({ ...k })), ...data.customKeybindings];
+      }
       if (data.autoUpdateEnabled != null) {
         state.autoUpdateEnabled = data.autoUpdateEnabled;
         window.electronAPI.settings.setAutoUpdateEnabled(data.autoUpdateEnabled);
@@ -321,7 +333,22 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         ];
       }
       if (data.recentCommands) state.recentCommands = data.recentCommands;
-      if (data.prefixConfig) state.prefixConfig = data.prefixConfig;
+      if (data.prefixConfig) {
+        // Merge the saved bindings ON TOP of DEFAULT_PREFIX_CONFIG instead of
+        // wholesale replacement (mirrors the layoutTemplates merge above). A
+        // session saved before a default binding existed — e.g. the arrow-key
+        // pane-focus bindings (ArrowUp/Down/Left/Right) added in a later
+        // release — carries a bindings map missing those keys; a wholesale
+        // replace would overwrite the in-memory default and leave prefix+arrow
+        // navigation permanently dead. Saved/rebound keys still win on
+        // collision so user customizations are preserved. Trade-off: a default
+        // the user deliberately removed is re-added on next load (acceptable
+        // until a removed-defaults tombstone schema exists).
+        state.prefixConfig = {
+          key: data.prefixConfig.key ?? DEFAULT_PREFIX_CONFIG.key,
+          bindings: { ...DEFAULT_PREFIX_CONFIG.bindings, ...data.prefixConfig.bindings },
+        };
+      }
     }),
 
     // ─── Fix 0 fallback (cross-slice atomic clear) ───────────────────────
