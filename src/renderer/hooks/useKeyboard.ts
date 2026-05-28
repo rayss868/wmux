@@ -257,8 +257,19 @@ export function useKeyboard() {
           return;
         }
 
-        // Ignore bare modifier keys (Shift, Control, Alt, Meta)
+        // Ignore bare modifier keys (Shift, Control, Alt, Meta) — the user is
+        // mid-chord reaching for a modified binding (e.g. Shift before '%' / '"'
+        // / '&' / '?' / ':'). clearPrefixTimeout() already ran above before the
+        // key was classified, so re-arm the auto-exit timer here; otherwise a
+        // lone modifier tap would leave prefix mode active with no timeout and
+        // the next keypress — even minutes later — would be treated as a prefix
+        // command. Exiting outright instead would make the Shift-reached
+        // bindings unreachable, so re-arming is the behavior-preserving fix.
         if (['Shift', 'Control', 'Alt', 'Meta'].includes(key)) {
+          prefixTimeoutRef.current = setTimeout(() => {
+            store.getState().setPrefixMode(false);
+            prefixTimeoutRef.current = null;
+          }, PREFIX_TIMEOUT_MS);
           return;
         }
 
@@ -272,10 +283,13 @@ export function useKeyboard() {
           return;
         }
 
-        // Unknown key → show error briefly, then exit
-        const displayKey = key.length === 1 ? key : key;
+        // Unknown key → show error briefly, then exit. Use exitPrefixMode()
+        // (not a bare setPrefixMode(false)) so prefix-mode teardown stays in
+        // one place; the prefix timeout was already cleared above but this
+        // keeps the cleanup symmetric with every other exit path.
+        const displayKey = key.length === 1 ? key.toUpperCase() : key;
         store.getState().setPrefixError(`Unknown: ${displayKey}`);
-        store.getState().setPrefixMode(false);
+        exitPrefixMode();
         setTimeout(() => {
           store.getState().setPrefixError(null);
         }, PREFIX_ERROR_DISPLAY_MS);

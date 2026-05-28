@@ -263,6 +263,24 @@ export interface CustomKeybinding {
   sendEnter: boolean; // append \n after command
 }
 
+/**
+ * Built-in custom keybindings seeded into uiSlice initial state and used as
+ * the backfill source when restoring a saved session. Single source of truth
+ * so the load-merge in workspaceSlice never drifts from the uiSlice default.
+ * Entries are identified by their `kb-default-*` id; user edits to a default
+ * win on load (saved entry kept), while a default missing from an older saved
+ * session is back-filled so shipping a new built-in never silently drops it.
+ */
+export const DEFAULT_CUSTOM_KEYBINDINGS: CustomKeybinding[] = [
+  {
+    id: 'kb-default-f7',
+    key: 'F7',
+    label: 'Claude (skip permissions)',
+    command: 'claude --dangerously-skip-permissions',
+    sendEnter: true,
+  },
+];
+
 // === Prefix mode bindings ===
 export interface PrefixConfig {
   key: string;  // e.code value for the prefix trigger, e.g. 'KeyB'

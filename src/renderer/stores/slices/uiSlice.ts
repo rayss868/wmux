@@ -15,6 +15,7 @@ import {
   type PrefixConfig,
   BUILTIN_TEMPLATES,
   DEFAULT_PREFIX_CONFIG,
+  DEFAULT_CUSTOM_KEYBINDINGS,
 } from '../../../shared/types';
 import { applyCustomCssVars, clearCustomCssVars, DEFAULT_CUSTOM_THEME, migrateCustomThemeColors } from '../../themes';
 
@@ -659,15 +660,10 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   // ─── Custom keybindings ──────────────────────────────────────────────
-  customKeybindings: [
-    {
-      id: 'kb-default-f7',
-      key: 'F7',
-      label: 'Claude (skip permissions)',
-      command: 'claude --dangerously-skip-permissions',
-      sendEnter: true,
-    },
-  ],
+  // Seed from the shared DEFAULT_CUSTOM_KEYBINDINGS constant (single source of
+  // truth shared with the workspaceSlice load-merge). Deep-copy each entry so
+  // the module-level constant can never be mutated through store state.
+  customKeybindings: DEFAULT_CUSTOM_KEYBINDINGS.map((kb) => ({ ...kb })),
 
   addKeybinding: (kb) => set((state) => {
     state.customKeybindings.push({
@@ -827,7 +823,9 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.prefixError = msg;
   }),
 
-  prefixConfig: { ...DEFAULT_PREFIX_CONFIG },
+  // Deep-copy bindings so the module-level DEFAULT_PREFIX_CONFIG.bindings map
+  // is never shared by reference with store state (matches resetPrefixConfig).
+  prefixConfig: { ...DEFAULT_PREFIX_CONFIG, bindings: { ...DEFAULT_PREFIX_CONFIG.bindings } },
 
   setPrefixKey: (keyCode) => set((state) => {
     state.prefixConfig.key = keyCode;

@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, generateId, BUILTIN_TEMPLATES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata } from '../../../shared/types';
+import { createWorkspace, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata } from '../../../shared/types';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
@@ -295,7 +295,28 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         window.electronAPI.settings.setToastEnabled(data.toastEnabled);
       }
       if (data.notificationRingEnabled != null) state.notificationRingEnabled = data.notificationRingEnabled;
-      if (data.customKeybindings) state.customKeybindings = data.customKeybindings;
+      if (data.customKeybindings) {
+        // Merge saved keybindings with current built-in defaults (mirrors the
+        // layoutTemplates merge below). Built-in defaults (id 'kb-default-*')
+        // the saved session predates are back-filled so shipping a new default
+        // never silently drops it on a cross-version upgrade.
+        //
+        // The runtime lookup matches by KEY (useKeyboard:
+        // customKeybindings.find((kb) => kb.key === pressed), first match
+        // wins), so we (a) keep saved entries FIRST and (b) back-fill a default
+        // only when neither its id NOR its key is already taken by a saved
+        // entry. Otherwise resurrecting a default would shadow a user binding
+        // that repurposed the same key under a different id. Trade-off (same as
+        // the prefixConfig merge): a default the user deleted outright — with
+        // no replacement on that key — is re-added on next load. Acceptable
+        // until a removed-defaults tombstone schema exists.
+        const savedIds = new Set(data.customKeybindings.map((k) => k.id));
+        const savedKeys = new Set(data.customKeybindings.map((k) => k.key));
+        const missingDefaults = DEFAULT_CUSTOM_KEYBINDINGS.filter(
+          (k) => !savedIds.has(k.id) && !savedKeys.has(k.key),
+        );
+        state.customKeybindings = [...data.customKeybindings, ...missingDefaults.map((k) => ({ ...k }))];
+      }
       if (data.autoUpdateEnabled != null) {
         state.autoUpdateEnabled = data.autoUpdateEnabled;
         window.electronAPI.settings.setAutoUpdateEnabled(data.autoUpdateEnabled);
@@ -321,7 +342,22 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         ];
       }
       if (data.recentCommands) state.recentCommands = data.recentCommands;
-      if (data.prefixConfig) state.prefixConfig = data.prefixConfig;
+      if (data.prefixConfig) {
+        // Merge the saved bindings ON TOP of DEFAULT_PREFIX_CONFIG instead of
+        // wholesale replacement (mirrors the layoutTemplates merge above). A
+        // session saved before a default binding existed — e.g. the arrow-key
+        // pane-focus bindings (ArrowUp/Down/Left/Right) added in a later
+        // release — carries a bindings map missing those keys; a wholesale
+        // replace would overwrite the in-memory default and leave prefix+arrow
+        // navigation permanently dead. Saved/rebound keys still win on
+        // collision so user customizations are preserved. Trade-off: a default
+        // the user deliberately removed is re-added on next load (acceptable
+        // until a removed-defaults tombstone schema exists).
+        state.prefixConfig = {
+          key: data.prefixConfig.key ?? DEFAULT_PREFIX_CONFIG.key,
+          bindings: { ...DEFAULT_PREFIX_CONFIG.bindings, ...data.prefixConfig.bindings },
+        };
+      }
     }),
 
     // ─── Fix 0 fallback (cross-slice atomic clear) ───────────────────────

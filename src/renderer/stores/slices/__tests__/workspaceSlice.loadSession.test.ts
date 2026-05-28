@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
-import type { Company, Pane, SessionData, Workspace } from '../../../../shared/types';
+import { DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Company, type Pane, type SessionData, type Workspace } from '../../../../shared/types';
 
 // Fix 0 — minimum cross-slice state surface that workspaceSlice.loadSession
 // and clearAllPtyState mutate. We intentionally don't pull in the full
@@ -366,5 +366,102 @@ describe('WorkspaceSlice.clearAllPtyState — Fix 0 fallback', () => {
     expect(store.getState().company).toBeNull();
     expect(() => store.getState().clearAllPtyState()).not.toThrow();
     expect(store.getState().company).toBeNull();
+  });
+});
+
+// Forward-compat config merge: a session saved by an older build must not strip
+// newly-shipped default bindings/keybindings on load. Regression guard for the
+// "prefix + arrow does nothing after upgrade" bug.
+describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
+  function makeSession(extra: Partial<SessionData>): SessionData {
+    const ws: Workspace = {
+      id: 'ws-1',
+      name: 'WS',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    return {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      ...extra,
+    } as unknown as SessionData;
+  }
+
+  it('back-fills new default prefix bindings (arrow keys) absent from a stale saved config', () => {
+    const store = createTestStore();
+    // Simulate a session saved before arrow-key bindings existed: no Arrow* keys,
+    // and a rebound 'x' (toggleZoom instead of the default closePane).
+    store.getState().loadSession(
+      makeSession({ prefixConfig: { key: 'KeyA', bindings: { 'x': 'toggleZoom', ':': 'commandPalette' } } as unknown as SessionData['prefixConfig'] })
+    );
+    const cfg = store.getState().prefixConfig as { key: string; bindings: Record<string, string> };
+    // New default bindings are present after load…
+    expect(cfg.bindings['ArrowUp']).toBe('focusUp');
+    expect(cfg.bindings['ArrowDown']).toBe('focusDown');
+    expect(cfg.bindings['ArrowLeft']).toBe('focusLeft');
+    expect(cfg.bindings['ArrowRight']).toBe('focusRight');
+    // …saved rebinding wins on collision with the default…
+    expect(cfg.bindings['x']).toBe('toggleZoom');
+    // …and the user's prefix key is preserved.
+    expect(cfg.key).toBe('KeyA');
+  });
+
+  it('falls back to DEFAULT_PREFIX_CONFIG.key when the saved prefix key is missing', () => {
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ prefixConfig: { bindings: {} } as unknown as SessionData['prefixConfig'] })
+    );
+    const cfg = store.getState().prefixConfig as { key: string; bindings: Record<string, string> };
+    expect(cfg.key).toBe(DEFAULT_PREFIX_CONFIG.key);
+    expect(cfg.bindings['ArrowUp']).toBe('focusUp');
+  });
+
+  it('back-fills a missing default keybinding while preserving saved entries', () => {
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ customKeybindings: [{ id: 'kb-user-1', key: 'F8', label: 'Mine', command: 'echo hi', sendEnter: true }] })
+    );
+    const kbs = store.getState().customKeybindings as { id: string }[];
+    const ids = kbs.map((k) => k.id);
+    expect(ids).toContain('kb-user-1');
+    expect(ids).toContain('kb-default-f7'); // back-filled from DEFAULT_CUSTOM_KEYBINDINGS
+  });
+
+  it('does NOT back-fill a default whose key a saved binding already repurposed under a different id', () => {
+    // Runtime lookup is by key (first match wins), so resurrecting kb-default-f7
+    // ahead of a user's own F7 binding would shadow it. Guard against that.
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ customKeybindings: [{ id: 'kb-user-f7', key: 'F7', label: 'My F7', command: 'vim', sendEnter: true }] })
+    );
+    const kbs = store.getState().customKeybindings as { id: string; key: string }[];
+    const f7Bindings = kbs.filter((k) => k.key === 'F7');
+    expect(f7Bindings).toHaveLength(1); // built-in NOT back-filled — no key collision shadow
+    expect(f7Bindings[0].id).toBe('kb-user-f7');
+    expect(kbs.map((k) => k.id)).not.toContain('kb-default-f7');
+  });
+
+  it('places saved entries before back-filled defaults so saved bindings win the key lookup', () => {
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ customKeybindings: [{ id: 'kb-user-1', key: 'F9', label: 'Mine', command: 'ls', sendEnter: true }] })
+    );
+    const kbs = store.getState().customKeybindings as { id: string }[];
+    // kb-user-1 (F9, no collision with F7 default) first, kb-default-f7 back-filled after.
+    expect(kbs[0].id).toBe('kb-user-1');
+    expect(kbs.map((k) => k.id)).toContain('kb-default-f7');
+  });
+
+  it('keeps the saved (edited) default keybinding rather than the built-in on id collision', () => {
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ customKeybindings: [{ id: 'kb-default-f7', key: 'F7', label: 'Edited', command: 'custom', sendEnter: false }] })
+    );
+    const kbs = store.getState().customKeybindings as { id: string; label: string; command: string }[];
+    const f7 = kbs.filter((k) => k.id === 'kb-default-f7');
+    expect(f7).toHaveLength(1); // not duplicated
+    expect(f7[0].label).toBe('Edited'); // saved edit wins over the built-in default
+    expect(DEFAULT_CUSTOM_KEYBINDINGS[0].command).toBe('claude --dangerously-skip-permissions');
   });
 });
