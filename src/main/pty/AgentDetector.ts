@@ -83,13 +83,15 @@ export function agentDisplayToSlug(display: string): AgentSlug | undefined {
  */
 export function agentStatusToSignalKind(
   status: AgentEventStatus,
-): 'agent.stop' | 'agent.activity' | null {
+): 'agent.stop' | 'agent.activity' | 'agent.awaiting_input' | null {
   switch (status) {
     case 'waiting':
     case 'complete':
       return 'agent.stop';
     case 'running':
       return 'agent.activity';
+    case 'awaiting_input':
+      return 'agent.awaiting_input';
     default:
       return null;
   }
@@ -113,9 +115,49 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // appears while a response is in flight (hint that the user can ESC to
       // cancel), not when the agent is idle. Including it produced
       // false-positive "waiting" notifications mid-turn. Removed.
-      { regex: /bypass permissions on/,          status: 'waiting',   message: 'Ready for input' },
-      { regex: /shift\+tab to cycle/,            status: 'waiting',   message: 'Ready for input' },
-      { regex: /Do you want to proceed/,         status: 'waiting',   message: 'Waiting for confirmation' },
+      { regex: /bypass permissions on/,          status: 'waiting',          message: 'Ready for input' },
+      { regex: /shift\+tab to cycle/,            status: 'waiting',          message: 'Ready for input' },
+      // Approval prompts — Claude Code is paused mid-turn waiting for the user
+      // to pick an option. Orchestrators can react to 'awaiting_input' to feed
+      // pre-approved answers without waiting for the full turn to end.
+      //
+      // The patterns are anchored to the END of the line: a real approval
+      // prompt occupies the whole line (possibly inside Claude's box-drawing
+      // frame), whereas conversational mentions are followed by more sentence
+      // text. Codex round-1/round-2 P2: an unanchored `Do you want to
+      // proceed` matched `If the CLI asks "Do you want to proceed?", choose
+      // no`, and unanchored `Allow tool use` matched `click Allow tool use
+      // for Bash` in plain text. Because orchestrators may auto-feed
+      // approval responses into the PTY, false positives here are
+      // particularly costly.
+      //
+      // Trailing AND leading character classes accept whitespace and the
+      // full set of box-drawing glyphs Claude's TUI uses to frame prompt
+      // lines:
+      //   straight:   │ ║ ┃ ═ ━ ─ ┄ ┅ ┆ ┇ ┈ ┉
+      //   corners:    ╭ ╮ ╯ ╰ ╔ ╗ ╝ ╚ ┌ ┐ ┘ └
+      //   separators: · ─
+      // Round-3 P2: omitting corners caused boxed prompt lines ending in
+      // `╮` or `╯` to be skipped. Round-4 P2: omitting `─` (U+2500, light
+      // horizontal) missed boxed prompts like `╭─ Do you want to
+      // proceed? ─╮`. Round-5 P2: omitting the leading anchor allowed
+      // conversational lines such as `Please click Allow tool use for
+      // Bash` to slip through — the round-2 comment promised "real
+      // prompts occupy the whole line" but the regex only checked the
+      // suffix. The whole-line constraint now applies on both ends.
+      //
+      // Tool-name pattern covers TWO and only two forms:
+      //   - Claude's built-in tool labels: `[A-Z][A-Za-z]+` (Bash, Edit,
+      //     Write, WebFetch, TodoWrite, ExitPlanMode, ...). Capitalized,
+      //     no underscores or hyphens.
+      //   - Canonical MCP namespaced form: `mcp__<server>__<tool>` with
+      //     literal `mcp__` prefix, at least two `__` segments, and
+      //     hyphens permitted inside the server/tool ids
+      //     (`mcp__context7__get-library-docs`). Round-5 P2: the prior
+      //     `mcp__[A-Za-z0-9_]+` rejected hyphens and accepted
+      //     non-canonical single-`__` names like `mcp__github_create_issue`.
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                                                  status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
     ],
   },
 
