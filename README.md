@@ -130,7 +130,7 @@ Terminal sessions survive app restarts. Close wmux and reopen — your sessions 
 - PTY input sanitization — prevents command injection
 - Randomized CDP port — no fixed debug port
 - Memory pressure watchdog — reaps dead sessions at 750MB, blocks new ones at 1GB
-- Electron Fuses — RunAsNode disabled, cookie encryption enabled
+- Electron Fuses — cookie encryption on; Node CLI inspect args and `NODE_OPTIONS` env disabled; app loads only from asar. (`RunAsNode` stays **enabled** — the background daemon is spawned as a detached Node process from `wmux.exe` via `ELECTRON_RUN_AS_NODE=1`.)
 
 ---
 
