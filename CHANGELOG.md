@@ -5,6 +5,38 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.0] — 2026-05-29 — Hook-RPC flood fix, view-switch perf, install/updater hardening
+
+Fixes the user-reported "freezing under load" and view-switch lag found via a dogfood-log RCA, finishes the remaining session-reliability hardening from the v2.14.0 RCA, makes the installer and auto-updater integrity-safe, and wires (inert) OSS code signing.
+
+### Fixed — hook-RPC timeout floods / UI freezes (Issue A1, A2)
+- `hooks.signal` no longer does a renderer `workspace.list` round-trip on every signal. A 2s-TTL coalescing cache collapses a tool-heavy turn's bursts into ~1 round-trip and serves the last-known list when the renderer is throttled — stopping the `PostToolUse` timeout floods that froze the UI and, at worst, blocked the daemon event loop into a forced respawn.
+- The Claude Code bridge retries *transient* connect-errors within its 2s budget (and never re-fires a request it already wrote), so a brief main-process restart window no longer drops hooks.
+
+### Fixed — session reliability (RCA A1/A9, A4, A6)
+- Partial-list reconcile now re-queries the daemon before clearing a live `ptyId` absent from a non-empty session list (2-strike guard), closing the last destructive-session-loss path the v2.14.0 RCA left open.
+- The daemon health probe tolerates a busy-but-responsive daemon — `daemon.ping` reports event-loop lag, thresholds raised to 5 strikes / 5s — instead of mistaking load for a hang and force-respawning.
+- `DaemonClient.connect` retries transient named-pipe errors (EPERM/ECONNRESET) with backoff; ENOENT still fails fast.
+- Session-pipe bind retries on `EADDRINUSE`, so a pane no longer dies when a prior pipe has not yet released its name.
+
+### Fixed — view-switch / multiview performance
+- WebGL terminal contexts are no longer disposed the instant a pane is hidden. A short grace period (cancelled on re-show) eliminates the GPU-context create/destroy thrash behind workspace-switch and multiview→single-view lag.
+
+### Added — auto-update integrity (fail-closed)
+- The updater downloads the `Setup.exe` and verifies a CI-published SHA-256 (`update-manifest.json`) before launching it; a tampered or unverifiable artifact is never run. Previously it opened an unverified URL.
+
+### Added — hook-RPC flood observability
+- A rolling 30s summary of slow/failed `workspace.list` resolutions is logged (escalating to a warning on a flood), so degradation is visible without hand-tallying `bridge.log`.
+
+### Changed — install funnel
+- `install.ps1` now downloads the prebuilt, SHA-256-verified `Setup.exe` by default instead of always compiling from source. Build-from-source is opt-in (`-FromSource` / `WMUX_FROM_SOURCE=1`).
+
+### Changed — docs & security accuracy
+- Corrected the README "RunAsNode disabled" claim and reconciled `SECURITY.md` / `PROTOCOL.md` with the actual code (token entropy, `icacls` behavior, intentionally-disabled asar-integrity fuse). Removed the permanently-disabled EditorPanel "Save" affordance.
+
+### Added — code-signing pipeline (inert until configured)
+- `release.yml` is wired for SignPath Foundation (OSS) Authenticode signing of the installer, gated on a signing secret so it is a no-op until configured. Binaries remain unsigned (SmartScreen "unknown publisher") until the certificate is provisioned.
+
 ## [2.14.0] — 2026-05-29 — Session-replacement fix + lifecycle observability + token ACL hardening
 
 Fixes the reported instability where, while running several Claude Code windows, "the daemon resets and sessions get replaced by new empty windows." Root-caused via a multi-expert review (see `plans/RCA-daemon-session-replacement-2026-05-29.md`): the daemon process never actually dies (uptime is monotonic). The renderer's reconnect/reconcile path could not distinguish a *transient* failure from a *permanent* one and destructively cleared live `ptyId`s, making Terminal self-create empty sessions while the daemon still held the originals.
