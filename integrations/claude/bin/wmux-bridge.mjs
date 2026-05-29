@@ -221,6 +221,12 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
     const sock = createConnection(pipePath);
     let buffer = '';
     let settled = false;
+    // Track whether the request bytes were written. A reset/broken-pipe AFTER
+    // the write still surfaces via sock.on('error') as connect-error, but the
+    // server may have already received and processed the signal — retrying it
+    // would double-fire the notification. Only a failure BEFORE the write
+    // (`wrote === false`) is safe to retry. (codex review 2026-05-29 P2.)
+    let wrote = false;
 
     const settle = (result) => {
       if (settled) return;
@@ -235,6 +241,7 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
 
     sock.on('connect', () => {
       sock.write(JSON.stringify(request) + '\n');
+      wrote = true;
     });
     sock.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
@@ -251,7 +258,8 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
     });
     sock.on('error', (err) => {
       clearTimeout(timer);
-      settle({ ok: false, error: 'connect-error', detail: err.code ?? err.message });
+      // retryable only if the request was never written (pre-connect failure).
+      settle({ ok: false, error: 'connect-error', detail: err.code ?? err.message, retryable: !wrote });
     });
     sock.on('close', () => {
       clearTimeout(timer);
@@ -276,8 +284,13 @@ async function sendRpcWithRetry(pipePath, request) {
     last = await sendRpc(pipePath, request, remaining);
     // Anything but a connect-error means the server was reached — return it.
     if (last.error !== 'connect-error') return last;
-    // Only a TRANSIENT connect code is worth retrying; ENOENT/absent → drop.
-    if (!TRANSIENT_CONNECT_CODES.has(last.detail) || attempt >= CONNECT_RETRY_BACKOFFS_MS.length) {
+    // Retry ONLY when: the request was never written (retryable, so no
+    // double-fire), the code is transient (pipe exists but contended — not an
+    // absent ENOENT), and we have attempts left. A reset/broken-pipe AFTER the
+    // write has retryable===false and is returned as-is. (codex 2026-05-29 P2.)
+    if (last.retryable === false
+        || !TRANSIENT_CONNECT_CODES.has(last.detail)
+        || attempt >= CONNECT_RETRY_BACKOFFS_MS.length) {
       return last;
     }
     const backoff = CONNECT_RETRY_BACKOFFS_MS[attempt++];
