@@ -22,6 +22,44 @@ jobs:
       - name: Build & Make
         run: npm run make
 
+      - name: Get version from package.json
+        id: pkg
+        run: |
+          $v = (Get-Content package.json | ConvertFrom-Json).version
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      # Single canonical SHA-256 of the Setup.exe, consumed by BOTH the
+      # Chocolatey package (below) and the published update-manifest.json
+      # (the in-app updater's integrity pin + install.ps1's verification).
+      - name: Compute Setup.exe checksum
+        id: checksum
+        run: |
+          $exe = Get-ChildItem "out/make/squirrel.windows/x64/*Setup.exe" | Select-Object -First 1
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          echo "sha256=$hash" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      # NN2-T3 — publish update-manifest.json so the in-app AutoUpdater (and
+      # install.ps1) can pin the Setup.exe SHA-256 before launching it.
+      # update.electronjs.org's JSON cannot carry a custom hash field, so this
+      # side-car is fetched from the releases/latest/download/ alias.
+      - name: Write update manifest
+        run: |
+          $version  = "${{ steps.pkg.outputs.version }}"
+          $sha256   = "${{ steps.checksum.outputs.sha256 }}".ToLower()
+          $setupExe = "wmux-$version.Setup.exe"
+          $url      = "https://github.com/openwong2kim/wmux/releases/download/v$version/$setupExe"
+          $manifest = [ordered]@{
+            version  = $version
+            setupExe = $setupExe
+            sha256   = $sha256
+            url      = $url
+          }
+          $manifest | ConvertTo-Json -Compress | Set-Content -NoNewline -Encoding utf8 "out/make/squirrel.windows/x64/update-manifest.json"
+          Write-Host "update-manifest.json: $($manifest | ConvertTo-Json -Compress)"
+        shell: pwsh
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -35,23 +73,9 @@ jobs:
             out/make/squirrel.windows/x64/*.exe
             out/make/squirrel.windows/x64/*.nupkg
             out/make/squirrel.windows/x64/RELEASES
+            out/make/squirrel.windows/x64/update-manifest.json
           generate_release_notes: true
           draft: false
-
-      - name: Get version from package.json
-        id: pkg
-        run: |
-          $v = (Get-Content package.json | ConvertFrom-Json).version
-          echo "version=$v" >> $env:GITHUB_OUTPUT
-        shell: pwsh
-
-      - name: Compute Setup.exe checksum
-        id: checksum
-        run: |
-          $exe = Get-ChildItem "out/make/squirrel.windows/x64/*Setup.exe" | Select-Object -First 1
-          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
-          echo "sha256=$hash" >> $env:GITHUB_OUTPUT
-        shell: pwsh
 
       - name: Build Chocolatey package
         run: |
@@ -73,7 +97,7 @@ jobs:
         shell: pwsh
         env:
           CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
-          
+
       - name: Publish to winget
         if: env.WINGET_TOKEN != ''
         continue-on-error: true
