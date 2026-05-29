@@ -110,6 +110,26 @@ jobs:
           Write-Host "update-manifest.json: $($manifest | ConvertTo-Json -Compress)"
         shell: pwsh
 
+      # Extract this version's section from CHANGELOG.md as the release body, so
+      # release notes are the real changelog (not just the auto PR-title line).
+      # generate_release_notes still appends "What's Changed" + the compare link.
+      - name: Extract release notes from CHANGELOG
+        run: |
+          $version = "${{ steps.pkg.outputs.version }}"
+          $lines = Get-Content CHANGELOG.md
+          $start = -1; $end = $lines.Count
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match "^## \[$([regex]::Escape($version))\]") { $start = $i; continue }
+            if ($start -ge 0 -and $lines[$i] -match '^## \[') { $end = $i; break }
+          }
+          if ($start -lt 0 -or $end -le ($start + 1)) {
+            "Release $version. See CHANGELOG.md for details." | Set-Content -Encoding utf8 out/release-notes.md
+          } else {
+            ($lines[($start + 1)..($end - 1)] -join "`n").Trim() | Set-Content -Encoding utf8 out/release-notes.md
+          }
+          Write-Host "--- release-notes.md (head) ---"; Get-Content out/release-notes.md | Select-Object -First 6
+        shell: pwsh
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -124,6 +144,7 @@ jobs:
             out/make/squirrel.windows/x64/*.nupkg
             out/make/squirrel.windows/x64/RELEASES
             out/make/squirrel.windows/x64/update-manifest.json
+          body_path: out/release-notes.md
           generate_release_notes: true
           draft: false
 
