@@ -7,6 +7,9 @@ import { execFileSync } from 'child_process';
  * grant Full control to ONLY the current user. Throws on failure (callers
  * decide whether that is fatal). Shared by the write path (secureWriteTokenFile)
  * and the re-harden path (reHardenTokenFileAcl).
+ *
+ * Backs the docs/SECURITY.md §1.2 + PROTOCOL.md §5 token-file ACL guarantee —
+ * keep the icacls argv (/inheritance:r /grant:r %USERNAME%:F) in sync with them.
  */
 function applyRestrictiveWindowsAcl(filePath: string): void {
   const icacls = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\icacls.exe`;
