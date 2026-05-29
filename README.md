@@ -44,7 +44,7 @@ choco install wmux
 
 **Installer:** [Download wmux Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
 
-> **Seeing a "Windows protected your PC" warning?** The installer isn't code-signed yet, so Windows SmartScreen flags it as from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. Installing via **winget** or **Chocolatey** above avoids this prompt entirely, since those package managers run in a trusted context.
+> **Seeing a "Windows protected your PC" warning?** The installer is not yet Authenticode-signed (free code signing via SignPath is being set up — see **Code signing** below), so Windows SmartScreen flags it as from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. Installing via **winget** or **Chocolatey** above avoids this prompt entirely, since those package managers run in a trusted context.
 
 **One-liner (PowerShell):** downloads the prebuilt Setup.exe from the latest release and verifies its SHA-256 before launching it (no Node/Python/build tools needed).
 ```powershell
@@ -55,6 +55,8 @@ Want to build from source instead (needs Node 18+, Python 3, and VS C++ Build To
 ```powershell
 $env:WMUX_FROM_SOURCE=1; irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 ```
+
+**Code signing** — Free Authenticode code signing for Windows builds is provided by [SignPath.io](https://signpath.io/), certificate by the [SignPath Foundation](https://signpath.org/).
 
 ---
 
