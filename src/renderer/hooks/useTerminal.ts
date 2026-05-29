@@ -21,6 +21,16 @@ import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectP
 const terminalRegistry = new Map<string, Terminal>();
 export { terminalRegistry };
 
+// RCA (2026-05-29 view-switch lag): when a terminal is hidden we DEFER WebGL
+// context dispose by this delay instead of tearing it down immediately. A
+// hidden terminal usually reappears within seconds (workspace switch back,
+// multiview<->single toggle); immediate dispose+reload thrashes GPU context
+// creation, which is the main source of the view-switch lag the user reported.
+// If the terminal becomes visible again before the timer fires, the dispose is
+// cancelled and the live context reused. Long-hidden panes still free their
+// context, bounding the simultaneous-context count under Chromium's ~16 limit.
+export const WEBGL_HIDDEN_DISPOSE_DELAY_MS = 10_000;
+
 // RCA A1 — reconnect-with-retry policy lives in its own module so it can be
 // unit-tested without xterm/zustand/electron. Bound to the live deps here.
 function reconnectPtyWithRetry(ptyId: string, isCurrent: () => boolean): Promise<void> {
@@ -141,6 +151,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const webglAddonRef = useRef<WebglAddon | null>(null);
   // loadWebgl closure ref — set by the main effect, called by visibility effect.
   const loadWebglRef = useRef<(() => void) | null>(null);
+  // Pending deferred-WebGL-dispose timer (see WEBGL_HIDDEN_DISPOSE_DELAY_MS).
+  const webglDisposeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { ptyId, isVisible = true, scrollbackFile, onFirstData, onContextMenu } = options;
   const ptyIdRef = useRef(ptyId);
   ptyIdRef.current = ptyId;
@@ -861,6 +873,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       removeDaemonConnectedForRestore?.();
       removeFlushListener?.();
       terminalRegistry.delete(ptyId);
+      if (webglDisposeTimerRef.current) {
+        clearTimeout(webglDisposeTimerRef.current);
+        webglDisposeTimerRef.current = null;
+      }
       webglAddonRef.current?.dispose();
       webglAddonRef.current = null;
       loadWebglRef.current = null;
@@ -907,6 +923,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // that was initialized while hidden displays at the correct size.
   useEffect(() => {
     if (isVisible) {
+      // Cancel any pending deferred WebGL dispose — the terminal is visible
+      // again (fast workspace switch / multiview<->single toggle), so reuse the
+      // still-live context instead of tearing it down and rebuilding. This is
+      // the de-thrash that removes the view-switch lag.
+      if (webglDisposeTimerRef.current) {
+        clearTimeout(webglDisposeTimerRef.current);
+        webglDisposeTimerRef.current = null;
+      }
       // Load WebGL for this terminal if not already loaded
       if (!webglAddonRef.current && loadWebglRef.current) {
         loadWebglRef.current();
@@ -926,10 +950,19 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       });
       return () => cancelAnimationFrame(id);
     } else {
-      // Dispose WebGL when hidden — free the context for other terminals
-      if (webglAddonRef.current) {
-        webglAddonRef.current.dispose();
-        webglAddonRef.current = null;
+      // DEFER WebGL dispose rather than tearing it down the instant the
+      // terminal is hidden (see WEBGL_HIDDEN_DISPOSE_DELAY_MS). A hidden
+      // terminal usually reappears within seconds; immediate dispose+reload
+      // is the view-switch lag. Only free the context if it stays hidden past
+      // the grace period, which still bounds simultaneous contexts.
+      if (webglAddonRef.current && !webglDisposeTimerRef.current) {
+        webglDisposeTimerRef.current = setTimeout(() => {
+          webglDisposeTimerRef.current = null;
+          if (webglAddonRef.current) {
+            webglAddonRef.current.dispose();
+            webglAddonRef.current = null;
+          }
+        }, WEBGL_HIDDEN_DISPOSE_DELAY_MS);
       }
     }
   }, [isVisible, fit]);
