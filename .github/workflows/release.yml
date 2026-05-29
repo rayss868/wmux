@@ -9,6 +9,16 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      # NN2-T1 — SignPath Foundation (OSS) code signing. EMPTY until the secret
+      # is configured, which makes every signing step below no-op so unsigned
+      # builds still ship exactly as today. To enable after SignPath approval:
+      #   1. Add repo SECRET   SIGNPATH_API_TOKEN          (the CI user token)
+      #   2. Add repo VARIABLES SIGNPATH_ORGANIZATION_ID,
+      #      SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG,
+      #      SIGNPATH_ARTIFACT_CONFIGURATION_SLUG (from the SignPath project UI)
+      # See docs.signpath.io/trusted-build-systems/github.
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -21,6 +31,46 @@ jobs:
 
       - name: Build & Make
         run: npm run make
+
+      # ── Authenticode code signing (SignPath Foundation, OSS) ─────────────
+      # No-op until SIGNPATH_API_TOKEN is set (see job env). Signs the prebuilt
+      # Setup.exe and replaces the unsigned copy BEFORE the checksum/manifest
+      # steps, so the published SHA-256 matches the signed binary. (Signing the
+      # embedded app exe + delta .nupkg is the NN2-T2 follow-up.)
+      - name: Upload unsigned Setup.exe for signing
+        id: upload-unsigned
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: wmux-setup-unsigned
+          path: out/make/squirrel.windows/x64/*.Setup.exe
+          if-no-files-found: error
+
+      - name: Sign Setup.exe via SignPath
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: out/signed
+
+      - name: Replace unsigned Setup.exe with the signed one
+        if: env.SIGNPATH_API_TOKEN != ''
+        shell: pwsh
+        run: |
+          $signed = Get-ChildItem "out/signed" -Recurse -Filter "*.Setup.exe" | Select-Object -First 1
+          if (-not $signed) { Write-Error "SignPath returned no signed Setup.exe"; exit 1 }
+          $dest = Get-ChildItem "out/make/squirrel.windows/x64/*.Setup.exe" | Select-Object -First 1
+          Copy-Item $signed.FullName $dest.FullName -Force
+          # Fail the release if the result is not a valid Authenticode signature.
+          $sig = Get-AuthenticodeSignature $dest.FullName
+          if ($sig.Status -ne 'Valid') { Write-Error "Signed exe failed Authenticode validation: $($sig.Status)"; exit 1 }
+          Write-Host "Signed Setup.exe in place (publisher: $($sig.SignerCertificate.Subject))"
 
       - name: Get version from package.json
         id: pkg
