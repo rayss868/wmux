@@ -43,6 +43,7 @@ import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import { sendNotification } from '../../notification/sendNotification';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
 import { eventBus } from '../../events/EventBus';
 import { IPC } from '../../../shared/constants';
 import {
@@ -79,6 +80,12 @@ export const WORKSPACE_LIST_CACHE_TTL_MS = 2_000;
 // miss against a slow renderer still returns (stale) before the bridge bails.
 const WORKSPACE_LIST_FETCH_TIMEOUT_MS = 1_500;
 
+// Observability (HookFloodMeter): a hook is "degraded" when its workspace.list
+// resolution took longer than this — i.e. it missed the cache and the renderer
+// was slow to answer (the flood precursor). Logged in a rolling summary.
+const HOOK_DEGRADED_FETCH_MS = 500;
+const HOOK_FLOOD_LOG_INTERVAL_MS = 30_000;
+
 /**
  * Register `hooks.signal` on the router. Must be called once at boot
  * (main/index.ts) after both the PipeServer and HookSignalRouter exist.
@@ -103,6 +110,19 @@ export function registerHooksRpc(
   // a single workspace.list round-trip (see WORKSPACE_LIST_CACHE_TTL_MS note).
   const workspaceCache = createWorkspaceListCache(() => safeListWorkspaces(getWindow));
 
+  // Observability: surface a hook-RPC flood in the main log (postmortem
+  // visible) by tallying slow/failed workspace.list resolutions per window.
+  const floodMeter = new HookFloodMeter();
+  const floodTimer = setInterval(() => {
+    const summary = floodMeter.flush(HOOK_FLOOD_LOG_INTERVAL_MS);
+    if (!summary) return;
+    const { level, message } = describeHookFlood(summary);
+    if (level === 'warn') console.warn(message);
+    else console.log(message);
+  }, HOOK_FLOOD_LOG_INTERVAL_MS);
+  // Never keep the process alive for the flood logger.
+  floodTimer.unref?.();
+
   router.register('hooks.signal', async (params): Promise<HookSignalResponse> => {
     // 1. Envelope validation. Reject anything that doesn't match the
     //    canonical shape — bridges from older wmux versions, malformed
@@ -124,7 +144,10 @@ export function registerHooksRpc(
     //    a wmux pane. The workspace list comes from a short-TTL coalescing
     //    cache (NOT a fresh round-trip per hook — that flooded the bridge
     //    with 2s timeouts under load; see the cache note above).
+    const fetchStart = Date.now();
     const workspaces = await workspaceCache.get();
+    const fetchMs = Date.now() - fetchStart;
+    floodMeter.record({ degraded: fetchMs > HOOK_DEGRADED_FETCH_MS || !workspaces, fetchMs });
     if (!workspaces) {
       // Record as a miss because we couldn't determine match either
       // way — better than silently skewing the counter to "matched".
@@ -265,6 +288,7 @@ export function registerHooksRpc(
   return () => {
     unsubscribe();
     throttledPush.cancel();
+    clearInterval(floodTimer);
   };
 }
 
