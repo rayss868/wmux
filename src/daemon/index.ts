@@ -14,9 +14,17 @@ import { RingBuffer } from './RingBuffer';
 import { initDaemonLogSink } from './util/logSink';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 // === Constants ===
 const wmuxDir = getWmuxDir();
+
+// RCA A4 — event-loop lag monitor. Enabled once at module load; daemon.ping
+// reports the mean lag (ms) since the previous ping so the main-side health
+// probe (DaemonRespawnController) can tell a busy-but-responsive daemon from a
+// hung one and skip a false-positive respawn under CPU load.
+const eventLoopMonitor = monitorEventLoopDelay({ resolution: 20 });
+eventLoopMonitor.enable();
 
 // Install the file log sink before any log() / console.* call below. The
 // launcher spawns this process with `stdio: 'ignore'`, so without this
@@ -765,7 +773,14 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.ping', async () => {
     const sessions = sessionManager.listSessions();
     const uptime = Math.floor((Date.now() - startTime) / 1000);
-    return { status: 'ok', uptime, sessions: sessions.length };
+    // RCA A4 — report event-loop lag (ms) so the controller distinguishes a
+    // busy-but-responsive daemon from a hung one. histogram.mean is in
+    // nanoseconds and is NaN before the first sample; reset so the next ping
+    // reflects lag since this one.
+    const meanNs = eventLoopMonitor.mean;
+    const eventLoopLagMs = Number.isFinite(meanNs) ? Math.round(meanNs / 1e6) : 0;
+    eventLoopMonitor.reset();
+    return { status: 'ok', uptime, sessions: sessions.length, eventLoopLagMs };
   });
 
   // daemon.shutdown — gracefully terminate the daemon process. A2 makes

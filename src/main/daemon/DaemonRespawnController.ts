@@ -70,9 +70,9 @@ export interface DaemonRespawnConfig {
   maxBackoffMs?: number;
   /** Health-probe interval. 0 disables the probe. Default 10s. */
   healthIntervalMs?: number;
-  /** Per-ping timeout. Default 3s. */
+  /** Per-ping timeout. Default 5s (RCA A4 — tolerate a busy daemon). */
   healthTimeoutMs?: number;
-  /** Consecutive ping failures that force a respawn. Default 3. */
+  /** Consecutive ping failures that force a respawn. Default 5 (RCA A4). */
   hangFailureThreshold?: number;
 }
 
@@ -82,9 +82,16 @@ const DEFAULTS: Required<DaemonRespawnConfig> = {
   baseBackoffMs: 1000,
   maxBackoffMs: 30_000,
   healthIntervalMs: 10_000,
-  healthTimeoutMs: 3_000,
-  hangFailureThreshold: 3,
+  // RCA A4 — raised from 3s/3 so a daemon under CPU load (the ~9s event-loop
+  // stall the RCA described) is not mistaken for a hang and force-respawned,
+  // which would re-emit daemon:connected and re-trigger the reconcile path.
+  healthTimeoutMs: 5_000,
+  hangFailureThreshold: 5,
 };
+
+// RCA A4 — a successful ping reporting event-loop lag at/above this is logged
+// as "busy but responsive" (never escalated; a daemon that answers is alive).
+const BUSY_LAG_WARN_MS = 1_000;
 
 /**
  * Owns the daemon-respawn lifecycle: detects disconnects, schedules
@@ -302,8 +309,17 @@ export class DaemonRespawnController {
     const client = this.client;
     if (!client || !client.isConnected) return;
     try {
-      await client.rpc('daemon.ping', {}, { timeoutMs: this.cfg.healthTimeoutMs });
+      const pong = (await client.rpc('daemon.ping', {}, { timeoutMs: this.cfg.healthTimeoutMs })) as
+        | { eventLoopLagMs?: number }
+        | undefined;
       this.healthFailureCount = 0;
+      // RCA A4 — a ping that SUCCEEDS proves the daemon is alive even if its
+      // event loop is lagging under load. Never escalate on a successful ping;
+      // just surface the busy state for observability.
+      const lag = pong?.eventLoopLagMs;
+      if (typeof lag === 'number' && lag >= BUSY_LAG_WARN_MS) {
+        this.deps.logger.info(`daemon busy but responsive (event-loop lag ~${lag}ms) — not a hang`);
+      }
     } catch (err) {
       this.healthFailureCount++;
       this.deps.logger.warn(

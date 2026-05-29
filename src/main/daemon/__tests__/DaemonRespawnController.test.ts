@@ -448,6 +448,59 @@ describe('DaemonRespawnController health probe', () => {
     expect(h.events.some((e) => e.type === 'reconnected')).toBe(true);
   });
 
+  it('a busy-but-responsive daemon (pings succeed with high event-loop lag) is never respawned (RCA A4)', async () => {
+    const h = makeHarness({
+      config: { healthIntervalMs: 1000, healthTimeoutMs: 5000, baseBackoffMs: 50, budget: 5 },
+    });
+    const c1 = new FakeDaemonClient();
+    h.clientQueue.push(c1);
+    // Every ping SUCCEEDS but reports a lagging event loop (busy under load).
+    c1.rpcImpl = async (method) =>
+      method === 'daemon.ping' ? { status: 'ok', eventLoopLagMs: 4000 } : {};
+
+    await h.controller.bootstrap();
+    expect(h.controller.isHealthy).toBe(true);
+
+    // Many ticks — a daemon that keeps answering is alive, never force-respawned.
+    for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(1000);
+
+    expect(h.deps.onUninstall).not.toHaveBeenCalled();
+    expect(c1.disconnectSyncCalls).toBe(0);
+    expect(h.events.some((e) => e.type === 'reconnecting')).toBe(false);
+    expect(h.controller.isHealthy).toBe(true);
+  });
+
+  it('uses the default hangFailureThreshold of 5 (4 failures tolerated, 5th respawns) (RCA A4)', async () => {
+    const h = makeHarness({
+      // No hangFailureThreshold override → DEFAULTS (now 5, was 3).
+      config: { healthIntervalMs: 1000, healthTimeoutMs: 100, baseBackoffMs: 50, budget: 5 },
+    });
+    const c1 = new FakeDaemonClient();
+    const c2 = new FakeDaemonClient();
+    h.clientQueue.push(c1, c2);
+
+    let pingCalls = 0;
+    c1.rpcImpl = async (method) => {
+      if (method === 'daemon.ping') {
+        pingCalls++;
+        if (pingCalls === 1) return {}; // bootstrap auth ping succeeds
+        throw new Error('ping timeout');
+      }
+      return {};
+    };
+
+    await h.controller.bootstrap();
+
+    // 4 failing ticks — below the default threshold of 5 → no respawn yet.
+    for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(1000);
+    expect(h.deps.onUninstall).not.toHaveBeenCalled();
+
+    // 5th consecutive failure → respawn.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.deps.onUninstall).toHaveBeenCalled();
+    expect(c1.disconnectSyncCalls).toBe(1);
+  });
+
   it('skips probe ticks when no client is installed', async () => {
     const h = makeHarness({
       config: { healthIntervalMs: 100, healthTimeoutMs: 50 },

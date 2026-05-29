@@ -31,6 +31,7 @@ import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../s
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
+import { resolvePtyIdsToClear } from '../../hooks/reconcileWithReQuery';
 import { withDefaultShell } from '../../utils/ptyCreateOptions';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
@@ -442,7 +443,15 @@ export default function AppLayout() {
         // is now responsible for calling pty.reconnect AFTER its
         // pty.onData listener is registered, so the SessionPipe replay
         // always lands on an attached listener.
-        const reconcile = (pane: Pane, wsId: string) => {
+        // RCA A1/A9 — collect candidate ptyIds (present in the store but
+        // ABSENT from the first NON-EMPTY daemon snapshot) WITHOUT clearing.
+        // Live ptyIds stay in place (useTerminal mount reconnects). The
+        // partial-list case is the still-open hole the empty-list guard above
+        // does not cover: a single snapshot can be partial (daemon
+        // mid-rehydrate), so clearing on the first cycle could destroy a live
+        // session. We defer the destructive decision to a 2-strike re-query.
+        const absentCandidates: { paneId: string; surfaceId: string; ptyId: string }[] = [];
+        const collect = (pane: Pane) => {
           if (signal?.aborted) return;
           if (pane.type === 'leaf') {
             for (const surface of pane.surfaces) {
@@ -456,21 +465,13 @@ export default function AppLayout() {
                 console.log(`[AppLayout] Surface ${surface.id}: ptyId ${surface.ptyId} alive in daemon, Terminal will reconnect on mount`);
                 // Leave ptyId in place. useTerminal mount reconnects.
               } else {
-                // RCA A8 — this is a destructive decision (live ptyId → ''),
-                // logged at warn so it lands in the main log file (mirrored via
-                // the webContents console-message listener) and can be
-                // correlated with the daemon's pty.list count. Reached only
-                // when the daemon returned a NON-empty list that omits this
-                // ptyId (empty lists are preserved above), so this is a
-                // genuinely-absent session per the daemon's own snapshot.
-                console.warn(`[lifecycle] reconcile clearing ptyId=${surface.ptyId} surface=${surface.id} (absent from daemon's ${activeIds.size}-session list) → Terminal self-create`);
-                useStore.getState().updateSurfacePtyId(pane.id, surface.id, '');
+                absentCandidates.push({ paneId: pane.id, surfaceId: surface.id, ptyId: surface.ptyId });
               }
             }
           } else {
             for (const child of pane.children) {
               if (signal?.aborted) return;
-              reconcile(child, wsId);
+              collect(child);
             }
           }
         };
@@ -483,7 +484,35 @@ export default function AppLayout() {
         for (const ws of useStore.getState().workspaces) {
           if (signal?.aborted) return;
           console.log(`[AppLayout] Reconciling workspace: ${ws.name}`);
-          reconcile(ws.rootPane, ws.id);
+          collect(ws.rootPane);
+        }
+
+        // RCA A1/A9 — partial-list 2-strike guard. Before destructively
+        // clearing any live ptyId absent from the first non-empty snapshot,
+        // re-query the daemon ONCE (resolvePtyIdsToClear). It preserves
+        // everything on uncertainty (re-query fails or the run aborts) and
+        // returns only ptyIds absent from BOTH snapshots. RCA A8 — the actual
+        // clear is logged at warn so it lands in the main log file and can be
+        // correlated with the daemon's pty.list count.
+        if (absentCandidates.length > 0 && !signal?.aborted) {
+          const firstAbsent = absentCandidates.map((c) => c.ptyId);
+          const toClear = await resolvePtyIdsToClear(firstAbsent, {
+            reList: async () => {
+              const r = await ipcInvoke<{ id: string }[]>(() => window.electronAPI.pty.list());
+              return r.ok
+                ? { ok: true, ids: new Set(r.data.map((p: { id: string }) => p.id)) }
+                : { ok: false };
+            },
+            isCurrent: () => !signal?.aborted,
+            log: (level, message) => (level === 'warn' ? console.warn(message) : console.log(message)),
+          });
+          for (const c of absentCandidates) {
+            if (signal?.aborted) break;
+            if (toClear.has(c.ptyId)) {
+              console.warn(`[lifecycle] reconcile clearing ptyId=${c.ptyId} surface=${c.surfaceId} (absent from TWO daemon snapshots) → Terminal self-create`);
+              useStore.getState().updateSurfacePtyId(c.paneId, c.surfaceId, '');
+            }
+          }
         }
         console.log('[AppLayout] Reconciliation complete');
       } finally {

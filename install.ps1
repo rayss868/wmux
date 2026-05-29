@@ -3,10 +3,19 @@
 .SYNOPSIS
     wmux installer for Windows
 .DESCRIPTION
-    Downloads and installs wmux — AI Agent Terminal for Windows
+    Downloads and runs the prebuilt wmux Setup.exe from the latest GitHub
+    Release, verifying its SHA-256 against the published update-manifest.json
+    before launching it.
+
+    Build-from-source is opt-in (needs Node, Python, and VS C++ Build Tools):
+      - one-liner:  $env:WMUX_FROM_SOURCE=1; irm <url>/install.ps1 | iex
+      - file:       pwsh -File install.ps1 -FromSource
 .EXAMPLE
     irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
+.EXAMPLE
+    $env:WMUX_FROM_SOURCE=1; irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 #>
+param([switch]$FromSource)
 
 $ErrorActionPreference = 'Stop'
 
@@ -16,6 +25,10 @@ $ErrorActionPreference = 'Stop'
 # Fix encoding: native commands (git, winget, npm) output UTF-8,
 # but PowerShell defaults to system locale (e.g. CP949 on Korean Windows)
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+# `irm | iex` cannot pass parameters, so the env var is the supported opt-in for
+# the piped one-liner; -FromSource is for `pwsh -File install.ps1`.
+if ($env:WMUX_FROM_SOURCE -in '1', 'true', 'yes', 'on') { $FromSource = $true }
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -143,10 +156,116 @@ if (-not $env:LOCALAPPDATA -or -not $installDir) {
 Write-Host ""
 Write-Host "  wmux installer" -ForegroundColor Cyan
 Write-Host "  AI Agent Terminal for Windows" -ForegroundColor DarkGray
+if ($FromSource) { Write-Host "  (build-from-source mode)" -ForegroundColor DarkGray }
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# Prerequisites
+# Resolve the latest release (needed by both the download and source paths)
+# ---------------------------------------------------------------------------
+
+Write-Host "  [*] Checking latest release..." -ForegroundColor DarkGray
+
+$release = $null
+$version = 'main'
+try {
+    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" `
+        -Headers @{ 'User-Agent' = 'wmux-installer' } `
+        -TimeoutSec 15
+    $version = $release.tag_name
+    if ($version -notmatch '^v?\d+\.\d+') {
+        Write-Host "  [*] Unexpected version format '$version'" -ForegroundColor Yellow
+        if (-not $FromSource) {
+            Write-Host "  [!] Cannot resolve a release to download. Build from source instead:" -ForegroundColor Red
+            Write-Host "       `$env:WMUX_FROM_SOURCE=1; irm <url>/install.ps1 | iex" -ForegroundColor Yellow
+            return
+        }
+        $version = 'main'
+    } else {
+        Write-Host "  [*] Latest version: $version" -ForegroundColor Green
+    }
+} catch {
+    if (-not $FromSource) {
+        Write-Host "  [!] Could not query the latest release ($($_.Exception.Message))." -ForegroundColor Red
+        Write-Host "       Build from source instead: `$env:WMUX_FROM_SOURCE=1; irm <url>/install.ps1 | iex" -ForegroundColor Yellow
+        return
+    }
+    Write-Host "  [*] No releases found, building from main branch ($($_.Exception.Message))" -ForegroundColor Yellow
+    $version = 'main'
+}
+
+# ===========================================================================
+# DEFAULT PATH — download the prebuilt Setup.exe and verify its SHA-256
+# ===========================================================================
+
+if (-not $FromSource) {
+    if (-not $release -or -not $release.assets) {
+        Write-Host "  [!] No release assets found. Build from source instead (-FromSource)." -ForegroundColor Red
+        return
+    }
+
+    $setupAsset = $release.assets | Where-Object { $_.name -match '\.Setup\.exe$' } | Select-Object -First 1
+    $manifestAsset = $release.assets | Where-Object { $_.name -eq 'update-manifest.json' } | Select-Object -First 1
+    if (-not $setupAsset) {
+        Write-Host "  [!] No Setup.exe asset in the latest release. Build from source instead (-FromSource)." -ForegroundColor Red
+        return
+    }
+
+    Write-Host "  [1/3] Downloading $($setupAsset.name)..." -ForegroundColor DarkGray
+    $tempExe = Join-Path $env:TEMP "wmux-$($version.TrimStart('v')).Setup.exe"
+    $ProgressPreference = 'SilentlyContinue'  # massively speeds up Invoke-WebRequest
+    try {
+        Invoke-WebRequest -Uri $setupAsset.browser_download_url -OutFile $tempExe `
+            -Headers @{ 'User-Agent' = 'wmux-installer' } -TimeoutSec 300
+    } catch {
+        Write-Host "  [!] Download failed: $($_.Exception.Message)" -ForegroundColor Red
+        return
+    }
+
+    # Integrity: verify SHA-256 against the published manifest when available.
+    # TODO(NN2): once Authenticode signing lands, also verify
+    # (Get-AuthenticodeSignature $tempExe).Status -eq 'Valid' and the publisher.
+    $expectedSha = $null
+    if ($manifestAsset) {
+        try {
+            $manifest = Invoke-RestMethod $manifestAsset.browser_download_url `
+                -Headers @{ 'User-Agent' = 'wmux-installer' } -TimeoutSec 15
+            $expectedSha = $manifest.sha256
+        } catch {
+            Write-Host "  [*] Could not fetch update-manifest.json ($($_.Exception.Message))" -ForegroundColor Yellow
+        }
+    }
+    if ($expectedSha) {
+        $actualSha = (Get-FileHash $tempExe -Algorithm SHA256).Hash
+        if ($actualSha.ToLower() -ne $expectedSha.ToLower()) {
+            Remove-Item $tempExe -Force -ErrorAction SilentlyContinue
+            Write-Host "  [!] SHA-256 mismatch — download may be corrupt or tampered. Aborting." -ForegroundColor Red
+            Write-Host "       expected $($expectedSha.ToLower())" -ForegroundColor Red
+            Write-Host "       actual   $($actualSha.ToLower())" -ForegroundColor Red
+            return
+        }
+        Write-Host "  [2/3] Verified SHA-256" -ForegroundColor Green
+    } else {
+        Write-Host "  [2/3] No checksum manifest for this release — skipping SHA-256 verification" -ForegroundColor Yellow
+    }
+
+    Write-Host "  [3/3] Launching installer..." -ForegroundColor Green
+    Start-Process -FilePath $tempExe
+    Write-Host ""
+    Write-Host "  Installation started — follow the Setup window to finish." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Note: the installer is not yet code-signed, so Windows SmartScreen may" -ForegroundColor DarkGray
+    Write-Host "        show 'unknown publisher' — click More info -> Run anyway." -ForegroundColor DarkGray
+    Write-Host ""
+    return
+}
+
+# ===========================================================================
+# BUILD-FROM-SOURCE PATH (opt-in via -FromSource / WMUX_FROM_SOURCE=1)
+# Requires Git, Node 18+, Python 3, and VS C++ Build Tools (auto-installed).
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Prerequisites (source build only)
 # ---------------------------------------------------------------------------
 
 # Git
@@ -211,7 +330,7 @@ if (Test-Path $vsWhere) {
 
 if (-not $hasVCTools) {
     # Check if Build Tools product exists (without VCTools workload)
-    $buildToolsInstanceId = $null
+    $buildToolsInstallPath = $null
     if (Test-Path $vsWhere) {
         $btJson = Get-NativeOutput { & $vsWhere -products Microsoft.VisualStudio.Product.BuildTools -format json }
         $btInstalls = @(ConvertFrom-JsonSafe $btJson)
@@ -226,9 +345,9 @@ if (-not $hasVCTools) {
         # --instanceId and --wait are not recognized by setup.exe (exit code 87).
         # Use setup.exe directly with --installPath.
         Write-Host "  [*] Build Tools found but C++ workload missing — adding VCTools..." -ForegroundColor Yellow
-        $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-        if (Test-Path $setupExe) {
-            Invoke-NativeCommand { & "$setupExe" modify --installPath "$buildToolsInstallPath" --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --norestart }
+        $vsSetupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+        if (Test-Path $vsSetupExe) {
+            Invoke-NativeCommand { & "$vsSetupExe" modify --installPath "$buildToolsInstallPath" --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --norestart }
             Write-Host "  [*] C++ workload added" -ForegroundColor Green
         } else {
             Write-Host "  [!] VS setup.exe not found. Add 'Desktop development with C++' workload manually." -ForegroundColor Red
@@ -295,29 +414,10 @@ if (-not $hasVCTools) {
 }
 
 # ---------------------------------------------------------------------------
-# Install
+# Clone + build
 # ---------------------------------------------------------------------------
 
-Write-Host "  [1/5] Checking latest release..." -ForegroundColor DarkGray
-
-try {
-    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" `
-        -Headers @{ 'User-Agent' = 'wmux-installer' } `
-        -TimeoutSec 15
-    $version = $release.tag_name
-    # Validate version format
-    if ($version -notmatch '^v?\d+\.\d+') {
-        Write-Host "  [1/5] Unexpected version format '$version', using main branch" -ForegroundColor Yellow
-        $version = "main"
-    } else {
-        Write-Host "  [1/5] Latest version: $version" -ForegroundColor Green
-    }
-} catch {
-    $version = "main"
-    Write-Host "  [1/5] No releases found, installing from main branch ($($_.Exception.Message))" -ForegroundColor Yellow
-}
-
-Write-Host "  [2/5] Cloning repository..." -ForegroundColor DarkGray
+Write-Host "  [1/5] Cloning repository..." -ForegroundColor DarkGray
 
 if (Test-Path $installDir) {
     # Check for junction/symlink before removing
@@ -415,13 +515,13 @@ if ($wmuxPath) {
 # Launch Setup.exe
 # ---------------------------------------------------------------------------
 
-$setupExe = Get-ChildItem "$installDir\out\make\squirrel.windows\x64" -Filter "*.exe" -ErrorAction SilentlyContinue |
+$builtSetupExe = Get-ChildItem "$installDir\out\make\squirrel.windows\x64" -Filter "*.exe" -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match 'Setup' } |
     Select-Object -First 1
 
-if ($setupExe) {
-    Write-Host "  [5/5] Launching installer: $($setupExe.Name)..." -ForegroundColor Green
-    Start-Process -FilePath $setupExe.FullName
+if ($builtSetupExe) {
+    Write-Host "  [5/5] Launching installer: $($builtSetupExe.Name)..." -ForegroundColor Green
+    Start-Process -FilePath $builtSetupExe.FullName
 } else {
     Write-Host "  [5/5] Setup.exe not found — run manually from:" -ForegroundColor Yellow
     Write-Host "    $installDir\out\make\squirrel.windows\x64\" -ForegroundColor White

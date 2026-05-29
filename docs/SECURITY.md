@@ -30,7 +30,7 @@ The following are first-class commitments. Regressions here are bugs.
 
 ### 1.2 Named Pipe authentication
 
-The wmux daemon exposes its RPC surface over a Windows Named Pipe (or Unix socket on POSIX). Every connection must present the per-boot auth token from `%USERPROFILE%\.wmux-auth-token` (POSIX: `~/.wmux-auth-token`). The token file is mode `0o600` and written via the `secureWriteTokenFile` helper, which applies an OS-level ACL restricting read to the current user's SID. Clients without the token are rejected before any RPC is dispatched. See `PROTOCOL.md` §5 for the full token model.
+The wmux daemon exposes its RPC surface over a Windows Named Pipe (or Unix socket on POSIX). Every connection must present the per-user auth token from `%USERPROFILE%\.wmux-auth-token` (POSIX: `~/.wmux-auth-token`) — a random UUIDv4 (122 bits) persisted to disk and reused across boots, rotated only on explicit request. The token file is mode `0o600` and written via the `secureWriteTokenFile` helper; on Windows it strips inherited ACEs and grants the current user Full control (`icacls /inheritance:r /grant:r %USERNAME%:F`), so no other local account can read it. The same ACL is re-applied on **every load** via `reHardenTokenFileAcl` (RCA A12 / v2.14.0), not just on first write. Clients without the token are rejected before any RPC is dispatched. See `PROTOCOL.md` §5 for the full token model.
 
 ### 1.3 Per-plugin permission enforcement (Phase 2.1, planned)
 
@@ -39,6 +39,18 @@ MCP plugins declare `wmuxPermissions` in their manifest. The substrate enforces 
 Permission enforcement is a substrate guarantee for plugin access through documented surfaces. It is *not* a sandbox: a same-user plugin process can read disk files directly without going through the substrate. Plugin disk access is governed by §1.1.
 
 > Status: Phase 2.1 implementation work item. The contract above is the Phase 0 declaration of intent; enforcement code ships across the v3.0 release window. See `plans/generic-wandering-teapot.md`.
+
+### 1.4 Packaging fuse posture
+
+The shipped Electron build sets these fuses (`forge.config.ts`), recorded here so the disabled ones are on the record and not mistaken for oversights:
+
+- `EnableCookieEncryption`: **on**.
+- `EnableNodeOptionsEnvironmentVariable` / `EnableNodeCliInspectArguments`: **off**.
+- `OnlyLoadAppFromAsar`: **on** — the app only loads from the packaged asar.
+- `EnableEmbeddedAsarIntegrityValidation`: **off** — *intentional*. The `postPackage` hook repacks `app.asar` to bundle `node-pty`, which changes the asar hash; enabling this fuse would FATAL at runtime. `OnlyLoadAppFromAsar` still constrains load origin.
+- `RunAsNode`: **on** — *required*. The background daemon is spawned as a detached Node process from `wmux.exe` via `ELECTRON_RUN_AS_NODE=1`. Acceptable for a terminal multiplexer that already executes arbitrary shell commands.
+
+The in-app updater downloads the `Setup.exe` itself and verifies a pinned SHA-256 (published in `update-manifest.json` by CI) before launching it — fail-closed, so a tampered or unverifiable artifact is never run. Authenticode code signing of the installer + update artifacts is **not yet in place** (pending a code-signing certificate); until it lands, direct downloads still trip the SmartScreen "unknown publisher" prompt and the updater's trust floor is the SHA-256 pin, not a signature. See the release pipeline (`.github/workflows/release.yml`).
 
 ---
 

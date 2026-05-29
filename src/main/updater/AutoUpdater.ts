@@ -9,10 +9,19 @@
  */
 
 import { autoUpdater, app, type BrowserWindow, ipcMain, net, shell } from 'electron';
+import { createWriteStream } from 'node:fs';
+import { unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { IPC } from '../../shared/constants';
+import { isAllowedDownloadUrl, digestsEqual, validateManifest, type UpdateManifest } from './verifyUpdate';
 
 const REPO = 'openwong2kim/wmux';
 const UPDATE_SERVER = `https://update.electronjs.org/${REPO}/win32/${app.getVersion()}`;
+// CI publishes update-manifest.json (version + setupExe + sha256 + url) as a
+// release asset; the "latest" alias always points at the newest release. The
+// updater pins the Setup.exe SHA-256 against this before installing.
+const MANIFEST_URL = `https://github.com/${REPO}/releases/latest/download/update-manifest.json`;
 
 // 업데이트 자동 확인 간격 (30분)
 const CHECK_INTERVAL_MS = 30 * 60 * 1000;
@@ -120,6 +129,85 @@ export class AutoUpdater {
     });
   }
 
+  /** Fetch the CI-published update manifest (raw JSON; validated by caller). */
+  private fetchManifest(): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const request = net.request(MANIFEST_URL);
+      let body = '';
+      request.on('response', (response) => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`update manifest server returned ${response.statusCode}`));
+          return;
+        }
+        response.on('data', (chunk) => { body += chunk.toString(); });
+        response.on('end', () => {
+          try {
+            resolve(JSON.parse(body));
+          } catch {
+            reject(new Error('invalid JSON in update manifest'));
+          }
+        });
+      });
+      request.on('error', (err) => reject(err));
+      request.end();
+    });
+  }
+
+  /**
+   * Download manifest.url to a temp file, streaming through a SHA-256 hash, and
+   * verify it matches manifest.sha256. Resolves the temp path on a verified
+   * match; rejects on any transport error or digest mismatch (caller cleans up
+   * and aborts — fail-closed).
+   */
+  private downloadAndVerify(manifest: UpdateManifest): Promise<string> {
+    return new Promise((resolve, reject) => {
+      // Defense in depth: validateManifest already allowlist-checked the URL;
+      // re-assert before opening the socket.
+      if (!isAllowedDownloadUrl(manifest.url)) {
+        reject(new Error(`download url not allowed: ${manifest.url}`));
+        return;
+      }
+      const dest = join(app.getPath('temp'), `wmux-update-${manifest.version}-${process.pid}.Setup.exe`);
+      const hash = createHash('sha256');
+      const out = createWriteStream(dest);
+      let settled = false;
+      const fail = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        out.destroy();
+        reject(err);
+      };
+
+      const request = net.request(manifest.url);
+      request.on('response', (response) => {
+        if (response.statusCode !== 200) {
+          fail(new Error(`installer download returned ${response.statusCode}`));
+          return;
+        }
+        response.on('data', (chunk: Buffer) => {
+          hash.update(chunk);
+          out.write(chunk);
+        });
+        response.on('end', () => {
+          out.end(() => {
+            if (settled) return;
+            const actual = hash.digest('hex');
+            if (digestsEqual(actual, manifest.sha256)) {
+              settled = true;
+              resolve(dest);
+            } else {
+              fail(new Error(`sha256 mismatch: expected ${manifest.sha256}, got ${actual}`));
+            }
+          });
+        });
+        response.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
+      });
+      request.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
+      out.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
+      request.end();
+    });
+  }
+
   private registerIpcHandlers(): void {
     ipcMain.on(IPC.AUTO_UPDATE_ENABLED, (_event, enabled: boolean) => {
       this.setEnabled(enabled);
@@ -135,7 +223,8 @@ export class AutoUpdater {
     });
 
     ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
-      if (!this.pendingUpdate) return;
+      const pending = this.pendingUpdate;
+      if (!pending) return;
 
       const win = this.getWindow();
       if (win && !win.isDestroyed() && !win.webContents.isCrashed()) {
@@ -150,8 +239,37 @@ export class AutoUpdater {
         }
       }
 
-      // Open the Setup.exe download URL — user installs the new version
-      shell.openExternal(this.pendingUpdate.url);
+      // NN2-T4 — fail-closed download-verify-launch. Never hand the user an
+      // unverified binary (the old path was shell.openExternal on an unchecked
+      // URL). Fetch the CI-published SHA-256 manifest, download the Setup.exe
+      // ourselves, verify its digest, and only then launch the LOCAL file. Any
+      // failure aborts the install and surfaces an error — no openExternal
+      // fallback, so a tampered/unverifiable artifact can never run.
+      let tempPath: string | null = null;
+      try {
+        const manifestRaw = await this.fetchManifest();
+        const validated = validateManifest(manifestRaw, pending.name);
+        if (!validated.ok) {
+          throw new Error(`update manifest rejected: ${validated.reason}`);
+        }
+        tempPath = await this.downloadAndVerify(validated.manifest);
+        console.log('[AutoUpdater] Update verified (sha256 match) — launching installer');
+        const openErr = await shell.openPath(tempPath);
+        if (openErr) {
+          // openPath resolves to a non-empty error string on failure.
+          throw new Error(`failed to launch verified installer: ${openErr}`);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[AutoUpdater] install aborted (fail-closed):', message);
+        if (tempPath) {
+          await unlink(tempPath).catch(() => { /* best-effort cleanup */ });
+        }
+        this.sendToRenderer(IPC.UPDATE_ERROR, {
+          status: 'error',
+          message: `Update could not be verified and was not installed: ${message}`,
+        });
+      }
     });
   }
 

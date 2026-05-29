@@ -44,12 +44,19 @@ choco install wmux
 
 **Installer:** [Download wmux Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
 
-> **Seeing a "Windows protected your PC" warning?** The installer isn't code-signed yet, so Windows SmartScreen flags it as from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. Installing via **winget** or **Chocolatey** above avoids this prompt entirely, since those package managers run in a trusted context.
+> **Seeing a "Windows protected your PC" warning?** The installer is not yet Authenticode-signed (free code signing via SignPath is being set up — see **Code signing** below), so Windows SmartScreen flags it as from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. Installing via **winget** or **Chocolatey** above avoids this prompt entirely, since those package managers run in a trusted context.
 
-**One-liner (PowerShell):**
+**One-liner (PowerShell):** downloads the prebuilt Setup.exe from the latest release and verifies its SHA-256 before launching it (no Node/Python/build tools needed).
 ```powershell
 irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 ```
+
+Want to build from source instead (needs Node 18+, Python 3, and VS C++ Build Tools — auto-installed)?
+```powershell
+$env:WMUX_FROM_SOURCE=1; irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
+```
+
+**Code signing** — Free Authenticode code signing for Windows builds is provided by [SignPath.io](https://signpath.io/), certificate by the [SignPath Foundation](https://signpath.org/).
 
 ---
 
@@ -130,7 +137,7 @@ Terminal sessions survive app restarts. Close wmux and reopen — your sessions 
 - PTY input sanitization — prevents command injection
 - Randomized CDP port — no fixed debug port
 - Memory pressure watchdog — reaps dead sessions at 750MB, blocks new ones at 1GB
-- Electron Fuses — RunAsNode disabled, cookie encryption enabled
+- Electron Fuses — cookie encryption on; Node CLI inspect args and `NODE_OPTIONS` env disabled; app loads only from asar. (`RunAsNode` stays **enabled** — the background daemon is spawned as a detached Node process from `wmux.exe` via `ELECTRON_RUN_AS_NODE=1`.)
 
 ---
 
@@ -243,7 +250,7 @@ npm run make       # Build installer
 - Python 3.x (for node-gyp)
 - Visual Studio Build Tools with C++ workload
 
-The `install.ps1` script auto-installs Python and VS Build Tools if missing.
+The `install.ps1` script auto-installs Python and VS Build Tools if missing **only when building from source** (`-FromSource` / `WMUX_FROM_SOURCE=1`). The default one-liner downloads the prebuilt Setup.exe and needs none of these.
 
 ---
 

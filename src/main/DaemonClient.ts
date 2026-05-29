@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import type { RpcResponse, DaemonEvent } from '../shared/rpc';
 import { FLUSH_DONE_MARKER } from '../daemon/SessionPipe';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
+import { connectWithRetry, type ConnectAttemptResult } from './daemonConnectRetry';
 
 // RCA A2 — single source of truth in shared/timeouts.ts so the renderer's
 // RECONCILE_TIMEOUT_MS can be derived from (and stay greater than) this value.
@@ -41,18 +42,40 @@ export class DaemonClient extends EventEmitter {
     super();
   }
 
-  /** Attempt to connect to daemon control pipe. Returns false on failure (for fallback). */
+  /**
+   * Connect to the daemon control pipe. Returns false on failure (for fallback).
+   *
+   * RCA A6 — wraps the connect attempt in a bounded retry: a transient Windows
+   * named-pipe blip (EPERM/ECONNRESET from AV scan / handle contention) is
+   * retried with short backoff instead of being treated as a dead daemon, while
+   * a genuinely-absent daemon (ENOENT/ECONNREFUSED) still returns false fast
+   * with no retry. The retry policy is the pure, unit-tested connectWithRetry.
+   */
   async connect(): Promise<boolean> {
     if (this.connected) return true;
+    return connectWithRetry({
+      attempt: () => this.attemptConnect(),
+      isConnected: () => this.connected,
+      log: (message) => console.warn(`[lifecycle] DaemonClient.connect ${message} pipe=${this.pipeName}`),
+    });
+  }
 
-    return new Promise<boolean>((resolve) => {
+  /** A single control-pipe connect attempt, classified for the retry layer. */
+  private attemptConnect(): Promise<ConnectAttemptResult> {
+    return new Promise<ConnectAttemptResult>((resolve) => {
+      let settled = false;
+      const finish = (r: ConnectAttemptResult): void => {
+        if (settled) return;
+        settled = true;
+        resolve(r);
+      };
       const timeout = setTimeout(() => {
-        // RCA A6/A8 — record connect timeouts. Previously this resolved(false)
-        // with no trace, so a daemon that was alive but slow to accept on the
-        // control pipe was indistinguishable from a dead one in the logs.
-        console.warn(`[lifecycle] DaemonClient.connect timeout (5s) pipe=${this.pipeName}`);
+        // RCA A6/A8 — record connect timeouts. A daemon that is alive but slow
+        // to accept on the control pipe is a transient condition (retried),
+        // not a dead one; the timeout is surfaced in the log either way.
+        console.warn(`[lifecycle] DaemonClient.connect attempt timeout (5s) pipe=${this.pipeName}`);
         socket.destroy();
-        resolve(false);
+        finish({ ok: false, timedOut: true });
       }, 5_000);
 
       const socket = net.createConnection(this.pipeName, () => {
@@ -60,18 +83,17 @@ export class DaemonClient extends EventEmitter {
         this.controlPipe = socket;
         this.connected = true;
         this.setupControlPipe(socket);
-        resolve(true);
+        finish({ ok: true });
       });
 
       socket.on('error', (err: NodeJS.ErrnoException) => {
-        // RCA A6/A8 — surface the error CODE (EPERM/ECONNREFUSED/ENOENT). On
-        // Windows EPERM here indicates AV scan / handle contention on the named
-        // pipe — a transient, retryable condition — not a dead daemon. The
-        // pre-fix code dropped the error entirely, which is the single biggest
-        // reason the control-pipe disconnect class was undiagnosable.
+        // RCA A6/A8 — surface the error CODE (EPERM/ECONNREFUSED/ENOENT) and
+        // hand it to classifyConnectFailure: EPERM/ECONNRESET on Windows are
+        // transient (AV scan / handle contention) and get retried; ENOENT /
+        // ECONNREFUSED mean the daemon is genuinely absent and fail fast.
         clearTimeout(timeout);
         console.warn(`[lifecycle] DaemonClient.connect error code=${err?.code ?? '?'} pipe=${this.pipeName} msg=${err?.message ?? String(err)}`);
-        resolve(false);
+        finish({ ok: false, code: err?.code });
       });
     });
   }

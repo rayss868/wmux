@@ -175,12 +175,14 @@ const config: ForgeConfig = {
       // Required: daemon process uses ELECTRON_RUN_AS_NODE=1 to spawn
       // a detached Node.js process from wmux.exe. Acceptable for a terminal
       // multiplexer that already executes arbitrary shell commands.
+      // Documented in README §6 + docs/SECURITY.md §1.4 — keep in sync.
       [FuseV1Options.RunAsNode]: true,
       [FuseV1Options.EnableCookieEncryption]: true,
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
       [FuseV1Options.EnableNodeCliInspectArguments]: false,
       // Disabled: postPackage hook repacks asar (for node-pty), which changes the hash.
       // Enabling this causes FATAL integrity check failure at runtime.
+      // Documented in docs/SECURITY.md §1.4 — keep in sync.
       [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: false,
       [FuseV1Options.OnlyLoadAppFromAsar]: true,
     }),

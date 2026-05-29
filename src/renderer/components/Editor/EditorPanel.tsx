@@ -111,15 +111,12 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
         >
           {editing ? 'View' : 'Edit'}
         </button>
-        {editing && (
-          <button
-            className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-muted)] border border-[var(--bg-mantle)] cursor-not-allowed opacity-50"
-            disabled
-            title="Save not available yet (writeFile API required)"
-          >
-            Save
-          </button>
-        )}
+        {/* No Save button: the panel is a read-only viewer with a local-only
+            edit/scratch mode (changes are not persisted). A disabled "Save not
+            available yet" button read as unfinished; removed (NN5-T5-ALT).
+            Finishing persistence would require relaxing the CLAUDE.md-only
+            FS_WRITE_FILE allowlist (a renderer write-power expansion) — out of
+            scope for the read-only viewer the README documents. */}
       </div>
 
       {/* Body */}

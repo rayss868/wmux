@@ -49,8 +49,50 @@ export class SessionPipe {
 
     const pipeName = this.getPipeName();
 
+    // On Unix, remove a stale socket file left by a prior run.
+    if (process.platform !== 'win32') {
+      try {
+        const stat = fs.lstatSync(pipeName);
+        if (stat.isSocket()) {
+          fs.unlinkSync(pipeName);
+        }
+      } catch {
+        // File doesn't exist — fine
+      }
+    }
+
+    // RCA (2026-05-28 dogfood): a session pane died when its named pipe could
+    // not bind — `EADDRINUSE: \\.\pipe\wmux-session-<id>` — because a PRIOR
+    // SessionPipe for the same sessionId had not yet released the name
+    // (renderer detach/reattach, daemon reconnect). On Windows the OS frees a
+    // named-pipe name shortly after the previous handle closes, so retry
+    // EADDRINUSE a few times with short backoff before giving up. Any other
+    // listen error (or exhausted retries) propagates to the caller as before.
+    const MAX_BIND_ATTEMPTS = 5;
+    const BIND_RETRY_MS = 100;
+    for (let attempt = 1; attempt <= MAX_BIND_ATTEMPTS; attempt++) {
+      try {
+        await this.listenOnce(pipeName);
+        return;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === 'EADDRINUSE' && attempt < MAX_BIND_ATTEMPTS) {
+          await new Promise<void>((r) => setTimeout(r, BIND_RETRY_MS));
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  /**
+   * Single bind attempt. Resolves once listening (and assigns this.server),
+   * rejects on the first listen error. The server is created fresh per attempt
+   * and closed on error so a retry can rebind cleanly.
+   */
+  private listenOnce(pipeName: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.server = net.createServer((socket) => {
+      const server = net.createServer((socket) => {
         // Pre-auth connection throttle: Named Pipe DACL cannot be restricted from
         // Node.js (libuv limitation), so brute-force token guessers are rate-capped
         // at the accept() layer before reaching auth.
@@ -75,25 +117,21 @@ export class SessionPipe {
       });
 
       // Single connection only
-      this.server.maxConnections = 1;
+      server.maxConnections = 1;
 
-      this.server.on('error', (err: NodeJS.ErrnoException) => {
+      let settled = false;
+      server.on('error', (err: NodeJS.ErrnoException) => {
+        if (settled) return;
+        settled = true;
+        // Close the failed server so a retry can rebind the same name cleanly.
+        try { server.close(); } catch { /* ignore */ }
         reject(err);
       });
 
-      // On Unix, remove stale socket file
-      if (process.platform !== 'win32') {
-        try {
-          const stat = fs.lstatSync(pipeName);
-          if (stat.isSocket()) {
-            fs.unlinkSync(pipeName);
-          }
-        } catch {
-          // File doesn't exist — fine
-        }
-      }
-
-      this.server.listen(pipeName, () => {
+      server.listen(pipeName, () => {
+        if (settled) return;
+        settled = true;
+        this.server = server;
         resolve();
       });
     });

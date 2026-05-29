@@ -333,7 +333,7 @@ Every connection must present the token from `%APPDATA%\wmux\pipe-token` in the 
 }
 ```
 
-The token is a 256-bit random value generated on first daemon launch and persisted to disk. The file is written with `secureWriteTokenFile` — Windows OS ACLs restrict read access to the current user's SID; other users on the same machine cannot read it. The token is rotated only on explicit request (planned CLI: `wmux pipe rotate-token`).
+The token is a random UUIDv4 (122 bits of entropy, via `crypto.randomUUID()`) generated on first daemon launch and persisted to disk; it is reused across boots and rotated only on explicit request (planned CLI: `wmux pipe rotate-token`). The file is written with `secureWriteTokenFile` and re-hardened on every load by `reHardenTokenFileAcl` — on Windows the ACL is set via `icacls /inheritance:r /grant:r %USERNAME%:F` (inheritance stripped, current user granted Full control), so no other local account can read it.
 
 ### 5.2 Connection cap
 

@@ -1,0 +1,92 @@
+import { describe, it, expect } from 'vitest';
+import {
+  normalizeVersion,
+  isAllowedDownloadUrl,
+  digestsEqual,
+  sha256Hex,
+  validateManifest,
+} from '../verifyUpdate';
+
+// NN2-T4 — the fail-closed verification core. The pre-fix updater launched an
+// UNVERIFIED binary from a URL taken verbatim from the update server. These
+// tests lock in the security decisions: only https github.com downloads, exact
+// SHA-256 match, manifest must match the offered version, reject on any doubt.
+
+const VALID_SHA = 'a'.repeat(64);
+const validManifest = (over: Record<string, unknown> = {}) => ({
+  version: '2.14.1',
+  setupExe: 'wmux-2.14.1.Setup.exe',
+  sha256: VALID_SHA,
+  url: 'https://github.com/openwong2kim/wmux/releases/download/v2.14.1/wmux-2.14.1.Setup.exe',
+  ...over,
+});
+
+describe('normalizeVersion', () => {
+  it('strips a leading v (any case) and trims', () => {
+    expect(normalizeVersion('v2.14.0')).toBe('2.14.0');
+    expect(normalizeVersion('2.14.0')).toBe('2.14.0');
+    expect(normalizeVersion('  V1.0 ')).toBe('1.0');
+  });
+});
+
+describe('isAllowedDownloadUrl', () => {
+  it('accepts https github.com and *.github.com', () => {
+    expect(isAllowedDownloadUrl('https://github.com/o/r/releases/download/v1/x.exe')).toBe(true);
+    expect(isAllowedDownloadUrl('https://api.github.com/x')).toBe(true);
+  });
+  it('rejects non-https, non-github hosts, and garbage', () => {
+    expect(isAllowedDownloadUrl('http://github.com/x')).toBe(false);
+    expect(isAllowedDownloadUrl('https://evil.com/x.exe')).toBe(false);
+    expect(isAllowedDownloadUrl('https://github.com.evil.com/x')).toBe(false);
+    expect(isAllowedDownloadUrl('ftp://github.com/x')).toBe(false);
+    expect(isAllowedDownloadUrl('not a url')).toBe(false);
+  });
+});
+
+describe('digestsEqual', () => {
+  it('matches case-insensitively', () => {
+    expect(digestsEqual('ABCDEF', 'abcdef')).toBe(true);
+    expect(digestsEqual('a'.repeat(64), 'A'.repeat(64))).toBe(true);
+  });
+  it('rejects differing content, differing length, and empty', () => {
+    expect(digestsEqual('abcdef', 'abcde0')).toBe(false);
+    expect(digestsEqual('abc', 'abcdef')).toBe(false);
+    expect(digestsEqual('', '')).toBe(false);
+  });
+});
+
+describe('sha256Hex', () => {
+  it('matches known vectors', () => {
+    expect(sha256Hex(Buffer.from(''))).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    expect(sha256Hex(Buffer.from('abc'))).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  });
+});
+
+describe('validateManifest', () => {
+  it('accepts a well-formed manifest whose version matches the offered update (v-prefix tolerant)', () => {
+    const r = validateManifest(validManifest(), 'v2.14.1');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.manifest.url).toContain('github.com');
+  });
+
+  it('rejects a version mismatch (stale/wrong manifest)', () => {
+    const r = validateManifest(validManifest(), '2.99.0');
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects a sha256 that is not a 64-char hex digest', () => {
+    expect(validateManifest(validManifest({ sha256: 'deadbeef' }), '2.14.1').ok).toBe(false);
+    expect(validateManifest(validManifest({ sha256: 'z'.repeat(64) }), '2.14.1').ok).toBe(false);
+  });
+
+  it('rejects a non-github / non-https download url', () => {
+    expect(validateManifest(validManifest({ url: 'https://evil.com/x.exe' }), '2.14.1').ok).toBe(false);
+    expect(validateManifest(validManifest({ url: 'http://github.com/x.exe' }), '2.14.1').ok).toBe(false);
+  });
+
+  it('rejects missing fields and non-objects', () => {
+    expect(validateManifest({ version: '2.14.1' }, '2.14.1').ok).toBe(false);
+    expect(validateManifest(null, '2.14.1').ok).toBe(false);
+    expect(validateManifest('nope', '2.14.1').ok).toBe(false);
+  });
+});
