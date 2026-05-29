@@ -61,6 +61,24 @@ interface WorkspaceListEntry {
   ptyIds?: string[];
 }
 
+// RCA (2026-05-29 dogfood, bridge.log): the handler used to do a renderer
+// `workspace.list` round-trip on EVERY hook signal. PostToolUse fires per
+// tool call, so a tool-heavy turn — especially with the window backgrounded
+// (Chromium throttles renderer timers/IPC) or the renderer busy flushing a
+// large terminal buffer — made every hook's round-trip (sendToRenderer
+// default 5s) exceed the bridge's 2s hard timeout. Result: bridge.log floods
+// with `timeout` (~11.6% of signals, 94% PostToolUse) and notifications /
+// token-tracking silently drop; in the worst bursts the daemon event loop is
+// blocked enough that daemon.ping fails 3× and the main-process supervisor
+// force-respawns the daemon. The workspace tree changes far less often than
+// hooks fire, so we serve a short-TTL cache and coalesce concurrent fetches
+// into a single round-trip, and fall back to the last-known list when a
+// refresh times out (renderer throttled) rather than dropping the hook.
+export const WORKSPACE_LIST_CACHE_TTL_MS = 2_000;
+// Keep the per-fetch cap under the bridge's HOOK_TIMEOUT_MS (2s) so a cache
+// miss against a slow renderer still returns (stale) before the bridge bails.
+const WORKSPACE_LIST_FETCH_TIMEOUT_MS = 1_500;
+
 /**
  * Register `hooks.signal` on the router. Must be called once at boot
  * (main/index.ts) after both the PipeServer and HookSignalRouter exist.
@@ -81,6 +99,9 @@ export function registerHooksRpc(
   hookRouter: HookSignalRouter,
 ): () => void {
   const meter = hookRouter.getLatencyMeter();
+  // Short-TTL, coalescing cache so a burst of hooks in one turn collapses to
+  // a single workspace.list round-trip (see WORKSPACE_LIST_CACHE_TTL_MS note).
+  const workspaceCache = createWorkspaceListCache(() => safeListWorkspaces(getWindow));
 
   router.register('hooks.signal', async (params): Promise<HookSignalResponse> => {
     // 1. Envelope validation. Reject anything that doesn't match the
@@ -100,11 +121,10 @@ export function registerHooksRpc(
     // 3. Resolve signal → ptyId. Env-first (workspaceId/surfaceId from
     //    WMUX_* env vars that wmux PTYManager injects into the shell)
     //    with cwd matching as the fallback for sessions started outside
-    //    a wmux pane. We query the renderer-side workspace list every
-    //    time because the workspace tree changes more often than hooks
-    //    fire; a 1-RTT round-trip to the renderer is fine at the hook
-    //    fire rate (≤ a few per turn).
-    const workspaces = await safeListWorkspaces(getWindow);
+    //    a wmux pane. The workspace list comes from a short-TTL coalescing
+    //    cache (NOT a fresh round-trip per hook — that flooded the bridge
+    //    with 2s timeouts under load; see the cache note above).
+    const workspaces = await workspaceCache.get();
     if (!workspaces) {
       // Record as a miss because we couldn't determine match either
       // way — better than silently skewing the counter to "matched".
@@ -313,13 +333,64 @@ function throttle1Hz<T>(fn: (arg: T) => void): ((arg: T) => void) & { cancel: ()
  */
 async function safeListWorkspaces(getWindow: GetWindow): Promise<WorkspaceListEntry[] | null> {
   try {
-    const result = (await sendToRenderer(getWindow, 'workspace.list')) as unknown;
+    const result = (await sendToRenderer(getWindow, 'workspace.list', {}, {
+      timeoutMs: WORKSPACE_LIST_FETCH_TIMEOUT_MS,
+    })) as unknown;
     if (!Array.isArray(result)) return null;
     return result as WorkspaceListEntry[];
   } catch (err) {
     console.warn('[hooks.rpc] workspace.list failed:', err);
     return null;
   }
+}
+
+interface WorkspaceListCache {
+  /**
+   * Resolve the workspace list, serving a cached snapshot when it is younger
+   * than WORKSPACE_LIST_CACHE_TTL_MS and coalescing concurrent misses into a
+   * single round-trip. Returns the last-known list if a refresh fails/times
+   * out (renderer throttled), or null if nothing has ever been fetched.
+   */
+  get(): Promise<WorkspaceListEntry[] | null>;
+}
+
+/**
+ * Build a workspace.list cache. Created once in registerHooksRpc so its
+ * closure state (cached value, timestamp, in-flight promise) lives for the
+ * handler's lifetime. See WORKSPACE_LIST_CACHE_TTL_MS for the why.
+ *
+ * `fetchList` and `now` are injected so the TTL + coalescing behavior is
+ * unit-testable without an electron BrowserWindow / IPC mock.
+ */
+export function createWorkspaceListCache(
+  fetchList: () => Promise<WorkspaceListEntry[] | null>,
+  now: () => number = Date.now,
+): WorkspaceListCache {
+  let cached: WorkspaceListEntry[] | null = null;
+  let cachedAt = 0;
+  let inFlight: Promise<WorkspaceListEntry[] | null> | null = null;
+
+  return {
+    async get(): Promise<WorkspaceListEntry[] | null> {
+      if (cached && now() - cachedAt < WORKSPACE_LIST_CACHE_TTL_MS) {
+        return cached; // fresh hit — no renderer round-trip
+      }
+      if (inFlight) return inFlight; // coalesce a burst into one round-trip
+      inFlight = (async () => {
+        const fresh = await fetchList();
+        if (fresh) {
+          cached = fresh;
+          cachedAt = now();
+        }
+        inFlight = null;
+        // On a failed/timed-out refresh, serve the last-known list rather than
+        // dropping the hook — a ≤2s-stale workspace map routes the toast/token
+        // correctly in the overwhelmingly common case (tree rarely changes).
+        return fresh ?? cached;
+      })();
+      return inFlight;
+    },
+  };
 }
 
 /**
