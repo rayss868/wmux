@@ -46,9 +46,14 @@ choco install wmux
 
 > **Seeing a "Windows protected your PC" warning?** The installer isn't code-signed yet, so Windows SmartScreen flags it as from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. Installing via **winget** or **Chocolatey** above avoids this prompt entirely, since those package managers run in a trusted context.
 
-**One-liner (PowerShell):**
+**One-liner (PowerShell):** downloads the prebuilt Setup.exe from the latest release and verifies its SHA-256 before launching it (no Node/Python/build tools needed).
 ```powershell
 irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
+```
+
+Want to build from source instead (needs Node 18+, Python 3, and VS C++ Build Tools — auto-installed)?
+```powershell
+$env:WMUX_FROM_SOURCE=1; irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 ```
 
 ---
@@ -243,7 +248,7 @@ npm run make       # Build installer
 - Python 3.x (for node-gyp)
 - Visual Studio Build Tools with C++ workload
 
-The `install.ps1` script auto-installs Python and VS Build Tools if missing.
+The `install.ps1` script auto-installs Python and VS Build Tools if missing **only when building from source** (`-FromSource` / `WMUX_FROM_SOURCE=1`). The default one-liner downloads the prebuilt Setup.exe and needs none of these.
 
 ---
 
