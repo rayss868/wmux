@@ -27,6 +27,20 @@ import { randomUUID } from 'node:crypto';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 const BRIDGE_VERSION = '0.1.0';
+
+// A2 (2026-05-29 user dogfood: 8 connect-errors during a brief main-process
+// restart / handler-swap window): retry a TRANSIENT connect failure a few
+// times WITHIN the HOOK_TIMEOUT_MS budget. A pipe that is ABSENT (ENOENT —
+// wmux not running) is NOT retried, so plugin users without wmux open are
+// never slowed; only a pipe that EXISTS but is momentarily contended is
+// retried. The total stays under HOOK_TIMEOUT_MS so a hook never slows Claude
+// beyond the existing cap. We retry ONLY connect-errors (never successfully
+// sent) so a retry can't double-fire the signal.
+const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
+const TRANSIENT_CONNECT_CODES = new Set([
+  'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
+]);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Cap stdin at 1MB. PostToolUse payloads can balloon when a tool returns
 // a big diff or file content; we have no business forwarding that
 // over the RPC channel. Truncation note is logged so the user sees the
@@ -202,7 +216,7 @@ async function readStdin() {
 
 // ----- RPC over named pipe ------------------------------------------------
 
-function sendRpc(pipePath, request) {
+function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const sock = createConnection(pipePath);
     let buffer = '';
@@ -217,7 +231,7 @@ function sendRpc(pipePath, request) {
 
     const timer = setTimeout(() => {
       settle({ ok: false, error: 'timeout' });
-    }, HOOK_TIMEOUT_MS);
+    }, timeoutMs);
 
     sock.on('connect', () => {
       sock.write(JSON.stringify(request) + '\n');
@@ -244,6 +258,32 @@ function sendRpc(pipePath, request) {
       settle({ ok: false, error: 'closed-without-response' });
     });
   });
+}
+
+// A2 — sendRpc with bounded connect retry. Retries ONLY transient
+// connect-errors (pipe exists but momentarily contended: EPERM/ECONNRESET/…),
+// never an absent pipe (ENOENT → wmux not running, drop fast) and never a
+// reached-server outcome (a response, timeout mid-request, or close-after-send
+// — retrying those risks a duplicate signal). The shared deadline keeps the
+// total under HOOK_TIMEOUT_MS so a hook never slows Claude beyond the cap.
+async function sendRpcWithRetry(pipePath, request) {
+  const deadline = Date.now() + HOOK_TIMEOUT_MS;
+  let attempt = 0;
+  let last = { ok: false, error: 'timeout' };
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return last;
+    last = await sendRpc(pipePath, request, remaining);
+    // Anything but a connect-error means the server was reached — return it.
+    if (last.error !== 'connect-error') return last;
+    // Only a TRANSIENT connect code is worth retrying; ENOENT/absent → drop.
+    if (!TRANSIENT_CONNECT_CODES.has(last.detail) || attempt >= CONNECT_RETRY_BACKOFFS_MS.length) {
+      return last;
+    }
+    const backoff = CONNECT_RETRY_BACKOFFS_MS[attempt++];
+    if (Date.now() + backoff >= deadline) return last;
+    await sleep(backoff);
+  }
 }
 
 // ----- Main ---------------------------------------------------------------
@@ -358,7 +398,7 @@ async function main() {
     token,
   };
 
-  const rpcResult = await sendRpc(getPipeName(), request);
+  const rpcResult = await sendRpcWithRetry(getPipeName(), request);
 
   // RpcResponse wraps the handler's return in { id, ok, result, error }.
   // The handler returns { ok, reason? } as well, so we need to unwrap
@@ -379,6 +419,7 @@ async function main() {
     logEvent('rpc-failed', {
       hook: hookName,
       error: rpcResult?.error ?? 'unknown',
+      detail: rpcResult?.detail, // connect-error code (ENOENT/EPERM/…) for diagnosis
     });
   }
 }
