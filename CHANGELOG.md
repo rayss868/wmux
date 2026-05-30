@@ -5,6 +5,35 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.0] — 2026-05-30 — tmux-style persistence, blank-relaunch fix, multiline-paste fix, stability batch
+
+Bundles everything merged since v2.15.0 (#81, #84). The headline is tmux-style persistence — closing the window now keeps your daemon and sessions alive and reattaches them on next launch — plus the fix for recovered sessions rendering blank on relaunch, a multiline-paste fix for PowerShell, and a batch of dogfood-driven stability and UX changes.
+
+### Added
+- **Quit keeps your sessions running.** The tray now offers "Quit (keep sessions running)" — it detaches the UI while the daemon and all PTYs survive, and the next launch reattaches them — plus a separate "Shut down wmux (close all sessions)" for a full teardown. This is the tmux model the README always described.
+- **`Ctrl+Shift+Arrow` moves focus** between panes (and between grid tiles in multiview) in all four directions. Bare `Ctrl+Arrow` is intentionally unbound.
+- **Completion blink.** A pane whose agent just finished (or is waiting / awaiting input) blinks its border, and its background tab shows a status dot, so you can see which terminal needs you without hunting. Clears on focus; respects `prefers-reduced-motion`.
+
+### Changed
+- **Quit now detaches instead of killing the daemon.** `before-quit` previously tried to shut the daemon down on every quit (the opposite of tmux), and a hung handler could orphan it. The default quit now only detaches; full shutdown is explicit and guaranteed to exit.
+- **RAM readout is real RSS** (`app.getAppMetrics` working-set sum) instead of the renderer's JS heap, so the StatusBar number reflects actual process memory.
+- **Removed the token-usage chip.** The regex-scraped per-pane token estimate was unreliable and is gone, along with its IPC and tracker. The measured 5h / 7d usage-percentage widget stays.
+- **Right-click copy keeps the selection** and no longer collides with the paste gesture (a fast second right-click used to paste over a just-copied selection).
+- **Multiline paste into PowerShell** inserts a clean multiline command instead of injecting whitespace at every line break (see Fixed).
+
+### Fixed
+- **Recovered sessions no longer render blank on relaunch (#81).** Daemon reattach ran inside the terminal-creation effect behind an `isCurrent` guard evaluated before the effect assigned the terminal ref, so `pty.reconnect` never fired (live daemon sessions, zero attach). Reattach moved to a dedicated effect that runs after the ref is set and also fires on `daemon:connected` (late-connect / respawn).
+- **Orphan daemon on quit.** A hung `before-quit` pipe-close could leave `wmux.exe` running after the window closed; full shutdown now force-exits within a bounded timer.
+- **Multiline paste injected whitespace in PowerShell (#84).** `normalizePasteText` collapsed every newline to a lone CR, but inside a bracketed-paste body PSReadLine treats CR as Enter and misplaces the cursor (PSReadLine #3939, #417, which both recommend LF). It now emits LF as the in-body separator when bracketed (CR otherwise), fixing all four paste paths (Ctrl+V, Ctrl+Shift+V, right-click, Shift+Insert / `onData`). Verified against real pwsh 7.6 / PSReadLine 2.4.5.
+- **`prefix` + arrow keys.** Session load now merges the saved prefix config over the defaults instead of replacing it wholesale, so arrow-key pane-focus bindings survive a reload.
+- **WebGL context thrash.** An LRU pool (max 12) caps live WebGL terminal contexts, preventing the "too many contexts" eviction that could blank panes when 16+ are visible at once.
+
+### Security
+- **Paste-injection guard (#84).** The bracketed-paste body sanitizes a raw ESC to `U+241B`, so pasted text can no longer forge the `ESC[201~` close marker and run trailing bytes as a command.
+
+### Docs
+- Dropped the removed `Ctrl+Up/Down` scroll-bookmark jump shortcut from the README. `Ctrl+M` marking and the gutter indicators still work.
+
 ## [2.15.0] — 2026-05-29 — Hook-RPC flood fix, view-switch perf, install/updater hardening
 
 Fixes the user-reported "freezing under load" and view-switch lag found via a dogfood-log RCA, finishes the remaining session-reliability hardening from the v2.14.0 RCA, makes the installer and auto-updater integrity-safe, and wires (inert) OSS code signing.
