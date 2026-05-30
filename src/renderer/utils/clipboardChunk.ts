@@ -10,11 +10,14 @@
  *   That bypasses xterm's paste pipeline, so this module re-implements the
  *   three guarantees a terminal paste needs:
  *
- *     1. **CRLF normalization** — collapse \r\n / \n / \r to a single CR.
- *        PowerShell PSReadLine treats lone \r as Enter, so an unnormalized
- *        chunk boundary between \r and \n executed the first line mid-paste
- *        and dropped the remainder onto a fresh prompt. That was the
- *        "front of paste disappears" symptom.
+ *     1. **Newline normalization** — collapse \r\n / \n / \r to a single
+ *        separator that depends on bracketed mode (see normalizePasteText):
+ *        LF inside a bracketed body (the readline in-body separator — a lone
+ *        CR there makes PSReadLine misplace the cursor and inject blank
+ *        space, the "multiline paste adds whitespace" bug), CR otherwise
+ *        (each line is an Enter). An unnormalized \r\n boundary used to
+ *        execute the first line mid-paste and strand the rest — the "front
+ *        of paste disappears" symptom.
  *
  *     2. **UTF-16 surrogate safety** — never split an astral codepoint
  *        (emoji, CJK supplementary) across two chunks. UTF-16 high
@@ -53,28 +56,34 @@ export interface TerminalModesLike {
 export type PtyWriteFn = (data: string) => void;
 
 /**
- * Normalize line endings in pasted text to a single carriage return.
+ * Normalize line endings in pasted text for the PTY wire. The correct
+ * separator depends on whether the foreground app enabled bracketed paste
+ * (DECSET 2004):
  *
- * Matches xterm.js's own paste normalization (`Clipboard.ts:13-14` in xterm
- * v5) so wmux's bypass path produces the same on-the-wire bytes as the
- * native paste path. Specifically:
+ *   - NON-bracketed (`bracketed=false`, default): collapse every line break
+ *     to a single CR. Each line is meant as an Enter, and every interactive
+ *     shell (PowerShell, cmd, bash, zsh, fish) accepts CR as Enter via its
+ *     line discipline. (Lone `\n` from *nix/WSL clipboards also becomes CR.)
  *
- *   - Windows clipboard contents arrive as `\r\n` — collapse to `\r`.
- *   - Lone `\n` (typical of *nix sources pasted via Wine / WSL clipboards)
- *     becomes `\r` so a TUI that expects Enter as CR still triggers.
- *   - Lone `\r` is left as `\r` (already correct).
+ *   - BRACKETED (`bracketed=true`): collapse to LF. Inside a bracket pair the
+ *     body is INSERTED into the line editor, not executed, so the separator
+ *     must be the readline in-body separator (LF) — NOT Enter. PSReadLine
+ *     (and bash/zsh/fish readline) misplace the cursor and inject blank
+ *     lines when they receive a lone CR as the in-body separator: the
+ *     "multiline paste adds whitespace" bug (PSReadLine #3939, #417 — both
+ *     recommend LF). Verified against real pwsh 7.6 / PSReadLine 2.4.5
+ *     (scripts/paste-repro.cjs): a CR body splits the command line-by-line,
+ *     an LF body buffers it as one multiline command.
  *
- * Why `\r` and not `\n`: every interactive shell on every supported
- * platform (PowerShell, cmd, bash, zsh, fish) accepts `\r` as Enter via
- * its line discipline; some Windows shells (notably PSReadLine) do not
- * recognize `\n` at all and would render it as `^J`. Bracketed paste
- * mode, when enabled by the foreground app, suppresses Enter handling
- * for the paste body — so `\r` inside a bracket pair is rendered as a
- * newline, not executed.
+ * NOTE: this intentionally diverges from xterm.js, which normalizes to CR in
+ * BOTH modes (xterm Clipboard.ts `prepareTextForTerminal`). wmux bypasses
+ * xterm's paste pipeline (it reads Electron's clipboard directly for Ctrl+V /
+ * right-click / drag-drop), so we own this choice and pick the separator that
+ * actually works for the bracketed insert path.
  */
-export function normalizePasteText(text: string): string {
+export function normalizePasteText(text: string, bracketed = false): string {
   if (!text) return text;
-  return text.replace(/\r\n|\r|\n/g, '\r');
+  return text.replace(/\r\n|\r|\n/g, bracketed ? '\n' : '\r');
 }
 
 /**
@@ -134,8 +143,11 @@ function yieldToEventLoop(): Promise<void> {
  * and first/last chunk) so a fast Ctrl+V repeat cannot interleave two
  * paste streams between marker and body.
  *
- * Newlines are normalized to `\r` before chunking (see
- * `normalizePasteText`) to match xterm.js's own paste pipeline.
+ * Newlines are normalized before chunking per bracketed mode (LF in-body
+ * when bracketed, CR otherwise — see `normalizePasteText`). When bracketed,
+ * raw ESC bytes in the body are also sanitized to U+241B so a pasted
+ * `\x1b[201~` cannot forge the close marker and run the trailing bytes as a
+ * command (paste injection).
  */
 export async function pastePtyChunked(
   write: PtyWriteFn,
@@ -144,8 +156,14 @@ export async function pastePtyChunked(
 ): Promise<void> {
   if (!text) return;
 
-  const normalized = normalizePasteText(text);
   const bracketed = !!modes?.bracketedPasteMode;
+  let normalized = normalizePasteText(text, bracketed);
+  // ESC sanitize (paste-injection guard): inside a bracketed body a raw ESC
+  // could forge the \x1b[201~ close marker and run the trailing bytes as a
+  // command. Replace it with the visible symbol U+241B, matching xterm's
+  // bracketTextForPaste. Length-preserving (1 unit → 1 unit), so the chunk
+  // boundaries and surrogate-pair safety below are unaffected.
+  if (bracketed) normalized = normalized.replace(/\x1b/g, '␛');
   const size = PTY_PASTE_CHUNK_SIZE;
 
   // Fast path: short payload + bracketed mode → single write keeps the wire
