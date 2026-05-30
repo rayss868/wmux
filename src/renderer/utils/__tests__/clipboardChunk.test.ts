@@ -43,6 +43,24 @@ describe('normalizePasteText', () => {
   it('preserves non-line-ending content verbatim', () => {
     expect(normalizePasteText('hello world!@#$%^&*()')).toBe('hello world!@#$%^&*()');
   });
+
+  // Bracketed mode: the in-body separator must be LF, not CR. A lone CR makes
+  // PSReadLine misplace the cursor and inject blank space (#3939/#417).
+  it('uses LF as the separator when bracketed=true (CRLF → LF)', () => {
+    expect(normalizePasteText('line1\r\nline2\r\nline3', true)).toBe('line1\nline2\nline3');
+  });
+
+  it('uses LF when bracketed=true (lone \\r and mixed endings → LF)', () => {
+    expect(normalizePasteText('a\r\nb\nc\rd', true)).toBe('a\nb\nc\nd');
+  });
+
+  it('defaults to CR when bracketed is omitted (non-bracketed path unchanged)', () => {
+    expect(normalizePasteText('a\nb')).toBe('a\rb');
+  });
+
+  it('is a no-op for empty input regardless of bracketed flag', () => {
+    expect(normalizePasteText('', true)).toBe('');
+  });
 });
 
 describe('splitSurrogateSafe', () => {
@@ -110,8 +128,8 @@ describe('pastePtyChunked', () => {
     const writes: string[] = [];
     await pastePtyChunked((d) => writes.push(d), 'line1\r\nline2\r\nline3');
     expect(writes).toEqual(['line1\rline2\rline3']);
-    // Critical invariant: no \r\n on the wire — PowerShell would treat the
-    // \r as immediate Enter and the \n would render as ^J.
+    // Critical invariant for the non-bracketed path: no \r\n on the wire —
+    // PowerShell would treat the \r as an immediate Enter mid-paste.
     for (const w of writes) {
       expect(w).not.toMatch(/\r\n/);
     }
@@ -127,6 +145,41 @@ describe('pastePtyChunked', () => {
     const writes: string[] = [];
     await pastePtyChunked((d) => writes.push(d), 'hi', { bracketedPasteMode: true });
     expect(writes).toEqual(['\x1b[200~hi\x1b[201~']);
+  });
+
+  it('bracketed multiline uses LF separators inside the marker pair (#3939)', async () => {
+    const writes: string[] = [];
+    await pastePtyChunked((d) => writes.push(d), 'line1\r\nline2\nline3', { bracketedPasteMode: true });
+    // Short payload + bracketed → single fast-path write; body uses LF, not CR,
+    // so PSReadLine inserts a clean multiline command instead of executing
+    // line-by-line / injecting blank space.
+    expect(writes).toEqual(['\x1b[200~line1\nline2\nline3\x1b[201~']);
+    expect(writes.join('')).not.toContain('line1\rline2');
+  });
+
+  it('still uses CR separators when NOT bracketed (each line is an Enter)', async () => {
+    const writes: string[] = [];
+    await pastePtyChunked((d) => writes.push(d), 'line1\r\nline2');
+    expect(writes).toEqual(['line1\rline2']);
+  });
+
+  it('sanitizes a raw ESC in a bracketed body to U+241B (paste-injection guard)', async () => {
+    const writes: string[] = [];
+    // A pasted, forged close marker + trailing command must NOT survive as
+    // real control bytes that escape the bracket and execute.
+    await pastePtyChunked((d) => writes.push(d), 'evil\x1b[201~rm -rf /', { bracketedPasteMode: true });
+    const wire = writes.join('');
+    // Our own close marker is the only real ESC[201~, and it sits at the end.
+    expect(wire.endsWith('\x1b[201~')).toBe(true);
+    expect(wire.indexOf('\x1b[201~')).toBe(wire.length - '\x1b[201~'.length);
+    // The pasted ESC became the visible symbol — no marker forgery.
+    expect(wire).toContain('␛[201~rm -rf /');
+  });
+
+  it('does NOT sanitize ESC when not bracketed (raw bytes pass through)', async () => {
+    const writes: string[] = [];
+    await pastePtyChunked((d) => writes.push(d), 'a\x1bb');
+    expect(writes).toEqual(['a\x1bb']);
   });
 
   it('chunks a > PTY_PASTE_CHUNK_SIZE payload without bracketed markers', async () => {
