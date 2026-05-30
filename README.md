@@ -82,7 +82,7 @@ ConPTY-based native Windows pseudo-terminal. xterm.js + WebGL hardware-accelerat
 
 **Floating pane** — `` Ctrl+` `` for a Quake-style dropdown terminal that lives outside your main layout. Stays alive across toggles.
 
-**Scroll bookmarks** — `Ctrl+M` marks the current scroll position, `Ctrl+Up/Down` jumps between marks. Indicators render on the gutter.
+**Scroll bookmarks** — `Ctrl+M` marks the current scroll position. Markers render on the gutter so you can see where you've been.
 
 **Smart right-click** — Windows Terminal style. Selection → instant copy. Empty area → instant paste. Link → small Open / Copy Link menu. Zero modal interrupts.
 
@@ -153,7 +153,7 @@ wmux never kills your work when you close the window. Like a tmux server, the ba
 - Tabs — multiple surfaces per pane
 - **Floating pane** — Quake-style dropdown terminal, dedicated PTY, `` Ctrl+` ``
 - **Smart right-click** — selection → instant copy, empty area → instant paste, link → Open / Copy Link menu
-- **Scroll bookmarks** — `Ctrl+M` mark, `Ctrl+Up/Down` jump, gutter indicators
+- **Scroll bookmarks** — `Ctrl+M` mark, gutter indicators
 - Vi copy mode — `Ctrl+Shift+X`
 - Search with regex toggle — `Ctrl+F`
 - 999K line scrollback with disk persistence
