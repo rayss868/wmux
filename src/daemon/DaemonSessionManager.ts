@@ -135,15 +135,25 @@ export class DaemonSessionManager extends EventEmitter {
       console.warn('[DaemonSessionManager] shell integration unavailable:', err);
     }
 
-    // Spawn ConPTY
-    const ptyProcess = pty.spawn(cmd, spawnArgs, {
-      name: 'xterm-256color',
-      cols,
-      rows,
-      cwd,
-      env,
-      useConpty: true,
-    });
+    // Spawn the PTY. node-pty throws synchronously on a missing/invalid shell
+    // binary or an unreadable cwd — common on macOS/Linux where the resolved
+    // shell path differs from Windows. Surface an actionable message instead of
+    // letting the raw node-pty error propagate as an opaque session-create
+    // failure. (useConpty is a Windows-only hint; node-pty ignores it elsewhere.)
+    let ptyProcess: IPty;
+    try {
+      ptyProcess = pty.spawn(cmd, spawnArgs, {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        cwd,
+        env,
+        useConpty: true,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to start shell "${cmd}" in "${cwd}": ${detail}`);
+    }
 
     const now = new Date().toISOString();
     const meta: DaemonSession = {
