@@ -180,3 +180,130 @@ jobs:
           token: ${{ secrets.WINGET_TOKEN }}
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+
+  # ── macOS build leg ──────────────────────────────────────────────────────
+  # OPT-IN: runs only when the repo variable ENABLE_CROSS_PLATFORM_RELEASE is
+  # 'true'. Until then this job is skipped and a tag push behaves EXACTLY like
+  # today (Windows-only). `needs: build` means it runs AFTER the `build` job has
+  # created the GitHub Release, so this job only APPENDS assets to it — it never
+  # creates the release. A macOS failure therefore cannot block the Windows
+  # release (which already shipped in `build`). Signing/notarization is gated on
+  # the Apple secrets being present (same no-op-when-empty contract as SignPath):
+  # with no secrets, Forge produces an unsigned/un-notarized .zip/.dmg that still
+  # uploads, so the pipeline structure can be validated before certs exist.
+  macos:
+    name: Build macOS (${{ matrix.os }})
+    needs: build
+    if: vars.ENABLE_CROSS_PLATFORM_RELEASE == 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      # Keep both arches building so one regressing doesn't hide the other.
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-13]   # macos-14 = Apple Silicon (arm64), macos-13 = Intel (x64)
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+      APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Import the Developer ID Application cert into a throwaway keychain so
+      # Forge's osxSign can discover it. No-op when the cert secret is empty.
+      - name: Import Apple Developer ID certificate
+        if: env.APPLE_CERT_P12_BASE64 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/wmux-build.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          printf '%s' "$APPLE_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      # Forge signs + notarizes inside `make` only when Apple creds are present
+      # (see macSignConfig in forge.config.ts); otherwise it builds unsigned.
+      - name: Build & Make
+        run: npm run make
+        timeout-minutes: 30
+
+      # Append the .zip/.dmg to the release the `build` job already created.
+      # continue-on-error: a macOS upload hiccup must not fail the whole release.
+      - name: Upload macOS artifacts to the release
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          FILES=$(find out/make -type f \( -name '*.dmg' -o -name '*.zip' \))
+          if [ -z "$FILES" ]; then echo "No macOS artifacts found — skipping upload"; exit 0; fi
+          printf 'Uploading:\n%s\n' "$FILES"
+          # Filenames carry no spaces (wmux-<ver>-<arch>.dmg); intentional word split.
+          # shellcheck disable=SC2086
+          gh release upload "${{ github.ref_name }}" $FILES --clobber
+
+      - name: Clean up temporary keychain
+        if: always() && env.APPLE_CERT_P12_BASE64 != ''
+        shell: bash
+        run: security delete-keychain "$RUNNER_TEMP/wmux-build.keychain-db" || true
+
+  # ── Linux build leg ──────────────────────────────────────────────────────
+  # OPT-IN (same flag) + needs: build → append-only, never blocks Windows.
+  # Linux has no in-app auto-update (users update via apt/dnf or re-download the
+  # AppImage), so no manifest is published here.
+  linux:
+    name: Build Linux
+    needs: build
+    if: vars.ENABLE_CROSS_PLATFORM_RELEASE == 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # build-essential + libxss1 for node-pty/Electron (matches the baseline CI);
+      # rpm + fakeroot are required by @electron-forge/maker-rpm.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libxss1 rpm fakeroot
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build & Make
+        run: npm run make
+        timeout-minutes: 30
+
+      - name: Upload Linux artifacts to the release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          FILES=$(find out/make -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \))
+          if [ -z "$FILES" ]; then echo "No Linux artifacts found — skipping upload"; exit 0; fi
+          printf 'Uploading:\n%s\n' "$FILES"
+          # shellcheck disable=SC2086
+          gh release upload "${{ github.ref_name }}" $FILES --clobber

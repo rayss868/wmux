@@ -152,14 +152,24 @@ export class PTYManager {
     const shellType = this.detectShellType(shell);
     const hookInjection = this.buildHookInjection(shellType, env);
 
-    const ptyProcess = pty.spawn(shell, hookInjection.args, {
-      name: 'xterm-256color',
-      cols: options?.cols || 80,
-      rows: options?.rows || 24,
-      cwd,
-      env: hookInjection.env,
-      useConpty: true,
-    });
+    // node-pty throws synchronously on a missing/invalid shell binary or an
+    // unreadable cwd (common on macOS/Linux where the shell path differs from
+    // Windows). Surface an actionable error instead of the raw node-pty throw.
+    // (useConpty is a Windows-only hint; node-pty ignores it elsewhere.)
+    let ptyProcess: ReturnType<typeof pty.spawn>;
+    try {
+      ptyProcess = pty.spawn(shell, hookInjection.args, {
+        name: 'xterm-256color',
+        cols: options?.cols || 80,
+        rows: options?.rows || 24,
+        cwd,
+        env: hookInjection.env,
+        useConpty: true,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to start shell "${shell}" in "${cwd}": ${detail}`);
+    }
 
     const instance: PTYInstance = {
       id,
