@@ -26,6 +26,15 @@ const MANIFEST_URL = `https://github.com/${REPO}/releases/latest/download/update
 // 업데이트 자동 확인 간격 (30분)
 const CHECK_INTERVAL_MS = 30 * 60 * 1000;
 
+// In-app auto-update is Windows-only today. The update-server URL (line above),
+// the temp installer filename, and the launch verb in this class are all
+// Squirrel.Windows-shaped: macOS gains a signed-ZIP self-update path in a later
+// phase, and Linux updates via the system package manager (no in-app updater).
+// Gate every network/install action on this constant so a macOS/Linux client can
+// NEVER fetch a manifest, download, or launch a Windows `.Setup.exe` — not even
+// once all three OSes share a single GitHub release's assets.
+const isUpdaterSupported = process.platform === 'win32';
+
 interface UpdateInfo {
   name: string;
   notes: string;
@@ -44,9 +53,17 @@ export class AutoUpdater {
   }
 
   start(): void {
+    // Register IPC handlers on every platform so the renderer's "check for
+    // updates" UI resolves cleanly (it gets a not-available reply off win32),
+    // but only schedule background checks on a supported platform.
     this.registerIpcHandlers();
 
     if (process.env.NODE_ENV === 'development') {
+      return;
+    }
+
+    if (!isUpdaterSupported) {
+      console.log(`[AutoUpdater] In-app updates are not supported on ${process.platform}; skipping auto-check (update via your package manager).`);
       return;
     }
 
@@ -73,6 +90,9 @@ export class AutoUpdater {
   }
 
   private async check(): Promise<void> {
+    // Defense in depth: never poll the win32-only update feed off Windows, even
+    // if a caller invokes check() directly.
+    if (!isUpdaterSupported) return;
     if (!this.enabled || this.isChecking) return;
     this.isChecking = true;
     this.sendToRenderer(IPC.UPDATE_CHECK, { status: 'checking' });
@@ -214,7 +234,7 @@ export class AutoUpdater {
     });
 
     ipcMain.handle(IPC.UPDATE_CHECK, async () => {
-      if (process.env.NODE_ENV === 'development') {
+      if (process.env.NODE_ENV === 'development' || !isUpdaterSupported) {
         return { status: 'not-available' };
       }
       // Don't await — fire and forget, results come via IPC events
@@ -223,6 +243,13 @@ export class AutoUpdater {
     });
 
     ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
+      if (!isUpdaterSupported) {
+        // No in-app installer on this platform — never download/launch a
+        // Windows .Setup.exe on macOS/Linux. The win32 install path below is
+        // unreachable here.
+        console.log(`[AutoUpdater] UPDATE_INSTALL ignored on ${process.platform} — no in-app installer for this platform.`);
+        return;
+      }
       const pending = this.pendingUpdate;
       if (!pending) return;
 
