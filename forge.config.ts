@@ -4,6 +4,7 @@ import { MakerZIP } from '@electron-forge/maker-zip';
 import { MakerDMG } from '@electron-forge/maker-dmg';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
+import { MakerAppImage } from '@reforged/maker-appimage';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
@@ -180,6 +181,18 @@ const config: ForgeConfig = {
               name: 'wmux',
               productName: 'wmux',
               categories: ['Utility', 'Development'],
+            },
+          }),
+          // AppImage: distro-independent single-file portable binary (like the
+          // Windows .exe). @reforged/maker-appimage is a third-party maker
+          // (no official Forge AppImage maker). Linux-guarded, so Windows/macOS
+          // builds never instantiate it.
+          new MakerAppImage({
+            options: {
+              name: 'wmux',
+              productName: 'wmux',
+              categories: ['Utility', 'Development'],
+              icon: './assets/icon.png',
             },
           }),
         ]
