@@ -240,6 +240,19 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
   if (method === 'workspace.close') {
     const id = String(params.id ?? '');
+    // Dispose the workspace's PTY sessions before dropping it from the UI.
+    // The UI close paths (Sidebar X, Ctrl+Shift+W, Settings reset) already
+    // dispose every surface's PTY; without the same step here an external
+    // CLI/MCP `workspace.close` would leave each pane's shell — and any agent
+    // process running inside it — alive in the daemon with no UI to reattach,
+    // accumulating until a full daemon shutdown. Best-effort: a failed dispose
+    // (session already dead, daemon mid-respawn) must not block the removal.
+    const ws = store.workspaces.find((w) => w.id === id);
+    if (ws) {
+      for (const ptyId of collectAllPtyIds(ws.rootPane)) {
+        try { window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
+      }
+    }
     store.removeWorkspace(id);
     return { ok: true };
   }

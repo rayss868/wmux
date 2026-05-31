@@ -4,6 +4,10 @@ import path from 'path';
 import { platformChoice } from '../shared/platform';
 
 let tray: Tray | null = null;
+// Retained so updateTraySessionCount() can rebuild the context menu (and so
+// the tooltip nudge stays in sync) without the caller re-passing them.
+let trayWindow: BrowserWindow | null = null;
+let trayCallbacks: TrayCallbacks | null = null;
 
 /**
  * Resolve a license-style file that ships in <exe>/resources/ when packaged
@@ -30,30 +34,19 @@ export interface TrayCallbacks {
   onShutdownAll: () => void;
 }
 
-export function createTray(mainWindow: BrowserWindow, callbacks: TrayCallbacks): Tray {
-  // In packaged app, extraResource files land in <exe_dir>/resources/
-  // In dev, assets are at project root: <__dirname>/../../assets/
-  //
-  // OS-aware extension: Windows -> .ico, macOS -> .icns, Linux/other -> .png.
-  // The actual non-Windows image files are produced by a separate asset pipeline
-  // (Phase 1.1 generate-icon.js). If the resolved file is missing on a given
-  // platform, Electron falls back to a default tray image rather than throwing.
-  const iconExt = platformChoice<string>({ win: 'ico', mac: 'icns', linux: 'png', default: 'png' });
-  const iconFile = `icon.${iconExt}`;
-  const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, iconFile)
-    : path.join(__dirname, '..', '..', 'assets', iconFile);
-
-  tray = new Tray(nativeImage.createFromPath(iconPath));
-  tray.setToolTip('wmux');
-
-  // License / About handlers — surface the MIT notice for wmux itself
-  // and the bundled THIRD_PARTY_NOTICES so users (and downstream
-  // distributors) can find the attribution that ships next to wmux.exe.
-  // `shell.openPath` opens the file in the user's default text app;
-  // failure (missing file in a stripped build, no associated app, etc.)
-  // falls back to revealing the containing folder so the file is still
-  // discoverable.
+/**
+ * Build the tray context menu. When `sessionCount` is a positive number we
+ * insert a disabled info row above the quit items so a user who has quit-to-
+ * tray can see, without opening the window, that the daemon is still holding
+ * N live sessions (each potentially a heavyweight agent process). This is the
+ * visibility half of the "don't auto-kill, make accumulation visible" fix —
+ * the user stays in control and reaches for "Shut down" when they see the count.
+ */
+function buildContextMenu(
+  mainWindow: BrowserWindow,
+  callbacks: TrayCallbacks,
+  sessionCount: number | null,
+): Menu {
   const openOrReveal = async (file: string | null): Promise<void> => {
     if (!file) {
       dialog.showErrorBox('wmux', 'License file is missing from this build.');
@@ -63,7 +56,7 @@ export function createTray(mainWindow: BrowserWindow, callbacks: TrayCallbacks):
     if (err) shell.showItemInFolder(file);
   };
 
-  const contextMenu = Menu.buildFromTemplate([
+  const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'Open wmux',
       click: () => {
@@ -87,6 +80,16 @@ export function createTray(mainWindow: BrowserWindow, callbacks: TrayCallbacks):
       click: () => void openOrReveal(resolveResource('THIRD_PARTY_NOTICES')),
     },
     { type: 'separator' },
+  ];
+
+  if (typeof sessionCount === 'number' && sessionCount > 0) {
+    template.push({
+      label: `${sessionCount} background session${sessionCount === 1 ? '' : 's'} running`,
+      enabled: false,
+    });
+  }
+
+  template.push(
     {
       label: 'Quit (keep sessions running)',
       click: () => {
@@ -101,9 +104,54 @@ export function createTray(mainWindow: BrowserWindow, callbacks: TrayCallbacks):
         app.quit();
       },
     },
-  ]);
+  );
 
-  tray.setContextMenu(contextMenu);
+  return Menu.buildFromTemplate(template);
+}
+
+/**
+ * Update the tray to reflect how many live sessions the daemon is holding.
+ * Pass the count when hiding to tray (the accumulation blind spot) and `null`
+ * when the window is shown (the panes are visible, so no nudge needed). Safe
+ * no-op before the tray exists. Best-effort cosmetic surface — never throws.
+ */
+export function updateTraySessionCount(sessionCount: number | null): void {
+  if (!tray || !trayWindow || !trayCallbacks) return;
+  tray.setToolTip(
+    typeof sessionCount === 'number' && sessionCount > 0
+      ? `wmux — ${sessionCount} background session${sessionCount === 1 ? '' : 's'} running`
+      : 'wmux',
+  );
+  tray.setContextMenu(buildContextMenu(trayWindow, trayCallbacks, sessionCount));
+}
+
+export function createTray(mainWindow: BrowserWindow, callbacks: TrayCallbacks): Tray {
+  // In packaged app, extraResource files land in <exe_dir>/resources/
+  // In dev, assets are at project root: <__dirname>/../../assets/
+  //
+  // OS-aware extension: Windows -> .ico, macOS -> .icns, Linux/other -> .png.
+  // The actual non-Windows image files are produced by a separate asset pipeline
+  // (Phase 1.1 generate-icon.js). If the resolved file is missing on a given
+  // platform, Electron falls back to a default tray image rather than throwing.
+  const iconExt = platformChoice<string>({ win: 'ico', mac: 'icns', linux: 'png', default: 'png' });
+  const iconFile = `icon.${iconExt}`;
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, iconFile)
+    : path.join(__dirname, '..', '..', 'assets', iconFile);
+
+  tray = new Tray(nativeImage.createFromPath(iconPath));
+  trayWindow = mainWindow;
+  trayCallbacks = callbacks;
+  tray.setToolTip('wmux');
+
+  // License / About handlers — surface the MIT notice for wmux itself
+  // and the bundled THIRD_PARTY_NOTICES so users (and downstream
+  // distributors) can find the attribution that ships next to wmux.exe.
+  // `shell.openPath` opens the file in the user's default text app;
+  // failure (missing file in a stripped build, no associated app, etc.)
+  // falls back to revealing the containing folder so the file is still
+  // discoverable. (See buildContextMenu for the menu template.)
+  tray.setContextMenu(buildContextMenu(mainWindow, callbacks, null));
 
   tray.on('double-click', () => {
     mainWindow.show();
@@ -118,4 +166,6 @@ export function destroyTray(): void {
     tray.destroy();
     tray = null;
   }
+  trayWindow = null;
+  trayCallbacks = null;
 }

@@ -46,7 +46,7 @@ import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
 import { ensureDaemon, killDaemonByPidFile } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
-import { createTray, destroyTray } from './tray';
+import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
@@ -199,6 +199,28 @@ const claudeWorker = new ClaudeWorker(() => mainWindow);
 
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
+
+/**
+ * Query the daemon for its live (attached + detached) session count and push
+ * it to the tray's background-session nudge. Dead/suspended tombstones hold no
+ * live process, so they're excluded. Best-effort and self-contained: any
+ * failure (local-only mode, daemon mid-respawn, RPC timeout) clears the nudge
+ * to `null` rather than surfacing an error — the count is a cosmetic hint.
+ */
+async function refreshTraySessionCount(): Promise<void> {
+  if (!daemonClient) {
+    updateTraySessionCount(null);
+    return;
+  }
+  try {
+    const sessions = (await daemonClient.rpc('daemon.listSessions', {})) as Array<{ state: string }>;
+    const live = sessions.filter((s) => s.state === 'attached' || s.state === 'detached').length;
+    updateTraySessionCount(live);
+  } catch {
+    updateTraySessionCount(null);
+  }
+}
+
 // In daemon mode, this router bridges daemon-broadcast events (agent status,
 // activity transitions, critical actions) into the same IPC channels
 // PTYBridge writes to in local mode. Without it, daemon mode would render
@@ -548,8 +570,21 @@ app.on('ready', async () => {
   // as "user not looking" so the poller's 30-min skip threshold kicks in
   // and we don't burn Anthropic quota for a UI nobody sees. Show always
   // unpauses immediately and forces a catch-up fetch.
-  mainWindow.on('hide', () => { usagePoller.setWindowVisible(false); });
-  mainWindow.on('show', () => { usagePoller.setWindowVisible(true); });
+  mainWindow.on('hide', () => {
+    usagePoller.setWindowVisible(false);
+    // Quit-to-tray is the accumulation blind spot: the daemon keeps every
+    // live session (and any agent inside it) running with no visible UI.
+    // Refresh the tray's session-count nudge so the user can see how much is
+    // still alive in the background. Best-effort — a tray hint must never
+    // block window hide, and listSessions may reject mid daemon-respawn.
+    void refreshTraySessionCount();
+  });
+  mainWindow.on('show', () => {
+    usagePoller.setWindowVisible(true);
+    // Window is visible again — the panes speak for themselves, so clear the
+    // background-session nudge back to the plain "wmux" tooltip/menu.
+    updateTraySessionCount(null);
+  });
 
   // System tray — lets the app stay alive when window is closed.
   // Phase A — A3/A5 fix (codex review P1, session 019e2af8): the callback
