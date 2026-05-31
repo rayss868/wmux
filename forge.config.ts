@@ -1,6 +1,7 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
+import { MakerDMG } from '@electron-forge/maker-dmg';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
 import { VitePlugin } from '@electron-forge/plugin-vite';
@@ -30,6 +31,37 @@ function copyDirSync(src: string, dest: string): void {
   }
 }
 
+// macOS Developer ID signing + notarization, gated on the Apple credentials
+// being present — exactly like the SignPath no-op-when-empty pattern in
+// release.yml. With no creds (local dev, or CI before the secrets are set) this
+// returns {} so Forge produces a working UNSIGNED .app/.zip/.dmg and nothing
+// changes for Windows/Linux. With all three creds present, Forge signs with the
+// Developer ID Application identity it discovers in the keychain and notarizes
+// via notarytool. Signing happens in the package phase AFTER the postPackage
+// asar repack below, so the signature covers the repacked asar (keep
+// EnableEmbeddedAsarIntegrityValidation=false). The entitlements grant the
+// hardened-runtime exceptions RunAsNode + node-pty need (see
+// build/entitlements.mac.plist).
+function macSignConfig(): Pick<NonNullable<ForgeConfig['packagerConfig']>, 'osxSign' | 'osxNotarize'> {
+  const { APPLE_TEAM_ID, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD } = process.env;
+  if (!APPLE_TEAM_ID || !APPLE_ID || !APPLE_APP_SPECIFIC_PASSWORD) {
+    return {};
+  }
+  return {
+    osxSign: {
+      optionsForFile: () => ({
+        hardenedRuntime: true,
+        entitlements: 'build/entitlements.mac.plist',
+      }),
+    },
+    osxNotarize: {
+      appleId: APPLE_ID,
+      appleIdPassword: APPLE_APP_SPECIFIC_PASSWORD,
+      teamId: APPLE_TEAM_ID,
+    },
+  };
+}
+
 const config: ForgeConfig = {
   packagerConfig: {
     asar: {
@@ -42,6 +74,8 @@ const config: ForgeConfig = {
     // (covering Chromium / V8 / Node) is emitted automatically by
     // electron-packager next to wmux.exe, so we don't duplicate it here.
     extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
+    // No-op on Windows/Linux and when Apple creds are absent (see macSignConfig).
+    ...macSignConfig(),
   },
   hooks: {
     postPackage: async (_config, packageResult) => {
@@ -127,7 +161,10 @@ const config: ForgeConfig = {
         ]
       : []),
     ...(process.platform === 'darwin'
-      ? [new MakerZIP({}, ['darwin'])]
+      // MakerZIP backs the update.electronjs.org/darwin/ discovery feed and the
+      // in-app ZIP self-update (Phase E); MakerDMG is the first-install download
+      // UX (drag to /Applications). Keep BOTH.
+      ? [new MakerZIP({}, ['darwin']), new MakerDMG({}, ['darwin'])]
       : []),
     ...(process.platform === 'linux'
       ? [

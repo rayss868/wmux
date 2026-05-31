@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the notarized macOS build.
+
+  wmux ships with the Electron `RunAsNode` fuse enabled (forge.config.ts) because
+  the detached daemon is spawned from the app binary with ELECTRON_RUN_AS_NODE=1,
+  and it loads the node-pty native addon. Under the macOS hardened runtime
+  (required for notarization, macOS 10.15+) those operations are blocked unless
+  the corresponding entitlements are granted:
+
+    - allow-jit / allow-unsigned-executable-memory: V8 JIT + the writable+
+      executable memory Node/Chromium use. Without these the renderer/daemon
+      crash on launch under hardened runtime.
+    - allow-dyld-environment-variables: ELECTRON_RUN_AS_NODE (and other ELECTRON_*
+      / NODE_* vars) are dyld-relevant env vars; hardened runtime strips them
+      unless this is set, which would break the daemon spawn handshake.
+    - disable-library-validation: lets the process load the locally-built,
+      separately-signed node-pty .node addon (and any other unbundled native
+      module) without Apple rejecting the team-id mismatch.
+
+  Keep this in sync with the RunAsNode fuse + the daemon spawn path. If RunAsNode
+  is ever disabled, revisit whether allow-dyld-environment-variables is still
+  needed. Documented alongside docs/SECURITY.md §1.4 (Fuses).
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
