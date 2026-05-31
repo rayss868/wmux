@@ -257,7 +257,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const ws = store.workspaces.find((w) => w.id === id);
     if (ws && store.workspaces.length > 1) {
       for (const ptyId of collectAllPtyIds(ws.rootPane)) {
-        try { window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
+        // dispose() returns an IPC Promise, so a daemon-side failure (mid-
+        // respawn, session already dead) rejects asynchronously — a plain
+        // try/catch wouldn't catch it and workspace.close would emit an
+        // unhandled rejection while still reporting success. Swallow the
+        // rejection via .catch; the outer try guards a synchronous throw
+        // (e.g. electronAPI missing). Best-effort either way. (codex review P2)
+        try {
+          void window.electronAPI.pty.dispose(ptyId).catch(() => { /* best-effort */ });
+        } catch { /* best-effort */ }
       }
     }
     store.removeWorkspace(id);
