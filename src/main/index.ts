@@ -200,24 +200,32 @@ const claudeWorker = new ClaudeWorker(() => mainWindow);
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
 
+// Monotonic token guarding the async tray refresh. Bumped on every refresh
+// start and on window 'show', so a slow `daemon.listSessions` from an earlier
+// 'hide' can't land its now-stale count after the window is visible again (or
+// after a newer refresh superseded it). (codex review P3)
+let trayRefreshToken = 0;
+
 /**
  * Query the daemon for its live (attached + detached) session count and push
  * it to the tray's background-session nudge. Dead/suspended tombstones hold no
  * live process, so they're excluded. Best-effort and self-contained: any
  * failure (local-only mode, daemon mid-respawn, RPC timeout) clears the nudge
  * to `null` rather than surfacing an error — the count is a cosmetic hint.
+ * The result is only applied if no newer refresh/show has superseded this one.
  */
 async function refreshTraySessionCount(): Promise<void> {
+  const token = ++trayRefreshToken;
   if (!daemonClient) {
-    updateTraySessionCount(null);
+    if (token === trayRefreshToken) updateTraySessionCount(null);
     return;
   }
   try {
     const sessions = (await daemonClient.rpc('daemon.listSessions', {})) as Array<{ state: string }>;
     const live = sessions.filter((s) => s.state === 'attached' || s.state === 'detached').length;
-    updateTraySessionCount(live);
+    if (token === trayRefreshToken) updateTraySessionCount(live);
   } catch {
-    updateTraySessionCount(null);
+    if (token === trayRefreshToken) updateTraySessionCount(null);
   }
 }
 
@@ -582,7 +590,10 @@ app.on('ready', async () => {
   mainWindow.on('show', () => {
     usagePoller.setWindowVisible(true);
     // Window is visible again — the panes speak for themselves, so clear the
-    // background-session nudge back to the plain "wmux" tooltip/menu.
+    // background-session nudge back to the plain "wmux" tooltip/menu. Bump the
+    // refresh token first so a slow in-flight hide refresh can't overwrite this
+    // clear with a stale count after it resolves. (codex review P3)
+    trayRefreshToken++;
     updateTraySessionCount(null);
   });
 
