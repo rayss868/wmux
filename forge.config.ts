@@ -32,6 +32,19 @@ function copyDirSync(src: string, dest: string): void {
   }
 }
 
+// node-pty의 spawn-helper(macOS에서 셸을 fork/exec하는 바이너리)는 npm prebuild가
+// 실행권한 없이(rw-r--r--) 풀려서, +x를 직접 부여하지 않으면 posix_spawnp가
+// 셸을 띄우지 못한다("posix_spawnp failed"). 반드시 코드 서명 "전"에 호출해야
+// 한다(서명 후 권한을 바꾸면 서명이 깨진다). root 하위를 재귀 탐색한다.
+function chmodSpawnHelpers(root: string): void {
+  if (!fs.existsSync(root)) return;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory()) chmodSpawnHelpers(full);
+    else if (entry.name === 'spawn-helper') fs.chmodSync(full, 0o755);
+  }
+}
+
 // macOS Developer ID signing + notarization은 packagerConfig가 아니라 아래
 // postPackage hook의 "맨 끝"에서 직접 수행한다(signMacAppIfConfigured).
 //
@@ -134,8 +147,18 @@ const config: ForgeConfig = {
       console.log('[postPackage] Repacking asar...');
       fs.unlinkSync(asarPath);
       if (fs.existsSync(unpackedDir)) fs.rmSync(unpackedDir, { recursive: true });
+      // node-pty의 네이티브 자산(prebuilds/ 안의 *.node + spawn-helper)만 asar
+      // 밖으로 빼낸다. spawn-helper는 macOS에서 셸을 fork/exec하는 바이너리라
+      // asar에 갇히면 실행 불가("posix_spawnp failed")다.
+      //
+      // 주의: lib/ 같은 JS는 unpack하지 말고 asar "안"에 둬야 한다. node-pty가
+      // helperPath를 __dirname 기준으로 만든 뒤 `.replace('app.asar',
+      // 'app.asar.unpacked')`로 unpacked 경로를 유도하는데, lib까지 unpack하면
+      // __dirname에 이미 'app.asar.unpacked'가 들어가
+      // 'app.asar.unpacked.unpacked'(ENOENT)로 망가진다. prebuilds만 unpack하면
+      // lib는 가상 app.asar에 남아 replace가 정확히 'app.asar.unpacked'로 변환된다.
       await asar.createPackageWithOptions(tempDir, asarPath, {
-        unpack: '*.node',
+        unpack: '**/node_modules/node-pty/prebuilds/**',
       });
 
       // 4. Cleanup temp
@@ -174,9 +197,15 @@ const config: ForgeConfig = {
         removePsFiles(resourcesDir);
       }
 
-      // 7. macOS 서명 + 노타라이즈 + 스테이플 — 반드시 위의 모든 파일 조작
-      //    (asar 재패킹 + daemon-bundle node-pty 복사)이 끝난 "뒤"에 수행해야
-      //    서명이 깨지지 않는다. darwin이 아니거나 Apple 자격증명이 없으면 no-op.
+      // 7. node-pty spawn-helper에 실행권한 부여 — app.asar.unpacked와
+      //    daemon-bundle 양쪽 모두. 반드시 서명 "전"에 해야 한다.
+      if (process.platform === 'darwin') {
+        chmodSpawnHelpers(resourcesDir);
+      }
+
+      // 8. macOS 서명 + 노타라이즈 + 스테이플 — 반드시 위의 모든 파일 조작
+      //    (asar 재패킹 + daemon-bundle node-pty 복사 + chmod)이 끝난 "뒤"에
+      //    수행해야 서명이 깨지지 않는다. darwin이 아니거나 자격증명 없으면 no-op.
       if (appBundle) {
         await signMacAppIfConfigured(path.join(outputPath, appBundle));
       }
