@@ -247,8 +247,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // process running inside it — alive in the daemon with no UI to reattach,
     // accumulating until a full daemon shutdown. Best-effort: a failed dispose
     // (session already dead, daemon mid-respawn) must not block the removal.
+    //
+    // Guard on workspaces.length > 1: removeWorkspace refuses to drop the final
+    // workspace (the store always keeps at least one). Without this check the
+    // RPC would dispose the only workspace's PTYs — killing its shells and any
+    // agent inside them — while the workspace stays in the UI with dead
+    // surfaces. Mirror the slice's guard so dispose only runs when the removal
+    // will actually happen. (codex review P2)
     const ws = store.workspaces.find((w) => w.id === id);
-    if (ws) {
+    if (ws && store.workspaces.length > 1) {
       for (const ptyId of collectAllPtyIds(ws.rootPane)) {
         try { window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
       }
