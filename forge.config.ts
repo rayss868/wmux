@@ -32,35 +32,56 @@ function copyDirSync(src: string, dest: string): void {
   }
 }
 
-// macOS Developer ID signing + notarization, gated on the Apple credentials
-// being present — exactly like the SignPath no-op-when-empty pattern in
-// release.yml. With no creds (local dev, or CI before the secrets are set) this
-// returns {} so Forge produces a working UNSIGNED .app/.zip/.dmg and nothing
-// changes for Windows/Linux. With all three creds present, Forge signs with the
-// Developer ID Application identity it discovers in the keychain and notarizes
-// via notarytool. Signing happens in the package phase AFTER the postPackage
-// asar repack below, so the signature covers the repacked asar (keep
-// EnableEmbeddedAsarIntegrityValidation=false). The entitlements grant the
-// hardened-runtime exceptions RunAsNode + node-pty need (see
-// build/entitlements.mac.plist).
-function macSignConfig(): Pick<NonNullable<ForgeConfig['packagerConfig']>, 'osxSign' | 'osxNotarize'> {
+// macOS Developer ID signing + notarization은 packagerConfig가 아니라 아래
+// postPackage hook의 "맨 끝"에서 직접 수행한다(signMacAppIfConfigured).
+//
+// 이유(중요): packager의 osxSign/osxNotarize는 postPackage hook보다 "먼저"
+// 실행된다. 그런데 postPackage hook은 node-pty를 app.asar과 daemon-bundle로
+// 복사해 넣는다 — 즉 packagerConfig에서 서명하면, 그 직후 postPackage가
+// 봉인된 리소스를 변경해 서명이 깨진다(`a sealed resource is missing or
+// invalid`). 그래서 모든 파일 조작이 끝난 마지막에 서명→노타라이즈→스테이플
+// 순서로 처리해야 한다.
+//
+// Apple 자격증명(APPLE_TEAM_ID/APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD) 3개가
+// 모두 있을 때만 동작하고, 없으면 UNSIGNED 빌드를 그대로 만든다(로컬 dev나
+// secrets 미설정 CI). Developer ID Application identity는 keychain에서 자동
+// 탐색한다. entitlements는 hardened-runtime 예외(RunAsNode + node-pty)를
+// 부여한다(build/entitlements.mac.plist).
+async function signMacAppIfConfigured(appPath: string): Promise<void> {
   const { APPLE_TEAM_ID, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD } = process.env;
+  if (process.platform !== 'darwin') return;
   if (!APPLE_TEAM_ID || !APPLE_ID || !APPLE_APP_SPECIFIC_PASSWORD) {
-    return {};
+    console.log('[postPackage] Apple 자격증명 없음 — UNSIGNED 빌드로 진행.');
+    return;
   }
-  return {
-    osxSign: {
-      optionsForFile: () => ({
-        hardenedRuntime: true,
-        entitlements: 'build/entitlements.mac.plist',
-      }),
-    },
-    osxNotarize: {
-      appleId: APPLE_ID,
-      appleIdPassword: APPLE_APP_SPECIFIC_PASSWORD,
-      teamId: APPLE_TEAM_ID,
-    },
-  };
+
+  const { signAsync } = require('@electron/osx-sign');
+  const { notarize } = require('@electron/notarize');
+
+  // 1) inside-out 서명: 모든 헬퍼 .app과 .node 네이티브 바이너리까지 서명한다.
+  console.log('[postPackage] 코드 서명 (Developer ID, hardened runtime)...');
+  await signAsync({
+    app: appPath,
+    optionsForFile: () => ({
+      hardenedRuntime: true,
+      entitlements: path.join(__dirname, 'build', 'entitlements.mac.plist'),
+    }),
+  });
+
+  // 2) 노타라이즈: notarytool로 제출 후 완료까지 대기(수 분 소요).
+  console.log('[postPackage] 노타라이즈 (notarytool, 수 분 소요)...');
+  await notarize({
+    appPath,
+    appleId: APPLE_ID,
+    appleIdPassword: APPLE_APP_SPECIFIC_PASSWORD,
+    teamId: APPLE_TEAM_ID,
+  });
+
+  // 3) 스테이플: 노타라이즈 티켓을 .app에 부착(오프라인 Gatekeeper 통과용).
+  console.log('[postPackage] 스테이플 (xcrun stapler)...');
+  require('child_process').execFileSync('xcrun', ['stapler', 'staple', appPath], { stdio: 'inherit' });
+
+  console.log('[postPackage] macOS 서명 + 노타라이즈 + 스테이플 완료.');
 }
 
 const config: ForgeConfig = {
@@ -75,15 +96,25 @@ const config: ForgeConfig = {
     // (covering Chromium / V8 / Node) is emitted automatically by
     // electron-packager next to wmux.exe, so we don't duplicate it here.
     extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
-    // No-op on Windows/Linux and when Apple creds are absent (see macSignConfig).
-    ...macSignConfig(),
+    // macOS 서명/노타라이즈는 packagerConfig가 아니라 postPackage hook 끝에서
+    // 수행한다(signMacAppIfConfigured 주석 참고). 여기서 서명하면 postPackage의
+    // node-pty 복사가 서명을 깨뜨리기 때문이다.
   },
   hooks: {
     postPackage: async (_config, packageResult) => {
       const asar = require('@electron/asar');
       const outputPath = packageResult.outputPaths[0];
-      const asarPath = path.join(outputPath, 'resources', 'app.asar');
-      const tempDir = path.join(outputPath, 'resources', '_app_tmp');
+      // macOS는 .app 번들이라 리소스가 <app>.app/Contents/Resources에,
+      // Windows/Linux는 <output>/resources에 위치한다. .app 이름은
+      // productName에 따라 달라지므로 디렉토리에서 직접 찾는다.
+      const appBundle = process.platform === 'darwin'
+        ? fs.readdirSync(outputPath).find((f) => f.endsWith('.app'))
+        : undefined;
+      const resourcesDir = appBundle
+        ? path.join(outputPath, appBundle, 'Contents', 'Resources')
+        : path.join(outputPath, 'resources');
+      const asarPath = path.join(resourcesDir, 'app.asar');
+      const tempDir = path.join(resourcesDir, '_app_tmp');
       const unpackedDir = asarPath + '.unpacked';
 
       // 1. Extract existing asar
@@ -112,7 +143,7 @@ const config: ForgeConfig = {
       console.log('[postPackage] Done — node-pty bundled in asar.');
 
       // 5. Copy node-pty into daemon-bundle/node_modules so the detached daemon process can find it
-      const daemonBundleDir = path.join(outputPath, 'resources', 'daemon-bundle');
+      const daemonBundleDir = path.join(resourcesDir, 'daemon-bundle');
       if (fs.existsSync(daemonBundleDir)) {
         const daemonNodePty = path.join(daemonBundleDir, 'node_modules', 'node-pty');
         console.log('[postPackage] Copying node-pty for daemon-bundle...');
@@ -125,7 +156,6 @@ const config: ForgeConfig = {
       //    Squirrel.Windows is the only maker that builds nupkgs, so this cleanup
       //    is meaningless on macOS / Linux and skipped there.
       if (process.platform === 'win32') {
-        const resourcesDir = path.join(outputPath, 'resources');
         const removePsFiles = (dir: string) => {
           if (!fs.existsSync(dir)) return;
           for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -142,6 +172,13 @@ const config: ForgeConfig = {
           }
         };
         removePsFiles(resourcesDir);
+      }
+
+      // 7. macOS 서명 + 노타라이즈 + 스테이플 — 반드시 위의 모든 파일 조작
+      //    (asar 재패킹 + daemon-bundle node-pty 복사)이 끝난 "뒤"에 수행해야
+      //    서명이 깨지지 않는다. darwin이 아니거나 Apple 자격증명이 없으면 no-op.
+      if (appBundle) {
+        await signMacAppIfConfigured(path.join(outputPath, appBundle));
       }
     },
   },
