@@ -240,6 +240,34 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
   if (method === 'workspace.close') {
     const id = String(params.id ?? '');
+    // Dispose the workspace's PTY sessions before dropping it from the UI.
+    // The UI close paths (Sidebar X, Ctrl+Shift+W, Settings reset) already
+    // dispose every surface's PTY; without the same step here an external
+    // CLI/MCP `workspace.close` would leave each pane's shell — and any agent
+    // process running inside it — alive in the daemon with no UI to reattach,
+    // accumulating until a full daemon shutdown. Best-effort: a failed dispose
+    // (session already dead, daemon mid-respawn) must not block the removal.
+    //
+    // Guard on workspaces.length > 1: removeWorkspace refuses to drop the final
+    // workspace (the store always keeps at least one). Without this check the
+    // RPC would dispose the only workspace's PTYs — killing its shells and any
+    // agent inside them — while the workspace stays in the UI with dead
+    // surfaces. Mirror the slice's guard so dispose only runs when the removal
+    // will actually happen. (codex review P2)
+    const ws = store.workspaces.find((w) => w.id === id);
+    if (ws && store.workspaces.length > 1) {
+      for (const ptyId of collectAllPtyIds(ws.rootPane)) {
+        // dispose() returns an IPC Promise, so a daemon-side failure (mid-
+        // respawn, session already dead) rejects asynchronously — a plain
+        // try/catch wouldn't catch it and workspace.close would emit an
+        // unhandled rejection while still reporting success. Swallow the
+        // rejection via .catch; the outer try guards a synchronous throw
+        // (e.g. electronAPI missing). Best-effort either way. (codex review P2)
+        try {
+          void window.electronAPI.pty.dispose(ptyId).catch(() => { /* best-effort */ });
+        } catch { /* best-effort */ }
+      }
+    }
     store.removeWorkspace(id);
     return { ok: true };
   }
