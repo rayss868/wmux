@@ -9,11 +9,11 @@ import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection } from './shell-integration';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
+import { createDefaultConfig } from './config';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const DEFAULT_BUFFER_SIZE = 512 * 1024; // 512 KB
-const DEFAULT_DEAD_TTL_HOURS = 24;
 
 /**
  * Internal type: session metadata + runtime resources.
@@ -70,6 +70,13 @@ export class DaemonSessionManager extends EventEmitter {
     rows?: number;
     agent?: { role: string; teamId: string; displayName: string };
     createdAt?: string;
+    /**
+     * Recovery passes the session's persisted per-session dead-TTL so a
+     * recovered session keeps its create-time retention instead of being
+     * restamped from the current config (codex P2). Omitted for brand-new
+     * sessions, which take the config default.
+     */
+    deadTtlHours?: number;
     scrollbackData?: Buffer;
     /**
      * v2.8.1 hotfix: when true, the bridge starts muted so PTY output
@@ -86,18 +93,33 @@ export class DaemonSessionManager extends EventEmitter {
       throw new Error(`Invalid session ID: must be 1-64 chars of [a-zA-Z0-9_-]`);
     }
 
+    // Resolve effective config once. The daemon main calls setConfig()
+    // before any createSession(); the createDefaultConfig() fallback only
+    // covers tests / early-boot paths and keeps the default SSOT in
+    // config.ts (createDefaultConfig) rather than re-hardcoding 200 / 24 here.
+    const cfg = this.config ?? createDefaultConfig();
+
     // Guard against resource exhaustion from unbounded session creation.
-    // The error message is user-facing — phrase it as an action the user
-    // can actually take so a cap lockout doesn't read as a generic toast.
+    // Substrate 3.0 Tier-2 floor: refuse the new session (RESOURCE_EXHAUSTED)
+    // — never evict an existing one to make room. The error message is
+    // user-facing, so phrase it as an action the user can actually take.
+    // The ceiling is configurable via session.maxSessions (default 200);
+    // startup recovery derives its own soft cap as min(maxSessions, 40).
     //
-    // 50 → 200: the v2.8.1 soft cap (MAX_RECOVER_SESSIONS=40) only gates
-    // startup recovery. Detached sessions still accumulate at runtime
-    // because the daemon keeps them alive across X-closes, so 50 is too
-    // tight for multi-workspace users. Soft-cap policy unchanged.
-    const MAX_SESSIONS = 200;
-    if (this.sessions.size >= MAX_SESSIONS) {
+    // Count only LIVE PTYs (attached/detached). DEAD tombstones linger in the
+    // map until the TTL/memory reaper runs but hold no live PTY — counting
+    // them would wrongly reject a new session under a low maxSessions the
+    // moment a PTY dies (codex P2). `suspended` never sits in this runtime
+    // map (it is a disk-only state the shutdown path demotes live sessions to
+    // before persisting, and recovery re-creates them as `detached`).
+    const maxSessions = cfg.session.maxSessions;
+    let liveCount = 0;
+    for (const m of this.sessions.values()) {
+      if (m.meta.state === 'attached' || m.meta.state === 'detached') liveCount++;
+    }
+    if (liveCount >= maxSessions) {
       throw new Error(
-        `Cannot create new terminal: ${MAX_SESSIONS} active sessions already running. ` +
+        `Cannot create new terminal: ${maxSessions} active sessions already running. ` +
           `Close some panes (or restart wmux) and try again.`,
       );
     }
@@ -167,7 +189,13 @@ export class DaemonSessionManager extends EventEmitter {
       env,
       cols,
       rows,
-      deadTtlHours: DEFAULT_DEAD_TTL_HOURS,
+      // Per-session dead-TTL. codex #5: captured at create time and the
+      // reaper reads the per-session value, so a later config change applies
+      // only to NEW sessions. Recovery passes the persisted value
+      // (params.deadTtlHours) so a recovered session keeps its create-time
+      // retention; a brand-new session takes the current config default
+      // (codex P2 — recovery must not silently restamp existing retention).
+      deadTtlHours: params.deadTtlHours ?? cfg.session.deadSessionTtlHours,
     };
     if (params.agent) {
       meta.agent = params.agent;

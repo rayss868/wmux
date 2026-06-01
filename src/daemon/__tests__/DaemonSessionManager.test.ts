@@ -70,6 +70,7 @@ vi.mock('node-pty', () => ({
 
 // Import after mock is set up
 import { DaemonSessionManager } from '../DaemonSessionManager';
+import { createDefaultConfig } from '../config';
 
 describe('DaemonSessionManager', () => {
   let manager: DaemonSessionManager;
@@ -363,6 +364,65 @@ describe('DaemonSessionManager', () => {
     expect(() =>
       manager.createSession({ id: 'cap-201', cmd: 'cmd.exe', cwd: '.' }),
     ).toThrow(/Cannot create new terminal: 200 active sessions already running/);
+  });
+
+  // substrate 3.0: the session cap is configurable (was a 200 literal)
+  it('honours a custom session.maxSessions from setConfig', () => {
+    const cfg = createDefaultConfig();
+    cfg.session.maxSessions = 3;
+    manager.setConfig(cfg);
+    for (let i = 0; i < 3; i++) {
+      manager.createSession({ id: `cm-${i}`, cmd: 'cmd.exe', cwd: '.' });
+    }
+    // The cap is now 3, not the default 200 — and the message echoes it.
+    expect(() =>
+      manager.createSession({ id: 'cm-overflow', cmd: 'cmd.exe', cwd: '.' }),
+    ).toThrow(/Cannot create new terminal: 3 active sessions already running/);
+  });
+
+  // codex P2: DEAD tombstones must not occupy a cap slot
+  it('does not count DEAD tombstones against maxSessions', () => {
+    const cfg = createDefaultConfig();
+    cfg.session.maxSessions = 2;
+    manager.setConfig(cfg);
+    manager.createSession({ id: 'd1', cmd: 'cmd.exe', cwd: '.' });
+    const d1Pty = lastMockPty; // capture before d2 overwrites lastMockPty
+    manager.createSession({ id: 'd2', cmd: 'cmd.exe', cwd: '.' });
+    // d1's PTY exits → it becomes a DEAD tombstone still held in the map.
+    d1Pty?.simulateExit(0);
+    expect(manager.getSession('d1')?.meta.state).toBe('dead');
+    // 1 live (d2) + 1 dead (d1). Under cap=2 a new session must be allowed —
+    // the dead tombstone must not occupy a live slot.
+    expect(() =>
+      manager.createSession({ id: 'd3', cmd: 'cmd.exe', cwd: '.' }),
+    ).not.toThrow();
+  });
+
+  // substrate 3.0: dead-TTL is stamped per session from config (codex #5)
+  it('stamps new sessions with deadSessionTtlHours from config', () => {
+    const cfg = createDefaultConfig();
+    cfg.session.deadSessionTtlHours = 48;
+    manager.setConfig(cfg);
+    const s = manager.createSession({ id: 'ttl-cfg', cmd: 'cmd.exe', cwd: '.' });
+    expect(s.deadTtlHours).toBe(48);
+  });
+
+  it('defaults deadTtlHours to 24 when no config is set (createDefaultConfig SSOT)', () => {
+    const s = manager.createSession({ id: 'ttl-def', cmd: 'cmd.exe', cwd: '.' });
+    expect(s.deadTtlHours).toBe(24);
+  });
+
+  // codex P2: recovery passes the saved per-session value, which must win
+  // over the current config so a recovered session keeps its create-time
+  // retention instead of being silently restamped.
+  it('preserves a passed deadTtlHours over the config default (recovery path)', () => {
+    const cfg = createDefaultConfig();
+    cfg.session.deadSessionTtlHours = 48; // current config
+    manager.setConfig(cfg);
+    // Recovery hands back the value the session was created with (e.g. 12h
+    // from an older config), not the current 48h.
+    const s = manager.createSession({ id: 'rec-ttl', cmd: 'cmd.exe', cwd: '.', deadTtlHours: 12 });
+    expect(s.deadTtlHours).toBe(12);
   });
 
   // v2.8.1 hotfix: deferred output mode for recovered sessions (Bug 2)
