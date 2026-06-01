@@ -204,6 +204,33 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // enforcement) to preserve intentionally subtle dimmed text.
   const minimumContrastRatio = xtermTheme.background && isLight(xtermTheme.background) ? 4.5 : 1;
 
+  // Resize the daemon PTY without letting a rejected RPC float as an
+  // "Uncaught (in promise)". Two transient daemon errors are expected here and
+  // are both benign to the UI:
+  //   • "rate limited" — a reconnect burst (many panes recreating at once)
+  //     momentarily exceeds the daemon's per-socket cap (50 RPC/s, 1 s window).
+  //     The dropped resize would otherwise strand the PTY at a stale geometry
+  //     (callers update lastSentCols/Rows *before* the send, so an identical
+  //     re-fit is suppressed and never retries). Re-send the *live* geometry
+  //     once after the window clears (~1.1 s) so the size self-heals.
+  //   • "not found" — the session was swapped/disposed mid-resize; the main
+  //     pty:resize handler already retries-then-logs this, so we swallow it.
+  const sendResize = useCallback((targetPtyId: string, cols: number, rows: number) => {
+    window.electronAPI.pty.resize(targetPtyId, cols, rows).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('rate limited')) return; // not-found / other: handled upstream
+      window.setTimeout(() => {
+        const term = terminalRef.current;
+        // Bail if the terminal was disposed or the pane swapped PTYs meanwhile.
+        if (!term || ptyIdRef.current !== targetPtyId) return;
+        const { cols: c, rows: r } = term;
+        if (c > 0 && r > 0) {
+          window.electronAPI.pty.resize(targetPtyId, c, r).catch(() => { /* give up quietly */ });
+        }
+      }, 1100);
+    });
+  }, []);
+
   const fit = useCallback(() => {
     const container = containerRef.current;
     if (!fitAddonRef.current || !terminalRef.current || !container) return;
@@ -218,7 +245,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const { cols, rows } = terminalRef.current;
         // Never send 0-size resize to PTY — that corrupts the terminal buffer.
         if (cols > 0 && rows > 0) {
-          window.electronAPI.pty.resize(currentPtyId, cols, rows);
+          sendResize(currentPtyId, cols, rows);
         }
       }
     } catch {
@@ -857,7 +884,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     if (cols > 0 && rows > 0) {
       lastSentCols = cols;
       lastSentRows = rows;
-      window.electronAPI.pty.resize(ptyId, cols, rows);
+      sendResize(ptyId, cols, rows);
     }
 
     // Terminal registry registration is now per-branch above:
@@ -912,7 +939,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             if (currentPtyId && cols > 0 && rows > 0 && (cols !== lastSentCols || rows !== lastSentRows)) {
               lastSentCols = cols;
               lastSentRows = rows;
-              window.electronAPI.pty.resize(currentPtyId, cols, rows);
+              sendResize(currentPtyId, cols, rows);
             }
           } catch {
             // ignore fit errors during unmount
