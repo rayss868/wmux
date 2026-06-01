@@ -272,7 +272,9 @@ describe('DaemonSessionManager', () => {
     // Simulate exit on the mock PTY
     lastMockPty?.simulateExit(1);
 
-    expect(diedHandler).toHaveBeenCalledWith({ id: 'die', exitCode: 1 });
+    // Payload also carries forensic fields (signal/cmd/lastActivityMsAgo) used
+    // by the daemon's death logging; assert the contract fields, tolerate extras.
+    expect(diedHandler).toHaveBeenCalledWith(expect.objectContaining({ id: 'die', exitCode: 1 }));
     const session = manager.getSession('die');
     expect(session?.meta.state).toBe('dead');
   });
@@ -460,7 +462,7 @@ describe('DaemonSessionManager', () => {
 
       lastMockPty?.simulateExit(2);
 
-      expect(diedHandler).toHaveBeenCalledWith({ id: 'rec-exit', exitCode: 2 });
+      expect(diedHandler).toHaveBeenCalledWith(expect.objectContaining({ id: 'rec-exit', exitCode: 2 }));
       expect(manager.getSession('rec-exit')?.meta.state).toBe('dead');
     });
   });

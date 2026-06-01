@@ -43,6 +43,47 @@ export class ProcessMonitor {
   }
 
   /**
+   * Positively confirm a PID is dead. Returns true ONLY when the liveness
+   * probe SUCCEEDS and reports the PID absent. THROWS when the probe itself
+   * fails (tasklist timeout/error) so the caller can tell "confirmed dead"
+   * from "couldn't check" and defer rather than kill.
+   *
+   * This is the critical distinction `isAlive` collapses: `isAlive` returns
+   * `false` on a probe error, conflating an unreachable/slow tasklist with a
+   * genuinely dead process. On machines where tasklist intermittently times
+   * out, that false negative makes the watch loop fire onDead for LIVE
+   * sessions (observed: powershell panes "exit -1" with exitCode=null while
+   * the process is still running). The kill gate must require positive proof.
+   */
+  static async isDefinitelyDead(pid: number): Promise<boolean> {
+    if (process.platform === 'win32') {
+      const { execFile } = require('child_process');
+      const { promisify } = require('util');
+      const execFileAsync = promisify(execFile);
+      const pathMod = require('path');
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const tasklist = pathMod.join(systemRoot, 'System32', 'tasklist.exe');
+      // No catch: a timeout/error rejects, and the caller treats a rejection
+      // as "unknown — do not kill". A clean run that lacks the PID is the only
+      // path to a confirmed death.
+      const { stdout } = await execFileAsync(
+        tasklist,
+        ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
+        { encoding: 'utf-8', timeout: 3000, windowsHide: true },
+      );
+      return !(stdout as string).includes(`"${pid}"`);
+    }
+    // POSIX: kill(pid, 0) is reliable. ESRCH ⇒ dead; EPERM ⇒ alive (not ours).
+    try {
+      process.kill(pid, 0);
+      return false; // signal delivered ⇒ alive
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ESRCH') return true; // no such process
+      return false; // EPERM or other ⇒ exists / can't prove dead
+    }
+  }
+
+  /**
    * Batch-check all given PIDs in a single tasklist call (Windows).
    * Returns the set of PIDs that are alive.
    */
@@ -179,12 +220,19 @@ export class ProcessMonitor {
 
           let confirmedDead = false;
           try {
-            confirmedDead = !(await ProcessMonitor.isAlive(pid));
+            // Require POSITIVE proof of death. isDefinitelyDead throws when the
+            // probe itself fails (tasklist timeout), so a slow/unreachable
+            // tasklist can NEVER be read as "dead" — it falls into the catch
+            // and defers. (Previously this used `!isAlive(pid)`, which returns
+            // false on a probe error and thus mis-fired onDead for live
+            // sessions whenever tasklist timed out — the "powershell exit -1 /
+            // exitCode=null" false death.)
+            confirmedDead = await ProcessMonitor.isDefinitelyDead(pid);
           } catch {
-            // If the per-PID check itself errors, defer the decision to the
-            // next batch cycle rather than firing onDead. Better to leave a
-            // watcher in place for one extra tick than to mass-kill live
-            // sessions when the OS is having a bad five seconds.
+            // Probe failed (timeout/error): cannot confirm death. Defer to the
+            // next cycle rather than killing a possibly-live session. Better to
+            // leave a watcher in place for one extra tick than to mass-kill
+            // live sessions when the OS is having a bad five seconds.
             confirmedDead = false;
           }
 
