@@ -5,6 +5,17 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.2] — 2026-06-02 — configurable daemon lifecycle thresholds
+
+A small substrate-hardening patch. The daemon's session-lifecycle limits — previously hardcoded — are now configuration knobs, so operators running many concurrent sessions or memory-constrained machines can tune them without a rebuild. Defaults are unchanged, so this is a no-op for anyone who doesn't touch the config.
+
+### Added
+- **Configurable lifecycle thresholds.** Five daemon limits became config keys with the former hardcoded values as defaults: `maxSessions` (200), the memory `warn`/`reap`/`block` triple (500/750/1024 MB), and `suspendedTtlHours` (7d). Out-of-range or malformed values are clamped per-field — not whole-file reset — with a startup warning, so a single bad value can't brick the daemon. `maxRecoverSessions` is derived from `maxSessions` rather than configured separately. Documented in PROTOCOL.md §7–§8.
+
+### Fixed
+- **`maxSessions` counts only live sessions.** Dead tombstones no longer occupy slots against the cap, so a low `maxSessions` won't be exhausted by sessions that have already exited.
+- **Recovered sessions keep their saved dead-TTL.** A recovered session preserves the dead-session TTL it was created with instead of silently inheriting the current default.
+
 ## [2.16.1] — 2026-06-01 — daemon false-death fix, resize console-spam fix
 
 A stability patch. The headline: on slow or loaded machines the daemon's process monitor could mistake a probe timeout for a dead process and reap a session that was actually alive, so sessions appeared to close on their own. That's fixed. It also quiets an `Uncaught (in promise)` console flood on relaunch and adds session-death logging so future "why did my session close" reports are diagnosable.
