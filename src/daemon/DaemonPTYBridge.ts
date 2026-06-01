@@ -17,7 +17,7 @@ import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
  *  - 'critical' → { sessionId: string, event: CriticalEvent }
  *  - 'active'   → { sessionId: string }                — onActive cycle start
  *  - 'idle'     → { sessionId: string }                — onActiveToIdle
- *  - 'exit'     → { sessionId: string, exitCode }
+ *  - 'exit'     → { sessionId: string, exitCode, signal }
  */
 export class DaemonPTYBridge extends EventEmitter {
   private oscParser: OscParser | null = null;
@@ -146,9 +146,13 @@ export class DaemonPTYBridge extends EventEmitter {
     });
     this.dataDisposable = () => onDataDisposable.dispose();
 
-    // PTY exit handler
-    const onExitDisposable = ptyProcess.onExit(({ exitCode }) => {
-      this.emit('exit', { sessionId, exitCode });
+    // PTY exit handler. Capture `signal` alongside exitCode: a clean shell
+    // exit carries a numeric exitCode and no signal, whereas a terminated
+    // process (ConPTY torn down, killed) shows up as a signal or a null
+    // exitCode. That distinction is what the silent-death investigation needs
+    // to tell "the shell exited on its own" from "something killed it".
+    const onExitDisposable = ptyProcess.onExit(({ exitCode, signal }) => {
+      this.emit('exit', { sessionId, exitCode, signal });
     });
     this.exitDisposable = () => onExitDisposable.dispose();
   }

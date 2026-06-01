@@ -8,13 +8,10 @@
 - **Context:** `src/main/index.ts` before-quit에서 daemon.shutdown RPC를 보내는데, 트레이 모드에서는 이걸 skip하게 변경 예정. 하지만 edge case(강제 종료, 데몬 크래시 후 재시작)에서는 여전히 reconnect가 필요.
 - **Depends on:** 트레이 아이콘 구현
 
-## Pane split max depth/count guard
-- **What:** splitPane에 max leaf count 가드 추가 (예: 20개)
-- **Why:** 무한 split 시 xterm.js 인스턴스 폭증 → 메모리 목표(200MB for 10 panes) 초과 가능
-- **Pros:** 안정성 + 메모리 보호. 1줄 가드.
-- **Cons:** 사용자에게 에러 메시지 표시 필요
-- **Context:** `src/renderer/stores/slices/paneSlice.ts:46` splitPane 함수 시작 부분에 leaf count 체크 추가.
-- **Depends on:** 없음 (즉시 가능)
+<!-- Pane split max depth/count guard — RESOLVED. paneSlice.ts now declares
+     MAX_PANES_PER_WORKSPACE=20 and splitPane() returns false (blockedAtCap)
+     when collectLeafIds(ws.rootPane).length >= the cap. Guard + boolean
+     return contract are complete. -->
 
 ## DESIGN.md 작성
 - **What:** 디자인 시스템 문서 생성 (CSS 변수 목록, 스페이싱 스케일, 폰트, 컴포넌트 패턴)
@@ -24,21 +21,15 @@
 - **Context:** /design-consultation 스킬로 자동 생성 가능. 기존 themes.ts의 CSS 변수, StatusBar/Sidebar의 스타일 패턴에서 추출.
 - **Depends on:** v1.0 출시 후
 
-## destroyCompanyWithCleanup race condition
-- **What:** PTY dispose가 완료되기 전에 store.destroyCompany()가 호출되는 레이스 컨디션 수정
-- **Why:** dispose 중 UI 리렌더가 company === null을 만나 에러 가능성. 기존 inline 코드에도 동일한 문제가 있었음.
-- **Pros:** company mode 종료 시 안정성 향상
-- **Cons:** async/await 변환 필요
-- **Context:** `src/company/renderer/provisioner.ts` destroyCompanyWithCleanup. await Promise.all(disposePromises) 후 destroyCompany() 호출하도록 변경.
-- **Depends on:** 없음
+<!-- destroyCompanyWithCleanup race condition (#4) — RESOLVED. provisioner.ts
+     destroyCompanyWithCleanup() now `await Promise.all(ptyIds.map(dispose))`
+     BEFORE state.destroyCompany(), so the store is never cleared while a
+     dispose Promise is mid-flight. -->
 
-## Member workspace PTY leak on company destroy
-- **What:** company destroy 시 member workspace 내 분할된 pane의 PTY가 정리되지 않는 문제
-- **Why:** m.ptyId만 dispose하고 workspace 내 다른 surface의 PTY는 무시됨
-- **Pros:** 메모리 누수 방지
-- **Cons:** collectLeafSurfaces로 workspace별 PTY 수집 로직 필요
-- **Context:** `src/company/renderer/provisioner.ts` 및 기존 CompanyPanel.tsx의 destroy 로직
-- **Depends on:** 없음
+<!-- Member workspace PTY leak on company destroy (#5) — RESOLVED.
+     destroyCompanyWithCleanup() sweeps every member workspace AND the CEO
+     workspace via collectLeafSurfaces(rootPane), de-duping ptyIds before
+     dispose. No split-pane PTY survives a company destroy. -->
 
 ## (E3) Agent status dot transient flash on completed/waiting
 - **What:** `agentStatusIcon.ts`/`MiniSidebar` dot animation을 `completed`/`waiting` 전환 시점에 한 번만 발화 (예: 2s flash). 현재 `running`만 `animate-pulse`이고 나머지는 정적.
@@ -88,34 +79,18 @@
   signal materializes within 4 weeks of merge, downgrade back to P3 idea.
 - **Priority:** P1 (after measurement gate)
 
-## (P3) CLI notify command
-- **What:** `wmux notify --title X --body Y` CLI surface that triggers an
-  in-app notification. External scripts can signal wmux directly.
-- **Why:** Power-user request from external-advice-26-concepts review. MCP
-  `send_message` partially covers this, but a one-liner CLI is more ergonomic
-  for ad-hoc shell scripts.
-- **Pros:** No new infrastructure — existing `sendNotification` helper +
-  IPC route already exist. The CLI just shells into the daemon's named pipe.
-- **Cons:** Yet another surface to maintain. Demand unproven.
-- **Context:** Pattern matches existing `wmux` CLI subcommands. Hook into
-  daemon RPC routes. CC ~20 min if scoped tight.
-- **Depends on:** None.
-- **Priority:** P3 (defer until user demand surfaces)
+<!-- (P3) CLI notify command — RESOLVED. src/cli/commands/notify.ts implements
+     `wmux notify --title X --body Y` (parses both flags, sends the `notify`
+     RPC over the daemon pipe); src/main/pipe/handlers/notify.rpc.ts handles
+     it; `wmux notify` is listed in the CLI help. -->
 
-## (P3) findSurfaceByPtyId / findActiveLeaf dedup inside useNotificationListener
-- **What:** `findSurfaceByPtyId` is defined twice and `findActiveLeaf` twice
-  inside `src/renderer/hooks/useNotificationListener.ts` (lines 17, 32, 74,
-  ~311 from quick scan). Extract to a single utility.
-- **Why:** Minor DRY violation introduced during T8 refactor. The duplicates
-  are identical closures; they exist because the file evolved without a
-  cleanup pass.
-- **Pros:** Easier maintenance. Small file size reduction.
-- **Cons:** Touching the listener at all carries regression risk; isolated
-  refactor + green test suite is required.
-- **Context:** Extract to `src/renderer/utils/paneTraversal.ts`. The functions
-  are pure and have no React/store dependencies. CC ~10 min.
-- **Depends on:** None.
-- **Priority:** P3 (purely a maintenance nit)
+<!-- (P3) findSurfaceByPtyId / findActiveLeaf dedup — RESOLVED (this session).
+     Both helpers extracted to src/renderer/utils/paneTraversal.ts (pure, no
+     React/store deps). useNotificationListener now imports them; the two
+     inline findActiveLeaf closures (isActivePtySurface / resolveNotificationTarget)
+     are gone. Regression-locked listener tests (19) + full suite (2057) green.
+     NOTE: findSurfaceByPtyId was already de-duplicated to a single module-level
+     fn before this pass — only findActiveLeaf was still duplicated. -->
 
 <!-- (P3) Pre-existing daemon ProcessMonitor flake — RESOLVED 2026-05-22.
      Root cause: watch() relied on the CHECK_INTERVAL_MS setInterval tick
@@ -124,4 +99,56 @@
      Fix: watch() now triggers an immediate first runBatchCheck (production
      code) AND the test's outer it() timeout is bumped to 20s with a 15s
      vi.waitFor budget. Verified stable across 5 consecutive full-suite runs. -->
+
+## Duplicate-daemon / split-brain on "Quit (keep sessions)" → relaunch (P1)
+- **What:** "Quit (keep sessions running)" 후 `npm start` 재실행 시 둘째 데몬이 `wmux-daemon-rizz-1` 폴백 파이프로 기동 → 첫 데몬의 세션 파이프 EADDRINUSE → reattach 실패 → 새 세션 → 터미널 초기화. persistence가 깨짐 + 데몬 중복(RAM 낭비).
+- **Why:** (1) `ensureDaemon`이 살아있는 데몬에 재접속 안 하고 spawn. 유력 가설: 느린 OS probe(tasklist/WMI 타임아웃 머신)로 verify-ping 타임아웃→"데몬 없음" 오판 (false-death PR #87과 같은 근원 패턴). (2) `DaemonPipeServer.start()`(`src/daemon/DaemonPipeServer.ts:108-145`)의 `-N` 폴백이 *크래시 zombie*용인데 *살아있는 owner*와 구분 못 해 split-brain 허용.
+- **Pros:** 영속성(핵심 기능) 정상화 + 중복 데몬 제거.
+- **Cons:** 데몬 lifecycle = 최고위험 영역(여러 라운드 하드닝, issue #54). 성급한 패치 금지.
+- **Context:** 별도 plan + codex 반복 리뷰. 순서: ① verify-timeout 동작 확인(launcher/DaemonRespawnController) → ② ensureDaemon이 live 데몬 확실히 재사용(timeout≠부재) → ③ `-N` 폴백이 live owner면 abort/양보. 메모리 project_duplicate_daemon_split_brain 참조.
+- **Plan (grounded):** `plans/duplicate-daemon-split-brain.md` — 코드 대조로 3-defect
+  체인 확정. **Defect 1 = `launcher.ts:64-77` `isProcessAlive`의 `tasklist timeout →
+  catch → false`** (느린 머신서 live 데몬을 dead로 오판 → spawn). PR #87 ProcessMonitor와
+  동일 안티패턴. ② kill+spawn은 keep-sessions 의도와 모순(켜둔 세션 파괴)이라 escalating
+  re-ping + graceful 재사용으로 교체. ③ `-N` 폴백은 live-owner면 fail-fast→launcher 재접속.
+  Step별 codex 리뷰 게이트. 미구현(코드 미변경).
+- **Depends on:** 없음 (PR #87와 독립)
+- **Priority:** P1 (persistence 깨짐)
+
+## pty:resize "[UNKNOWN] rate limited" 폭주 + uncaught promise (P2 → renderer fix shipped)
+- **Status:** Renderer side FIXED (this session, option (a) — minimal form). All
+  three `useTerminal` resize call sites now route through a `sendResize` helper
+  that `.catch()`es the RPC, so a "rate limited" / "not found" reject can no
+  longer float as `Uncaught (in promise)`. On a "rate limited" reject it re-sends
+  the *live* geometry once after the per-socket window clears (~1.1 s), so a
+  resize dropped during a reconnect burst self-heals instead of stranding the PTY
+  at a stale size (callers update lastSentCols/Rows *before* the send, so an
+  identical re-fit was otherwise suppressed and never retried). tsc + full suite
+  (2057) green. **Verify via GUI dogfood** (clean-daemon relaunch with many panes,
+  watch console for the spam + confirm TUI geometry is correct).
+- **Deferred (optional, needs codex review):** the *transport-layer* mitigations —
+  (b) cross-terminal resize coalesce/debounce, or (c) exempting `pty:resize` from
+  the `DaemonPipeServer` per-socket limit (`DaemonPipeServer.ts:413`,
+  PER_SOCKET_RATE_LIMIT=50/s). These touch the security-sensitive rate limiter
+  and were intentionally NOT done here; the renderer fix removes the symptom
+  without altering the DoS guard. Revisit only if dogfood still shows dropped
+  resizes under extreme pane counts (>50 simultaneous).
+- **Dead-ptyId resize note:** a resize aimed at a swapped/disposed session returns
+  "not found", which the main `pty:resize` handler already retries-then-logs and
+  the new `sendResize` swallows — no uncaught reject, no infinite re-fire (the
+  ResizeObserver disconnects on unmount).
+- **Priority:** P2 (renderer symptom resolved; transport-layer option deferred)
+
+## Cross-platform liveness/probe 신뢰성 일반화 (P3, follow-up of PR #87)
+- **What:** Windows OS probe(tasklist/WMI)가 타임아웃하는 머신에서 "probe 실패=부재/죽음" 오해 패턴을 코드 전반에서 제거. PR #87이 ProcessMonitor kill 게이트는 고침. 같은 안티패턴이 남아있는지 audit(특히 데몬 verify, launcher PID 체크 — split-brain와 연결).
+- **Why:** 동일 근원 버그(느린 probe→오판)가 여러 곳에 잠복. 원칙: probe 실패는 "unknown"이지 "absent/dead"가 아님.
+- **Pros:** 느린/부하 머신에서 전반적 안정성.
+- **Cons:** audit 범위 넓음.
+- **Context:** `isAlive` catch→false 패턴 grep, launcher의 daemon verify 타임아웃 처리 확인. 메모리 project_processmonitor_false_death 참조.
+- **Audit done (2026-06-01):** `plans/duplicate-daemon-split-brain.md` §"Cross-platform
+  liveness/probe audit"에 사이트 표 작성. 확정 BAD 1건 = `launcher.ts:74` `isProcessAlive`
+  `catch→false` (split-brain Defect 1로 승격). `getProcessImage` null→category(c) throw는
+  안전, `ProcessMonitor`는 PR #87로 이미 정답. 원칙: timeout/예외 = `unknown`, 절대 `dead` 아님.
+- **Depends on:** split-brain plan과 함께 진행 (Step ①이 이 항목을 흡수)
+- **Priority:** P3 (P1 split-brain 작업 중 자연히 일부 커버됨)
 

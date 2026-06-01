@@ -397,7 +397,7 @@ async function recoverSessions(
           const managed = sessionManager.getSession(recovered.id);
           if (managed && managed.meta.state !== 'dead') {
             managed.meta.state = 'dead';
-            sessionManager.emit('session:died', { id: recovered.id, exitCode: null });
+            sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'recovery' });
           }
         });
 
@@ -450,7 +450,7 @@ async function recoverSessions(
             const managed = sessionManager.getSession(recovered.id);
             if (managed && managed.meta.state !== 'dead') {
               managed.meta.state = 'dead';
-              sessionManager.emit('session:died', { id: recovered.id, exitCode: null });
+              sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'recovery' });
             }
           });
 
@@ -487,7 +487,7 @@ async function recoverSessions(
           const managed = sessionManager.getSession(recovered.id);
           if (managed && managed.meta.state !== 'dead') {
             managed.meta.state = 'dead';
-            sessionManager.emit('session:died', { id: recovered.id, exitCode: null });
+            sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'recovery' });
           }
         });
 
@@ -566,7 +566,7 @@ function registerRpcHandlers(
       const managed = sessionManager.getSession(session.id);
       if (managed && managed.meta.state !== 'dead') {
         managed.meta.state = 'dead';
-        sessionManager.emit('session:died', { id: session.id, exitCode: null });
+        sessionManager.emit('session:died', { id: session.id, exitCode: null, reason: 'process-monitor' });
       }
     });
 
@@ -585,6 +585,9 @@ function registerRpcHandlers(
   // daemon.destroySession
   pipeServer.onRpc('daemon.destroySession', async (params) => {
     const p = params as unknown as DaemonSessionIdParams;
+    // OBSERVABILITY: log wmux-initiated kills (pane/workspace close, reset) so
+    // they can be told apart from a process self-exit in the session:died log.
+    log('info', `[lifecycle] destroySession id=${p.id} reason=rpc`);
 
     // Remove data listener to prevent leak
     const tracked = sessionDataListeners.get(p.id);
@@ -855,7 +858,14 @@ function wireEvents(
   // repeats as fatal and shuts the whole daemon down, killing every other
   // session as collateral damage. Per-step isolation ensures one session's
   // exit can't cascade into a mass kill.
-  sessionManager.on('session:died', (payload: { id: string; exitCode: number | null }) => {
+  sessionManager.on('session:died', (payload: { id: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; reason?: string }) => {
+    // OBSERVABILITY: PTY deaths were previously unlogged — a session could
+    // vanish (e.g. powershell exiting -1 under a TUI like claude) with zero
+    // trace in the daemon log, making root-cause impossible. Log the forensics
+    // on every death. Read it as: NO preceding `destroySession` log for this id
+    // ⇒ the process exited on its own (exitCode/signal say why); a
+    // `destroySession` log just before ⇒ wmux killed it.
+    log('info', `[lifecycle] session:died id=${payload.id} reason=${payload.reason ?? 'pty-exit'} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} idleMsBeforeExit=${payload.lastActivityMsAgo ?? '?'} liveTotal=${sessionManager.listSessions().length}`);
     try {
       const event: DaemonEvent = {
         type: 'session.died',

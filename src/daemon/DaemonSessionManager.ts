@@ -241,12 +241,23 @@ export class DaemonSessionManager extends EventEmitter {
       meta.lastActivity = new Date().toISOString();
     });
 
-    bridge.on('exit', (payload: { sessionId: string; exitCode: number | null }) => {
+    bridge.on('exit', (payload: { sessionId: string; exitCode: number | null; signal?: number }) => {
       meta.state = 'dead';
       meta.exitCode = payload.exitCode;
       // Clean up bridge timers/listeners to prevent leaks when sessions die naturally
       managed.bridge.cleanup();
-      this.emit('session:died', { id: params.id, exitCode: payload.exitCode });
+      // Enrich the death event with forensics so the daemon can log WHY a PTY
+      // exited: code/signal, the shell, and how long it had been idle before
+      // dying. Silent PTY deaths (no log, no recorded exitCode) made the
+      // "powershell exits -1 under claude" report undiagnosable.
+      const lastActivityMsAgo = Date.now() - new Date(meta.lastActivity).getTime();
+      this.emit('session:died', {
+        id: params.id,
+        exitCode: payload.exitCode,
+        signal: payload.signal,
+        cmd: meta.cmd,
+        lastActivityMsAgo,
+      });
       this.emit('session:stateChanged', { id: params.id, state: 'dead' as DaemonSessionState });
     });
 

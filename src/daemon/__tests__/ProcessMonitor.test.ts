@@ -149,17 +149,17 @@ describe('ProcessMonitor', () => {
   // for every watched session. The user-visible bug was "한번 터지면 모든
   // 터미널이 동시에 종료" — caused by tasklist returning unparseable output
   // once, which made aliveSet empty, which marked every PID dead in one tick.
-  // The fix re-verifies each apparent-dead PID via individual isAlive() before
+  // The fix re-verifies each apparent-dead PID via isDefinitelyDead() before
   // firing onDead.
   it('does not cascade-fire onDead when batch returns empty set but PIDs are alive', async () => {
     monitor = new ProcessMonitor();
     const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAlive');
-    const isAliveSpy = vi.spyOn(ProcessMonitor, 'isAlive');
+    const deadSpy = vi.spyOn(ProcessMonitor, 'isDefinitelyDead');
 
     // Simulate the failure mode: batch reports nobody alive (parse failure),
-    // but per-PID isAlive correctly reports them alive.
+    // but the per-PID re-verify confirms they are NOT dead (still alive).
     batchSpy.mockResolvedValue(new Set<number>());
-    isAliveSpy.mockResolvedValue(true);
+    deadSpy.mockResolvedValue(false);
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
@@ -175,7 +175,7 @@ describe('ProcessMonitor', () => {
       // Wait for batch check + per-PID re-verify to complete
       await vi.waitFor(() => {
         expect(batchSpy).toHaveBeenCalled();
-        expect(isAliveSpy).toHaveBeenCalled();
+        expect(deadSpy).toHaveBeenCalled();
       }, { timeout: 2000 });
 
       // Give re-verify a chance to finish for all three
@@ -188,18 +188,18 @@ describe('ProcessMonitor', () => {
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
       batchSpy.mockRestore();
-      isAliveSpy.mockRestore();
+      deadSpy.mockRestore();
     }
   });
 
   it('still fires onDead when both batch and per-PID confirm death', async () => {
     monitor = new ProcessMonitor();
     const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAlive');
-    const isAliveSpy = vi.spyOn(ProcessMonitor, 'isAlive');
+    const deadSpy = vi.spyOn(ProcessMonitor, 'isDefinitelyDead');
 
     // Both layers agree this PID is gone — fire onDead.
     batchSpy.mockResolvedValue(new Set<number>());
-    isAliveSpy.mockResolvedValue(false);
+    deadSpy.mockResolvedValue(true);
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
@@ -214,50 +214,55 @@ describe('ProcessMonitor', () => {
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
       batchSpy.mockRestore();
-      isAliveSpy.mockRestore();
+      deadSpy.mockRestore();
     }
   });
 
-  it('defers decision when per-PID isAlive itself errors', async () => {
+  // PRIMARY REGRESSION for the "powershell exits -1 / exitCode=null" false
+  // death: when the liveness probe itself fails (tasklist times out), the
+  // re-verify must NOT read that as death. The old gate used `!isAlive(pid)`,
+  // and isAlive returns false on a probe error — so a slow tasklist killed
+  // LIVE sessions. isDefinitelyDead throws on probe failure; the gate must
+  // catch that and defer, never firing onDead.
+  it('does NOT fire onDead when the death probe times out (live session survives a slow tasklist)', async () => {
     monitor = new ProcessMonitor();
     const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAlive');
-    const isAliveSpy = vi.spyOn(ProcessMonitor, 'isAlive');
+    const deadSpy = vi.spyOn(ProcessMonitor, 'isDefinitelyDead');
 
-    // Batch reports dead, per-PID check throws. Defer rather than cascade-fire.
+    // Batch can't see the PID (timed out → empty), and the per-PID confirm
+    // probe also fails (tasklist timeout). The process is actually ALIVE.
     batchSpy.mockResolvedValue(new Set<number>());
-    isAliveSpy.mockRejectedValue(new Error('tasklist OS-level failure'));
+    deadSpy.mockRejectedValue(Object.assign(new Error('tasklist ETIMEDOUT'), { code: 'ETIMEDOUT' }));
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
 
     try {
       const onDead = vi.fn();
-      monitor.watch('sess-uncertain', 55555, onDead);
+      monitor.watch('sess-alive-but-probe-slow', 55555, onDead);
 
-      // Give batch + isAlive (rejected) time to run
       await vi.waitFor(() => {
-        expect(isAliveSpy).toHaveBeenCalled();
+        expect(deadSpy).toHaveBeenCalled();
       }, { timeout: 2000 });
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 150));
 
-      // onDead must not fire on uncertainty — better to leak a watcher
-      // for one tick than to falsely kill a live session.
+      // The whole point: a probe timeout must never be read as a death.
       expect(onDead).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
       batchSpy.mockRestore();
-      isAliveSpy.mockRestore();
+      deadSpy.mockRestore();
     }
   });
 
   it('only re-verifies the apparent-dead subset, not the whole watch list', async () => {
     monitor = new ProcessMonitor();
     const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAlive');
-    const isAliveSpy = vi.spyOn(ProcessMonitor, 'isAlive');
+    const deadSpy = vi.spyOn(ProcessMonitor, 'isDefinitelyDead');
 
     // Three watched, one missing from batch result.
     batchSpy.mockResolvedValue(new Set<number>([11111, 22222]));
-    isAliveSpy.mockResolvedValue(false);
+    deadSpy.mockResolvedValue(true);
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
@@ -275,14 +280,14 @@ describe('ProcessMonitor', () => {
       }, { timeout: 2000 });
 
       // Only the missing one should have been re-verified
-      expect(isAliveSpy).toHaveBeenCalledTimes(1);
-      expect(isAliveSpy).toHaveBeenCalledWith(33333);
+      expect(deadSpy).toHaveBeenCalledTimes(1);
+      expect(deadSpy).toHaveBeenCalledWith(33333);
       expect(onDead1).not.toHaveBeenCalled();
       expect(onDead2).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
       batchSpy.mockRestore();
-      isAliveSpy.mockRestore();
+      deadSpy.mockRestore();
     }
   });
 });

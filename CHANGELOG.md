@@ -5,6 +5,17 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.1] — 2026-06-01 — daemon false-death fix, resize console-spam fix
+
+A stability patch. The headline: on slow or loaded machines the daemon's process monitor could mistake a probe timeout for a dead process and reap a session that was actually alive, so sessions appeared to close on their own. That's fixed. It also quiets an `Uncaught (in promise)` console flood on relaunch and adds session-death logging so future "why did my session close" reports are diagnosable.
+
+### Fixed
+- **Live sessions are no longer killed on a probe timeout.** ProcessMonitor treated a slow or timed-out `tasklist` probe as proof the process had died and reaped the still-alive session — the cause behind sessions closing by themselves under CPU contention or a Defender scan. It now reaps only on positive confirmation of death; a probe that fails or times out defers instead of killing.
+- **No more `Uncaught (in promise)` flood on relaunch.** A burst of terminal resizes during reconnect could exceed the daemon's per-socket rate limit, and the renderer never caught the rejection, spamming the console. Resize calls now swallow the transient rejection and re-send the live geometry once after the rate window clears, so a resize dropped during the burst self-heals instead of leaving the terminal stuck at the wrong size.
+
+### Added
+- **PTY session-death logging.** When a session dies the daemon now logs its exit code, signal, and idle time, so an unexpected session close can be diagnosed from the log instead of guessed at.
+
 ## [2.16.0] — 2026-05-30 — tmux-style persistence, blank-relaunch fix, multiline-paste fix, stability batch
 
 Bundles everything merged since v2.15.0 (#81, #84). The headline is tmux-style persistence — closing the window now keeps your daemon and sessions alive and reattaches them on next launch — plus the fix for recovered sessions rendering blank on relaunch, a multiline-paste fix for PowerShell, and a batch of dogfood-driven stability and UX changes.

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../stores';
-import type { AgentStatus, NotificationType, Pane, PaneLeaf, Workspace } from '../../shared/types';
+import type { AgentStatus, NotificationType, Pane, Workspace } from '../../shared/types';
 import { playNotificationSound } from './useNotificationSound';
 import { createThrottler, type Throttler } from '../utils/createThrottler';
 import {
@@ -8,36 +8,18 @@ import {
   type NotifPayload,
   type PolicyContext,
 } from './useNotificationPolicy';
+import { findSurfaceByPtyId, findActiveLeaf } from '../utils/paneTraversal';
 
 // ─── Target resolution helpers (regression-locked, unchanged from pre-T8) ───
-// These two helpers were verified by the integration tests below (R1-R4)
-// to behave identically to the previous implementation. Any change here
-// would shift workspace resolution semantics and break callers.
-
-function findSurfaceByPtyId(root: Pane, ptyId: string): { surfaceId: string; paneId: string } | null {
-  if (root.type === 'leaf') {
-    const surface = root.surfaces.find((s) => s.ptyId === ptyId);
-    if (surface) return { surfaceId: surface.id, paneId: root.id };
-    return null;
-  }
-  for (const child of root.children) {
-    const found = findSurfaceByPtyId(child, ptyId);
-    if (found) return found;
-  }
-  return null;
-}
+// `findSurfaceByPtyId` / `findActiveLeaf` now live in ../utils/paneTraversal
+// (extracted to kill the in-file duplicates). They were verified by the
+// integration tests below (R1-R4) to behave identically to the previous
+// implementation. Any change there would shift workspace resolution semantics
+// and break callers.
 
 /** Check if a ptyId belongs to the active pane's active surface in a workspace */
 function isActivePtySurface(ws: { rootPane: Pane; activePaneId: string }, ptyId: string): boolean {
-  const findActiveLeaf = (pane: Pane): PaneLeaf | null => {
-    if (pane.type === 'leaf') return pane.id === ws.activePaneId ? pane : null;
-    for (const child of pane.children) {
-      const found = findActiveLeaf(child);
-      if (found) return found;
-    }
-    return null;
-  };
-  const leaf = findActiveLeaf(ws.rootPane);
+  const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId);
   if (!leaf) return false;
   const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
   return activeSurface?.ptyId === ptyId;
@@ -71,15 +53,7 @@ export function resolveNotificationTarget(
   if (!ws) return null;
   // Best-effort active surface lookup. If no active leaf, the notification
   // is still recorded at the workspace level with no surfaceId / paneId.
-  const findActiveLeaf = (pane: Pane): PaneLeaf | null => {
-    if (pane.type === 'leaf') return pane.id === ws.activePaneId ? pane : null;
-    for (const child of pane.children) {
-      const found = findActiveLeaf(child);
-      if (found) return found;
-    }
-    return null;
-  };
-  const leaf = findActiveLeaf(ws.rootPane);
+  const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId);
   const surfaceId = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId)?.id;
   return { workspaceId: ws.id, surfaceId, paneId: leaf?.id };
 }
