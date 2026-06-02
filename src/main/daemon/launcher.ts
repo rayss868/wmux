@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import { app, dialog } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
+import { DAEMON_EXIT_ALREADY_RUNNING } from '../../shared/constants';
 
 export interface DaemonInfo {
   pid: number;
@@ -61,19 +62,63 @@ function askUserToRecoverFromStalePid(opts: {
   return choice === 0;
 }
 
-function isProcessAlive(pid: number): boolean {
+export type ProcessLiveness = 'alive' | 'dead' | 'unknown';
+
+/**
+ * Classify a Windows `tasklist` probe result. `stdout === null` means the
+ * probe itself failed (timeout under Defender realtime scan, CPU/WMI
+ * pressure, exec error) — that is `unknown`, NOT `dead`. Only an
+ * authoritative empty listing (exec succeeded, PID absent) is `dead`.
+ */
+export function classifyTasklistOutput(pid: number, stdout: string | null): ProcessLiveness {
+  if (stdout === null) return 'unknown';
+  return stdout.includes(`"${pid}"`) ? 'alive' : 'dead';
+}
+
+/**
+ * Classify a POSIX `process.kill(pid, 0)` outcome. No error → the signal
+ * reached a live process (`alive`). `ESRCH` → authoritative "no such
+ * process" (`dead`). `EPERM` → the process exists but we may not signal it
+ * (`alive`). Anything else → `unknown`.
+ */
+export function classifyKillOutcome(code: string | undefined): ProcessLiveness {
+  if (code === undefined) return 'alive';
+  if (code === 'ESRCH') return 'dead';
+  if (code === 'EPERM') return 'alive';
+  return 'unknown';
+}
+
+/**
+ * Three-state liveness probe. A probe FAILURE (timeout / exec error) is
+ * `unknown`, never `dead` — mirroring `ProcessMonitor.isDefinitelyDead`
+ * (PR #87). Only positive confirmation of death (`dead`) may authorize a
+ * destructive / spawn-over branch; callers must treat `unknown` as "assume
+ * alive, do not spawn over it." Reading a probe timeout as "process absent"
+ * was the upstream trigger of the duplicate-daemon / split-brain bug
+ * (Defect 1): tasklist stalls on a loaded box → false "dead" → ensureDaemon
+ * skips ping/reuse and spawns a second daemon over the live one.
+ */
+function checkProcessLiveness(pid: number): ProcessLiveness {
   if (process.platform === 'win32') {
+    let stdout: string | null = null;
     try {
       const { execFileSync } = require('child_process');
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
       const tasklist = path.join(systemRoot, 'System32', 'tasklist.exe');
-      const result = execFileSync(tasklist, ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
+      stdout = execFileSync(tasklist, ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
         encoding: 'utf-8', timeout: 3000, windowsHide: true,
       });
-      return result.includes(`"${pid}"`);
-    } catch { return false; }
+    } catch {
+      stdout = null; // timeout / exec failure → unknown (NOT dead)
+    }
+    return classifyTasklistOutput(pid, stdout);
   }
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try {
+    process.kill(pid, 0);
+    return classifyKillOutcome(undefined);
+  } catch (err: unknown) {
+    return classifyKillOutcome((err as NodeJS.ErrnoException | undefined)?.code);
+  }
 }
 
 /**
@@ -183,14 +228,33 @@ function getProcessCommandLine(pid: number): string | null {
   } catch { return null; }
 }
 
-function pingDaemon(pipeName: string, token: string, timeoutMs = 3000): Promise<boolean> {
+interface DaemonPingResult {
+  status?: string;
+  pid?: number;
+  uptime?: number;
+  sessions?: number;
+  eventLoopLagMs?: number;
+}
+
+/**
+ * Send `daemon.ping` and return the daemon's reported result (which carries
+ * `pid` since the Step ③ follow-up), or `null` on timeout / error / refusal.
+ * `pingDaemon` is the boolean wrapper most callers use; the reconnect path
+ * uses the result's `pid` to restore daemon.pid.
+ */
+function daemonPing(pipeName: string, token: string, timeoutMs = 3000): Promise<DaemonPingResult | null> {
   return new Promise((resolve) => {
     const socket = net.connect(pipeName);
     let settled = false;
+    const finish = (value: DaemonPingResult | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(value);
+    };
 
-    const timer = setTimeout(() => {
-      if (!settled) { settled = true; socket.destroy(); resolve(false); }
-    }, timeoutMs);
+    const timer = setTimeout(() => finish(null), timeoutMs);
     timer.unref();
 
     socket.on('connect', () => {
@@ -208,20 +272,41 @@ function pingDaemon(pipeName: string, token: string, timeoutMs = 3000): Promise<
         try {
           const resp = JSON.parse(line.trim());
           if (resp.ok || (resp.result && resp.result.status === 'ok')) {
-            settled = true;
-            clearTimeout(timer);
-            socket.destroy();
-            resolve(true);
+            finish((resp.result as DaemonPingResult) ?? { status: 'ok' });
             return;
           }
         } catch {}
       }
     });
 
-    socket.on('error', () => {
-      if (!settled) { settled = true; clearTimeout(timer); resolve(false); }
-    });
+    socket.on('error', () => finish(null));
   });
+}
+
+function pingDaemon(pipeName: string, token: string, timeoutMs = 3000): Promise<boolean> {
+  return daemonPing(pipeName, token, timeoutMs).then((r) => r !== null);
+}
+
+/**
+ * Escalating re-ping. After the two short startup pings (250+250 ms) fail,
+ * give a busy-but-alive daemon a longer budget before treating it as wedged
+ * and SIGKILLing it — which would destroy the sessions the user chose to keep
+ * (split-brain Defect 2). Injectable (`ping`/`sleep` passed in) so the
+ * reuse-vs-kill decision is unit-testable without a live daemon. Returns true
+ * as soon as any escalated ping succeeds (→ reuse, do not kill); stops at the
+ * first success.
+ */
+export async function tryEscalatedReping(
+  ping: (timeoutMs: number) => Promise<boolean>,
+  timeouts: number[],
+  backoffMs: number,
+  sleep: (ms: number) => Promise<void>,
+): Promise<boolean> {
+  for (const timeoutMs of timeouts) {
+    await sleep(backoffMs);
+    if (await ping(timeoutMs)) return true;
+  }
+  return false;
 }
 
 function findNodePath(): string {
@@ -338,6 +423,23 @@ function spawnDaemon(): Promise<number> {
         reject(new Error('Daemon spawned but not responding after 15 seconds'));
       }
     }, 200);
+
+    // A redundant second daemon (spawned over a daemon the launcher failed to
+    // detect) yields the canonical pipe to the live owner and exits with
+    // DAEMON_EXIT_ALREADY_RUNNING (split-brain Defect 3). Surface that as a
+    // distinct error so ensureDaemon reconnects to the existing daemon instead
+    // of treating it as a spawn failure. Other early exits fall through to the
+    // poll's own 15s timeout.
+    child.on('exit', (code) => {
+      if (code === DAEMON_EXIT_ALREADY_RUNNING) {
+        clearInterval(poll);
+        const e = new Error(
+          'daemon yielded: another daemon already owns the canonical control pipe',
+        ) as NodeJS.ErrnoException;
+        e.code = 'EDAEMON_ALREADY_RUNNING';
+        reject(e);
+      }
+    });
   });
 }
 
@@ -360,8 +462,10 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     existingPid = parseInt(pidStr, 10);
   } catch {}
 
-  // 2. If PID exists and process alive, try to ping
-  if (existingPid && isProcessAlive(existingPid)) {
+  // 2. If the PID is alive OR its liveness is unknown (a probe timeout must
+  //    NOT be read as "dead" — Defect 1), enter the ping/reuse path. Only a
+  //    confirmed-dead PID skips straight to spawn over a possibly-live daemon.
+  if (existingPid && checkProcessLiveness(existingPid) !== 'dead') {
     const token = readDaemonAuthToken();
     const pipeName = readPipeNameFromFile(wmuxDir) || getDaemonPipeName();
 
@@ -498,9 +602,39 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
               `[launcher] PID ${existingPid} image matches but cmdline does not reference daemon script — stale-PID reuse by sibling Electron app, cleaning + spawning fresh`,
             );
           } else {
+            // (a) Verified wmux daemon (image+cmdline match) that missed the
+            //     two-shot (250+250 ms) ping. Before the DESTRUCTIVE SIGKILL —
+            //     which nukes the very sessions the user chose to keep
+            //     (Defect 2) — escalate the ping budget. A busy-but-alive
+            //     daemon (big sessions.json recovery, ConPTY cold-init,
+            //     Defender realtime scan) can stall past the short pings while
+            //     fully alive and still owning its PTYs. Only a daemon that
+            //     ALSO fails the escalated ping is treated as genuinely wedged.
+            //     The escalating budget (~1.9 s worst case) stays well inside
+            //     the 15 s spawn budget.
+            //
+            //     A graceful shutdown RPC is intentionally NOT attempted: a
+            //     daemon that can't answer a ping can't answer an RPC either,
+            //     so escalated re-ping (→ reuse) is the only thing that
+            //     actually preserves kept sessions. A confirmed-wedged daemon
+            //     leaves SIGKILL+respawn as the single-daemon recovery.
+            if (token) {
+              const recovered = await tryEscalatedReping(
+                (timeoutMs) => pingDaemon(pipeName, token, timeoutMs),
+                [500, 1000],
+                200,
+                (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+              );
+              if (recovered) {
+                console.log(
+                  `[launcher] Daemon (PID ${existingPid}) recovered on escalated re-ping — reusing, no kill`,
+                );
+                return { pid: existingPid, authToken: token, pipeName, spawned: false };
+              }
+            }
             // (a) Verified wmux daemon → kill before respawning.
             console.warn(
-              `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive — terminating before respawn`,
+              `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive${token ? ' after escalated re-ping' : ' (no auth token to ping)'} — terminating before respawn`,
             );
             let killSucceeded = true;
             try {
@@ -508,7 +642,7 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
             } catch (err: unknown) {
               const code = (err as NodeJS.ErrnoException | undefined)?.code;
               if (code === 'ESRCH') {
-                // ESRCH = process died between isProcessAlive and kill.
+                // ESRCH = process died between the liveness check and kill.
                 // Benign race — we wanted it gone and it is.
               } else {
                 // EPERM (Windows: Access Denied), EINVAL, anything else:
@@ -545,7 +679,45 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     try { fs.unlinkSync(path.join(wmuxDir, name)); } catch { /* ignore */ }
   }
 
-  const pid = await spawnDaemon();
+  let pid: number;
+  try {
+    pid = await spawnDaemon();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | undefined)?.code === 'EDAEMON_ALREADY_RUNNING') {
+      // The daemon we spawned yielded to a live daemon already owning the
+      // canonical pipe (split-brain avoided — no second live daemon, no `-N`
+      // pipe). Reconnect to the existing daemon instead of looping into another
+      // spawn. The pipe file was cleaned with the stale files above, so resolve
+      // the canonical name deterministically.
+      const canonicalPipe = getDaemonPipeName();
+      const reconnectToken = readDaemonAuthToken();
+      if (reconnectToken) {
+        const pong = await daemonPing(canonicalPipe, reconnectToken);
+        if (pong) {
+          // Restore daemon.pid (the stale-file cleanup above deleted it) to the
+          // live daemon's reported pid, so the NEXT launch hits the cheap reuse
+          // branch (existingPid → ping → reuse) instead of repeating this
+          // spawn-yield-reconnect dance every launch.
+          const livePid = typeof pong.pid === 'number' && pong.pid > 0 ? pong.pid : (existingPid ?? 0);
+          if (livePid > 0) {
+            try {
+              fs.writeFileSync(pidFile, String(livePid), { encoding: 'utf-8', mode: 0o600 });
+            } catch { /* best effort — reconnect still succeeds without it */ }
+          }
+          console.log(
+            '[launcher] spawned daemon yielded to a live daemon — reconnected to the existing daemon',
+          );
+          return {
+            pid: livePid,
+            authToken: reconnectToken,
+            pipeName: canonicalPipe,
+            spawned: false,
+          };
+        }
+      }
+    }
+    throw err;
+  }
 
   // Read connection info after spawn
   const token = readDaemonAuthToken();
@@ -584,7 +756,11 @@ export function killDaemonByPidFile(): boolean {
     const pidStr = fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim();
     const pid = parseInt(pidStr, 10);
     if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false;
-    if (!isProcessAlive(pid)) return false;
+    // Only a confirmed-dead PID skips the kill (already gone). `unknown`
+    // proceeds — this backstop runs seconds after we were talking to the
+    // daemon, so an orphan is the worse outcome; the image/cmdline guards
+    // below still prevent killing an unrelated PID-reuse victim.
+    if (checkProcessLiveness(pid) === 'dead') return false;
 
     const expectedImage = path.basename(process.execPath);
     const image = getProcessImageName(pid);
