@@ -5,16 +5,21 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.16.2] — 2026-06-02 — configurable daemon lifecycle thresholds
+## [2.16.2] — 2026-06-03 — daemon hardening: security, split-brain fix, configurable lifecycle
 
-A small substrate-hardening patch. The daemon's session-lifecycle limits — previously hardcoded — are now configuration knobs, so operators running many concurrent sessions or memory-constrained machines can tune them without a rebuild. Defaults are unchanged, so this is a no-op for anyone who doesn't touch the config.
+Bundles everything merged since v2.16.1: a token-file permission hardening (security), the duplicate-daemon / split-brain fix behind the "relaunch resets my terminals" bug, configurable daemon lifecycle thresholds, and idle-reap diagnostics. No config changes are required — defaults are unchanged.
 
-### Added
-- **Configurable lifecycle thresholds.** Five daemon limits became config keys with the former hardcoded values as defaults: `maxSessions` (200), the memory `warn`/`reap`/`block` triple (500/750/1024 MB), and `suspendedTtlHours` (7d). Out-of-range or malformed values are clamped per-field — not whole-file reset — with a startup warning, so a single bad value can't brick the daemon. `maxRecoverSessions` is derived from `maxSessions` rather than configured separately. Documented in PROTOCOL.md §7–§8.
+### Security
+- **Token-file ACL is applied by owner SID, not username.** The daemon auth-token file's ACL was tightened by passing the account name to `icacls`, which mojibakes under the OEM codepage for non-ASCII (e.g. Korean) usernames and could lock the owner out of their own token. The ACL is now keyed by the owner's SID, with an ASCII-only fallback guard. (#90)
 
 ### Fixed
-- **`maxSessions` counts only live sessions.** Dead tombstones no longer occupy slots against the cap, so a low `maxSessions` won't be exhausted by sessions that have already exited.
-- **Recovered sessions keep their saved dead-TTL.** A recovered session preserves the dead-session TTL it was created with instead of silently inheriting the current default.
+- **No more duplicate daemon / split-brain on relaunch.** "Quit (keep sessions) → relaunch" could spawn a second daemon that fell back to a `-N`-suffixed pipe, leaving the first daemon's session pipe in `EADDRINUSE` and the UI unable to reattach — terminals appeared to reset. A three-defect chain is closed: `isProcessAlive` swallowing its probe error into `false`, the canonical-pipe reclaim conflating a live owner with a zombie, and the `-N` fallback itself. A confirmed live owner on the canonical pipe now makes the redundant daemon exit cleanly so the launcher reconnects to the existing one. (#93)
+- **`maxSessions` counts only live sessions.** Dead tombstones no longer occupy slots against the cap, so a low `maxSessions` won't be exhausted by sessions that have already exited. (#92)
+- **Recovered sessions keep their saved dead-TTL.** A recovered session preserves the dead-session TTL it was created with instead of silently inheriting the current default. (#92)
+
+### Added
+- **Configurable lifecycle thresholds.** Five daemon limits became config keys with the former hardcoded values as defaults: `maxSessions` (200), the memory `warn`/`reap`/`block` triple (500/750/1024 MB), and `suspendedTtlHours` (7d). Out-of-range or malformed values are clamped per-field — not whole-file reset — with a startup warning, so a single bad value can't brick the daemon. `maxRecoverSessions` is derived from `maxSessions` rather than configured separately. Documented in PROTOCOL.md §7–§8. (#92)
+- **Idle-shutdown diagnostics.** When the daemon is held alive past its grace window, the watchdog now logs which signal is keeping it up (active connections vs. live sessions) or that it is counting down to self-terminate, so a daemon that fails to reap an empty session set can be diagnosed from its log instead of a live-process inspection. (#95)
 
 ## [2.16.1] — 2026-06-01 — daemon false-death fix, resize console-spam fix
 
