@@ -21,6 +21,12 @@ Bundles everything merged since v2.16.1: a token-file permission hardening (secu
 - **Configurable lifecycle thresholds.** Five daemon limits became config keys with the former hardcoded values as defaults: `maxSessions` (200), the memory `warn`/`reap`/`block` triple (500/750/1024 MB), and `suspendedTtlHours` (7d). Out-of-range or malformed values are clamped per-field — not whole-file reset — with a startup warning, so a single bad value can't brick the daemon. `maxRecoverSessions` is derived from `maxSessions` rather than configured separately. Documented in PROTOCOL.md §7–§8. (#92)
 - **Idle-shutdown diagnostics.** When the daemon is held alive past its grace window, the watchdog now logs which signal is keeping it up (active connections vs. live sessions) or that it is counting down to self-terminate, so a daemon that fails to reap an empty session set can be diagnosed from its log instead of a live-process inspection. (#95)
 
+### Contributors
+
+Special thanks to **[@junbeom09](https://github.com/junbeom09) (조준범)** for the token-file ACL hardening (#90). He hit the non-ASCII-username lockout firsthand: a Korean account name turned the `icacls` principal into mojibake under the Windows OEM codepage and locked the owner out of their own auth token. He traced the root cause and contributed the SID-based fix that makes the hardening codepage-proof for every user. Reports like this, from real-world setups a single maintainer never sees, are exactly how wmux gets more robust. 🙏
+
+Maintained by [@openwong2kim](https://github.com/openwong2kim), with engineering and code-review pairing by Claude (Anthropic). Thanks as always to everyone filing issues and dogfooding the daemon-lifecycle work.
+
 ## [2.16.1] — 2026-06-01 — daemon false-death fix, resize console-spam fix
 
 A stability patch. The headline: on slow or loaded machines the daemon's process monitor could mistake a probe timeout for a dead process and reap a session that was actually alive, so sessions appeared to close on their own. That's fixed. It also quiets an `Uncaught (in promise)` console flood on relaunch and adds session-death logging so future "why did my session close" reports are diagnosable.
