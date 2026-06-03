@@ -179,8 +179,13 @@ server.tool(
     url: z.string().optional().describe('Initial URL to load (defaults to google.com)'),
   },
   async ({ url }) => {
-    const workspaceId = await resolveWorkspaceId();
-    return callRpc('browser.open', { ...(url && { url }), ...(workspaceId && { workspaceId }) });
+    // requireWorkspaceId (NOT the weak resolveWorkspaceId) so a failed identity
+    // resolution THROWS instead of returning '' — which `...(workspaceId && …)`
+    // would drop, letting the renderer (useRpcBridge.ts) fall back to
+    // store.activeWorkspaceId and open the browser in the wrong (UI-active)
+    // workspace. Matches every other workspace-routed tool.
+    const workspaceId = await requireWorkspaceId();
+    return callRpc('browser.open', { ...(url && { url }), workspaceId });
   },
 );
 
@@ -212,8 +217,12 @@ server.tool(
     profile: z.string().optional().describe('Profile name to use (defaults to "default")'),
   },
   async ({ profile }) => {
-    const workspaceId = await resolveWorkspaceId();
-    return callRpc('browser.session.start', { ...(profile && { profile }), ...(workspaceId && { workspaceId }) });
+    // requireWorkspaceId for parity with browser_open and every other routed
+    // tool: never silently fall through to the active workspace on a resolve
+    // miss. (The server currently ignores workspaceId here, but pinning the
+    // strong resolver keeps the contract uniform and future-proof.)
+    const workspaceId = await requireWorkspaceId();
+    return callRpc('browser.session.start', { ...(profile && { profile }), workspaceId });
   },
 );
 
