@@ -179,8 +179,13 @@ server.tool(
     url: z.string().optional().describe('Initial URL to load (defaults to google.com)'),
   },
   async ({ url }) => {
-    const workspaceId = await resolveWorkspaceId();
-    return callRpc('browser.open', { ...(url && { url }), ...(workspaceId && { workspaceId }) });
+    // requireWorkspaceId (NOT the weak resolveWorkspaceId) so a failed identity
+    // resolution THROWS instead of returning '' — which `...(workspaceId && …)`
+    // would drop, letting the renderer (useRpcBridge.ts) fall back to
+    // store.activeWorkspaceId and open the browser in the wrong (UI-active)
+    // workspace. Matches every other workspace-routed tool.
+    const workspaceId = await requireWorkspaceId();
+    return callRpc('browser.open', { ...(url && { url }), workspaceId });
   },
 );
 
@@ -211,10 +216,13 @@ server.tool(
   {
     profile: z.string().optional().describe('Profile name to use (defaults to "default")'),
   },
-  async ({ profile }) => {
-    const workspaceId = await resolveWorkspaceId();
-    return callRpc('browser.session.start', { ...(profile && { profile }), ...(workspaceId && { workspaceId }) });
-  },
+  // No workspaceId: browser sessions are GLOBAL — a single profile + CDP port via
+  // the module-level ProfileManager/PortAllocator in browser.rpc.ts. The handler
+  // ignores workspaceId entirely, so requiring identity here would protect no
+  // routing and only throw spuriously when the MCP server can't resolve its
+  // workspace (e.g. launched outside a wmux terminal). Matches browser_session_stop
+  // /status/list, which are likewise global. Only browser_open is workspace-routed.
+  async ({ profile }) => callRpc('browser.session.start', profile ? { profile } : {}),
 );
 
 server.tool(

@@ -43,6 +43,11 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     return sendToRenderer(getWindow, 'browser.open', {
       partition: getActivePartition(),
       ...(url && { url }),
+      // workspaceId is dropped when absent; the renderer (useRpcBridge.ts) then
+      // falls back to the UI-active workspace. The MCP path guarantees a non-empty
+      // id via requireWorkspaceId (src/mcp/index.ts -> browser_open), so it never
+      // hits that fallback. Any future NON-MCP caller of browser.open must likewise
+      // pass an explicit workspaceId to avoid active-workspace misrouting.
       ...(workspaceId && { workspaceId }),
     });
   });
