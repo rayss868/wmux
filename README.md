@@ -120,7 +120,7 @@ Launch wmux and the MCP server registers automatically. Claude Code just works:
 
 **Multi-agent:** Every browser tool accepts `surfaceId` — each Claude Code session controls its own browser independently. A2A (agent-to-agent) tools route messages between sibling agents in the same wmux instance.
 
-**Programmatic orchestration:** If you want to drive multiple wmux panes from your own script (TypeScript / Node), the MCP surface is wrapped by [`@wmux/orchestrator`](https://github.com/openwong2kim/wmux-orchestrator) — a small client-side SDK that gives you `sendAndWait`, `sendCommandAndWait` (OSC 133 exit codes), atomic pane claim, fan-out, and `agent.lifecycle` event subscription. Composes the primitives above, ships independently from wmux.
+**Programmatic orchestration:** To drive multiple wmux panes from your own script or agent, call the MCP tools (`terminal_send`, `terminal_read`, `pane_list`, `wmux_events_poll`) or the `wmux` CLI (`wmux send` / `read-screen` / `list-panes`, scriptable via `--json`) directly. The substrate is the orchestration surface — atomic pane claim is `pane_set_metadata` with an `expectedVersion` guard (server-enforced optimistic concurrency).
 
 ### 5. Session persistence — tmux-style, survives Quit, crash, and reboot
 
