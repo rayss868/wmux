@@ -216,14 +216,13 @@ server.tool(
   {
     profile: z.string().optional().describe('Profile name to use (defaults to "default")'),
   },
-  async ({ profile }) => {
-    // requireWorkspaceId for parity with browser_open and every other routed
-    // tool: never silently fall through to the active workspace on a resolve
-    // miss. (The server currently ignores workspaceId here, but pinning the
-    // strong resolver keeps the contract uniform and future-proof.)
-    const workspaceId = await requireWorkspaceId();
-    return callRpc('browser.session.start', { ...(profile && { profile }), workspaceId });
-  },
+  // No workspaceId: browser sessions are GLOBAL — a single profile + CDP port via
+  // the module-level ProfileManager/PortAllocator in browser.rpc.ts. The handler
+  // ignores workspaceId entirely, so requiring identity here would protect no
+  // routing and only throw spuriously when the MCP server can't resolve its
+  // workspace (e.g. launched outside a wmux terminal). Matches browser_session_stop
+  // /status/list, which are likewise global. Only browser_open is workspace-routed.
+  async ({ profile }) => callRpc('browser.session.start', profile ? { profile } : {}),
 );
 
 server.tool(
