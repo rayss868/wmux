@@ -32,41 +32,80 @@ interface NetworkEntry {
   };
 }
 
-const consoleMessages = new Map<string, ConsoleEntry[]>();
-const networkRequests = new Map<string, NetworkEntry[]>();
+// Capture buffers are keyed by the Page object itself, not by surfaceId. A Page is the
+// true identity: an omitted surfaceId and an explicit surfaceId can resolve to the SAME
+// Page (one buffer, no stranding), and two DISTINCT Pages never collide on an alias key
+// like '__default__' (so closing one page cannot delete another's data). WeakMap also
+// lets a closed/GC'd Page drop its buffers automatically.
+const consoleMessages = new WeakMap<Page, ConsoleEntry[]>();
+const networkRequests = new WeakMap<Page, NetworkEntry[]>();
 
-// Track which pages already have listeners attached
+// Bound the per-page capture arrays so a long-lived MCP server process does not grow
+// without limit on a chatty / polling page. Oldest entries are dropped first.
+const MAX_CAPTURE_ENTRIES = 1000;
+// Cap each retained response body so a single large payload cannot pin unbounded RAM.
+const MAX_RESPONSE_BODY_BYTES = 256 * 1024;
+
+// Track which pages already have listeners attached. Keyed by the Page object so a
+// closed/GC'd page drops its guard automatically.
 const attachedConsolePages = new WeakSet<Page>();
 const attachedNetworkPages = new WeakSet<Page>();
+const cleanupBoundPages = new WeakSet<Page>();
 
-function ensureConsoleListener(page: Page, surfaceKey: string): void {
+/** Append to a capped ring: drop the oldest entries once MAX_CAPTURE_ENTRIES is exceeded. */
+function pushCapped<T>(entries: T[], item: T): void {
+  entries.push(item);
+  if (entries.length > MAX_CAPTURE_ENTRIES) {
+    entries.splice(0, entries.length - MAX_CAPTURE_ENTRIES);
+  }
+}
+
+/**
+ * Eagerly drop a page's capture buffers when it closes. The WeakMap would reclaim them
+ * once the Page is GC'd, but the engine may retain the Page object past close, so we
+ * delete on 'close' to free the (potentially large) retained response bodies promptly.
+ * Bound once per page.
+ */
+function ensurePageCloseCleanup(page: Page): void {
+  if (cleanupBoundPages.has(page)) return;
+  cleanupBoundPages.add(page);
+
+  page.on('close', () => {
+    consoleMessages.delete(page);
+    networkRequests.delete(page);
+  });
+}
+
+function ensureConsoleListener(page: Page): void {
+  ensurePageCloseCleanup(page);
   if (attachedConsolePages.has(page)) return;
   attachedConsolePages.add(page);
 
-  if (!consoleMessages.has(surfaceKey)) {
-    consoleMessages.set(surfaceKey, []);
+  if (!consoleMessages.has(page)) {
+    consoleMessages.set(page, []);
   }
 
   page.on('console', (msg) => {
-    const entries = consoleMessages.get(surfaceKey);
+    const entries = consoleMessages.get(page);
     if (entries) {
-      entries.push({ level: msg.type(), text: msg.text() });
+      pushCapped(entries, { level: msg.type(), text: msg.text() });
     }
   });
 }
 
-function ensureNetworkListener(page: Page, surfaceKey: string): void {
+function ensureNetworkListener(page: Page): void {
+  ensurePageCloseCleanup(page);
   if (attachedNetworkPages.has(page)) return;
   attachedNetworkPages.add(page);
 
-  if (!networkRequests.has(surfaceKey)) {
-    networkRequests.set(surfaceKey, []);
+  if (!networkRequests.has(page)) {
+    networkRequests.set(page, []);
   }
 
   page.on('request', (request) => {
-    const entries = networkRequests.get(surfaceKey);
+    const entries = networkRequests.get(page);
     if (entries) {
-      entries.push({
+      pushCapped(entries, {
         url: request.url(),
         method: request.method(),
       });
@@ -74,17 +113,21 @@ function ensureNetworkListener(page: Page, surfaceKey: string): void {
   });
 
   page.on('response', (response) => {
-    const entries = networkRequests.get(surfaceKey);
+    const entries = networkRequests.get(page);
     if (!entries) return;
 
     const url = response.url();
     // Find the matching request entry (last one with same URL and no status yet)
     for (let i = entries.length - 1; i >= 0; i--) {
       if (entries[i].url === url && entries[i].status === undefined) {
-        entries[i].status = response.status();
+        // Capture a stable reference to the entry object: the capture array is a
+        // capped ring (pushCapped), so positional indices can shift while the async
+        // response.text() below is in flight.
+        const entry = entries[i];
+        entry.status = response.status();
         // Store response headers for later body retrieval
         const headers = response.headers();
-        entries[i].response = { headers };
+        entry.response = { headers };
         // Only eagerly capture body for text-based content types
         const contentType = headers['content-type'] ?? '';
         const isTextual =
@@ -98,8 +141,12 @@ function ensureNetworkListener(page: Page, surfaceKey: string): void {
           response
             .text()
             .then((body) => {
-              if (entries[i].response) {
-                entries[i].response!.body = body;
+              if (entry.response) {
+                entry.response.body =
+                  body.length > MAX_RESPONSE_BODY_BYTES
+                    ? body.slice(0, MAX_RESPONSE_BODY_BYTES) +
+                      `\n... [truncated ${body.length - MAX_RESPONSE_BODY_BYTES} chars]`
+                    : body;
               }
             })
             .catch(() => {
@@ -110,10 +157,6 @@ function ensureNetworkListener(page: Page, surfaceKey: string): void {
       }
     }
   });
-}
-
-function surfaceKey(surfaceId?: string): string {
-  return surfaceId ?? '__default__';
 }
 
 /**
@@ -370,10 +413,9 @@ export function registerInspectionTools(server: McpServer): void {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        const key = surfaceKey(surfaceId);
-        ensureConsoleListener(page, key);
+        ensureConsoleListener(page);
 
-        const entries = consoleMessages.get(key) ?? [];
+        const entries = consoleMessages.get(page) ?? [];
 
         const filterLevel = level ?? 'all';
         const filtered =
@@ -392,7 +434,7 @@ export function registerInspectionTools(server: McpServer): void {
             : filtered.map((e) => `[${e.level}] ${e.text}`).join('\n');
 
         if (clear) {
-          consoleMessages.set(key, []);
+          consoleMessages.set(page, []);
         }
 
         return {
@@ -413,25 +455,28 @@ export function registerInspectionTools(server: McpServer): void {
   // -----------------------------------------------------------------------
   server.tool(
     'browser_network',
-    'Retrieve network requests collected from the browser page. Requests are accumulated over time. Use a URL glob pattern to filter.',
+    'Retrieve network requests collected from the browser page. Requests are accumulated over time; use clear=true to reset. Use a URL glob pattern to filter.',
     {
       filter: z
         .string()
         .optional()
         .describe('URL glob pattern to filter requests (e.g. "*api*", "*.json").'),
+      clear: z
+        .boolean()
+        .optional()
+        .describe('Clear collected requests (and any retained response bodies) after returning them.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ filter, surfaceId }) => {
+    async ({ filter, clear, surfaceId }) => {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        const key = surfaceKey(surfaceId);
-        ensureNetworkListener(page, key);
+        ensureNetworkListener(page);
 
-        const entries = networkRequests.get(key) ?? [];
+        const entries = networkRequests.get(page) ?? [];
 
         const filtered = filter
           ? entries.filter((e) => matchesGlob(e.url, filter))
@@ -447,6 +492,10 @@ export function registerInspectionTools(server: McpServer): void {
           summary.length === 0
             ? 'No network requests collected.'
             : JSON.stringify(summary, null, 2);
+
+        if (clear) {
+          networkRequests.set(page, []);
+        }
 
         return {
           content: [{ type: 'text' as const, text }],
@@ -480,10 +529,9 @@ export function registerInspectionTools(server: McpServer): void {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        const key = surfaceKey(surfaceId);
-        ensureNetworkListener(page, key);
+        ensureNetworkListener(page);
 
-        const entries = networkRequests.get(key) ?? [];
+        const entries = networkRequests.get(page) ?? [];
 
         // Find the last matching entry with a captured body
         let matchedEntry: NetworkEntry | undefined;
