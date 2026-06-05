@@ -15,6 +15,24 @@ const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const DEFAULT_BUFFER_SIZE = 512 * 1024; // 512 KB
 
+/** The daemon's own RPC auth-token namespace — must never reach a child shell. */
+const RESERVED_AUTH_PREFIX = /^WMUX_AUTH/i;
+
+/**
+ * Return a fresh env copy with the daemon's reserved auth-token namespace
+ * removed. Applied to every child env regardless of caller (substrate
+ * invariant). WMUX_AUTH* is reserved, so this can never drop a legitimate
+ * user/profile key.
+ */
+function stripReservedAuth(env: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (RESERVED_AUTH_PREFIX.test(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 /**
  * Internal type: session metadata + runtime resources.
  */
@@ -65,6 +83,16 @@ export class DaemonSessionManager extends EventEmitter {
     id: string;
     cmd: string;
     cwd: string;
+    /**
+     * The child environment. When provided it is treated as AUTHORITATIVE and
+     * replayed verbatim — the caller (main process) has already run
+     * buildSafeChildEnv + any workspace-profile overlay + forced identity, so
+     * the daemon must NOT re-filter it (re-filtering would strip an intentional
+     * *_KEY/*_TOKEN). Only the `?? process.env` fallback is filtered, for
+     * direct/legacy callers that don't pre-resolve. This keeps the daemon
+     * profile-agnostic and makes recovery (which replays the persisted
+     * meta.env) reproduce the exact create-time environment.
+     */
     env?: Record<string, string>;
     cols?: number;
     rows?: number;
@@ -133,11 +161,21 @@ export class DaemonSessionManager extends EventEmitter {
     const cwd = params.cwd || os.homedir();
     const cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
 
-    // Build clean environment — strip Electron/Vite vars and sensitive
-    // credentials. Child PTY sessions inherit the daemon's environment,
-    // so we filter via the shared envFilter module (shared with the
-    // main-process PTYManager to keep both spawn paths in lockstep).
-    const env = buildSafeChildEnv(params.env ?? globalThis.process.env);
+    // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
+    // main already ran buildSafeChildEnv + the workspace-profile overlay +
+    // forced identity, and recovery replays the persisted (already-resolved)
+    // meta.env. Re-filtering here would strip an intentional *_KEY/*_TOKEN, so
+    // we trust a supplied env verbatim and only filter the process.env fallback
+    // (direct/legacy callers that don't pre-resolve). The daemon stays
+    // profile-agnostic — it never needs to know what a "profile" is.
+    //
+    // SUBSTRATE INVARIANT (not profile policy): regardless of caller, the
+    // daemon's own RPC auth token must never reach a child shell. We always
+    // drop the WMUX_AUTH* namespace even from a supplied env — it is reserved
+    // (a profile can never set it) so this can't strip a user/profile key. This
+    // bounds the trusted-env contract: a misbehaving/legacy caller that passes
+    // a raw env can at worst leak ITS inherited vars, never wmux's auth token.
+    const env = stripReservedAuth(params.env ?? buildSafeChildEnv(globalThis.process.env));
 
     // Shell integration: dot-source our OSC 133 init script when the shell
     // is a supported family (pwsh/bash). Unknown shells (cmd.exe, zsh, etc.)

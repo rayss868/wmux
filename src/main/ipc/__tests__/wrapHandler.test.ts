@@ -207,6 +207,88 @@ describe('wrapHandler', () => {
     expect(summary).toContain('alice');
   });
 
+  // 6b. Recursive redaction — nested secrets must not leak (workspace profile
+  //     env / startup command flowing through pty:create).
+  describe('recursive redaction', () => {
+    it('redacts secrets nested inside an object value', () => {
+      const summary = buildArgsSummary([
+        { workspaceId: 'ws-1', nested: { GITHUB_TOKEN: 'ghp_xxx', safe: 'ok' } },
+      ]);
+      expect(summary).toBeDefined();
+      expect(summary).toContain('[REDACTED]');
+      expect(summary).not.toContain('ghp_xxx');
+      expect(summary).toContain('ws-1');
+      expect(summary).toContain('ok'); // non-sensitive nested value preserved
+    });
+
+    it('summarizes an env map to a key count without exposing values', () => {
+      const summary = buildArgsSummary([
+        { shell: 'powershell.exe', env: { CLAUDE_CONFIG_DIR: 'C:/secret/path', FOO: 'bar' } },
+      ]);
+      expect(summary).toBeDefined();
+      expect(summary).toContain('keyCount');
+      expect(summary).toContain('2');
+      // Neither env keys nor values appear.
+      expect(summary).not.toContain('CLAUDE_CONFIG_DIR');
+      expect(summary).not.toContain('C:/secret/path');
+      expect(summary).not.toContain('bar');
+      expect(summary).toContain('powershell.exe'); // sibling field preserved
+    });
+
+    it('redacts a startup/initial command value', () => {
+      const summary = buildArgsSummary([
+        { workspaceId: 'ws-1', initialCommand: 'claude --token sk-abc123' },
+      ]);
+      expect(summary).toBeDefined();
+      expect(summary).toContain('[REDACTED]');
+      expect(summary).not.toContain('sk-abc123');
+    });
+
+    it('redacts a non-object value under env (string bypass attempt)', () => {
+      // Regression: a malformed env carried as a string must not be stringified
+      // into the log. Without the type-agnostic env branch this leaked.
+      const summary = buildArgsSummary([
+        { shell: 'powershell.exe', env: 'ANTHROPIC_API_KEY=sk-do-not-leak' },
+      ]);
+      expect(summary).toBeDefined();
+      expect(summary).toContain('[REDACTED]');
+      expect(summary).not.toContain('sk-do-not-leak');
+      expect(summary).not.toContain('ANTHROPIC_API_KEY');
+      expect(summary).toContain('powershell.exe');
+    });
+
+    it('redacts an array value under env without exposing entries', () => {
+      const summary = buildArgsSummary([
+        { env: ['SECRET=sk-leak', 'X=1'] },
+      ]);
+      expect(summary).toBeDefined();
+      expect(summary).not.toContain('sk-leak');
+    });
+
+    it('never String()-falls-back an object when redaction throws', () => {
+      // A throwing getter makes redactDeep/JSON.stringify blow up. The fallback
+      // must NOT String() the object (a hostile toString could leak) — it
+      // returns a safe marker instead.
+      const hostile = {
+        get token() { throw new Error('boom'); },
+        toString() { return 'SECRET_LEAK_sk-123'; },
+      };
+      const summary = buildArgsSummary([hostile]);
+      expect(summary).toBe('[unserializable]');
+      expect(summary).not.toContain('SECRET_LEAK');
+    });
+
+    it('redacts secrets inside arrays of objects', () => {
+      const summary = buildArgsSummary([
+        { items: [{ apiKey: 'k1' }, { name: 'fine' }] },
+      ]);
+      expect(summary).toBeDefined();
+      expect(summary).toContain('[REDACTED]');
+      expect(summary).not.toContain('k1');
+      expect(summary).toContain('fine');
+    });
+  });
+
   // 7. [CODE] message prefix — defensive against Electron IPC property drop
   describe('message code prefix', () => {
     it('stamps `[CODE] ` prefix onto thrown error messages', async () => {

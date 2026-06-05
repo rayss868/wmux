@@ -7,6 +7,8 @@ import { PTYBridge } from '../../pty/PTYBridge';
 import { DaemonClient } from '../../DaemonClient';
 import { IPC, getPidMapDir, ENV_KEYS } from '../../../shared/constants';
 import { sanitizePtyText } from '../../../shared/types';
+import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
+import { scheduleInitialCommand } from './scheduleInitialCommand';
 import { updateCwd } from './metadata.handler';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
@@ -82,6 +84,12 @@ function isAllowedShell(shell: string): boolean {
  */
 const RESIZE_RETRY_ATTEMPTS = 50;
 const RESIZE_RETRY_DELAY_MS = 20;
+
+/**
+ * Startup-command scheduling lives in ./scheduleInitialCommand (electron-free,
+ * unit-tested). The wiring below supplies the per-mode writer + an exhaustion
+ * log so a command that never gets delivered leaves a diagnostic trail.
+ */
 
 /**
  * Validate and resolve cwd. Returns undefined if invalid.
@@ -197,7 +205,7 @@ export function registerPTYHandlers(
   // pty:create
   ipcMain.removeHandler(IPC.PTY_CREATE);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string }) => {
+    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string }) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
@@ -222,25 +230,33 @@ export function registerPTYHandlers(
       // Without this, daemon-mode sessions get a bare `globalThis.process.env`
       // baseline that has no wmux identity at all — main process never had
       // WMUX_WORKSPACE_ID/SURFACE_ID in its own env (those are PTY-level).
-      const identityEnv: Record<string, string> = {};
-      if (options?.workspaceId) identityEnv[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
-      if (options?.surfaceId) identityEnv[ENV_KEYS.SURFACE_ID] = options.surfaceId;
-      // Merge with main process env so the daemon's buildSafeChildEnv starts
-      // from a complete baseline (PATH, USERPROFILE, etc.) plus our identity.
-      const sessionEnv: Record<string, string> = {};
-      for (const [k, v] of Object.entries(globalThis.process.env)) {
-        if (typeof v === 'string') sessionEnv[k] = v;
-      }
-      Object.assign(sessionEnv, identityEnv);
+      //
+      // Env resolution happens HERE in main (the trusted control process),
+      // symmetric with local-mode PTYManager.create, so the daemon stays
+      // profile-agnostic and replays the persisted env verbatim on recovery:
+      //   1. buildSafeChildEnv(process.env) — strip the main process's own
+      //      inherited secrets/build-tooling vars from the child baseline.
+      //   2. applyProfileEnv(...) — overlay the workspace profile AFTER the
+      //      denylist (so an intentional *_KEY/*_TOKEN survives) and skip
+      //      reserved WMUX_* keys.
+      //   3. force WMUX identity LAST so a profile can never spoof it.
+      // The daemon receives this as the complete `env`; it no longer needs a
+      // separate `profileEnv` field, and recovery (which replays session.env)
+      // reproduces the exact create-time environment without re-filtering.
+      const identity: Record<string, string> = {};
+      if (options?.workspaceId) identity[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
+      if (options?.surfaceId) identity[ENV_KEYS.SURFACE_ID] = options.surfaceId;
+      const resolvedEnv = resolveSpawnEnv(globalThis.process.env, options?.env, identity);
 
-      // Create session via daemon RPC
+      // Create session via daemon RPC. `env` is the FULLY-RESOLVED child env;
+      // the daemon replays it verbatim (see DaemonCreateSessionParams.env).
       const result = await daemonClient.rpc('daemon.createSession', {
         id: sessionId,
         cmd: shell,
         cwd: effectiveCwd,
         cols: options?.cols || 80,
         rows: options?.rows || 24,
-        env: sessionEnv,
+        env: resolvedEnv,
       });
 
       // Attach to the session (makes daemon start the SessionPipe server)
@@ -249,11 +265,26 @@ export function registerPTYHandlers(
       // Connect session data pipe
       await daemonClient.connectSessionPipe(sessionId);
 
+      // Workspace profile startup command. Written as shell INPUT (not spawned
+      // as the executable) so the allowed-shell check and quoting behavior are
+      // preserved — same pattern company provisioning uses. Gated on the
+      // session's first output (see scheduleInitialCommand) and retried while
+      // the pipe reports "not delivered", which fixes the intermittent
+      // never-ran-the-command race the fixed-delay version had.
+      const initialCmd = scheduleInitialCommand(options?.initialCommand, {
+        write: (cmd) => daemonClient.writeToSession(sessionId, sanitizePtyText(cmd) + '\r'),
+        onExhausted: () => console.warn(
+          `[pty:create] startup command for ${sessionId} not delivered after ` +
+          `retries — session pipe never became writable (pane may be empty).`,
+        ),
+      });
+
       // Forward session data to renderer. Routed through the per-id helper so
       // a stale listener (from a prior create with the same id, or a reconnect)
       // is removed before the new one is attached.
       const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
         if (payload.sessionId !== sessionId) return;
+        initialCmd.onFirstData();
         const win = getWindow?.();
         if (win && !win.isDestroyed()) {
           const text = decodeSessionData(sessionId, payload.data);
@@ -276,17 +307,32 @@ export function registerPTYHandlers(
       return { id: sessionId, shell, cwd: effectiveCwd };
     }));
   } else {
-    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string }) => {
+    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string }) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
 
       const safeCwd = validateCwd(options?.cwd);
       const effectiveCwd = safeCwd ?? undefined;
-      const instance = ptyManager.create(effectiveCwd !== undefined ? { ...options, cwd: effectiveCwd } : { ...options, cwd: undefined });
+      // Split off initialCommand — it's written into the shell post-create, not
+      // a spawn option. The rest (incl. the profile env overlay) goes to create.
+      const { initialCommand, ...createOpts } = options ?? {};
+      const instance = ptyManager.create({ ...createOpts, cwd: effectiveCwd });
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);
+      // Startup command: gate on the shell's first output (one-shot onData)
+      // so it lands at a ready prompt, mirroring the daemon path. ptyManager
+      // writes are always delivered locally, so the writer returns void.
+      if (initialCommand && initialCommand.trim().length > 0) {
+        const initialCmd = scheduleInitialCommand(initialCommand, {
+          write: (cmd) => { ptyManager.write(instance.id, sanitizePtyText(cmd) + '\r'); },
+        });
+        const disposable = instance.process.onData(() => {
+          disposable.dispose();
+          initialCmd.onFirstData();
+        });
+      }
       return { id: instance.id, shell: instance.shell, cwd: actualCwd };
     }));
   }
