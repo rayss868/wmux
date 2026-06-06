@@ -6,6 +6,7 @@ import { useStore } from '../../renderer/stores';
 import type { Company, TeamMember } from '../types';
 import { validateMessage } from '../../shared/types';
 import { formatMessage, formatBroadcast } from '../core/messageTemplates';
+import { submitBracketedPasteToPty } from '../../renderer/utils/ptyMessageDelivery';
 import { spawnCompany, spawnMember } from './provisioner';
 
 type Store = ReturnType<typeof useStore.getState>;
@@ -66,7 +67,7 @@ function deliverToCeo(store: Store, from: string, message: string): void {
     const surface = leaf.surfaces.find((s) => s.surfaceType !== 'browser' && s.ptyId);
     if (surface) {
       const formatted = formatMessage(from, 'CEO', message);
-      window.electronAPI.pty.write(surface.ptyId, formatted + '\r');
+      submitBracketedPasteToPty(surface.ptyId, formatted);
       break;
     }
   }
@@ -176,7 +177,7 @@ export async function handleCompanyRpc(
     for (const member of c.departments.flatMap((d) => d.members)) {
       if (!member.ptyId) continue;
       if (member.status === 'idle') {
-        window.electronAPI.pty.write(member.ptyId, formatBroadcast(from, message) + '\r');
+        submitBracketedPasteToPty(member.ptyId, formatBroadcast(from, message));
         sentImmediate++;
       } else {
         store.enqueueMessage(member.id, member.ptyId, member.name, message, from, true);
@@ -203,7 +204,7 @@ export async function handleCompanyRpc(
     for (const member of dept.members) {
       if (!member.ptyId) continue;
       if (member.status === 'idle') {
-        window.electronAPI.pty.write(member.ptyId, formatMessage(from, member.name, message) + '\r');
+        submitBracketedPasteToPty(member.ptyId, formatMessage(from, member.name, message));
         sentImmediate++;
       } else {
         store.enqueueMessage(member.id, member.ptyId, member.name, message, from, false);
@@ -230,7 +231,7 @@ export async function handleCompanyRpc(
     const member = dept.members.find((m) => m.id === memberId);
     if (!member?.ptyId) return { error: `member not found or no PTY` };
     if (member.status === 'idle') {
-      window.electronAPI.pty.write(member.ptyId, formatMessage(from, member.name, message) + '\r');
+      submitBracketedPasteToPty(member.ptyId, formatMessage(from, member.name, message));
       return { ok: true, sentImmediate: 1, queued: 0 };
     } else {
       store.enqueueMessage(member.id, member.ptyId, member.name, message, from, false);
@@ -257,7 +258,7 @@ export async function handleCompanyRpc(
       for (const member of c.departments.flatMap((d) => d.members)) {
         if (!member.ptyId) continue;
         if (member.status === 'idle') {
-          window.electronAPI.pty.write(member.ptyId, formatBroadcast(from, message) + '\r');
+          submitBracketedPasteToPty(member.ptyId, formatBroadcast(from, message));
         } else {
           store.enqueueMessage(member.id, member.ptyId, member.name, message, from, true);
         }
@@ -275,7 +276,7 @@ export async function handleCompanyRpc(
     for (const member of targets) {
       if (!member.ptyId) continue;
       if (member.status === 'idle') {
-        window.electronAPI.pty.write(member.ptyId, formatMessage(from, member.name, message) + '\r');
+        submitBracketedPasteToPty(member.ptyId, formatMessage(from, member.name, message));
       } else {
         store.enqueueMessage(member.id, member.ptyId, member.name, message, from, false);
       }
@@ -325,7 +326,7 @@ export async function handleCompanyRpc(
       store.addToInbox(member.id, { from, to: member.name, message, priority });
       if (!member.ptyId) continue;
       if (member.status === 'idle') {
-        window.electronAPI.pty.write(member.ptyId, formatMessage(from, member.name, message, priority as MessagePriority) + '\r');
+        submitBracketedPasteToPty(member.ptyId, formatMessage(from, member.name, message, priority as MessagePriority));
         delivered++;
       } else {
         store.enqueueMessage(member.id, member.ptyId, member.name, message, from, false);
@@ -354,7 +355,7 @@ export async function handleCompanyRpc(
       store.addToInbox(member.id, { from, to: 'All', message, priority });
       if (!member.ptyId) continue;
       if (member.status === 'idle') {
-        window.electronAPI.pty.write(member.ptyId, formatBroadcast(from, message, priority as MessagePriority) + '\r');
+        submitBracketedPasteToPty(member.ptyId, formatBroadcast(from, message, priority as MessagePriority));
       } else {
         store.enqueueMessage(member.id, member.ptyId, member.name, message, from, true);
       }
