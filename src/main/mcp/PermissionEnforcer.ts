@@ -54,6 +54,7 @@ import {
   parsePermission,
   type ParsedPermission,
 } from './permissionGrammar';
+import { FIRST_PARTY_METHODS, isFirstPartyClient } from './firstParty';
 
 export type EnforcerOutcome =
   | { kind: 'allow' }
@@ -161,6 +162,28 @@ export function check(input: EnforcerInput): EnforcerOutcome {
   // Legacy: caller didn't send a clientName envelope, RpcRouter is already
   // grandfathering them via the legacy recorder. Allow at this layer.
   if (!input.ctx.clientName) {
+    return { kind: 'allow' };
+  }
+
+  // First-party bundled wmux MCP server (recognised by the host clientName it
+  // reports). It ships inside wmux and never goes through the external-plugin
+  // declare/approve flow — and it couldn't if it tried, because several tools
+  // it exposes map to `wmux.internal` methods (surface.list, company.a2a.*)
+  // that the permission grammar forbids from any declaration. Grant exactly
+  // the method set it calls (firstParty.ts), nothing more, regardless of the
+  // trust-DB `unconfirmed` status that the bundled server is otherwise stuck
+  // in. Two guards keep this from becoming a blanket bypass:
+  //   - An explicit user `denied` still wins (operator escape hatch): fall
+  //     through to the `denied` branch below.
+  //   - A method outside the curated allowlist also falls through to normal
+  //     enforcement, so a coverage gap surfaces as a rejection instead of
+  //     silently widening first-party scope.
+  // See plans/first-party-mcp-trust.md and docs/api/mcp-plugin-spec.md.
+  if (
+    isFirstPartyClient(input.ctx.clientName) &&
+    input.trust?.status !== 'denied' &&
+    FIRST_PARTY_METHODS.has(input.method)
+  ) {
     return { kind: 'allow' };
   }
 
