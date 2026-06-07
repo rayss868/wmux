@@ -5,6 +5,14 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.17.1] — 2026-06-08 — MCP pane-lifecycle fixes
+
+Two small MCP fixes on top of v2.17.0, both dogfood-verified on a live build before tagging.
+
+### Fixed
+- **`browser_close` no longer leaves an empty pane behind.** The UI close path removes a pane when its last surface is closed, but the MCP mirror only closed the surface — leaving an empty leaf that the "auto-create initial surface" effect backfilled with a fresh terminal. A `browser_open`/`browser_close` loop accreted blank PowerShell panes. The handler now snapshots whether the closed surface was the pane's last one *before* removing it, then cascades into `closePane` to mirror the UI path. A browser sharing a split pane with a terminal still only loses the surface; a browser that is a workspace's only (root) pane still gets an auto-terminal, matching the UI exactly. ([#144](https://github.com/openwong2kim/wmux/pull/144))
+- **Stale pid-map anchors are pruned on workspace/pane close.** The pid→ptyId anchor that backs MCP workspace-identity resolution was only pruned on `session:died`, so closing a workspace or pane through the UI (the `destroySession` path) leaked its anchor. Over time those stale entries could mis-resolve a ghost workspace identity. Closing now prunes the anchor immediately, in lockstep with the session teardown. ([#142](https://github.com/openwong2kim/wmux/pull/142))
+
 ## [2.17.0] — 2026-06-07 — security hardening sweep, packaged browser fixes, workspace UX
 
 The big batch since v2.16.2. Headline: a security-hardening sweep across the daemon, MCP, A2A, release pipeline, and browser surfaces — most of it surfaced by an external codex security scan, with each finding triaged and adversarially verified before merge (a chunk turned out to be false-positives or duplicates and were closed rather than merged). Plus a set of fixes that make the embedded browser tools work on packaged builds, per-workspace environment/startup profiles, and the workspace-management UX that profiles implied (duplicate, per-terminal working directories). No config changes required — defaults are unchanged.
