@@ -21,6 +21,14 @@ export const en = {
   'workspace.copyInfo': 'Copy session info',
   'workspace.copied': 'Copied!',
   'workspace.configureProfile': 'Configure profile…',
+  'workspace.duplicate': 'Duplicate workspace',
+  'workspace.workingDirs': 'Working directories',
+  'workspace.noWorkingDirs': 'No terminals in this workspace',
+  'workspace.copyPath': 'Copy directory',
+  'workspace.closeConfirm': 'Close “{name}”?',
+  'workspace.closeConfirmDetail': '{count} terminal(s) will be closed',
+  'workspace.closeCancel': 'Cancel',
+  'workspace.closeConfirmYes': 'Close',
 
   // Workspace profile (env + startup command for new panes)
   'workspaceProfile.title': 'Workspace profile',
