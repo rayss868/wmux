@@ -14,6 +14,7 @@ export const IPC = {
   // before letting the live PTY output compose on a clean buffer.
   PTY_FLUSH_COMPLETE: 'pty:flush-complete',
   SHELL_LIST: 'shell:list',
+  FONTS_LIST: 'fonts:list',
   SESSION_SAVE: 'session:save',
   SESSION_LOAD: 'session:load',
   NOTIFICATION: 'notification:new',
