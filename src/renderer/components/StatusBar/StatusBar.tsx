@@ -3,6 +3,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import type { Notification, Workspace } from '../../../shared/types';
 import { UsageWidgetView } from './UsageWidget';
+import { tokenAttrs } from '../../themes';
 
 /**
  * Compute the unread notification count, excluding notifications whose
@@ -70,6 +71,7 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
       title={ariaLabel}
       data-testid="statusbar-notification-bell"
       className="text-[var(--accent-blue)] hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent-blue)] focus-visible:outline-offset-1 transition-colors px-1.5 py-0.5 min-w-[24px] min-h-[24px] inline-flex items-center justify-center rounded-sm"
+      {...tokenAttrs('accent', 'accent')}
     >
       {label}
     </button>
@@ -145,23 +147,23 @@ export default function StatusBar() {
   const nowMs = time.getTime();
 
   return (
-    <div className="flex items-center justify-between h-6 px-3 border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono" style={{ backgroundColor: 'var(--bg-mantle)' }} data-onboarding-target="status-bar">
+    <div className="flex items-center justify-between h-6 px-3 border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono" style={{ backgroundColor: 'var(--bg-mantle)' }} data-onboarding-target="status-bar" {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')} {...tokenAttrs('textMuted', 'text')}>
       {/* Left: workspace + branch */}
       <div className="flex items-center gap-3">
-        <span className="text-[var(--text-main)] font-medium">{activeWs?.name || 'wmux'}</span>
+        <span className="text-[var(--text-main)] font-medium" {...tokenAttrs('textMain', 'text')}>{activeWs?.name || 'wmux'}</span>
         {prefixMode && (
-          <span className="text-[var(--accent-red)] font-bold animate-pulse">
+          <span className="text-[var(--accent-red)] font-bold animate-pulse" {...tokenAttrs('danger', 'accent')}>
             [PREFIX]
           </span>
         )}
         {prefixError && (
-          <span className="text-[var(--accent-yellow)]">
+          <span className="text-[var(--accent-yellow)]" {...tokenAttrs('warning', 'accent')}>
             {prefixError}
           </span>
         )}
         {branch && (
           <span>
-            <span className="text-[var(--accent-yellow)]">⎇</span> {branch}
+            <span className="text-[var(--accent-yellow)]" {...tokenAttrs('warning', 'accent')}>⎇</span> {branch}
           </span>
         )}
         {/* Company 모드 배지 */}

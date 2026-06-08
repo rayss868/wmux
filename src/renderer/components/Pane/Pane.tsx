@@ -10,6 +10,7 @@ import EditorPanel from '../Editor/EditorPanel';
 import SurfaceTabs from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
+import { tokenAttrs } from '../../themes';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -192,6 +193,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       }}
       onClick={handleClick}
       data-onboarding-target="pane-area"
+      {...tokenAttrs('accent', 'border')}
+      data-derived="accentCursor"
     >
       <ErrorBoundary name="pane">
       <SurfaceTabs
@@ -251,7 +254,7 @@ function SplitSurfaceView({
 
   if (pane.surfaces.length === 0) {
     return (
-      <div className="flex-1 relative overflow-hidden flex items-center justify-center text-[var(--text-muted)] text-sm">
+      <div className="flex-1 relative overflow-hidden flex items-center justify-center text-[var(--text-muted)] text-sm" {...tokenAttrs('textMuted', 'text')}>
         {emptyMessage}
       </div>
     );

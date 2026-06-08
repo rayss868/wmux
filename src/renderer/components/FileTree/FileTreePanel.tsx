@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../../stores';
+import { tokenAttrs } from '../../themes';
 
 interface FileTreePanelProps {
   position: 'left' | 'right';
@@ -444,12 +445,15 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
     <div
       className={`flex flex-col h-full bg-[var(--bg-mantle)] ${borderClass} border-[var(--bg-surface)] font-mono text-xs`}
       style={{ width: 240, minWidth: 240 }}
+      {...tokenAttrs('bgMantle', 'bg')}
+      {...tokenAttrs('bgSurface', 'border')}
     >
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--bg-surface)] shrink-0">
         <span
           className="text-[var(--text-sub)] truncate flex-1 mr-2"
           title={cwd ?? 'No directory'}
+          {...tokenAttrs('textSub', 'text')}
         >
           {cwd ? shortenPath(cwd) : 'No CWD'}
         </span>
@@ -457,6 +461,7 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
           className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors text-sm"
           onClick={() => setRefreshKey((k) => k + 1)}
           title="Refresh"
+          {...tokenAttrs('textMuted', 'text')}
         >
           &#x21BB;
         </button>
@@ -489,8 +494,8 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
       {previewFile && (
         <div className="flex flex-col border-t border-[var(--bg-surface)] shrink-0" style={{ height: '45%', minHeight: 120 }}>
           {/* Preview Header */}
-          <div className="flex items-center justify-between px-2 py-1 border-b border-[var(--bg-surface)] shrink-0 bg-[var(--bg-surface)]">
-            <span className="text-[var(--text-main)] text-[10px] font-semibold truncate flex-1 mr-2" title={previewFile}>
+          <div className="flex items-center justify-between px-2 py-1 border-b border-[var(--bg-surface)] shrink-0 bg-[var(--bg-surface)]" {...tokenAttrs('bgSurface', 'bg')}>
+            <span className="text-[var(--text-main)] text-[10px] font-semibold truncate flex-1 mr-2" title={previewFile} {...tokenAttrs('textMain', 'text')}>
               {previewFileName}
             </span>
             <button

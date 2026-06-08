@@ -6,6 +6,7 @@ import {
   buildExportPayload,
   buildPaneMarkdown,
 } from '../../utils/sessionInfoMarkdown';
+import { tokenAttrs } from '../../themes';
 
 /** B8: dot color for a completed/awaiting surface tab. */
 function statusDotColor(status: AgentStatus): string {
@@ -107,7 +108,7 @@ export default function SurfaceTabs({
   };
 
   return (
-    <div className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-7 overflow-x-auto">
+    <div className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-7 overflow-x-auto" {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
       {surfaces.map((s) => (
         <div
           key={s.id}
@@ -119,6 +120,8 @@ export default function SurfaceTabs({
               ? 'bg-[var(--bg-base)] text-[var(--text-main)]'
               : 'text-[var(--text-subtle)] hover:text-[var(--text-sub)] hover:bg-[rgba(var(--bg-base-rgb),0.5)]'
           }`}
+          {...tokenAttrs('bgBase', 'bg')}
+          {...tokenAttrs('textMain', 'text')}
           onClick={() => handleTabClick(s.id)}
           onDoubleClick={() => startRename(s)}
           // Hover shows the terminal's working directory (cwd is always present
@@ -159,6 +162,7 @@ export default function SurfaceTabs({
             className="text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors ml-1 leading-none"
             onClick={(e) => { e.stopPropagation(); onClose(s.id); }}
             title={t('surface.closeTab')}
+            {...tokenAttrs('danger', 'accent')}
           >
             ✕
           </button>

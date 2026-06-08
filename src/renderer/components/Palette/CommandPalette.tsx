@@ -5,6 +5,7 @@ import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
 import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
+import { tokenAttrs } from '../../themes';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -556,13 +557,15 @@ export default function CommandPalette() {
           boxShadow: '0 25px 60px rgba(0,0,0,0.7)',
         }}
         onMouseDown={(e) => e.stopPropagation()}
+        {...tokenAttrs('bgBase', 'bg')}
+        {...tokenAttrs('bgSurface', 'border')}
       >
         {/* Search input row */}
         <div
           className="flex items-center gap-2.5 px-4 py-3"
           style={{ borderBottom: '1px solid var(--bg-surface)' }}
         >
-          <span className="shrink-0 text-[var(--text-subtle)]">
+          <span className="shrink-0 text-[var(--text-subtle)]" {...tokenAttrs('textSub', 'text')} data-derived="textSubtle">
             <IconSearch />
           </span>
           <input
@@ -578,10 +581,14 @@ export default function CommandPalette() {
             className="flex-1 bg-transparent text-[var(--text-main)] text-sm placeholder-[var(--text-muted)] outline-none"
             spellCheck={false}
             autoComplete="off"
+            {...tokenAttrs('textMain', 'text')}
           />
           <kbd
             className="shrink-0 text-xs text-[var(--text-muted)] px-1.5 py-0.5 rounded"
             style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
+            {...tokenAttrs('textMuted', 'text')}
+            {...tokenAttrs('bgSurface', 'border')}
+            data-derived="bgOverlay"
           >
             ESC
           </kbd>
@@ -610,6 +617,7 @@ export default function CommandPalette() {
         <div
           className="flex items-center gap-3 px-4 py-2"
           style={{ borderTop: '1px solid var(--bg-surface)', backgroundColor: 'var(--bg-mantle)' }}
+          {...tokenAttrs('bgMantle', 'bg')}
         >
           <span className="text-xs text-[var(--text-muted)]">
             <kbd
