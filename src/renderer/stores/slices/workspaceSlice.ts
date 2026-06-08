@@ -5,6 +5,7 @@ import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
+import { resetInspectState } from './uiSlice';
 import { publishWorkspaceMetadataChanged } from '../../events/publisher';
 
 /** Collect all leaf panes from a pane tree */
@@ -195,6 +196,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     setActiveWorkspace: (id) => set((state: StoreState) => {
       if (!state.workspaces.some((w: Workspace) => w.id === id)) return;
       state.activeWorkspaceId = id;
+      // D-teardown: a workspace switch invalidates any marked-region queries
+      // the inspect overlay is holding, so exit inspect explicitly rather than
+      // letting it dangle against a now-unmounted DOM (inspect is preserved as
+      // a stale no-target mode otherwise). Inlined into this draft via the
+      // shared reset helper so the switch stays a single atomic mutation.
+      if (state.inspectModeActive) resetInspectState(state);
       // Auto-mark this workspace's notifications as read on activation.
       // Without this the unread badge keeps climbing whenever the user
       // switches around without clicking into a specific terminal (the
