@@ -9,7 +9,7 @@ import {
   BUILTIN_XTERM_PALETTE,
   type BuiltinThemeId,
 } from '../themes';
-import { luminance } from '../tailwindPalette';
+import { luminance, getContrastRatio } from '../tailwindPalette';
 
 describe('themes — 10-token system', () => {
   const builtinIds: BuiltinThemeId[] = [
@@ -35,29 +35,49 @@ describe('themes — 10-token system', () => {
     });
   });
 
+  describe('getContrastRatio — WCAG contrast utility', () => {
+    it('returns ≈21 for pure black on pure white', () => {
+      // Spec maximum: (1 + 0.05) / (0 + 0.05) = 21.
+      expect(getContrastRatio('#000000', '#FFFFFF')).toBeCloseTo(21, 1);
+    });
+
+    it('is order-independent (fg/bg swap)', () => {
+      expect(getContrastRatio('#000000', '#FFFFFF'))
+        .toBeCloseTo(getContrastRatio('#FFFFFF', '#000000'), 5);
+    });
+
+    it('returns exactly 1.0 for identical colors', () => {
+      expect(getContrastRatio('#3B82F6', '#3B82F6')).toBe(1);
+    });
+
+    it('is NaN-safe for malformed hex (matches parseHex tolerance)', () => {
+      // parseHex coerces garbage to a finite RGB rather than throwing, so the
+      // ratio stays a finite number in [1, 21] — never NaN.
+      const r = getContrastRatio('not-a-color', '#FFFFFF');
+      expect(Number.isFinite(r)).toBe(true);
+      expect(r).toBeGreaterThanOrEqual(1);
+    });
+  });
+
   describe('hinomaru / taegeuk light themes — text contrast', () => {
     // Regression: pre-refactor textMuted #A8A098 had luminance 0.388 on bg
     // 0.911 — a 2.4:1 contrast that read as "invisible white" against the
     // cream background. New textMuted must keep at least ~4:1 against bgBase.
-    function contrastRatio(a: string, b: string): number {
-      const l1 = luminance(a) + 0.05;
-      const l2 = luminance(b) + 0.05;
-      return l1 > l2 ? l1 / l2 : l2 / l1;
-    }
+    // Uses the shared getContrastRatio (formerly a local copy here — kept DRY).
 
     it('hinomaru textMuted is readable on bgBase', () => {
       const { textMuted, bgBase } = UI_THEME_TOKENS.hinomaru;
-      expect(contrastRatio(textMuted, bgBase)).toBeGreaterThanOrEqual(3.5);
+      expect(getContrastRatio(textMuted, bgBase)).toBeGreaterThanOrEqual(3.5);
     });
 
     it('taegeuk textMuted is readable on bgBase', () => {
       const { textMuted, bgBase } = UI_THEME_TOKENS.taegeuk;
-      expect(contrastRatio(textMuted, bgBase)).toBeGreaterThanOrEqual(3.5);
+      expect(getContrastRatio(textMuted, bgBase)).toBeGreaterThanOrEqual(3.5);
     });
 
     it('hinomaru textMain meets WCAG AA on bgBase', () => {
       const { textMain, bgBase } = UI_THEME_TOKENS.hinomaru;
-      expect(contrastRatio(textMain, bgBase)).toBeGreaterThanOrEqual(4.5);
+      expect(getContrastRatio(textMain, bgBase)).toBeGreaterThanOrEqual(4.5);
     });
   });
 

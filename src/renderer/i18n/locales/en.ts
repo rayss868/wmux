@@ -324,6 +324,38 @@ export const en = {
   'settings.xtermSlotReset': 'Reset to preset',
   'settings.xtermResetAll': 'Reset all to preset',
 
+  // Custom theme — contrast safety net (PR1)
+  'settings.contrast.ok': 'Readable',
+  'settings.contrast.warn': 'Contrast {ratio}:1 on {surface} — hard to read',
+  'settings.contrast.severe': 'Contrast {ratio}:1 on {surface} — fails WCAG, very hard to read',
+  'settings.contrast.nudge': 'Use a safe lightness',
+  'settings.contrast.nudgeUnavailable': 'No safe lightness at this hue',
+  'settings.contrast.surface.bgBase': 'base',
+  'settings.contrast.surface.bgSurface': 'surface',
+  'settings.contrast.surface.bgMantle': 'mantle',
+
+  // Custom theme — preset reset (PR1)
+  'settings.theme.basedOn': 'Custom (based on {preset})',
+  'settings.theme.resetToPreset': 'Reset to preset…',
+  'settings.theme.tokenOverridden': 'Changed from preset',
+  'settings.theme.resetToken': 'Reset this color to the preset',
+
+  // Color inspect mode — point-and-style overlay (PR2 / S4)
+  'settings.inspect.start': 'Pick a color on screen',
+  'settings.inspect.picking': 'Picking a color…',
+  'settings.inspect.appliesTo': 'Applies to {count} marked areas',
+  'settings.inspect.followsSource': 'Follows {source}',
+  'settings.inspect.notCustomizable': 'Not customizable yet',
+  'settings.inspect.done': 'Done',
+  'settings.inspect.banner': 'Click an area to edit its color · Esc to finish',
+  'settings.inspect.terminalBg': 'Terminal background',
+  'settings.inspect.terminalFg': 'Terminal text',
+  'settings.inspect.menuFill': 'Fill',
+  'settings.inspect.menuText': 'Text',
+  'settings.inspect.menuBorder': 'Border',
+  'settings.inspect.menuAccent': 'Accent',
+  'settings.inspect.proxyLabel': 'Edit {token} ({role})',
+
   // Floating pane (Quake-style dropdown terminal)
   'floatingPane.title': 'Terminal',
   'floatingPane.close': 'Close',

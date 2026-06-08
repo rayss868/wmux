@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, type ReactElement } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { timeAgo } from '../../utils/timeAgo';
+import { tokenAttrs } from '../../themes';
 import type { Notification, NotificationType } from '../../../shared/types';
 
 // ─── Pure helpers (exported for tests) ────────────────────────────────────────
@@ -90,13 +91,15 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
       role="dialog"
       aria-label={dialogLabel}
       className="fixed right-0 top-0 h-full w-80 bg-[var(--bg-mantle)] border-l border-[var(--bg-surface)] z-50 flex flex-col shadow-2xl notification-panel-enter"
+      {...tokenAttrs('bgMantle', 'bg')}
+      {...tokenAttrs('bgSurface', 'border')}
     >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--bg-surface)]">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-bold text-[var(--text-main)]">{dialogLabel}</span>
+          <span className="text-sm font-bold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>{dialogLabel}</span>
           {unreadCount > 0 && (
-            <span className="bg-[var(--accent-blue)] text-[var(--bg-base)] text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+            <span className="bg-[var(--accent-blue)] text-[var(--bg-base)] text-[10px] font-bold px-1.5 py-0.5 rounded-full" {...tokenAttrs('accent', 'accent')} {...tokenAttrs('bgBase', 'bg')}>
               {unreadCount}
             </span>
           )}
@@ -124,6 +127,7 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
               <button
                 className="text-[10px] text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors"
                 onClick={onClear}
+                {...tokenAttrs('danger', 'accent')}
               >
                 {clearLabel}
               </button>
@@ -142,7 +146,7 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
       {/* List */}
       <div className="flex-1 overflow-y-auto">
         {notifications.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm">
+          <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm" {...tokenAttrs('textMuted', 'text')}>
             {emptyLabel}
           </div>
         ) : (
@@ -170,7 +174,7 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
                       {timeAgo(notif.timestamp)}
                     </span>
                   </div>
-                  <p className="text-[11px] text-[var(--text-sub2)] mt-0.5 truncate">{notif.body}</p>
+                  <p className="text-[11px] text-[var(--text-sub2)] mt-0.5 truncate" {...tokenAttrs('textMain', 'text')} data-derived="textSub2">{notif.body}</p>
                 </div>
                 {!notif.read && (
                   <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent-blue)] mt-1.5 flex-shrink-0" />

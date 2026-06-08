@@ -8,6 +8,7 @@ import StatusBar from '../StatusBar/StatusBar';
 import NotificationPanel from '../Notification/NotificationPanel';
 import CommandPalette from '../Palette/CommandPalette';
 import SettingsPanel from '../Settings/SettingsPanel';
+import InspectOverlay from '../Inspect/InspectOverlay';
 import FileTreePanel from '../FileTree/FileTreePanel';
 import ApprovalDialog from '../Company/ApprovalDialog';
 import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
@@ -1003,6 +1004,11 @@ export default function AppLayout() {
       )}
       <CommandPalette />
       <SettingsPanel />
+      {/* Color inspect-mode overlay (S4). Sits at z-[65] (declared inside the
+          component) — above SettingsPanel (z-50) so it captures clicks over the
+          minimized Settings bar, below FirstRunWizard (z-70). Returns null when
+          inspectModeActive is false. */}
+      <InspectOverlay />
       <ApprovalDialog />
       <ExecuteApprovalDialog />
       <PermissionApprovalDialogContainer />

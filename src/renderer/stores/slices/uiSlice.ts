@@ -17,7 +17,17 @@ import {
   DEFAULT_PREFIX_CONFIG,
   DEFAULT_CUSTOM_KEYBINDINGS,
 } from '../../../shared/types';
-import { applyCustomCssVars, clearCustomCssVars, DEFAULT_CUSTOM_THEME, migrateCustomThemeColors } from '../../themes';
+import {
+  applyCustomCssVars,
+  clearCustomCssVars,
+  DEFAULT_CUSTOM_THEME,
+  migrateCustomThemeColors,
+  builtinToCustom,
+  UI_THEME_TOKENS,
+  type BuiltinThemeId,
+  type UIThemeTokenKey,
+  type TokenRole,
+} from '../../themes';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
 
 // String-valued tokens only. xtermOverrides is an object handled by separate
@@ -91,6 +101,44 @@ export interface UISlice {
   // ─── Theme ──────────────────────────────────────────────────────────────
   theme: string;
   setTheme: (theme: string) => void;
+
+  // ─── Color inspect mode (PR2 foundation) ─────────────────────────────────
+  // Top-level exclusive "point-and-style" mode. The InspectOverlay (separate
+  // task) renders while inspectModeActive is true; this slice only owns the
+  // state machine + invariants.
+  //
+  //   inspectModeActive — overlay mounted, hover/click reverse-maps to tokens.
+  //   inspectMinimized  — Settings shrinks to a floating bar but stays mounted
+  //                       (D-settings); ESC leaves inspect → full Settings.
+  //   inspectTargetToken — the token/role a click selected, consumed by the
+  //                       editor to scroll/flash the matching TokenRow.
+  //
+  // Invariants enforced by the actions below:
+  //   inspectModeActive ⇒ settingsPanelVisible ∧ inspectMinimized            (D-settings)
+  //   inspectModeActive ⇒ ¬commandPaletteVisible ∧ ¬notificationPanelVisible (D-exclusive)
+  // Entering any competing modal, or switching workspaces, tears inspect down
+  // first so an interrupt cannot leave the state machine half-open.
+  inspectModeActive: boolean;
+  inspectMinimized: boolean;
+  inspectTargetToken: { token: UIThemeTokenKey; role: TokenRole } | null;
+  // Set when a click lands on the terminal *area* (D-terminal v1): a single
+  // background/foreground slot rather than a UI token. The SettingsPanel (a
+  // separate task) reads this to scroll/open the xterm background/foreground
+  // editor. Null when no terminal slot is the current inspect target. Reset to
+  // null on exit alongside the other inspect fields.
+  inspectXtermTarget: 'background' | 'foreground' | null;
+  enterInspect: () => void;
+  exitInspect: () => void;
+  setInspectTarget: (token: UIThemeTokenKey, role: TokenRole) => void;
+  setInspectXtermTarget: (target: 'background' | 'foreground' | null) => void;
+  // Clear BOTH pending targets (UI token + xterm slot) without leaving inspect.
+  // Integration contract: after a click commits a target the overlay yields its
+  // capture and the full Settings modal re-expands to edit it; when the user
+  // closes that editor we must clear the target so the overlay resumes hover
+  // inspection (it stays paused while a target is pending). setInspectTarget can
+  // only set a non-null token, so this is the only path back to "no target,
+  // still inspecting" — without it a single click strands inspect forever.
+  clearInspectTarget: () => void;
 
   // ─── Layout ────────────────────────────────────────────────────────────
   sidebarPosition: 'left' | 'right';
@@ -392,6 +440,26 @@ function collectFirstLeafId(pane: Pane): string {
   return collectFirstLeafId(pane.children[0]);
 }
 
+// ─── Inspect-mode teardown helper ────────────────────────────────────────────
+// Shared so exitInspect, the exclusive-mode guards, and the workspaceSlice
+// switch teardown (D-teardown) all reset the same three fields identically.
+// Mutates an immer draft in place — call only inside a set() callback. The
+// param is structurally typed (not the full StoreState) so workspaceSlice can
+// import and apply it against its own draft without a circular slice import.
+export interface InspectStateFields {
+  inspectModeActive: boolean;
+  inspectMinimized: boolean;
+  inspectTargetToken: { token: UIThemeTokenKey; role: TokenRole } | null;
+  inspectXtermTarget: 'background' | 'foreground' | null;
+}
+
+export function resetInspectState(state: InspectStateFields): void {
+  state.inspectModeActive = false;
+  state.inspectMinimized = false;
+  state.inspectTargetToken = null;
+  state.inspectXtermTarget = null;
+}
+
 export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]], [], UISlice> = (set, get) => ({
   // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
   paneGate: 'pending',
@@ -419,11 +487,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.notificationPanelVisible) {
       state.commandPaletteVisible = false;
       state.settingsPanelVisible = false;
+      // D-exclusive: opening a competing surface tears inspect down so the
+      // top-level state machine can't coexist with another modal.
+      if (state.inspectModeActive) resetInspectState(state);
     }
   }),
 
   setNotificationPanelVisible: (visible) => set((state) => {
     state.notificationPanelVisible = visible;
+    if (visible && state.inspectModeActive) resetInspectState(state);
   }),
 
   // ─── Command palette ─────────────────────────────────────────────────────
@@ -434,11 +506,14 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.commandPaletteVisible) {
       state.notificationPanelVisible = false;
       state.settingsPanelVisible = false;
+      // D-exclusive: opening the palette tears inspect down (no coexistence).
+      if (state.inspectModeActive) resetInspectState(state);
     }
   }),
 
   setCommandPaletteVisible: (visible) => set((state) => {
     state.commandPaletteVisible = visible;
+    if (visible && state.inspectModeActive) resetInspectState(state);
   }),
 
   // ─── Settings panel ──────────────────────────────────────────────────────
@@ -449,6 +524,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.settingsPanelVisible) {
       state.commandPaletteVisible = false;
       state.notificationPanelVisible = false;
+    } else if (state.inspectModeActive) {
+      // D-exclusive invariant: inspect can only exist while Settings is open
+      // (inspectModeActive ⇒ settingsPanelVisible). Toggling Settings shut
+      // (true→false) while inspecting would strand a "Settings-less inspect"
+      // overlay, so tear inspect down in lock-step — same reset the
+      // command-palette / notification teardown paths use.
+      resetInspectState(state);
     }
   }),
 
@@ -547,6 +629,67 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       state.theme = theme;
     });
   },
+
+  // ─── Color inspect mode (PR2 foundation) ─────────────────────────────────
+  inspectModeActive: false,
+  inspectMinimized: false,
+  inspectTargetToken: null,
+  inspectXtermTarget: null,
+
+  enterInspect: () => {
+    // D-builtin: live color edits are a silent no-op unless theme==='custom'
+    // (applyCustomCssVars gates on it). When entering from a built-in theme we
+    // seed a custom palette from the current built-in and switch to it FIRST,
+    // before flipping the mode on, so the very first click already paints.
+    // setCustomThemeColors + setTheme are run outside the immer draft because
+    // they perform DOM side-effects (applyCustomCssVars / data-theme attr).
+    const currentTheme = get().theme;
+    if (currentTheme !== 'custom') {
+      const seedId: BuiltinThemeId = currentTheme in UI_THEME_TOKENS
+        ? (currentTheme as BuiltinThemeId)
+        : 'catppuccin-mocha';
+      get().setCustomThemeColors(builtinToCustom(seedId));
+      get().setTheme('custom');
+    }
+    set((state) => {
+      state.inspectModeActive = true;
+      state.inspectMinimized = true;   // Settings shrinks to a floating bar.
+      state.settingsPanelVisible = true; // ...but stays mounted (D-settings).
+      // D-exclusive: inspect is the top-level mode — close competing surfaces.
+      state.commandPaletteVisible = false;
+      state.notificationPanelVisible = false;
+    });
+  },
+
+  exitInspect: () => set((state) => {
+    // Leave inspect only — settingsPanelVisible stays true so ESC/done returns
+    // the user to the full Settings panel rather than closing it (D-settings).
+    resetInspectState(state);
+  }),
+
+  setInspectTarget: (token, role) => set((state) => {
+    state.inspectTargetToken = { token, role };
+    // A UI-token target and a terminal-slot target are mutually exclusive —
+    // picking a token clears any pending xterm slot so the editor opens exactly
+    // one section.
+    state.inspectXtermTarget = null;
+  }),
+
+  setInspectXtermTarget: (target) => set((state) => {
+    state.inspectXtermTarget = target;
+    // Symmetric to setInspectTarget: choosing a terminal slot clears the UI
+    // token target so only the xterm background/foreground editor opens.
+    if (target !== null) state.inspectTargetToken = null;
+  }),
+
+  clearInspectTarget: () => set((state) => {
+    // Drop both pending targets but stay in inspect — the overlay resumes hover
+    // (overlayShouldCapture goes back to true) so the user can keep picking.
+    // Deliberately does NOT touch inspectModeActive / inspectMinimized /
+    // settingsPanelVisible; only exitInspect tears the mode down.
+    state.inspectTargetToken = null;
+    state.inspectXtermTarget = null;
+  }),
 
   // ─── Layout ────────────────────────────────────────────────────────────
   sidebarPosition: 'left',

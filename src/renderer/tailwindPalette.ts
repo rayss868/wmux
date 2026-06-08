@@ -102,6 +102,19 @@ export function isLight(hex: string): boolean {
   return luminance(hex) > 0.5;
 }
 
+/**
+ * WCAG contrast ratio between two colors. Order-independent: returns the same
+ * value whether `fg`/`bg` are swapped. Range is 1 (identical luminance) to 21
+ * (pure black on pure white). Formula: (Lmax + 0.05) / (Lmin + 0.05).
+ */
+export function getContrastRatio(fg: string, bg: string): number {
+  const l1 = luminance(fg);
+  const l2 = luminance(bg);
+  const lo = Math.min(l1, l2);
+  const hi = Math.max(l1, l2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 /** Shift HSL lightness by delta (0–1 range). Positive = lighter. */
 export function shiftLightness(hex: string, delta: number): string {
   const [r, g, b] = parseHex(hex);

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
+import { tokenAttrs } from '../../themes';
 
 export default function MiniSidebar() {
   const t = useT();
@@ -24,13 +25,16 @@ export default function MiniSidebar() {
   const [dropIndicator, setDropIndicator] = useState<{ index: number; side: 'above' | 'below' } | null>(null);
 
   return (
-    <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48 }}>
+    <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48 }} {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
       {/* Header — new workspace button */}
       <button
         className="flex items-center justify-center h-10 text-[var(--text-subtle)] hover:text-[var(--accent-green)] transition-colors border-b border-[var(--bg-surface)] font-mono text-lg leading-none"
         onClick={() => addWorkspace()}
         title={t('sidebar.newWorkspaceTooltip')}
         data-onboarding-target="add-workspace"
+        {...tokenAttrs('textSub', 'text')}
+        {...tokenAttrs('success', 'accent')}
+        data-derived="textSubtle"
       >
         +
       </button>
@@ -113,6 +117,8 @@ export default function MiniSidebar() {
                     : 'text-[var(--text-muted)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
                 } ${isDragging ? 'opacity-40' : 'opacity-100'}`}
                 style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
+                {...tokenAttrs('bgSurface', 'bg')}
+                {...tokenAttrs('textMain', 'text')}
                 onClick={handleClick}
                 onDragStart={handleDragStart}
                 onDragEnd={handleDragEnd}
@@ -126,6 +132,8 @@ export default function MiniSidebar() {
                   <span
                     className="absolute -top-0.5 -right-0.5 bg-[var(--accent-blue)] text-[var(--bg-base)] text-[8px] font-bold rounded-full min-w-[12px] h-3 flex items-center justify-center px-0.5 leading-none"
                     title={t('sidebar.unreadCount', { count: unreadCount })}
+                    {...tokenAttrs('accent', 'accent')}
+                    {...tokenAttrs('bgBase', 'bg')}
                   >
                     {unreadCount > 9 ? '9+' : unreadCount}
                   </span>

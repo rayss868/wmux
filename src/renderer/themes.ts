@@ -395,5 +395,133 @@ export function migrateCustomThemeColors(input: unknown): CustomThemeColors {
   return { ...ui, xtermPaletteId };
 }
 
+// ─── Inspect-mode reverse mapping (PR2 foundation) ──────────────────────────
+//
+// The color "inspect mode" lets users click a region on the live app and edit
+// the token that paints it. Per design decision D-revmap, `data-token-<role>`
+// attributes on production elements are the ONLY source of truth for the
+// element→token reverse map — there is no separate registry constant that could
+// drift. The single piece of derived knowledge we mirror here is the small
+// static derived→source map below (D-revmap), which encodes the same facts as
+// deriveFullPalette so a click on a derived region routes to its editable
+// source token.
+
+/** The 10 editable UI token keys. Marker helpers type-check token names against
+ *  this so a typo in a `data-token-*` attribute fails to compile (D-attrs). */
+export type UIThemeTokenKey = keyof UIThemeTokens;
+
+/** Visual roles a single element can paint with one of the 10 tokens. A card
+ *  may use one token for its fill, another for its text, another for its
+ *  border, so the role disambiguates which slot a click targets. */
+export type TokenRole = 'bg' | 'text' | 'border' | 'accent';
+
+/** Priority order used to pick a multi-role element's representative role for
+ *  the hover preview (D-hover): background first, then accent, text, border. */
+const ROLE_PRIORITY: readonly TokenRole[] = ['bg', 'accent', 'text', 'border'];
+
+/**
+ * Typed marker-attribute emitter (D-attrs). Production components spread the
+ * result onto an element to declare which editable token paints which role:
+ *   <div {...tokenAttrs('bgSurface', 'bg')} />  →  data-token-bg="bgSurface"
+ * The `token` param is constrained to UIThemeTokenKey so a misspelled token
+ * name is a compile error rather than a silently dead marker.
+ */
+export function tokenAttrs(token: UIThemeTokenKey, role: TokenRole): Record<string, string> {
+  return { [`data-token-${role}`]: token };
+}
+
+/**
+ * Derived CSS var → editable source token (D-revmap). Mirrors deriveFullPalette:
+ *   bgOverlay   = shiftLightness(bgSurface)  → bgSurface
+ *   textSub2    = mix(textMain, textSub)     → textMain
+ *   textSubtle  = mix(textSub, textMuted)    → textSub
+ *   accentCursor= accent                     → accent
+ * A region painted with a derived var carries `data-derived="<derivedKey>"` so
+ * findTokenForElement can label it ("follows Surface") and route edits to the
+ * source token rather than dead-ending on a non-editable derived value.
+ */
+export const DERIVED_TO_SOURCE: Record<string, UIThemeTokenKey> = {
+  bgOverlay: 'bgSurface',
+  textSub2: 'textMain',
+  textSubtle: 'textSub',
+  accentCursor: 'accent',
+};
+
+/** Result of resolving an element to its editable token(s). */
+export interface ResolvedRegion {
+  /** The nearest marked ancestor (or the element itself) that carries tokens. */
+  el: Element;
+  /** Every role this element marks, keyed by role. A card with fill + text +
+   *  border yields up to 3 entries; the click menu lists exactly these. */
+  tokens: Partial<Record<TokenRole, UIThemeTokenKey>>;
+  /** The single role/token shown in the hover preview (D-hover): bg if present,
+   *  else the next role by ROLE_PRIORITY. Guaranteed non-null because a region
+   *  with zero roles resolves to null instead. */
+  representative: { role: TokenRole; token: UIThemeTokenKey };
+  /** When the matched element is painted by a derived var (data-derived), the
+   *  editable source token it follows — for the "follows {source}" label. */
+  derivedNote?: UIThemeTokenKey;
+}
+
+const TOKEN_ROLE_SELECTOR =
+  '[data-token-bg],[data-token-text],[data-token-border],[data-token-accent]';
+
+/**
+ * Reverse-map an element to its editable token(s) (D-revmap, D-hover). Walks up
+ * from `el` via closest() to the nearest marked ancestor, collects every
+ * `data-token-<role>` it declares, and picks a representative role for the hover
+ * preview (bg > accent > text > border). Returns null when nothing in the
+ * ancestor chain is marked (the overlay shows a "not customizable yet" hint).
+ *
+ * Token-name validation against UIThemeTokenKey is enforced at write time by
+ * tokenAttrs; at read time we trust the attribute string and surface it as
+ * UIThemeTokenKey, since the CI invariant (separate task) guards the DOM.
+ */
+export function findTokenForElement(el: Element): ResolvedRegion | null {
+  const marked = el.closest(TOKEN_ROLE_SELECTOR);
+  if (!marked) return null;
+
+  const tokens: Partial<Record<TokenRole, UIThemeTokenKey>> = {};
+  for (const role of ROLE_PRIORITY) {
+    const value = marked.getAttribute(`data-token-${role}`);
+    if (value) tokens[role] = value as UIThemeTokenKey;
+  }
+
+  // Pick representative by priority. The selector guarantees ≥1 role matched,
+  // so this loop always finds one — but guard defensively for type narrowing.
+  let representative: ResolvedRegion['representative'] | null = null;
+  for (const role of ROLE_PRIORITY) {
+    const token = tokens[role];
+    if (token) {
+      representative = { role, token };
+      break;
+    }
+  }
+  if (!representative) return null;
+
+  const region: ResolvedRegion = { el: marked, tokens, representative };
+
+  const derivedKey = marked.getAttribute('data-derived');
+  if (derivedKey && derivedKey in DERIVED_TO_SOURCE) {
+    region.derivedNote = DERIVED_TO_SOURCE[derivedKey];
+  }
+
+  return region;
+}
+
+/**
+ * Forward count for the "applies to N places" chip (D-chip). Returns every
+ * element marked with the given token/role under `root` (default: document).
+ * Only marked consumers are counted — the chip says "marked N places", an
+ * honest subset of the ~799 raw var() consumers (D-chip).
+ */
+export function regionsForToken(
+  token: UIThemeTokenKey,
+  role: TokenRole,
+  root: ParentNode = document,
+): Element[] {
+  return Array.from(root.querySelectorAll(`[data-token-${role}="${token}"]`));
+}
+
 // ─── Backwards-compat re-export of hexToRgb (legacy callers may import it) ──
 export { hexToRgbString as hexToRgb } from './tailwindPalette';
