@@ -20,6 +20,42 @@
   font-display: swap;
 }
 
+/* JetBrains Mono — variable weight (Copyright 2020 The JetBrains Mono Project
+ * Authors). Latin only; pair with JetBrainsMonoHangul for fixed-width Hangul. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../assets/fonts/JetBrainsMono.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Fira Code — variable weight (Copyright (c) 2014 The Fira Code Project Authors). */
+@font-face {
+  font-family: 'Fira Code';
+  src: url('../assets/fonts/FiraCode.woff2') format('woff2');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* JetBrainsMonoHangul — JetBrains Mono + D2Coding mixed mono with fixed-width
+ * Hangul glyphs (Copyright 2022 Janghyub Seo). Static Regular + Bold. */
+@font-face {
+  font-family: 'JetBrainsMonoHangul';
+  src: url('../assets/fonts/JetBrainsMonoHangul-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'JetBrainsMonoHangul';
+  src: url('../assets/fonts/JetBrainsMonoHangul-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ─── Theme CSS Variables ────────────────────────────────────────────────── */
 
 /* Hinomaru — light theme. Text colors are DARK on the cream background.

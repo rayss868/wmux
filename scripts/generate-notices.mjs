@@ -308,5 +308,43 @@ for (const p of packages) {
   lines.push('');
 }
 
+// --- Step 4: emit bundled fonts ---------------------------------------------
+// Fonts are shipped in the renderer via @font-face (see styles/globals.css),
+// not as npm dependencies, so they are enumerated here from their committed
+// LICENSE-*.txt files. This keeps the SIL Open Font License attribution in the
+// notices across every regeneration. Keep in sync with the @font-face block.
+const FONTS_DIR = join(ROOT, 'src/renderer/assets/fonts');
+const BUNDLED_FONTS = [
+  { name: 'Cascadia Code', file: 'LICENSE-CascadiaCode.txt', repo: 'https://github.com/microsoft/cascadia-code' },
+  { name: 'JetBrains Mono', file: 'LICENSE-JetBrainsMono.txt', repo: 'https://github.com/JetBrains/JetBrainsMono' },
+  { name: 'Fira Code', file: 'LICENSE-FiraCode.txt', repo: 'https://github.com/tonsky/FiraCode' },
+  { name: 'JetBrainsMonoHangul', file: 'LICENSE-JetBrainsMonoHangul.txt', repo: 'https://github.com/Jhyub/JetBrainsMonoHangul' },
+];
+lines.push('BUNDLED FONTS');
+lines.push('');
+lines.push('The fonts below are bundled in the renderer via @font-face and are not');
+lines.push('npm packages. Each is distributed under the SIL Open Font License 1.1;');
+lines.push('the full license text (including the original copyright line) follows.');
+lines.push('');
+lines.push(SEP);
+lines.push('');
+let fontCount = 0;
+for (const f of BUNDLED_FONTS) {
+  lines.push(f.name);
+  lines.push('License: SIL Open Font License 1.1');
+  lines.push(`Repository: ${f.repo}`);
+  lines.push('');
+  const licPath = join(FONTS_DIR, f.file);
+  if (existsSync(licPath)) {
+    lines.push(readFileSync(licPath, 'utf8').trimEnd());
+    fontCount++;
+  } else {
+    lines.push(`(LICENSE file ${f.file} not found — run after the font is committed.)`);
+  }
+  lines.push('');
+  lines.push(SEP);
+  lines.push('');
+}
+
 writeFileSync(NOTICES_PATH, lines.join('\n'));
-console.error(`[notices] wrote ${NOTICES_PATH} (${packages.length} packages, ${missing.length} missing).`);
+console.error(`[notices] wrote ${NOTICES_PATH} (${packages.length} packages, ${fontCount} fonts, ${missing.length} missing).`);

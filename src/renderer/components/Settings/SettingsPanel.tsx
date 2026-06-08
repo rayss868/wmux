@@ -475,11 +475,25 @@ function resolveDefaultShellPath(current: string, shells: ShellInfo[]): string {
 }
 
 const FONT_FAMILY_OPTIONS = [
-  { value: 'Cascadia Code',    label: 'Cascadia Code' },
-  { value: 'Consolas',         label: 'Consolas' },
-  { value: 'Fira Code',        label: 'Fira Code' },
-  { value: 'JetBrains Mono',   label: 'JetBrains Mono' },
+  { value: 'Cascadia Code',       label: 'Cascadia Code' },
+  { value: 'JetBrainsMonoHangul', label: 'JetBrainsMonoHangul' },
+  { value: 'Consolas',            label: 'Consolas' },
+  { value: 'Fira Code',           label: 'Fira Code' },
+  { value: 'JetBrains Mono',      label: 'JetBrains Mono' },
 ];
+
+// Fonts shipped inside the app via @font-face (see styles/globals.css). They
+// render correctly even when not installed on the machine, so the picker must
+// never tag them "not installed" — unlike a system-only font like Consolas,
+// which falls back to another face when absent. Keep in sync with the
+// @font-face declarations in globals.css.
+const BUNDLED_FONTS = new Set([
+  'Cascadia Code',
+  'Cascadia Mono',
+  'JetBrains Mono',
+  'Fira Code',
+  'JetBrainsMonoHangul',
+]);
 
 // ─── Reset section ───────────────────────────────────────────────────────────
 
@@ -1789,7 +1803,9 @@ function FontFamilyField() {
   const installedSet = useMemo(() => new Set(systemFonts), [systemFonts]);
   const knowInstalled = systemFonts.length > 0;
   const isInstalled = useCallback(
-    (f: string) => !knowInstalled || installedSet.has(f),
+    // Bundled fonts always render (shipped via @font-face), so treat them as
+    // available regardless of OS enumeration.
+    (f: string) => BUNDLED_FONTS.has(f) || !knowInstalled || installedSet.has(f),
     [knowInstalled, installedSet],
   );
 
