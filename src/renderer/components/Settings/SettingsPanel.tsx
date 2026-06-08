@@ -1378,12 +1378,25 @@ function ThemeSwatch({ colors }: { colors: [string, string, string, string] }) {
 const FONT_PREVIEW_SAMPLE = 'AaBb 한글 漢字 0O 1l {}';
 
 /**
- * Font-family picker: a native `<input list>` + `<datalist>` combobox.
- * Free-text entry (any installed font name works) plus autocomplete
- * suggestions enumerated from the OS via `electronAPI.fonts.list()`. The
- * browser handles filtering and keyboard nav natively. A live preview row
- * renders the sample in the current font. The store setter sanitizes the
- * value, so nothing here needs to guard the CSS string.
+ * Font-family picker: a custom combobox for installed fonts, plus an explicit
+ * "custom font" mode for typing any family name by hand.
+ *
+ * Native `<input list>`+`<datalist>` was rejected: the browser filters the
+ * datalist by the input's *current value*, so re-opening a chosen field shows
+ * only that one item — the opposite of a dropdown. This combobox opens the FULL
+ * installed-font list on click regardless of the current value, filters only
+ * once the user types, and renders each option *in its own font* so a mixed-mono
+ * font's CJK glyphs are visible before selection (the point of issue #147).
+ *
+ * Recommended seed fonts that are NOT installed on this machine are greyed and
+ * tagged "not installed" — otherwise several of them render identically via the
+ * fallback chain and look like duplicates.
+ *
+ * A separate "custom" row drops the field into free-text mode for a not-yet-
+ * enumerated family (e.g. JetBrainsMonoHangul): the dropdown collapses, the user
+ * types a name, and Apply/Enter commits it. The store setter sanitizes the
+ * value, and `terminalFontFamilyCss` sanitizes again at every render site, so
+ * nothing here needs to guard the CSS string.
  */
 function FontFamilyField() {
   const t = useT();
@@ -1391,24 +1404,22 @@ function FontFamilyField() {
   const setTerminalFontFamily = useStore((s) => s.setTerminalFontFamily);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
 
-  // Raw input buffer, decoupled from the sanitized store value. Binding the
-  // input directly to the store would let the setter's sanitize (which trims
-  // and collapses whitespace) fight the user mid-keystroke — typing a space in
-  // "Fira Code" would be deleted as it's entered, making multi-word font names
-  // impossible to type by hand. So we keep the raw text here and only commit
-  // (sanitize → store) on blur / Enter. The store still re-syncs the draft when
-  // it changes externally (session load, reset).
-  const [draft, setDraft] = useState(terminalFontFamily);
-  useEffect(() => {
-    setDraft(terminalFontFamily);
-  }, [terminalFontFamily]);
-  const commitFont = useCallback(() => {
-    setTerminalFontFamily(draft);
-  }, [draft, setTerminalFontFamily]);
+  // Combobox state. `open` = dropdown visible. `query` = text typed since
+  // opening — empty right after opening, so the list shows EVERYTHING until the
+  // user searches. `highlight` drives keyboard nav. `custom`/`customText` are
+  // the separate free-text entry mode, kept apart so the dropdown (selects
+  // installed fonts) and custom entry (types any name) never fight.
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [highlight, setHighlight] = useState(-1);
+  const [custom, setCustom] = useState(false);
+  const [customText, setCustomText] = useState('');
+  const listRef = useRef<HTMLUListElement>(null);
+  const customRef = useRef<HTMLInputElement>(null);
 
   // Fetch installed fonts once when the field mounts. Best-effort: an empty
-  // result (non-Windows, enumeration failed) just means no autocomplete —
-  // the input stays usable as pure free-text. Mirrors the shell.list pattern.
+  // result (non-Windows, enumeration failed) just means no suggestions — the
+  // custom-entry mode still lets the user type any name. Mirrors shell.list.
   useEffect(() => {
     let cancelled = false;
     window.electronAPI.fonts
@@ -1439,43 +1450,299 @@ function FontFamilyField() {
     return merged;
   }, [systemFonts]);
 
+  // Installed-state lookup. Only meaningful once enumeration returned something:
+  // an empty systemFonts means "couldn't enumerate" (non-Windows, spawn failed),
+  // NOT "everything is uninstalled" — so don't grey anything in that case.
+  const installedSet = useMemo(() => new Set(systemFonts), [systemFonts]);
+  const knowInstalled = systemFonts.length > 0;
+  const isInstalled = useCallback(
+    (f: string) => !knowInstalled || installedSet.has(f),
+    [knowInstalled, installedSet],
+  );
+
+  // Empty query (just opened) → show everything; once the user types →
+  // substring-filter.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q === '') return suggestions;
+    return suggestions.filter((f) => f.toLowerCase().includes(q));
+  }, [suggestions, query]);
+
+  // Closed → show the committed font. Open → show the live query (blank right
+  // after opening). The live preview tracks the highlighted option while
+  // navigating, else the committed font.
+  const displayValue = open ? query : terminalFontFamily;
+  const previewTarget = highlight >= 0 && filtered[highlight] ? filtered[highlight] : terminalFontFamily;
+
+  const openList = useCallback(() => {
+    setOpen(true);
+    setQuery('');
+    setHighlight(-1);
+  }, []);
+  const closeReset = useCallback(() => {
+    setOpen(false);
+    setQuery('');
+    setHighlight(-1);
+  }, []);
+  const selectFont = useCallback(
+    (f: string) => {
+      setTerminalFontFamily(f);
+      closeReset();
+    },
+    [setTerminalFontFamily, closeReset],
+  );
+
+  const enterCustom = useCallback(() => {
+    setOpen(false);
+    setQuery('');
+    setHighlight(-1);
+    setCustomText(terminalFontFamily);
+    setCustom(true);
+  }, [terminalFontFamily]);
+  const exitCustom = useCallback(() => {
+    setCustom(false);
+    setCustomText('');
+  }, []);
+  const applyCustom = useCallback(() => {
+    const v = customText.trim();
+    if (v !== '') setTerminalFontFamily(v);
+    exitCustom();
+  }, [customText, setTerminalFontFamily, exitCustom]);
+
+  // Focus the custom input when entering custom mode.
+  useEffect(() => {
+    if (custom) customRef.current?.focus();
+  }, [custom]);
+
+  // Keep the highlighted row in view during keyboard navigation.
+  useEffect(() => {
+    if (highlight < 0 || !listRef.current) return;
+    (listRef.current.children[highlight] as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest' });
+  }, [highlight]);
+
+  // ─── Custom free-text entry mode ──────────────────────────────────────────
+  if (custom) {
+    return (
+      <div className="flex flex-col items-end gap-1.5">
+        <div className="flex items-center gap-1" style={{ minWidth: 180 }}>
+          <input
+            ref={customRef}
+            type="text"
+            value={customText}
+            onChange={(e) => setCustomText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                applyCustom();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                exitCustom();
+              }
+            }}
+            aria-label={t('settings.fontFamily')}
+            placeholder={t('settings.fontCustomPlaceholder')}
+            spellCheck={false}
+            autoComplete="off"
+            className="text-xs rounded-md px-2 py-1 flex-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
+            style={{
+              backgroundColor: 'var(--bg-surface)',
+              color: 'var(--text-main)',
+              border: '1px solid var(--bg-overlay)',
+              minWidth: 120,
+            }}
+          />
+          <button
+            type="button"
+            onClick={applyCustom}
+            aria-label={t('settings.fontApply')}
+            title={t('settings.fontApply')}
+            className="text-xs rounded-md px-1.5 py-1 shrink-0 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)]"
+            style={{ backgroundColor: 'var(--accent-blue)', color: 'var(--bg-base)' }}
+          >
+            ✓
+          </button>
+          <button
+            type="button"
+            onClick={exitCustom}
+            aria-label={t('settings.fontCancel')}
+            title={t('settings.fontCancel')}
+            className="text-xs rounded-md px-1.5 py-1 shrink-0 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)]"
+            style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-sub)', border: '1px solid var(--bg-overlay)' }}
+          >
+            ✕
+          </button>
+        </div>
+        <div
+          className="text-xs rounded-md px-2 py-1 w-full text-right truncate"
+          style={{
+            fontFamily: terminalFontFamilyCss(customText),
+            color: 'var(--text-sub)',
+            backgroundColor: 'var(--bg-base)',
+            border: '1px solid var(--bg-surface)',
+            minWidth: 180,
+          }}
+          aria-hidden="true"
+        >
+          {FONT_PREVIEW_SAMPLE}
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Dropdown (installed-font selection) mode ─────────────────────────────
   return (
-    <div className="flex flex-col items-end gap-1.5">
-      <input
-        type="text"
-        list="terminal-font-suggestions"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commitFont}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            commitFont();
-            e.currentTarget.blur();
-          }
-        }}
-        aria-label={t('settings.fontFamily')}
-        placeholder={t('settings.fontFamilyPlaceholder')}
-        spellCheck={false}
-        autoComplete="off"
-        className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
-        style={{
-          backgroundColor: 'var(--bg-surface)',
-          color: 'var(--text-main)',
-          border: '1px solid var(--bg-overlay)',
-          minWidth: 180,
-        }}
-      />
-      <datalist id="terminal-font-suggestions">
-        {suggestions.map((f) => (
-          <option key={f} value={f} />
-        ))}
-      </datalist>
-      {/* Live preview — tracks the raw draft (sanitized by terminalFontFamilyCss)
-          so the user sees Hangul/mono glyphs update as they type, before commit. */}
+    <div className="relative flex flex-col items-end gap-1.5">
+      <div className="relative" style={{ minWidth: 180 }}>
+        <input
+          type="text"
+          role="combobox"
+          aria-expanded={open}
+          aria-controls="terminal-font-listbox"
+          aria-autocomplete="list"
+          value={displayValue}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+            setHighlight(-1);
+          }}
+          onMouseDown={() => {
+            // Toggle on click so a second click closes; opening always shows the
+            // full list (openList resets the query state).
+            if (open) closeReset();
+            else openList();
+          }}
+          onBlur={() => {
+            // Tab-out / click-away just closes and keeps the stored value.
+            // Typing here only filters — committing a not-installed name is the
+            // custom mode's job. Option clicks use onMouseDown+preventDefault, so
+            // they fire first and this is skipped.
+            closeReset();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              if (!open) return openList();
+              setHighlight((h) => Math.min(h + 1, filtered.length - 1));
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              setHighlight((h) => Math.max(h - 1, 0));
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              // Highlighted row first; else the sole/first filtered match.
+              if (highlight >= 0 && filtered[highlight]) selectFont(filtered[highlight]);
+              else if (filtered.length > 0) selectFont(filtered[0]);
+              else closeReset();
+              e.currentTarget.blur();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              closeReset();
+              e.currentTarget.blur();
+            }
+          }}
+          aria-label={t('settings.fontFamily')}
+          // Open + blank → hint the current font so it stays visible while the
+          // field is cleared for browsing; closed → the normal placeholder.
+          placeholder={open && terminalFontFamily ? terminalFontFamily : t('settings.fontFamilyPlaceholder')}
+          spellCheck={false}
+          autoComplete="off"
+          className="text-xs rounded-md pl-2 pr-6 py-1 w-full focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
+          style={{
+            backgroundColor: 'var(--bg-surface)',
+            color: 'var(--text-main)',
+            border: '1px solid var(--bg-overlay)',
+          }}
+        />
+        {/* Chevron affordance — signals this is a dropdown, not a plain field. */}
+        <span
+          className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px]"
+          style={{ color: 'var(--text-muted)' }}
+          aria-hidden="true"
+        >
+          ▼
+        </span>
+        {open && (
+          <ul
+            ref={listRef}
+            id="terminal-font-listbox"
+            role="listbox"
+            className="absolute right-0 z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-md py-1 shadow-lg"
+            style={{
+              backgroundColor: 'var(--bg-surface)',
+              border: '1px solid var(--bg-overlay)',
+            }}
+          >
+            {filtered.map((f, i) => {
+              const isCurrent = f === terminalFontFamily;
+              const isHi = i === highlight;
+              const installed = isInstalled(f);
+              return (
+                <li
+                  key={f}
+                  role="option"
+                  aria-selected={isCurrent}
+                  // preventDefault keeps input focus so onBlur doesn't fire and
+                  // clobber the selection before onMouseDown runs.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    selectFont(f);
+                  }}
+                  onMouseEnter={() => setHighlight(i)}
+                  className="flex items-center justify-between gap-2 px-2 py-1 text-xs cursor-pointer"
+                  style={{
+                    // Greyed when not installed (renders via fallback anyway).
+                    fontFamily: terminalFontFamilyCss(f),
+                    color: installed ? 'var(--text-main)' : 'var(--text-muted)',
+                    backgroundColor: isHi ? 'var(--bg-overlay)' : 'transparent',
+                  }}
+                >
+                  <span className="truncate">{f}</span>
+                  <span className="flex items-center gap-1 shrink-0">
+                    {!installed && (
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {t('settings.fontNotInstalled')}
+                      </span>
+                    )}
+                    {isCurrent && (
+                      <span style={{ color: 'var(--accent-blue)' }} aria-hidden="true">
+                        ✓
+                      </span>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+            {filtered.length === 0 && (
+              <li className="px-2 py-1 text-xs" style={{ color: 'var(--text-muted)' }} aria-disabled="true">
+                —
+              </li>
+            )}
+            {/* Sticky entry point into free-text custom mode. */}
+            <li
+              role="option"
+              aria-selected={false}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                enterCustom();
+              }}
+              className="sticky bottom-0 flex items-center gap-1.5 px-2 py-1.5 text-xs cursor-pointer border-t"
+              style={{
+                backgroundColor: 'var(--bg-surface)',
+                borderColor: 'var(--bg-overlay)',
+                color: 'var(--accent-blue)',
+              }}
+            >
+              <span aria-hidden="true">＋</span>
+              <span>{t('settings.fontCustom')}</span>
+            </li>
+          </ul>
+        )}
+      </div>
+      {/* Live preview — renders the sample in the highlighted/current font so
+          Hangul + mono glyphs are visible before committing. */}
       <div
         className="text-xs rounded-md px-2 py-1 w-full text-right truncate"
         style={{
-          fontFamily: terminalFontFamilyCss(draft),
+          fontFamily: terminalFontFamilyCss(previewTarget),
           color: 'var(--text-sub)',
           backgroundColor: 'var(--bg-base)',
           border: '1px solid var(--bg-surface)',

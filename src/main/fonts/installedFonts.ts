@@ -41,13 +41,36 @@ export function parseFontList(stdout: string): string[] {
   return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
 }
 
+// Resolve powershell.exe candidates. A bare `'powershell.exe'` relies on
+// %SystemRoot%\System32\WindowsPowerShell\v1.0 being on the *spawned* process's
+// PATH — which is NOT guaranteed. In Electron's main process (and some shells)
+// the lookup fails with ENOENT, so the enumeration silently fell into the
+// catch-all `[]` and the Settings picker showed no installed fonts at all.
+// Prefer the absolute path (SystemRoot is always set on Windows), then fall
+// back to the bare name in case SystemRoot is somehow unset but PATH works.
+function powershellCandidates(): string[] {
+  const root = process.env.SystemRoot || process.env.windir;
+  const candidates: string[] = [];
+  if (root) candidates.push(`${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`);
+  candidates.push('powershell.exe');
+  return candidates;
+}
+
 async function listWindowsFonts(): Promise<string[]> {
-  const { stdout } = await execFileAsync(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', PS_FONT_SCRIPT],
-    { timeout: PS_TIMEOUT_MS, windowsHide: true, maxBuffer: PS_MAX_BUFFER, encoding: 'utf8' },
-  );
-  return parseFontList(stdout);
+  const args = ['-NoProfile', '-NonInteractive', '-Command', PS_FONT_SCRIPT];
+  const opts = { timeout: PS_TIMEOUT_MS, windowsHide: true, maxBuffer: PS_MAX_BUFFER, encoding: 'utf8' as const };
+  let lastErr: unknown;
+  for (const exe of powershellCandidates()) {
+    try {
+      const { stdout } = await execFileAsync(exe, args, opts);
+      return parseFontList(stdout);
+    } catch (err) {
+      // Try the next candidate (e.g. ENOENT on the bare name); the public
+      // listInstalledFonts() still swallows a total failure into [].
+      lastErr = err;
+    }
+  }
+  throw lastErr;
 }
 
 /**

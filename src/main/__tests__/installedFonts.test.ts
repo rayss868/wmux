@@ -59,4 +59,36 @@ describe('listInstalledFonts', () => {
     mockExecFileAsync.mockRejectedValue(new Error('spawn ENOENT'));
     await expect(listInstalledFonts()).resolves.toEqual([]);
   });
+
+  it('invokes PowerShell by absolute path, not a bare PATH lookup', async () => {
+    // Regression guard: spawning a bare 'powershell.exe' relies on System32
+    // being on the spawned process's PATH, which fails with ENOENT in Electron's
+    // main process — the enumeration then silently returned []. The first
+    // candidate must be an absolute path so the lookup can't depend on PATH.
+    setPlatform('win32');
+    const prevRoot = process.env.SystemRoot;
+    process.env.SystemRoot = 'C:\\Windows';
+    try {
+      mockExecFileAsync.mockResolvedValue({ stdout: 'Consolas\n', stderr: '' });
+      await listInstalledFonts();
+      const exe = mockExecFileAsync.mock.calls[0][0] as string;
+      expect(exe).not.toBe('powershell.exe');
+      expect(exe).toMatch(/powershell\.exe$/i);
+      expect(exe).toContain('System32');
+    } finally {
+      if (prevRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = prevRoot;
+    }
+  });
+
+  it('falls back to the next candidate when the first spawn fails', async () => {
+    setPlatform('win32');
+    process.env.SystemRoot = 'C:\\Windows';
+    // Absolute path ENOENT → bare name succeeds. End result must still parse.
+    mockExecFileAsync
+      .mockRejectedValueOnce(new Error('spawn ENOENT'))
+      .mockResolvedValueOnce({ stdout: 'Consolas\nFira Code\n', stderr: '' });
+    await expect(listInstalledFonts()).resolves.toEqual(['Consolas', 'Fira Code']);
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(2);
+  });
 });
