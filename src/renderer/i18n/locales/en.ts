@@ -318,6 +318,22 @@ export const en = {
   'settings.xtermSlotReset': 'Reset to preset',
   'settings.xtermResetAll': 'Reset all to preset',
 
+  // Custom theme — contrast safety net (PR1)
+  'settings.contrast.ok': 'Readable',
+  'settings.contrast.warn': 'Contrast {ratio}:1 on {surface} — hard to read',
+  'settings.contrast.severe': 'Contrast {ratio}:1 on {surface} — fails WCAG, very hard to read',
+  'settings.contrast.nudge': 'Use a safe lightness',
+  'settings.contrast.nudgeUnavailable': 'No safe lightness at this hue',
+  'settings.contrast.surface.bgBase': 'base',
+  'settings.contrast.surface.bgSurface': 'surface',
+  'settings.contrast.surface.bgMantle': 'mantle',
+
+  // Custom theme — preset reset (PR1)
+  'settings.theme.basedOn': 'Custom (based on {preset})',
+  'settings.theme.resetToPreset': 'Reset to preset…',
+  'settings.theme.tokenOverridden': 'Changed from preset',
+  'settings.theme.resetToken': 'Reset this color to the preset',
+
   // Floating pane (Quake-style dropdown terminal)
   'floatingPane.title': 'Terminal',
   'floatingPane.close': 'Close',

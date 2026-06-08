@@ -13,6 +13,12 @@ import {
   nearestTailwindSwatch,
   type TailwindHue,
 } from '../../tailwindPalette';
+import {
+  evaluateToken,
+  nudgeForReport,
+  type ForegroundTokenKey,
+  type ContrastReport,
+} from '../../contrastSafety';
 import type { CustomThemeColors, XtermThemeColors } from '../../../shared/types';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
@@ -150,6 +156,75 @@ function StatusBadge({ ok, okLabel = 'OK', failLabel = 'Not OK' }: { ok: boolean
       style={{ color: ok ? 'var(--accent-green)' : 'var(--accent-red)', width: 14, height: 14 }}
     >
       {ok ? <IconCheck /> : <IconX />}
+    </span>
+  );
+}
+
+// ─── Contrast safety badge (custom theme editor, PR1) ───────────────────────
+//
+// Fixed high-contrast styling on purpose: this badge warns when the user's
+// chosen colors are hard to read, so it must stay legible even if the live
+// theme tokens are broken. It therefore NEVER uses var(--*) — every color here
+// is a hardcoded, self-sufficient pair (dark glyphs on light chips). See
+// plans/color-customization-inspect-mode.md §4.4.
+
+// Self-contained palettes (no theme tokens). amber = warning, red = severe.
+const CONTRAST_BADGE_STYLE = {
+  ok:     { bg: '#0B3D1E', fg: '#7DE6A3', border: '#1F7A45' }, // green on near-black
+  warn:   { bg: '#3D2A00', fg: '#FFC247', border: '#A06A00' }, // amber on dark amber
+  severe: { bg: '#4A0F0F', fg: '#FF8A80', border: '#B02A2A' }, // red on dark red
+} as const;
+
+/**
+ * Live WCAG badge for one foreground token. Renders an OK check when every
+ * background pair clears AA, otherwise an amber (or red, if any pair is below
+ * the 3:1 floor) warning chip describing the worst pair. Severe cases announce
+ * via aria-live="assertive". Warning only — no clamping happens here.
+ */
+export function ContrastBadge({
+  report,
+  t,
+  surfaceLabel,
+}: {
+  report: ContrastReport;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+  surfaceLabel: (bg: string) => string;
+}) {
+  if (report.allPass) {
+    const s = CONTRAST_BADGE_STYLE.ok;
+    return (
+      <span
+        role="img"
+        aria-label={t('settings.contrast.ok')}
+        data-testid={`contrast-badge-${report.token}`}
+        data-contrast-state="ok"
+        className="shrink-0 inline-flex items-center justify-center rounded"
+        style={{ backgroundColor: s.bg, color: s.fg, border: `1px solid ${s.border}`, width: 16, height: 16 }}
+      >
+        <IconCheck />
+      </span>
+    );
+  }
+
+  const severe = report.anySevere;
+  const s = severe ? CONTRAST_BADGE_STYLE.severe : CONTRAST_BADGE_STYLE.warn;
+  const ratio = report.worstRatio.toFixed(1);
+  const surface = surfaceLabel(report.worstBg);
+  const msg = t(severe ? 'settings.contrast.severe' : 'settings.contrast.warn', { ratio, surface });
+
+  return (
+    <span
+      role="img"
+      aria-label={msg}
+      // Severe failures (<3:1) are announced assertively; AA misses stay polite.
+      aria-live={severe ? 'assertive' : 'polite'}
+      data-testid={`contrast-badge-${report.token}`}
+      data-contrast-state={severe ? 'severe' : 'warn'}
+      className="shrink-0 inline-flex items-center gap-1 rounded px-1 font-mono tabular-nums"
+      style={{ backgroundColor: s.bg, color: s.fg, border: `1px solid ${s.border}`, height: 16, fontSize: 9, lineHeight: '14px' }}
+    >
+      <span aria-hidden="true" style={{ width: 10, height: 10, display: 'inline-flex' }}><IconX /></span>
+      <span aria-hidden="true">{ratio}:1</span>
     </span>
   );
 }
@@ -1003,10 +1078,36 @@ interface TokenRowProps {
   value: string;
   hueScope?: 'neutral' | 'color' | 'all';
   onChange: (hex: string) => void;
+  /** Live WCAG report for text/accent tokens. Omitted for backgrounds. */
+  contrast?: ContrastReport;
+  /** Translator + surface labeller, only needed when `contrast` is set. */
+  t?: (key: string, vars?: Record<string, string | number>) => string;
+  surfaceLabel?: (bg: string) => string;
+  /** Suggested safe hex from the nudge, or null when AA is unreachable. */
+  nudgeHex?: string | null;
+  /** True when this token differs from the chosen base preset. */
+  overridden?: boolean;
+  /** Reset this single token back to the base preset value. */
+  onResetToBase?: () => void;
 }
 
-function TokenRow({ label, description, value, hueScope, onChange }: TokenRowProps) {
+function TokenRow({
+  label,
+  description,
+  value,
+  hueScope,
+  onChange,
+  contrast,
+  t,
+  surfaceLabel,
+  nudgeHex,
+  overridden,
+  onResetToBase,
+}: TokenRowProps) {
   const [open, setOpen] = useState(false);
+  // Offer the nudge only when there's a real, reachable safe shade that
+  // actually differs from the current value.
+  const canNudge = !!contrast && !contrast.allPass && !!nudgeHex && nudgeHex.toUpperCase() !== value.toUpperCase();
 
   return (
     <div className="flex flex-col gap-1 px-2 py-1.5">
@@ -1014,13 +1115,46 @@ function TokenRow({ label, description, value, hueScope, onChange }: TokenRowPro
         className={`flex items-center justify-between w-full rounded ${FOCUS_RING}`}
         onClick={() => setOpen((o) => !o)}
       >
-        <div className="flex flex-col items-start">
-          <span className="text-[11px] text-[color:var(--text-sub)] font-medium">{label}</span>
-          {description && (
-            <span className="text-[10px] text-[color:var(--text-muted)]">{description}</span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          {/* "Changed from preset" dot — hover/click resets just this token. */}
+          {overridden && onResetToBase && t && (
+            <span
+              role="button"
+              tabIndex={0}
+              aria-label={t('settings.theme.resetToken')}
+              title={`${t('settings.theme.tokenOverridden')} — ${t('settings.theme.resetToken')}`}
+              data-testid={`token-overridden-dot-${label}`}
+              className={`group/dot shrink-0 inline-flex items-center justify-center rounded-full ${FOCUS_RING}`}
+              style={{ width: 12, height: 12 }}
+              onClick={(e) => { e.stopPropagation(); onResetToBase(); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onResetToBase(); }
+              }}
+            >
+              {/* Solid dot at rest, undo glyph on hover/focus. Fixed colors. */}
+              <span
+                className="block rounded-full group-hover/dot:hidden group-focus-visible/dot:hidden"
+                style={{ width: 6, height: 6, backgroundColor: '#FBBF24' }}
+              />
+              <span
+                className="hidden group-hover/dot:inline-flex group-focus-visible/dot:inline-flex"
+                style={{ color: '#FBBF24', width: 10, height: 10 }}
+              >
+                <Icon size={10}><path d="M11.5 4.2A5 5 0 1 0 12 7" /><polyline points="11.8,1.5 11.8,4.4 8.9,4.4" /></Icon>
+              </span>
+            </span>
           )}
+          <div className="flex flex-col items-start min-w-0">
+            <span className="text-[11px] text-[color:var(--text-sub)] font-medium">{label}</span>
+            {description && (
+              <span className="text-[10px] text-[color:var(--text-muted)]">{description}</span>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2">
+          {contrast && t && surfaceLabel && (
+            <ContrastBadge report={contrast} t={t} surfaceLabel={surfaceLabel} />
+          )}
           <span className="text-[10px] text-[color:var(--text-muted)] font-mono tabular-nums">{value.toUpperCase()}</span>
           <span
             className="w-6 h-6 rounded"
@@ -1028,6 +1162,30 @@ function TokenRow({ label, description, value, hueScope, onChange }: TokenRowPro
           />
         </div>
       </button>
+
+      {/* Nudge link — applies the nearest AA-passing lightness. Warning UI is
+          fixed high-contrast so it reads even when the theme is broken. */}
+      {contrast && !contrast.allPass && t && (
+        <div className="flex items-center gap-2 pl-1">
+          {canNudge && nudgeHex ? (
+            <button
+              type="button"
+              data-testid={`contrast-nudge-${contrast.token}`}
+              onClick={() => onChange(nudgeHex)}
+              className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${FOCUS_RING}`}
+              style={{ backgroundColor: '#1F2937', color: '#93C5FD', border: '1px solid #3B5067' }}
+            >
+              <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: nudgeHex, border: '1px solid rgba(255,255,255,0.3)' }} />
+              {t('settings.contrast.nudge')}
+            </button>
+          ) : (
+            <span className="text-[10px]" style={{ color: '#9CA3AF' }}>
+              {t('settings.contrast.nudgeUnavailable')}
+            </span>
+          )}
+        </div>
+      )}
+
       {open && (
         <TailwindSwatchPicker
           value={value}
@@ -1101,31 +1259,85 @@ const TOKEN_DESCRIPTIONS: Record<UITokenSpec['key'], string> = {
   warning: 'Waiting / caution',
 };
 
+// Foreground tokens that get a live WCAG contrast badge (text + accent). The
+// other accents (success/danger/warning) are semantic signal colors, not body
+// text on a surface, so they're left out of the body-AA check.
+const CONTRAST_TOKENS: ReadonlySet<string> = new Set(['textMain', 'textSub', 'textMuted', 'accent']);
+
+/**
+ * Detect which built-in preset a CustomThemeColors most closely came from, by
+ * exact-matching the 10 UI tokens. Returns null when it matches none (fully
+ * hand-tuned). Used to label the header and as the per-token "overridden" base.
+ */
+export function detectBasePreset(colors: CustomThemeColors): BuiltinThemeId | null {
+  for (const { value } of BASE_ON_OPTIONS) {
+    const preset = builtinToCustom(value);
+    const same = UI_TOKEN_GROUPS.every((g) =>
+      g.tokens.every(({ key }) => colors[key].toUpperCase() === preset[key].toUpperCase()),
+    );
+    if (same) return value;
+  }
+  return null;
+}
+
 function CustomThemeEditor() {
   const t = useT();
   const customThemeColors = useStore((s) => s.customThemeColors) ?? DEFAULT_CUSTOM_THEME;
   const setCustomThemeColors = useStore((s) => s.setCustomThemeColors);
   const updateCustomThemeColor = useStore((s) => s.updateCustomThemeColor);
 
+  // The preset the user is comparing against for per-token "overridden" dots.
+  // Seeded from an exact match (if the current colors equal a built-in), else
+  // catppuccin-mocha. A "Reset to preset…" pick updates both the colors and
+  // this base so subsequent edits show as overrides of the new preset.
+  const detected = detectBasePreset(customThemeColors);
+  const [basePreset, setBasePreset] = useState<BuiltinThemeId>(detected ?? 'catppuccin-mocha');
+  // If the live colors exactly match a built-in (e.g. just reseeded), keep the
+  // comparison base in sync so nothing reads as "overridden" right after a reset.
+  const effectiveBase = detected ?? basePreset;
+  const baseColors = useMemo(() => builtinToCustom(effectiveBase), [effectiveBase]);
+  const baseLabel = BASE_ON_OPTIONS.find((o) => o.value === effectiveBase)?.label ?? effectiveBase;
+
+  // Surface-aware contrast: each text/accent token vs bgBase/bgSurface/bgMantle.
+  const reports = useMemo(() => {
+    const out: Partial<Record<ForegroundTokenKey, ContrastReport>> = {};
+    for (const tok of ['textMain', 'textSub', 'textMuted', 'accent'] as ForegroundTokenKey[]) {
+      out[tok] = evaluateToken(tok, customThemeColors);
+    }
+    return out;
+  }, [customThemeColors]);
+
+  const surfaceLabel = (bg: string): string => t(`settings.contrast.surface.${bg}`) || bg;
+
+  const onResetToPreset = (id: BuiltinThemeId): void => {
+    setBasePreset(id);
+    setCustomThemeColors(builtinToCustom(id));
+  };
+
   return (
     <div className="flex flex-col gap-2">
       <SectionLabel label={t('settings.customTheme')} />
 
-      {/* Base on preset */}
+      {/* Header: "Custom (based on …)" + Reset-to-preset control */}
       <div
-        className="flex items-center justify-between px-3 py-2 rounded-lg"
+        className="flex items-center justify-between px-3 py-2 rounded-lg gap-2"
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       >
-        <span className="text-[11px] text-[color:var(--text-sub)]">{t('settings.baseOnPreset')}</span>
+        <span className="text-[11px] text-[color:var(--text-sub)] truncate" data-testid="custom-theme-based-on">
+          {t('settings.theme.basedOn', { preset: baseLabel })}
+        </span>
         <select
-          className={`text-[11px] rounded px-2 py-0.5 font-mono ${FOCUS_RING}`}
+          className={`text-[11px] rounded px-2 py-0.5 font-mono shrink-0 ${FOCUS_RING}`}
           style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--bg-overlay)' }}
+          aria-label={t('settings.theme.resetToPreset')}
+          data-testid="reset-to-preset-select"
           onChange={(e) => {
-            setCustomThemeColors(builtinToCustom(e.target.value as BuiltinThemeId));
+            if (e.target.value) onResetToPreset(e.target.value as BuiltinThemeId);
+            e.currentTarget.value = '';
           }}
-          defaultValue=""
+          value=""
         >
-          <option value="" disabled>{t('settings.selectPreset')}</option>
+          <option value="" disabled>{t('settings.theme.resetToPreset')}</option>
           {BASE_ON_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
@@ -1146,16 +1358,27 @@ function CustomThemeEditor() {
             {t(`settings.tokenGroup.${group.label.toLowerCase()}`) || group.label}
           </div>
           <div className="pb-1">
-            {group.tokens.map(({ key, labelKey, hueScope }) => (
-              <TokenRow
-                key={key}
-                label={t(labelKey) || key}
-                description={TOKEN_DESCRIPTIONS[key]}
-                value={customThemeColors[key]}
-                hueScope={hueScope}
-                onChange={(v) => updateCustomThemeColor(key, v)}
-              />
-            ))}
+            {group.tokens.map(({ key, labelKey, hueScope }) => {
+              const report = CONTRAST_TOKENS.has(key) ? reports[key as ForegroundTokenKey] : undefined;
+              const nudge = report ? nudgeForReport(report, customThemeColors) : null;
+              const overridden = customThemeColors[key].toUpperCase() !== baseColors[key].toUpperCase();
+              return (
+                <TokenRow
+                  key={key}
+                  label={t(labelKey) || key}
+                  description={TOKEN_DESCRIPTIONS[key]}
+                  value={customThemeColors[key]}
+                  hueScope={hueScope}
+                  onChange={(v) => updateCustomThemeColor(key, v)}
+                  contrast={report}
+                  t={t}
+                  surfaceLabel={surfaceLabel}
+                  nudgeHex={nudge ? nudge.hex : undefined}
+                  overridden={overridden}
+                  onResetToBase={() => updateCustomThemeColor(key, baseColors[key])}
+                />
+              );
+            })}
           </div>
         </div>
       ))}
