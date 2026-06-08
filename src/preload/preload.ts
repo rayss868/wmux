@@ -73,6 +73,13 @@ const electronAPI = {
     openPath: (filePath: string) =>
       ipcRenderer.invoke(IPC.SHELL_OPEN_PATH, filePath) as Promise<{ ok: boolean; error?: string }>,
   },
+  fonts: {
+    // Best-effort list of installed font-family names for the Settings font
+    // picker. Always resolves (never rejects); resolves [] on non-Windows or
+    // any enumeration failure. The font input is free-text, so [] just means
+    // "no autocomplete suggestions".
+    list: () => ipcRenderer.invoke(IPC.FONTS_LIST) as Promise<string[]>,
+  },
   session: {
     save: (data: unknown) => ipcRenderer.invoke(IPC.SESSION_SAVE, data),
     load: () => ipcRenderer.invoke(IPC.SESSION_LOAD),

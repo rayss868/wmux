@@ -14,6 +14,7 @@ import { registerPTYHandlers } from './handlers/pty.handler';
 // registered" rejections, the silent .catch resolves, and the next 5s
 // autosave overwrites the previous scrollback files on disk.
 import { registerShellHandlers } from './handlers/shell.handler';
+import { registerFontHandlers } from './handlers/fonts.handler';
 import { registerMetadataHandlers } from './handlers/metadata.handler';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
 import { registerFsHandlers } from './handlers/fs.handler';
@@ -45,6 +46,7 @@ export function registerAllHandlers(
   // main/index.ts) and intentionally NOT in this swap cycle. See the
   // import-block note above for the race rationale.
   const cleanupShell = registerShellHandlers();
+  const cleanupFonts = registerFontHandlers();
   const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow);
   registerClipboardHandlers();
   const cleanupFs = registerFsHandlers();
@@ -106,6 +108,7 @@ export function registerAllHandlers(
     // cleanupSession deliberately omitted — session/scrollback handlers
     // live outside this swap cycle (see import-block note above).
     cleanupShell();
+    cleanupFonts();
     cleanupMetadata();
     cleanupFs();
     if (cleanupMcp) cleanupMcp();

@@ -17,6 +17,7 @@ import type { CustomThemeColors, XtermThemeColors } from '../../../shared/types'
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
+import { terminalFontFamilyCss } from '../../utils/terminalFont';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1369,12 +1370,129 @@ function ThemeSwatch({ colors }: { colors: [string, string, string, string] }) {
   );
 }
 
+// Live-preview sample for the font picker. Mixes Latin, Hangul, and the
+// 0/O · 1/l pairs that monospace fonts disambiguate — so the user instantly
+// sees whether their chosen font has fixed-width CJK glyphs (the whole point
+// of issue #147) and is actually monospaced. Not translated: it is a glyph
+// demo, not prose.
+const FONT_PREVIEW_SAMPLE = 'AaBb 한글 漢字 0O 1l {}';
+
+/**
+ * Font-family picker: a native `<input list>` + `<datalist>` combobox.
+ * Free-text entry (any installed font name works) plus autocomplete
+ * suggestions enumerated from the OS via `electronAPI.fonts.list()`. The
+ * browser handles filtering and keyboard nav natively. A live preview row
+ * renders the sample in the current font. The store setter sanitizes the
+ * value, so nothing here needs to guard the CSS string.
+ */
+function FontFamilyField() {
+  const t = useT();
+  const terminalFontFamily = useStore((s) => s.terminalFontFamily);
+  const setTerminalFontFamily = useStore((s) => s.setTerminalFontFamily);
+  const [systemFonts, setSystemFonts] = useState<string[]>([]);
+
+  // Raw input buffer, decoupled from the sanitized store value. Binding the
+  // input directly to the store would let the setter's sanitize (which trims
+  // and collapses whitespace) fight the user mid-keystroke — typing a space in
+  // "Fira Code" would be deleted as it's entered, making multi-word font names
+  // impossible to type by hand. So we keep the raw text here and only commit
+  // (sanitize → store) on blur / Enter. The store still re-syncs the draft when
+  // it changes externally (session load, reset).
+  const [draft, setDraft] = useState(terminalFontFamily);
+  useEffect(() => {
+    setDraft(terminalFontFamily);
+  }, [terminalFontFamily]);
+  const commitFont = useCallback(() => {
+    setTerminalFontFamily(draft);
+  }, [draft, setTerminalFontFamily]);
+
+  // Fetch installed fonts once when the field mounts. Best-effort: an empty
+  // result (non-Windows, enumeration failed) just means no autocomplete —
+  // the input stays usable as pure free-text. Mirrors the shell.list pattern.
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.fonts
+      .list()
+      .then((fonts) => {
+        if (!cancelled) setSystemFonts(fonts);
+      })
+      .catch(() => {
+        if (!cancelled) setSystemFonts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Seed the suggestion list with the four curated fonts, then merge in the
+  // system fonts (deduped, seeds first so the recommended options lead).
+  const suggestions = useMemo(() => {
+    const seeds = FONT_FAMILY_OPTIONS.map((o) => o.value);
+    const seen = new Set(seeds);
+    const merged = [...seeds];
+    for (const f of systemFonts) {
+      if (!seen.has(f)) {
+        seen.add(f);
+        merged.push(f);
+      }
+    }
+    return merged;
+  }, [systemFonts]);
+
+  return (
+    <div className="flex flex-col items-end gap-1.5">
+      <input
+        type="text"
+        list="terminal-font-suggestions"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commitFont}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            commitFont();
+            e.currentTarget.blur();
+          }
+        }}
+        aria-label={t('settings.fontFamily')}
+        placeholder={t('settings.fontFamilyPlaceholder')}
+        spellCheck={false}
+        autoComplete="off"
+        className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
+        style={{
+          backgroundColor: 'var(--bg-surface)',
+          color: 'var(--text-main)',
+          border: '1px solid var(--bg-overlay)',
+          minWidth: 180,
+        }}
+      />
+      <datalist id="terminal-font-suggestions">
+        {suggestions.map((f) => (
+          <option key={f} value={f} />
+        ))}
+      </datalist>
+      {/* Live preview — tracks the raw draft (sanitized by terminalFontFamilyCss)
+          so the user sees Hangul/mono glyphs update as they type, before commit. */}
+      <div
+        className="text-xs rounded-md px-2 py-1 w-full text-right truncate"
+        style={{
+          fontFamily: terminalFontFamilyCss(draft),
+          color: 'var(--text-sub)',
+          backgroundColor: 'var(--bg-base)',
+          border: '1px solid var(--bg-surface)',
+          minWidth: 180,
+        }}
+        aria-hidden="true"
+      >
+        {FONT_PREVIEW_SAMPLE}
+      </div>
+    </div>
+  );
+}
+
 function TabAppearance() {
   const t = useT();
   const terminalFontSize    = useStore((s) => s.terminalFontSize);
   const setTerminalFontSize = useStore((s) => s.setTerminalFontSize);
-  const terminalFontFamily    = useStore((s) => s.terminalFontFamily);
-  const setTerminalFontFamily = useStore((s) => s.setTerminalFontFamily);
 
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const setSidebarPosition = useStore((s) => s.setSidebarPosition);
@@ -1426,12 +1544,7 @@ function TabAppearance() {
           </div>
         </SettingRow>
         <SettingRow label={t('settings.fontFamily')} description={t('settings.fontFamilyDesc')}>
-          <SettingSelect
-            label={t('settings.fontFamily')}
-            value={terminalFontFamily}
-            onChange={setTerminalFontFamily}
-            options={FONT_FAMILY_OPTIONS}
-          />
+          <FontFamilyField />
         </SettingRow>
       </div>
 

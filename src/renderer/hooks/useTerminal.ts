@@ -14,6 +14,7 @@ import { pastePtyChunked, chunkOnDataIfNeeded } from '../utils/clipboardChunk';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
+import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
 import { webglContextPool } from '../terminal/webglContextPool';
@@ -263,7 +264,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fontSize: terminalFontSize,
       scrollback: scrollbackLines,
       scrollOnUserInput: false,
-      fontFamily: `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`,
+      fontFamily: terminalFontFamilyCss(terminalFontFamily),
       theme: xtermTheme,
       minimumContrastRatio,
       allowProposedApi: true,
@@ -1041,7 +1042,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   useEffect(() => {
     if (!terminalRef.current) return;
     terminalRef.current.options.fontSize = terminalFontSize;
-    terminalRef.current.options.fontFamily = `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`;
+    terminalRef.current.options.fontFamily = terminalFontFamilyCss(terminalFontFamily);
     terminalRef.current.options.theme = xtermTheme;
     terminalRef.current.options.minimumContrastRatio = minimumContrastRatio;
     // Selection-preservation guard — see ResizeObserver above.
