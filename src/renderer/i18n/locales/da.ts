@@ -289,4 +289,36 @@ export const da = {
   'claudeIntegration.usage.status.http-error': 'Anthropic API-fejl',
   'claudeIntegration.usage.status.network-error': 'Netværksfejl',
   'claudeIntegration.usage.status.read-error': 'Fejl ved læsning af loginoplysninger',
+
+  // Settings — Contrast warnings
+  'settings.contrast.ok': 'Læsbar',
+  'settings.contrast.warn': 'Kontrast {ratio}:1 på {surface} — svær at læse',
+  'settings.contrast.severe': 'Kontrast {ratio}:1 på {surface} — opfylder ikke WCAG, meget svær at læse',
+  'settings.contrast.nudge': 'Brug en sikker lysstyrke',
+  'settings.contrast.nudgeUnavailable': 'Ingen sikker lysstyrke ved denne farvetone',
+  'settings.contrast.surface.bgBase': 'baggrund',
+  'settings.contrast.surface.bgSurface': 'overflade',
+  'settings.contrast.surface.bgMantle': 'kappe',
+
+  // Settings — Theme presets
+  'settings.theme.basedOn': 'Tilpasset (baseret på {preset})',
+  'settings.theme.resetToPreset': 'Nulstil til forudindstilling…',
+  'settings.theme.tokenOverridden': 'Ændret fra forudindstilling',
+  'settings.theme.resetToken': 'Nulstil denne farve til forudindstillingen',
+
+  // Settings — Color inspector
+  'settings.inspect.start': 'Vælg en farve på skærmen',
+  'settings.inspect.picking': 'Vælger en farve…',
+  'settings.inspect.appliesTo': 'Gælder for {count} markerede områder',
+  'settings.inspect.followsSource': 'Følger {source}',
+  'settings.inspect.notCustomizable': 'Kan endnu ikke tilpasses',
+  'settings.inspect.done': 'Færdig',
+  'settings.inspect.banner': 'Klik på et område for at redigere dets farve · Esc for at afslutte',
+  'settings.inspect.terminalBg': 'Terminalbaggrund',
+  'settings.inspect.terminalFg': 'Terminaltekst',
+  'settings.inspect.menuFill': 'Fyld',
+  'settings.inspect.menuText': 'Tekst',
+  'settings.inspect.menuBorder': 'Kant',
+  'settings.inspect.menuAccent': 'Accent',
+  'settings.inspect.proxyLabel': 'Rediger {token} ({role})',
 } as const;

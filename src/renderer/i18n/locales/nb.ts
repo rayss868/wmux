@@ -290,4 +290,36 @@ export const nb = {
   'claudeIntegration.usage.status.http-error': 'Feil i Anthropic-API-et',
   'claudeIntegration.usage.status.network-error': 'Nettverksfeil',
   'claudeIntegration.usage.status.read-error': 'Feil ved lesing av påloggingsinformasjon',
+
+  // Settings — Contrast checker
+  'settings.contrast.ok': 'Lesbar',
+  'settings.contrast.warn': 'Kontrast {ratio}:1 på {surface} — vanskelig å lese',
+  'settings.contrast.severe': 'Kontrast {ratio}:1 på {surface} — bryter WCAG, svært vanskelig å lese',
+  'settings.contrast.nudge': 'Bruk en trygg lyshet',
+  'settings.contrast.nudgeUnavailable': 'Ingen trygg lyshet for denne fargetonen',
+  'settings.contrast.surface.bgBase': 'bunn',
+  'settings.contrast.surface.bgSurface': 'overflate',
+  'settings.contrast.surface.bgMantle': 'mantel',
+
+  // Settings — Theme tokens
+  'settings.theme.basedOn': 'Egendefinert (basert på {preset})',
+  'settings.theme.resetToPreset': 'Tilbakestill til forhåndsinnstilling…',
+  'settings.theme.tokenOverridden': 'Endret fra forhåndsinnstilling',
+  'settings.theme.resetToken': 'Tilbakestill denne fargen til forhåndsinnstillingen',
+
+  // Settings — Color inspector
+  'settings.inspect.start': 'Velg en farge på skjermen',
+  'settings.inspect.picking': 'Velger en farge…',
+  'settings.inspect.appliesTo': 'Gjelder {count} markerte områder',
+  'settings.inspect.followsSource': 'Følger {source}',
+  'settings.inspect.notCustomizable': 'Kan ikke tilpasses ennå',
+  'settings.inspect.done': 'Ferdig',
+  'settings.inspect.banner': 'Klikk på et område for å redigere fargen · Esc for å avslutte',
+  'settings.inspect.terminalBg': 'Terminalbakgrunn',
+  'settings.inspect.terminalFg': 'Terminaltekst',
+  'settings.inspect.menuFill': 'Fyll',
+  'settings.inspect.menuText': 'Tekst',
+  'settings.inspect.menuBorder': 'Kant',
+  'settings.inspect.menuAccent': 'Aksent',
+  'settings.inspect.proxyLabel': 'Rediger {token} ({role})',
 } as const;

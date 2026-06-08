@@ -290,4 +290,36 @@ export const bs = {
   'claudeIntegration.usage.status.http-error': 'Greška Anthropic API-ja',
   'claudeIntegration.usage.status.network-error': 'Mrežna greška',
   'claudeIntegration.usage.status.read-error': 'Greška čitanja vjerodajnica',
+
+  // Settings — Contrast checker
+  'settings.contrast.ok': 'Čitljivo',
+  'settings.contrast.warn': 'Kontrast {ratio}:1 na {surface} — teško čitljivo',
+  'settings.contrast.severe': 'Kontrast {ratio}:1 na {surface} — ne ispunjava WCAG, vrlo teško čitljivo',
+  'settings.contrast.nudge': 'Koristi sigurnu svjetlinu',
+  'settings.contrast.nudgeUnavailable': 'Nema sigurne svjetline za ovu nijansu',
+  'settings.contrast.surface.bgBase': 'baza',
+  'settings.contrast.surface.bgSurface': 'površina',
+  'settings.contrast.surface.bgMantle': 'plašt',
+
+  // Settings — Custom theme tokens
+  'settings.theme.basedOn': 'Prilagođeno (bazirano na {preset})',
+  'settings.theme.resetToPreset': 'Vrati na predložak…',
+  'settings.theme.tokenOverridden': 'Izmijenjeno od predloška',
+  'settings.theme.resetToken': 'Vrati ovu boju na predložak',
+
+  // Settings — Color inspector
+  'settings.inspect.start': 'Odaberi boju na ekranu',
+  'settings.inspect.picking': 'Odabir boje…',
+  'settings.inspect.appliesTo': 'Primjenjuje se na {count} označenih područja',
+  'settings.inspect.followsSource': 'Prati {source}',
+  'settings.inspect.notCustomizable': 'Još se ne može prilagoditi',
+  'settings.inspect.done': 'Gotovo',
+  'settings.inspect.banner': 'Klikni područje za uređivanje boje · Esc za završetak',
+  'settings.inspect.terminalBg': 'Pozadina terminala',
+  'settings.inspect.terminalFg': 'Tekst terminala',
+  'settings.inspect.menuFill': 'Ispuna',
+  'settings.inspect.menuText': 'Tekst',
+  'settings.inspect.menuBorder': 'Obrub',
+  'settings.inspect.menuAccent': 'Akcent',
+  'settings.inspect.proxyLabel': 'Uredi {token} ({role})',
 } as const;

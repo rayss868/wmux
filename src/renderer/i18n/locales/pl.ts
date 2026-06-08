@@ -291,4 +291,37 @@ export const pl = {
   'claudeIntegration.usage.status.http-error': 'Błąd API Anthropic',
   'claudeIntegration.usage.status.network-error': 'Błąd sieci',
   'claudeIntegration.usage.status.read-error': 'Błąd odczytu poświadczeń',
+
+  // Settings — Contrast checker (custom theme accessibility)
+  'settings.contrast.ok': 'Czytelne',
+  'settings.contrast.warn': 'Kontrast {ratio}:1 na {surface} — trudny do odczytania',
+  'settings.contrast.severe':
+    'Kontrast {ratio}:1 na {surface} — nie spełnia WCAG, bardzo trudny do odczytania',
+  'settings.contrast.nudge': 'Użyj bezpiecznej jasności',
+  'settings.contrast.nudgeUnavailable': 'Brak bezpiecznej jasności dla tego odcienia',
+  'settings.contrast.surface.bgBase': 'tło',
+  'settings.contrast.surface.bgSurface': 'powierzchnia',
+  'settings.contrast.surface.bgMantle': 'płaszcz',
+
+  // Settings — Custom theme editing
+  'settings.theme.basedOn': 'Niestandardowy (na podstawie {preset})',
+  'settings.theme.resetToPreset': 'Przywróć ustawienie wstępne…',
+  'settings.theme.tokenOverridden': 'Zmieniono względem ustawienia wstępnego',
+  'settings.theme.resetToken': 'Przywróć ten kolor do ustawienia wstępnego',
+
+  // Settings — Color inspector (pick a color on screen)
+  'settings.inspect.start': 'Wybierz kolor na ekranie',
+  'settings.inspect.picking': 'Wybieranie koloru…',
+  'settings.inspect.appliesTo': 'Dotyczy {count} zaznaczonych obszarów',
+  'settings.inspect.followsSource': 'Podąża za {source}',
+  'settings.inspect.notCustomizable': 'Jeszcze nie można dostosować',
+  'settings.inspect.done': 'Gotowe',
+  'settings.inspect.banner': 'Kliknij obszar, aby edytować jego kolor · Esc, aby zakończyć',
+  'settings.inspect.terminalBg': 'Tło terminala',
+  'settings.inspect.terminalFg': 'Tekst terminala',
+  'settings.inspect.menuFill': 'Wypełnienie',
+  'settings.inspect.menuText': 'Tekst',
+  'settings.inspect.menuBorder': 'Obramowanie',
+  'settings.inspect.menuAccent': 'Akcent',
+  'settings.inspect.proxyLabel': 'Edytuj {token} ({role})',
 } as const;

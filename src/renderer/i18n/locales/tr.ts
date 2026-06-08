@@ -291,4 +291,36 @@ export const tr = {
   'claudeIntegration.usage.status.http-error': 'Anthropic API hatası',
   'claudeIntegration.usage.status.network-error': 'Ağ hatası',
   'claudeIntegration.usage.status.read-error': 'Kimlik bilgisi okuma hatası',
+
+  // Settings — Color contrast feedback
+  'settings.contrast.ok': 'Okunabilir',
+  'settings.contrast.warn': '{surface} üzerinde {ratio}:1 kontrast — okunması zor',
+  'settings.contrast.severe': '{surface} üzerinde {ratio}:1 kontrast — WCAG\'ı geçemiyor, okunması çok zor',
+  'settings.contrast.nudge': 'Güvenli bir parlaklık kullan',
+  'settings.contrast.nudgeUnavailable': 'Bu tonda güvenli parlaklık yok',
+  'settings.contrast.surface.bgBase': 'taban',
+  'settings.contrast.surface.bgSurface': 'yüzey',
+  'settings.contrast.surface.bgMantle': 'manto',
+
+  // Settings — Theme presets and token overrides
+  'settings.theme.basedOn': 'Özel ({preset} tabanlı)',
+  'settings.theme.resetToPreset': 'Ön ayara sıfırla…',
+  'settings.theme.tokenOverridden': 'Ön ayardan değiştirildi',
+  'settings.theme.resetToken': 'Bu rengi ön ayara sıfırla',
+
+  // Settings — Color inspector / eyedropper
+  'settings.inspect.start': 'Ekrandan bir renk seç',
+  'settings.inspect.picking': 'Renk seçiliyor…',
+  'settings.inspect.appliesTo': '{count} işaretli alana uygulanır',
+  'settings.inspect.followsSource': '{source} ögesini izler',
+  'settings.inspect.notCustomizable': 'Henüz özelleştirilemiyor',
+  'settings.inspect.done': 'Bitti',
+  'settings.inspect.banner': 'Rengini düzenlemek için bir alana tıklayın · Bitirmek için Esc',
+  'settings.inspect.terminalBg': 'Terminal arka planı',
+  'settings.inspect.terminalFg': 'Terminal metni',
+  'settings.inspect.menuFill': 'Dolgu',
+  'settings.inspect.menuText': 'Metin',
+  'settings.inspect.menuBorder': 'Kenarlık',
+  'settings.inspect.menuAccent': 'Vurgu',
+  'settings.inspect.proxyLabel': '{token} düzenle ({role})',
 } as const;

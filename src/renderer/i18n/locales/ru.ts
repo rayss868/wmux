@@ -291,4 +291,36 @@ export const ru = {
   'claudeIntegration.usage.status.http-error': 'Ошибка API Anthropic',
   'claudeIntegration.usage.status.network-error': 'Ошибка сети',
   'claudeIntegration.usage.status.read-error': 'Ошибка чтения учётных данных',
+
+  // Settings — Contrast checker
+  'settings.contrast.ok': 'Читаемо',
+  'settings.contrast.warn': 'Контраст {ratio}:1 на {surface} — трудно читать',
+  'settings.contrast.severe': 'Контраст {ratio}:1 на {surface} — не проходит WCAG, читать очень трудно',
+  'settings.contrast.nudge': 'Использовать безопасную светлоту',
+  'settings.contrast.nudgeUnavailable': 'Нет безопасной светлоты при этом оттенке',
+  'settings.contrast.surface.bgBase': 'фон',
+  'settings.contrast.surface.bgSurface': 'поверхность',
+  'settings.contrast.surface.bgMantle': 'мантия',
+
+  // Settings — Theme presets and token overrides
+  'settings.theme.basedOn': 'Своя (на основе {preset})',
+  'settings.theme.resetToPreset': 'Сбросить к пресету…',
+  'settings.theme.tokenOverridden': 'Изменено относительно пресета',
+  'settings.theme.resetToken': 'Сбросить этот цвет к пресету',
+
+  // Settings — Color inspector
+  'settings.inspect.start': 'Выбрать цвет на экране',
+  'settings.inspect.picking': 'Выбор цвета…',
+  'settings.inspect.appliesTo': 'Применяется к {count} отмеченным областям',
+  'settings.inspect.followsSource': 'Следует за {source}',
+  'settings.inspect.notCustomizable': 'Пока нельзя настроить',
+  'settings.inspect.done': 'Готово',
+  'settings.inspect.banner': 'Нажмите на область, чтобы изменить её цвет · Esc для завершения',
+  'settings.inspect.terminalBg': 'Фон терминала',
+  'settings.inspect.terminalFg': 'Текст терминала',
+  'settings.inspect.menuFill': 'Заливка',
+  'settings.inspect.menuText': 'Текст',
+  'settings.inspect.menuBorder': 'Граница',
+  'settings.inspect.menuAccent': 'Акцент',
+  'settings.inspect.proxyLabel': 'Изменить {token} ({role})',
 } as const;

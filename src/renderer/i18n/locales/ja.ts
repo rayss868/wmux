@@ -332,4 +332,36 @@ export const ja = {
   'claudeIntegration.usage.status.http-error': 'Anthropic API エラー',
   'claudeIntegration.usage.status.network-error': 'ネットワークエラー',
   'claudeIntegration.usage.status.read-error': '認証情報の読み取りエラー',
+
+  // Settings — Contrast checker
+  'settings.contrast.ok': '読みやすい',
+  'settings.contrast.warn': '{surface} 上でコントラスト比 {ratio}:1 — 読みにくい',
+  'settings.contrast.severe': '{surface} 上でコントラスト比 {ratio}:1 — WCAG 不適合、非常に読みにくい',
+  'settings.contrast.nudge': '安全な明度を使う',
+  'settings.contrast.nudgeUnavailable': 'この色相に安全な明度はありません',
+  'settings.contrast.surface.bgBase': 'ベース',
+  'settings.contrast.surface.bgSurface': 'サーフェス',
+  'settings.contrast.surface.bgMantle': 'マントル',
+
+  // Settings — Theme preset state
+  'settings.theme.basedOn': 'カスタム ({preset} がベース)',
+  'settings.theme.resetToPreset': 'プリセットに戻す…',
+  'settings.theme.tokenOverridden': 'プリセットから変更済み',
+  'settings.theme.resetToken': 'この色をプリセットに戻す',
+
+  // Settings — Color inspector
+  'settings.inspect.start': '画面上の色を選ぶ',
+  'settings.inspect.picking': '色を選択中…',
+  'settings.inspect.appliesTo': 'マークされた {count} 箇所に適用',
+  'settings.inspect.followsSource': '{source} に追従',
+  'settings.inspect.notCustomizable': 'まだカスタマイズできません',
+  'settings.inspect.done': '完了',
+  'settings.inspect.banner': '色を編集する領域をクリック · Esc で終了',
+  'settings.inspect.terminalBg': 'ターミナル背景',
+  'settings.inspect.terminalFg': 'ターミナル文字',
+  'settings.inspect.menuFill': '塗り',
+  'settings.inspect.menuText': '文字',
+  'settings.inspect.menuBorder': '枠線',
+  'settings.inspect.menuAccent': 'アクセント',
+  'settings.inspect.proxyLabel': '{token} を編集 ({role})',
 } as const;

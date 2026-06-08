@@ -290,4 +290,36 @@ export const it = {
   'claudeIntegration.usage.status.http-error': 'Errore dell\'API Anthropic',
   'claudeIntegration.usage.status.network-error': 'Errore di rete',
   'claudeIntegration.usage.status.read-error': 'Errore di lettura delle credenziali',
+
+  // Settings — Color contrast checker
+  'settings.contrast.ok': 'Leggibile',
+  'settings.contrast.warn': 'Contrasto {ratio}:1 su {surface} — difficile da leggere',
+  'settings.contrast.severe': 'Contrasto {ratio}:1 su {surface} — non conforme alle WCAG, molto difficile da leggere',
+  'settings.contrast.nudge': 'Usa una luminosità sicura',
+  'settings.contrast.nudgeUnavailable': 'Nessuna luminosità sicura per questa tonalità',
+  'settings.contrast.surface.bgBase': 'base',
+  'settings.contrast.surface.bgSurface': 'superficie',
+  'settings.contrast.surface.bgMantle': 'mantello',
+
+  // Settings — Custom theme presets and token overrides
+  'settings.theme.basedOn': 'Personalizzato (basato su {preset})',
+  'settings.theme.resetToPreset': 'Ripristina preimpostazione…',
+  'settings.theme.tokenOverridden': 'Modificato rispetto alla preimpostazione',
+  'settings.theme.resetToken': 'Ripristina questo colore alla preimpostazione',
+
+  // Settings — On-screen color inspector
+  'settings.inspect.start': 'Scegli un colore sullo schermo',
+  'settings.inspect.picking': 'Selezione di un colore…',
+  'settings.inspect.appliesTo': 'Si applica a {count} aree contrassegnate',
+  'settings.inspect.followsSource': 'Segue {source}',
+  'settings.inspect.notCustomizable': 'Non ancora personalizzabile',
+  'settings.inspect.done': 'Fine',
+  'settings.inspect.banner': 'Fai clic su un\'area per modificarne il colore · Esc per terminare',
+  'settings.inspect.terminalBg': 'Sfondo del terminale',
+  'settings.inspect.terminalFg': 'Testo del terminale',
+  'settings.inspect.menuFill': 'Riempimento',
+  'settings.inspect.menuText': 'Testo',
+  'settings.inspect.menuBorder': 'Bordo',
+  'settings.inspect.menuAccent': 'Accento',
+  'settings.inspect.proxyLabel': 'Modifica {token} ({role})',
 } as const;
