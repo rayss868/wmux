@@ -226,6 +226,26 @@ function hintNode(): HTMLElement | null {
   return root ? root.querySelector<HTMLElement>('[role="status"]') : null;
 }
 
+/** The banner's "Done" button (always present so the user can always exit). */
+function doneButton(): HTMLButtonElement {
+  const root = overlayRoot();
+  if (!root) throw new Error('overlay not mounted');
+  const btn = Array.from(root.querySelectorAll<HTMLButtonElement>('button')).find(
+    (b) => (b.textContent ?? '').trim() === 'Done',
+  );
+  if (!btn) throw new Error('Done button not found');
+  return btn;
+}
+
+/** The banner container that hosts the Done button — it opts back into pointer
+ *  events (pointerEvents:'auto') so the user can always exit, even though the
+ *  overlay root is a pass-through container. */
+function bannerContainer(): HTMLElement {
+  const parent = doneButton().parentElement;
+  if (!parent) throw new Error('banner container not found');
+  return parent;
+}
+
 // ─── Event dispatch helpers ─────────────────────────────────────────────────
 
 function dispatchPointerMove(x: number, y: number): void {
@@ -490,6 +510,76 @@ describe('InspectOverlay — dynamic mount lifecycle (S4)', () => {
     // card's bg token bgSurface is used by exactly one region → 1 highlight.
     expect(highlightNodes()).toHaveLength(1);
     expect(chipText()).toBe('Applies to 1 marked areas');
+  });
+
+  // ── Scenario 9b: root is a pass-through; crosshair lives on the capture
+  //     layer; picker is never blocked once a target is set ────────────────
+  // Regression lock for the "+ cursor stuck / picker blocked until Done" bug:
+  // the root div used to be pointer-events:auto (default) and own the crosshair,
+  // so even when the capture layer yielded, the full-screen z-65 root swallowed
+  // clicks meant for the Settings picker (z-50) underneath. The fix makes the
+  // root a pass-through container (pointerEvents:'none') and moves the crosshair
+  // onto the capture layer, so clearing capture lets clicks fall through.
+  it('9b. root never blocks the picker — root pointer-events:none, crosshair on the capture layer', () => {
+    const scene = buildScene();
+    mount();
+    enterInspect();
+
+    const rootEl = overlayRoot()!;
+    const layer = captureLayer();
+
+    // INVARIANT 1: the root is always a pass-through container so it can never
+    // intercept clicks destined for the Settings picker beneath it.
+    expect(rootEl.style.pointerEvents).toBe('none');
+    // INVARIANT 2: the crosshair affordance lives on the capture layer, NOT the
+    // root (otherwise a stuck "+" cursor persists over the picker).
+    expect(rootEl.style.cursor).toBe('');
+    expect(layer.style.cursor).toBe('crosshair');
+
+    // While capturing (no target): the capture layer owns events.
+    expect(layer.style.pointerEvents).toBe('auto');
+
+    // Set a target → BOTH the root and the capture layer must be transparent to
+    // pointer events so the click reaches the picker (not just the layer).
+    act(() => {
+      useStore.getState().setInspectTarget('bgMantle', 'bg');
+    });
+    expect(rootEl.style.pointerEvents).toBe('none'); // root still pass-through
+    expect(captureLayer().style.pointerEvents).toBe('none'); // layer yielded
+    // crosshair stays on the (now-inert) capture layer; the root never shows it.
+    expect(overlayRoot()!.style.cursor).toBe('');
+    expect(captureLayer().style.cursor).toBe('crosshair');
+  });
+
+  // ── Scenario 9c: banner/Done stays clickable in BOTH capture states ──────
+  // The banner opts back into pointer events (pointerEvents:'auto') even though
+  // the root is pass-through, so the user can always exit — with OR without a
+  // pending target.
+  it('9c. Done stays clickable (pointer-events:auto) and exits in both capture states', () => {
+    const scene = buildScene();
+    mount();
+    enterInspect();
+
+    // State A — capturing (no target): banner opts in despite the pass-through root.
+    expect(bannerContainer().style.pointerEvents).toBe('auto');
+    dispatchClick(0, 0, doneButton());
+    expect(useStore.getState().inspectModeActive).toBe(false);
+
+    // State B — target pending: banner is still the one auto element; Done exits.
+    resetStore();
+    enterInspect();
+    act(() => {
+      useStore.getState().setInspectTarget('bgMantle', 'bg');
+    });
+    // Root pass-through + capture yielded, yet the banner remains interactive.
+    expect(overlayRoot()!.style.pointerEvents).toBe('none');
+    expect(captureLayer().style.pointerEvents).toBe('none');
+    expect(bannerContainer().style.pointerEvents).toBe('auto');
+    dispatchClick(0, 0, doneButton());
+    expect(useStore.getState().inspectModeActive).toBe(false);
+
+    // Touch the unused fixture so the scene builder isn't flagged dead.
+    expect(scene.sidebarA).toBeTruthy();
   });
 
   // ── Scenario 10: ESC exits inspect ──────────────────────────────────────

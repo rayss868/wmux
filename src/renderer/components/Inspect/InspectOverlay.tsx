@@ -359,7 +359,13 @@ export default function InspectOverlay(): React.ReactElement | null {
       tabIndex={-1}
       onKeyDown={onKeyDown}
       className="fixed inset-0 z-[65] outline-none"
-      style={{ cursor: 'crosshair' }}
+      // Root is a pass-through container: pointer-events:none so that once a
+      // target is set and the capture layer yields (pointer-events:none below),
+      // clicks fall through to the Settings picker (z-50) underneath instead of
+      // the root swallowing them. Children that need clicks opt back in with
+      // pointerEvents:'auto' (capture layer while capturing, role/terminal menus,
+      // banner/Done). crosshair lives on the capture layer, not here.
+      style={{ pointerEvents: 'none' }}
       aria-label={t('settings.inspect.banner')}
       role="application"
     >
@@ -371,7 +377,7 @@ export default function InspectOverlay(): React.ReactElement | null {
         ref={captureRef}
         data-inspect-overlay
         className="absolute inset-0"
-        style={{ pointerEvents: capturing ? 'auto' : 'none' }}
+        style={{ pointerEvents: capturing ? 'auto' : 'none', cursor: 'crosshair' }}
         onPointerMove={onPointerMove}
         onClick={onClick}
       />
