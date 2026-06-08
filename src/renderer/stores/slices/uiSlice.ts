@@ -28,6 +28,7 @@ import {
   type UIThemeTokenKey,
   type TokenRole,
 } from '../../themes';
+import { sanitizeFontFamily } from '../../utils/terminalFont';
 
 // String-valued tokens only. xtermOverrides is an object handled by separate
 // setXtermOverride / clearXtermOverrides actions below.
@@ -586,8 +587,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   terminalFontFamily: 'Cascadia Code',
 
+  // Sanitize at the trust boundary so the stored value can never carry
+  // CSS-injection characters into the xterm fontFamily string. An empty result
+  // (name was blank/all-unsafe) falls back to the default so the terminal keeps
+  // a valid monospace font. See utils/terminalFont.ts for the threat model.
   setTerminalFontFamily: (family) => set((state) => {
-    state.terminalFontFamily = family;
+    const safe = sanitizeFontFamily(family);
+    state.terminalFontFamily = safe || 'Cascadia Code';
   }),
 
   defaultShell: 'powershell',

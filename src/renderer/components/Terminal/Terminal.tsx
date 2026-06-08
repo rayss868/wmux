@@ -4,6 +4,7 @@ import { useStore } from '../../stores';
 import { useIpc } from '../../hooks/useIpc';
 import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
+import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { isFileDrag } from '../../../shared/dragDrop';
 import ViCopyMode from './ViCopyMode';
 import SearchBar from './SearchBar';
@@ -95,7 +96,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       try {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d')!;
-        ctx.font = `${fontSize}px '${fontFamily}', Consolas, 'Courier New', 'Malgun Gothic', monospace`;
+        ctx.font = `${fontSize}px ${terminalFontFamilyCss(fontFamily)}`;
         charWidth = ctx.measureText('W').width;
         lineHeight = fontSize * 1.2;
       } catch {

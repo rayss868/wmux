@@ -6,6 +6,7 @@ import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
 import { resetInspectState } from './uiSlice';
+import { sanitizeFontFamily } from '../../utils/terminalFont';
 import { publishWorkspaceMetadataChanged } from '../../events/publisher';
 
 /** Collect all leaf panes from a pane tree */
@@ -392,7 +393,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         i18nSetLocale(data.locale as Locale);
       }
       if (data.terminalFontSize != null) state.terminalFontSize = data.terminalFontSize;
-      if (data.terminalFontFamily) state.terminalFontFamily = data.terminalFontFamily;
+      // Sanitize on load too — session.json is untrusted (hand-editable), and
+      // this path bypasses setTerminalFontFamily's write-time sanitize. Keeps
+      // the "stored value is always clean" invariant (terminalFont.ts) intact
+      // so a poisoned font string can't round-trip back to disk or reach a CSS
+      // sink that forgets to re-sanitize.
+      if (data.terminalFontFamily) {
+        state.terminalFontFamily = sanitizeFontFamily(data.terminalFontFamily) || 'Cascadia Code';
+      }
       if (data.defaultShell) state.defaultShell = data.defaultShell;
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
       if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;
