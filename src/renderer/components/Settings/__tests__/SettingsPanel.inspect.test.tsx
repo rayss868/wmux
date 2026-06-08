@@ -15,6 +15,8 @@
  * DOGFOOD-only (no DOM in this env).
  */
 import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
@@ -112,5 +114,85 @@ describe('InspectMinimizedBar (D-settings)', () => {
     const doneBtn = (el.props as { onDone: () => void });
     doneBtn.onDone();
     expect(onDone).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── Integration glue: handleClose clears the target so hover resumes ─────────
+// The full modal's close affordances (X / footer / backdrop) collapse back to
+// the floating bar while inspecting AND must clear the pending target — without
+// that, overlayShouldCapture stays false and the user can never hover-pick a
+// second region. handleClose is a component-internal closure (pulls in the whole
+// store, can't be imported under node-env vitest), so this is a source-structural
+// assertion in the same spirit as the useRpcBridge / pty.handler scans.
+describe('SettingsPanel handleClose — clears inspect target (integration glue)', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'SettingsPanel.tsx'),
+    'utf-8',
+  );
+
+  /** Isolate the handleClose body so assertions can't match elsewhere. */
+  function handleCloseBody(): string {
+    const m = src.match(/const handleClose =\s*\(\) =>\s*\{([\s\S]*?)\n {2}\};/);
+    expect(m, 'handleClose not found in SettingsPanel').not.toBeNull();
+    return (m as RegExpMatchArray)[1];
+  }
+
+  it('subscribes to clearInspectTarget from the store', () => {
+    expect(src).toMatch(/const clearInspectTarget = useStore\(\(s\) => s\.clearInspectTarget\)/);
+  });
+
+  it('calls clearInspectTarget inside the inspect-active branch', () => {
+    const body = handleCloseBody();
+    // The inspect-active branch (the one that returns early) must clear the
+    // target so the overlay re-arms hover.
+    expect(body).toContain('if (inspectModeActive)');
+    expect(body).toContain('clearInspectTarget()');
+    // And it must NOT fully close Settings while inspecting (that path is for
+    // the non-inspect branch only — guards the D-settings stay-mounted rule).
+    const inspectBranch = body.match(/if \(inspectModeActive\) \{([\s\S]*?)return;/);
+    expect(inspectBranch).not.toBeNull();
+    expect((inspectBranch as RegExpMatchArray)[1]).not.toContain('setVisible(false)');
+  });
+});
+
+// ─── Integration glue: the overlay pick path stays in inspect ─────────────────
+// Mirror-asserts the overlay contract from the SettingsPanel side: pickToken /
+// pickTerminal must set a target WITHOUT calling exitInspect (the old bug nulled
+// the target immediately, so the picker never saw which region was clicked).
+describe('InspectOverlay pick path — does not exit inspect on pick (glue)', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'Inspect', 'InspectOverlay.tsx'),
+    'utf-8',
+  );
+
+  function pickTokenBody(): string {
+    const m = src.match(/const pickToken = useCallback\(\s*\([\s\S]*?\) => \{([\s\S]*?)\},/);
+    expect(m, 'pickToken not found').not.toBeNull();
+    return (m as RegExpMatchArray)[1];
+  }
+
+  function pickTerminalBody(): string {
+    const m = src.match(/const pickTerminal = useCallback\(\s*\([\s\S]*?\) => \{([\s\S]*?)\},/);
+    expect(m, 'pickTerminal not found').not.toBeNull();
+    return (m as RegExpMatchArray)[1];
+  }
+
+  it('pickToken sets the target but does not call exitInspect', () => {
+    const body = pickTokenBody();
+    expect(body).toContain('setInspectTarget(');
+    expect(body).not.toContain('exitInspect');
+  });
+
+  it('pickTerminal sets the slot but does not call exitInspect', () => {
+    const body = pickTerminalBody();
+    expect(body).toContain('setInspectXtermTarget(');
+    expect(body).not.toContain('exitInspect');
+  });
+
+  it('the capture layer toggles pointer-events off the `capturing` flag', () => {
+    // The transparent layer yields capture while a target is pending so clicks
+    // reach the Settings picker (overlayShouldCapture).
+    expect(src).toContain("pointerEvents: capturing ? 'auto' : 'none'");
+    expect(src).toContain('overlayShouldCapture(active, hasTarget)');
   });
 });

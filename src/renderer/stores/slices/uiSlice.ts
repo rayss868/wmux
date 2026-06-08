@@ -130,6 +130,14 @@ export interface UISlice {
   exitInspect: () => void;
   setInspectTarget: (token: UIThemeTokenKey, role: TokenRole) => void;
   setInspectXtermTarget: (target: 'background' | 'foreground' | null) => void;
+  // Clear BOTH pending targets (UI token + xterm slot) without leaving inspect.
+  // Integration contract: after a click commits a target the overlay yields its
+  // capture and the full Settings modal re-expands to edit it; when the user
+  // closes that editor we must clear the target so the overlay resumes hover
+  // inspection (it stays paused while a target is pending). setInspectTarget can
+  // only set a non-null token, so this is the only path back to "no target,
+  // still inspecting" — without it a single click strands inspect forever.
+  clearInspectTarget: () => void;
 
   // ─── Layout ────────────────────────────────────────────────────────────
   sidebarPosition: 'left' | 'right';
@@ -659,6 +667,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     // Symmetric to setInspectTarget: choosing a terminal slot clears the UI
     // token target so only the xterm background/foreground editor opens.
     if (target !== null) state.inspectTargetToken = null;
+  }),
+
+  clearInspectTarget: () => set((state) => {
+    // Drop both pending targets but stay in inspect — the overlay resumes hover
+    // (overlayShouldCapture goes back to true) so the user can keep picking.
+    // Deliberately does NOT touch inspectModeActive / inspectMinimized /
+    // settingsPanelVisible; only exitInspect tears the mode down.
+    state.inspectTargetToken = null;
+    state.inspectXtermTarget = null;
   }),
 
   // ─── Layout ────────────────────────────────────────────────────────────

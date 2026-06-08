@@ -2795,6 +2795,7 @@ export default function SettingsPanel() {
   const inspectTargetToken = useStore((s) => s.inspectTargetToken);
   const inspectXtermTarget = useStore((s) => s.inspectXtermTarget);
   const exitInspect = useStore((s) => s.exitInspect);
+  const clearInspectTarget = useStore((s) => s.clearInspectTarget);
 
   // A pending target (overlay clicked a region/terminal slot) temporarily
   // restores the full modal so the user can edit that color — Settings stays
@@ -2863,6 +2864,12 @@ export default function SettingsPanel() {
   const handleClose = () => {
     if (inspectModeActive) {
       setDismissedTarget(true);
+      // Integration contract: clear the pending target so the overlay resumes
+      // hover inspection (overlayShouldCapture flips back to true). Without this
+      // the target stays set, the overlay keeps yielding capture, and the user
+      // can never hover-pick a second region — inspect is stranded after one
+      // click. This collapses Settings to the floating bar and re-arms picking.
+      clearInspectTarget();
       return;
     }
     setVisible(false);

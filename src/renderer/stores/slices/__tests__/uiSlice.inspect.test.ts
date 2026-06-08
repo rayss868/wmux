@@ -178,6 +178,72 @@ describe('UISlice — exitInspect + setInspectTarget', () => {
   });
 });
 
+// ─── Integration glue (P0): a picked target must NOT tear inspect down ──────
+// The overlay's pickToken/pickTerminal set a target and STAY in inspect so the
+// Settings picker can open underneath (the overlay yields capture). Only ESC /
+// Done (exitInspect) leaves the mode. These assert the store-side contract the
+// overlay relies on; the pointer-events yield itself is overlayShouldCapture.
+describe('UISlice — inspect target lifecycle (integration glue)', () => {
+  let store: ReturnType<typeof createUIStore>;
+  beforeEach(() => { store = createUIStore(); });
+
+  it('a UI-token pick keeps inspect active with the target pending', () => {
+    store.getState().enterInspect();
+    // Mirrors overlay.pickToken — setInspectTarget WITHOUT exitInspect.
+    store.getState().setInspectTarget('bgSurface', 'bg');
+    expect(store.getState().inspectTargetToken).toEqual({ token: 'bgSurface', role: 'bg' });
+    // Must NOT have torn inspect down (the old exitInspect-on-pick bug).
+    expect(store.getState().inspectModeActive).toBe(true);
+    expect(store.getState().inspectMinimized).toBe(true);
+    expect(store.getState().settingsPanelVisible).toBe(true);
+  });
+
+  it('a terminal-slot pick keeps inspect active with the slot pending', () => {
+    store.getState().enterInspect();
+    store.getState().setInspectXtermTarget('background');
+    expect(store.getState().inspectXtermTarget).toBe('background');
+    expect(store.getState().inspectTargetToken).toBeNull(); // mutually exclusive
+    expect(store.getState().inspectModeActive).toBe(true);
+  });
+
+  it('clearInspectTarget drops both targets but stays in inspect (hover resumes)', () => {
+    store.getState().enterInspect();
+    store.getState().setInspectTarget('accent', 'accent');
+    store.getState().clearInspectTarget();
+    expect(store.getState().inspectTargetToken).toBeNull();
+    expect(store.getState().inspectXtermTarget).toBeNull();
+    // Crucially still inspecting + minimized so the overlay re-arms hover and
+    // the user can pick a second region (the "stranded after one click" bug).
+    expect(store.getState().inspectModeActive).toBe(true);
+    expect(store.getState().inspectMinimized).toBe(true);
+    expect(store.getState().settingsPanelVisible).toBe(true);
+  });
+
+  it('clearInspectTarget also clears a pending terminal slot', () => {
+    store.getState().enterInspect();
+    store.getState().setInspectXtermTarget('foreground');
+    store.getState().clearInspectTarget();
+    expect(store.getState().inspectXtermTarget).toBeNull();
+    expect(store.getState().inspectModeActive).toBe(true);
+  });
+
+  it('pick → clear → pick a second region round-trips (multi-pick session)', () => {
+    store.getState().enterInspect();
+    store.getState().setInspectTarget('bgBase', 'bg');
+    store.getState().clearInspectTarget();      // user closed the first picker
+    store.getState().setInspectTarget('textMain', 'text'); // hover-picks again
+    expect(store.getState().inspectTargetToken).toEqual({ token: 'textMain', role: 'text' });
+    expect(store.getState().inspectModeActive).toBe(true);
+  });
+
+  it('clearInspectTarget on a no-target inspect session is a safe no-op', () => {
+    store.getState().enterInspect();
+    store.getState().clearInspectTarget();
+    expect(store.getState().inspectTargetToken).toBeNull();
+    expect(store.getState().inspectModeActive).toBe(true);
+  });
+});
+
 // D-teardown is implemented inside workspaceSlice.setActiveWorkspace via the
 // shared resetInspectState helper, so we exercise the real switch path against
 // a workspace store with the inspect fields overlaid.

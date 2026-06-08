@@ -27,6 +27,7 @@ import {
   resolveClickAction,
   isTerminalElement,
   firstNonOverlayElement,
+  overlayShouldCapture,
   type RoleOption,
   type InspectAction,
 } from './inspectActions';
@@ -87,7 +88,15 @@ export default function InspectOverlay(): React.ReactElement | null {
   const exitInspect = useStore((s) => s.exitInspect);
   const setInspectTarget = useStore((s) => s.setInspectTarget);
   const setInspectXtermTarget = useStore((s) => s.setInspectXtermTarget);
+  // A pending target (UI token or xterm slot) means the Settings picker is open
+  // underneath; the overlay must yield its capture so clicks reach the picker
+  // (integration glue). Recomputed via the pure overlayShouldCapture helper.
+  const inspectTargetToken = useStore((s) => s.inspectTargetToken);
+  const inspectXtermTarget = useStore((s) => s.inspectXtermTarget);
   const t = useT();
+
+  const hasTarget = inspectTargetToken !== null || inspectXtermTarget !== null;
+  const capturing = overlayShouldCapture(active, hasTarget);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const captureRef = useRef<HTMLDivElement>(null);
@@ -109,21 +118,24 @@ export default function InspectOverlay(): React.ReactElement | null {
       window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
 
-  // ── Commit a token target and leave the highlight loop (used by click + Enter)
+  // ── Commit a token target (used by click + Enter). Stay in inspect: the
+  //    overlay yields capture (overlayShouldCapture → false) and the Settings
+  //    modal re-expands to edit this token. Calling exitInspect here would
+  //    immediately null the target (resetInspectState) and tear the overlay
+  //    down, so the editor would never see which region was clicked — the user
+  //    leaves inspect when they hit Done/ESC, not on every pick.
   const pickToken = useCallback(
     (token: UIThemeTokenKey, role: TokenRole) => {
       setInspectTarget(token, role);
-      exitInspect();
     },
-    [setInspectTarget, exitInspect],
+    [setInspectTarget],
   );
 
   const pickTerminal = useCallback(
     (slot: 'background' | 'foreground') => {
       setInspectXtermTarget(slot);
-      exitInspect();
     },
-    [setInspectXtermTarget, exitInspect],
+    [setInspectXtermTarget],
   );
 
   // ── Highlight all regions for the current token, syncing rects every frame so
@@ -342,18 +354,24 @@ export default function InspectOverlay(): React.ReactElement | null {
       role="application"
     >
       {/* Transparent capture layer — owns every mouse event so the terminal
-          never receives them (PTY isolation). */}
+          never receives them (PTY isolation). While a target is being edited
+          the layer yields (pointer-events:none) so clicks fall through to the
+          Settings picker that re-expanded underneath (integration glue). */}
       <div
         ref={captureRef}
         data-inspect-overlay
         className="absolute inset-0"
-        style={{ pointerEvents: 'auto' }}
+        style={{ pointerEvents: capturing ? 'auto' : 'none' }}
         onPointerMove={onPointerMove}
         onClick={onClick}
       />
 
+      {/* Hover affordances (highlights, chip, menus, hint, proxy) are paused
+          while a target is being edited — capture is yielded so they'd be stale
+          and would obscure the Settings picker. The banner stays so the user
+          can always exit. */}
       {/* Region highlights — outline every area painted by the hovered token. */}
-      {highlight?.rects.map((r, i) => (
+      {capturing && highlight?.rects.map((r, i) => (
         <div
           key={i}
           data-inspect-overlay
@@ -374,7 +392,7 @@ export default function InspectOverlay(): React.ReactElement | null {
       ))}
 
       {/* "Applies to N marked areas" chip. */}
-      {highlight && (
+      {capturing && highlight && (
         <div
           data-inspect-overlay
           className="absolute font-mono text-xs px-2 py-1 rounded-md"
@@ -393,7 +411,7 @@ export default function InspectOverlay(): React.ReactElement | null {
       )}
 
       {/* Multi-role disambiguation menu (fill / text / border / accent). */}
-      {roleMenu && (
+      {capturing && roleMenu && (
         <div
           data-inspect-overlay
           className="absolute font-mono text-xs rounded-md overflow-hidden"
@@ -432,7 +450,7 @@ export default function InspectOverlay(): React.ReactElement | null {
       )}
 
       {/* Terminal area menu — background / foreground slot (D-terminal v1). */}
-      {terminalMenu && (
+      {capturing && terminalMenu && (
         <div
           data-inspect-overlay
           className="absolute font-mono text-xs rounded-md overflow-hidden"
@@ -473,7 +491,7 @@ export default function InspectOverlay(): React.ReactElement | null {
       )}
 
       {/* Non-silent "not customizable yet" hint (D: no silent no-op). */}
-      {hint && (
+      {capturing && hint && (
         <div
           data-inspect-overlay
           className="absolute font-mono text-xs px-2 py-1 rounded-md"
@@ -495,7 +513,7 @@ export default function InspectOverlay(): React.ReactElement | null {
       {/* Roving-tabindex proxy: one focusable button representing the currently
           focused marked region. The overlay owns it, so production tabindex is
           untouched. Visually hidden but reachable by SR + Tab/Enter. */}
-      {proxy && (
+      {capturing && proxy && (
         <button
           data-inspect-overlay
           type="button"

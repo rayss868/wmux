@@ -13,6 +13,7 @@ import {
   isTerminalElement,
   isOverlayElement,
   firstNonOverlayElement,
+  overlayShouldCapture,
 } from '../inspectActions';
 import type { ResolvedRegion, UIThemeTokenKey, TokenRole } from '../../../themes';
 
@@ -164,5 +165,22 @@ describe('isOverlayElement / firstNonOverlayElement — hit-test self-filter', (
     const chip = document.createElement('div');
     root.appendChild(chip);
     expect(firstNonOverlayElement([root, chip], root)).toBeNull();
+  });
+});
+
+describe('overlayShouldCapture — integration glue (yield while editing a target)', () => {
+  it('captures while inspecting with no pending target (hover/click active)', () => {
+    expect(overlayShouldCapture(true, false)).toBe(true);
+  });
+
+  it('yields capture once a target is pending so clicks reach the Settings picker', () => {
+    // This is the P0 fix: with a target set the Settings modal re-expands at
+    // z-50; the z-65 overlay must let pointer events fall through to its swatch.
+    expect(overlayShouldCapture(true, true)).toBe(false);
+  });
+
+  it('never captures when inspect is inactive (overlay is unmounted anyway)', () => {
+    expect(overlayShouldCapture(false, false)).toBe(false);
+    expect(overlayShouldCapture(false, true)).toBe(false);
   });
 });

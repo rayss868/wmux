@@ -102,6 +102,27 @@ export function resolveClickAction(
 }
 
 /**
+ * Should the overlay's transparent layer keep intercepting mouse events?
+ *
+ * Integration glue (P0): once a click commits an inspect target the overlay must
+ * YIELD the capture so the clicks that follow land on the Settings picker the
+ * full modal re-expands underneath (z-50) — otherwise the overlay (z-65) keeps
+ * swallowing them and the swatch is unreachable. Capture (and the hover
+ * highlight that depends on it) therefore pauses while a target is pending and
+ * resumes the instant the target clears (the user closed the picker / finished
+ * editing). When inspect is inactive the overlay isn't mounted, so this is false.
+ *
+ * Pure so the coordinate-free branch is unit-tested; the actual pointer-events
+ * toggle + highlight suppression in InspectOverlay reads straight off this.
+ */
+export function overlayShouldCapture(
+  inspectModeActive: boolean,
+  hasTarget: boolean,
+): boolean {
+  return inspectModeActive && !hasTarget;
+}
+
+/**
  * True when any element in an elementsFromPoint hit-stack belongs to an xterm
  * terminal area. xterm.js adds the `.xterm` class to the element it opens onto,
  * so a hit on the terminal screen, rows, or viewport all sit inside a `.xterm`
