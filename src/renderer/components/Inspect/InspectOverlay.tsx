@@ -26,6 +26,7 @@ import {
 import {
   resolveClickAction,
   isTerminalElement,
+  isOverlayElement,
   firstNonOverlayElement,
   overlayShouldCapture,
   type RoleOption,
@@ -220,11 +221,17 @@ export default function InspectOverlay(): React.ReactElement | null {
         setTerminalMenu(null);
         setHint(null);
       }
-      const stack = document.elementsFromPoint(e.clientX, e.clientY);
+      // Exclude ALL overlay chrome (capture layer, chips, menus, banner — any
+      // pointer-events:auto bit that can sit atop the cursor) before judging the
+      // hit, so a chrome element never wins the terminal test or the token
+      // reverse-map. Same filter the click path uses (kept identical on purpose).
+      const stack = document
+        .elementsFromPoint(e.clientX, e.clientY)
+        .filter((el) => !isOverlayElement(el, rootRef.current));
       const target = firstNonOverlayElement(stack, rootRef.current);
       if (!target) return;
 
-      if (isTerminalElement(stack.filter((el) => el !== captureRef.current && el !== rootRef.current))) {
+      if (isTerminalElement(stack)) {
         // Terminal area: show a single soft hint outline, no token chip.
         if (lastTokenRef.current !== '__terminal__') {
           lastTokenRef.current = '__terminal__';
@@ -259,9 +266,12 @@ export default function InspectOverlay(): React.ReactElement | null {
     (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      const stack = document.elementsFromPoint(e.clientX, e.clientY).filter(
-        (el) => el !== captureRef.current && el !== rootRef.current,
-      );
+      // Exclude ALL overlay chrome before judging the hit — identical to the
+      // pointer-move filter — so a menu/banner/chip on top of the cursor can't
+      // be mistaken for the terminal area or reverse-mapped to a token.
+      const stack = document
+        .elementsFromPoint(e.clientX, e.clientY)
+        .filter((el) => !isOverlayElement(el, rootRef.current));
       const target = firstNonOverlayElement(stack, rootRef.current);
       const isTerminal = isTerminalElement(stack);
       const resolved = target ? findTokenForElement(target) : null;

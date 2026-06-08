@@ -191,6 +191,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (state.activeWorkspaceId === id) {
         state.activeWorkspaceId = state.workspaces[Math.min(idx, state.workspaces.length - 1)].id;
       }
+      // D-teardown: removing a workspace (sidebar X, Ctrl+Shift+W, kill-pane)
+      // unmounts the marked-region DOM the inspect overlay queries. setActiveWorkspace
+      // already tears inspect down on a switch; mirror that here so killing/closing
+      // the workspace while inspecting can't leave a stale overlay dangling.
+      if (state.inspectModeActive) resetInspectState(state);
     }),
 
     setActiveWorkspace: (id) => set((state: StoreState) => {

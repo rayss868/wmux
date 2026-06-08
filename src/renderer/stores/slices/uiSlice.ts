@@ -523,6 +523,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.settingsPanelVisible) {
       state.commandPaletteVisible = false;
       state.notificationPanelVisible = false;
+    } else if (state.inspectModeActive) {
+      // D-exclusive invariant: inspect can only exist while Settings is open
+      // (inspectModeActive ⇒ settingsPanelVisible). Toggling Settings shut
+      // (true→false) while inspecting would strand a "Settings-less inspect"
+      // overlay, so tear inspect down in lock-step — same reset the
+      // command-palette / notification teardown paths use.
+      resetInspectState(state);
     }
   }),
 

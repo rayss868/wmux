@@ -19,6 +19,8 @@
  * the pre-existing actions, without needing a browser harness.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   ctrlByteForKeyCode,
   createPrefixActions,
@@ -373,4 +375,48 @@ describe('ctrlByteForKeyCode + DEFAULT_PREFIX_CONFIG — wired-up sanity', () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+// ─── D-exclusive: inspect mode suppresses every global shortcut ───────────────
+// The capture keydown handler lives inside useKeyboard's effect closure (it
+// touches `window` / the live store and can't be invoked under node-env vitest),
+// so we assert the suppression structurally — the same fs-read approach the
+// SettingsPanel inspect suite uses for handleClose. The guard must (1) be the
+// very first statement in the handler, BEFORE prefix mode is read, and (2)
+// early-return so no shortcut branch runs.
+describe('useKeyboard handler — inspect suppression (D-exclusive)', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'useKeyboard.ts'),
+    'utf-8',
+  );
+
+  /** Isolate the handler body between `const handler = (e: KeyboardEvent) => {`
+   *  and the line that reads prefix mode, so assertions can't match elsewhere. */
+  function handlerHead(): string {
+    const start = src.indexOf('const handler = (e: KeyboardEvent) => {');
+    expect(start, 'handler not found in useKeyboard.ts').toBeGreaterThan(-1);
+    const prefixRead = src.indexOf('const prefixMode = store.getState().prefixMode;', start);
+    expect(prefixRead, 'prefix-mode read not found').toBeGreaterThan(start);
+    return src.slice(start, prefixRead);
+  }
+
+  it('early-returns from the handler while inspect mode is active', () => {
+    const head = handlerHead();
+    expect(head).toContain('if (store.getState().inspectModeActive) return;');
+  });
+
+  it('places the inspect guard BEFORE prefix mode is read (suppresses prefix too)', () => {
+    const guard = src.indexOf('if (store.getState().inspectModeActive) return;');
+    const prefixRead = src.indexOf('const prefixMode = store.getState().prefixMode;');
+    expect(guard).toBeGreaterThan(-1);
+    expect(prefixRead).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(prefixRead);
+  });
+
+  it('does NOT special-case Escape in the guard (ESC bubbles to the overlay)', () => {
+    // The guard is a blanket early-return with no Escape branch — ESC stays
+    // unconsumed so InspectOverlay's React onKeyDown handles exitInspect.
+    const head = handlerHead();
+    expect(head).not.toMatch(/Escape/);
+  });
 });

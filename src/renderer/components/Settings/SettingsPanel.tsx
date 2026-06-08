@@ -1365,7 +1365,9 @@ function CustomThemeEditor() {
     return out;
   }, [customThemeColors]);
 
-  const surfaceLabel = (bg: string): string => t(`settings.contrast.surface.${bg}`) || bg;
+  // t() returns the key string itself for a missing key, so the `|| bg` fallback
+  // was unreachable dead code — t(...) is always truthy. Kept as a plain call.
+  const surfaceLabel = (bg: string): string => t(`settings.contrast.surface.${bg}`);
 
   const onResetToPreset = (id: BuiltinThemeId): void => {
     setBasePreset(id);
@@ -1457,7 +1459,7 @@ function CustomThemeEditor() {
                   onResetToBase={() => updateCustomThemeColor(key, baseColors[key])}
                   tokenKey={tokenKey}
                   tokenRole={role}
-                  inspectTargeted={isInspectTargetRow(inspectTargetToken, tokenKey, role)}
+                  inspectTargeted={isInspectTargetRow(inspectTargetToken, tokenKey)}
                 />
               );
             })}
@@ -2724,15 +2726,22 @@ export function shouldShowInspectBar(
 
 /**
  * D-hover: does a given editable token row match the current inspect target?
- * Both the token key and the role must match so e.g. a 'bg' click on bgSurface
- * doesn't open an unrelated row.
+ *
+ * Matched on the TOKEN ALONE — never the role. Each editable token maps to
+ * exactly one TokenRow, so the token uniquely identifies the row. The click
+ * role (`target.role`) stays the element's representative role for the overlay's
+ * highlight/menu labeling, but a derived region routes to its source token while
+ * keeping that representative role (e.g. bgOverlay border → token 'bgSurface',
+ * role 'border'). Requiring role equality here would then leave that pick with
+ * no matching row (bgSurface's canonical role is 'bg') and dead-click the
+ * largest clickable surfaces. Token-only matching makes every routed pick open
+ * its row.
  */
 export function isInspectTargetRow(
   target: { token: UIThemeTokenKey; role: TokenRole } | null,
   tokenKey: UIThemeTokenKey,
-  role: TokenRole,
 ): boolean {
-  return target !== null && target.token === tokenKey && target.role === role;
+  return target !== null && target.token === tokenKey;
 }
 
 // ─── Inspect minimized bar (D-settings) ─────────────────────────────────────

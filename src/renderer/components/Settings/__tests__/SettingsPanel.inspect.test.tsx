@@ -61,24 +61,41 @@ describe('shouldShowInspectBar (D-settings)', () => {
   });
 });
 
-// ─── D-hover: target-row reaction ─────────────────────────────────────────────
-describe('isInspectTargetRow (D-hover)', () => {
+// ─── D-hover: target-row reaction (TOKEN-ONLY matching) ───────────────────────
+// Matched on the token alone — each editable token maps to exactly one TokenRow.
+// The role is NOT part of the match: a derived-region pick routes to its source
+// token while carrying the element's representative role (e.g. bgOverlay border →
+// token 'bgSurface', role 'border'), and that pick must still open bgSurface's
+// row even though bgSurface's canonical role is 'bg'. Role-aware matching used to
+// dead-click those derived areas (the Pane body, palette ESC kbd, …).
+describe('isInspectTargetRow (D-hover — token-only)', () => {
   const target = { token: 'bgSurface' as UIThemeTokenKey, role: 'bg' as TokenRole };
 
-  it('matches the row whose token AND role both equal the target', () => {
-    expect(isInspectTargetRow(target, 'bgSurface', 'bg')).toBe(true);
+  it('matches the row whose token equals the target token', () => {
+    expect(isInspectTargetRow(target, 'bgSurface')).toBe(true);
   });
 
   it('does not match a different token', () => {
-    expect(isInspectTargetRow(target, 'bgBase', 'bg')).toBe(false);
+    expect(isInspectTargetRow(target, 'bgBase')).toBe(false);
   });
 
-  it('does not match the same token under a different role', () => {
-    expect(isInspectTargetRow(target, 'bgSurface', 'accent')).toBe(false);
+  it('matches the token even when the target was picked under a NON-canonical role', () => {
+    // Regression: a derived border-painted region routes to its source token
+    // (bgSurface) but the click role is 'border'. Token-only matching must still
+    // open the bgSurface row — role-aware matching dead-clicked this.
+    const derivedPick = { token: 'bgSurface' as UIThemeTokenKey, role: 'border' as TokenRole };
+    expect(isInspectTargetRow(derivedPick, 'bgSurface')).toBe(true);
+  });
+
+  it('matches an accent token picked under a derived border role', () => {
+    // accentCursor border (Pane root) routes to source 'accent' with role 'border';
+    // accent's canonical row role is 'accent', so this only matches token-only.
+    const accentDerived = { token: 'accent' as UIThemeTokenKey, role: 'border' as TokenRole };
+    expect(isInspectTargetRow(accentDerived, 'accent')).toBe(true);
   });
 
   it('matches nothing when there is no target', () => {
-    expect(isInspectTargetRow(null, 'bgSurface', 'bg')).toBe(false);
+    expect(isInspectTargetRow(null, 'bgSurface')).toBe(false);
   });
 });
 
@@ -194,5 +211,17 @@ describe('InspectOverlay pick path — does not exit inspect on pick (glue)', ()
     // reach the Settings picker (overlayShouldCapture).
     expect(src).toContain("pointerEvents: capturing ? 'auto' : 'none'");
     expect(src).toContain('overlayShouldCapture(active, hasTarget)');
+  });
+
+  // Important E: pointer-move and click must filter the hit stack identically —
+  // both strip ALL overlay chrome via isOverlayElement before the terminal test
+  // and reverse-map, so a menu/banner/chip on top of the cursor is never
+  // mistaken for the terminal area or a token region.
+  it('both hit-test paths filter the stack through isOverlayElement', () => {
+    const matches = src.match(/\.filter\(\(el\) => !isOverlayElement\(el, rootRef\.current\)\)/g);
+    expect(matches, 'expected the isOverlayElement filter in both paths').not.toBeNull();
+    expect((matches as RegExpMatchArray).length).toBe(2);
+    // And the stale capture/root-only filter must be gone from the hit paths.
+    expect(src).not.toContain('el !== captureRef.current && el !== rootRef.current');
   });
 });

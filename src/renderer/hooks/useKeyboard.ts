@@ -212,6 +212,15 @@ export function useKeyboard() {
     const isMac = window.electronAPI.platform === 'darwin';
 
     const handler = (e: KeyboardEvent) => {
+      // D-exclusive: inspect (point-and-style) is the top-level exclusive mode.
+      // While it's active, suppress EVERY global shortcut — the prefix trigger,
+      // split/close/zoom/focus, palette/settings toggles, custom keybindings —
+      // so a stray key can't fire an action that mutates the pane tree or shakes
+      // the marked-region DOM the overlay is reverse-mapping against. ESC is NOT
+      // handled here: it stays unconsumed and bubbles to InspectOverlay's own
+      // React onKeyDown (which calls exitInspect), so exiting still works.
+      if (store.getState().inspectModeActive) return;
+
       const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
       const literalCtrl = e.ctrlKey;
       const shift = e.shiftKey;

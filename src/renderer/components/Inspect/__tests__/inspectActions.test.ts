@@ -168,6 +168,61 @@ describe('isOverlayElement / firstNonOverlayElement — hit-test self-filter', (
   });
 });
 
+// ─── Unified hit-test filter (Important E) ────────────────────────────────────
+// Both onPointerMove and onClick filter the elementsFromPoint stack through
+// isOverlayElement BEFORE running the terminal test / reverse-map, so a chrome
+// element (menu/banner/chip — pointer-events:auto) sitting first in the stack
+// can never be mistaken for the terminal area or a token region. These assert
+// the filter behaviour the two paths now share.
+describe('overlay-chrome filter then terminal/token judgement (Important E)', () => {
+  function filterChrome(stack: Element[], root: Element | null): Element[] {
+    return stack.filter((el) => !isOverlayElement(el, root));
+  }
+
+  it('a chrome element on top of a terminal hit does not block terminal detection', () => {
+    const root = document.createElement('div');
+    const banner = document.createElement('div'); // overlay banner (chrome)
+    root.appendChild(banner);
+    const xt = document.createElement('div');
+    xt.className = 'xterm';
+    document.body.appendChild(xt);
+
+    // Raw stack: chrome first, then the terminal underneath.
+    const raw = [banner, xt];
+    const filtered = filterChrome(raw, root);
+    // Chrome is gone; the terminal survives and is detected.
+    expect(filtered).toEqual([xt]);
+    expect(isTerminalElement(filtered)).toBe(true);
+    document.body.removeChild(xt);
+  });
+
+  it('a chrome element on top of a marked region resolves to that region, not chrome', () => {
+    const root = document.createElement('div');
+    const chip = document.createElement('div'); // chrome
+    root.appendChild(chip);
+    const region = document.createElement('div');
+    region.setAttribute('data-token-bg', 'bgSurface');
+
+    const raw = [chip, region];
+    const filtered = filterChrome(raw, root);
+    // The first non-overlay element is the real region — never the chip.
+    expect(firstNonOverlayElement(filtered, root)).toBe(region);
+    // And the terminal test on the filtered stack is correctly false.
+    expect(isTerminalElement(filtered)).toBe(false);
+  });
+
+  it('an off-root [data-inspect-overlay] chrome is filtered out too', () => {
+    const portaled = document.createElement('div');
+    portaled.setAttribute('data-inspect-overlay', '');
+    const region = document.createElement('div');
+    region.setAttribute('data-token-text', 'textMain');
+
+    const filtered = filterChrome([portaled, region], null);
+    expect(filtered).toEqual([region]);
+    expect(firstNonOverlayElement(filtered, null)).toBe(region);
+  });
+});
+
 describe('overlayShouldCapture — integration glue (yield while editing a target)', () => {
   it('captures while inspecting with no pending target (hover/click active)', () => {
     expect(overlayShouldCapture(true, false)).toBe(true);

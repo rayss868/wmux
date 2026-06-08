@@ -153,6 +153,28 @@ describe('UISlice — inspect exclusivity (D-exclusive reverse guard)', () => {
     store.getState().setNotificationPanelVisible(false);
     expect(store.getState().inspectModeActive).toBe(true);
   });
+
+  it('toggleSettingsPanel SHUT while inspecting tears inspect down (no Settings-less inspect)', () => {
+    store.getState().enterInspect();
+    expect(store.getState().settingsPanelVisible).toBe(true);
+    expect(store.getState().inspectModeActive).toBe(true);
+    // Ctrl+, while inspecting → settingsPanelVisible true→false. The invariant
+    // inspectModeActive ⇒ settingsPanelVisible would otherwise be violated.
+    store.getState().toggleSettingsPanel();
+    expect(store.getState().settingsPanelVisible).toBe(false);
+    expect(store.getState().inspectModeActive).toBe(false);
+    expect(store.getState().inspectMinimized).toBe(false);
+    expect(store.getState().inspectTargetToken).toBeNull();
+  });
+
+  it('toggleSettingsPanel OPEN does not spuriously touch inspect (inspect was off)', () => {
+    // Sanity: the teardown only runs on the shut branch. Opening Settings from
+    // a clean state must not flip any inspect field.
+    expect(store.getState().settingsPanelVisible).toBe(false);
+    store.getState().toggleSettingsPanel();
+    expect(store.getState().settingsPanelVisible).toBe(true);
+    expect(store.getState().inspectModeActive).toBe(false);
+  });
 });
 
 describe('UISlice — exitInspect + setInspectTarget', () => {
@@ -293,6 +315,50 @@ describe('WorkspaceSlice — inspect teardown on workspace switch (D-teardown)',
     const b = createWorkspace('B');
     const store = createWsStore([a, b], a.id, false);
     store.getState().setActiveWorkspace(b.id);
+    expect(store.getState().inspectModeActive).toBe(false);
+  });
+
+  // D-teardown also fires on removeWorkspace — killing/closing a workspace
+  // (sidebar X, Ctrl+Shift+W, prefix &) unmounts the marked-region DOM, so a
+  // stale inspect overlay must not survive it.
+  it('exits inspect when the active workspace is removed', () => {
+    const a = createWorkspace('A');
+    const b = createWorkspace('B');
+    const store = createWsStore([a, b], a.id, true);
+
+    store.getState().removeWorkspace(a.id);
+    // a was active → activeWorkspaceId moves to the surviving workspace.
+    expect(store.getState().activeWorkspaceId).toBe(b.id);
+    expect(store.getState().inspectModeActive).toBe(false);
+    expect(store.getState().inspectMinimized).toBe(false);
+    expect(store.getState().inspectTargetToken).toBeNull();
+  });
+
+  it('exits inspect even when a NON-active workspace is removed', () => {
+    // Removing any workspace can drop regions the overlay queried; tear down
+    // regardless of whether the removed one was active.
+    const a = createWorkspace('A');
+    const b = createWorkspace('B');
+    const store = createWsStore([a, b], a.id, true);
+
+    store.getState().removeWorkspace(b.id);
+    expect(store.getState().activeWorkspaceId).toBe(a.id); // active unchanged
+    expect(store.getState().inspectModeActive).toBe(false);
+  });
+
+  it('leaves inspect untouched when removeWorkspace is a no-op (last workspace / unknown id)', () => {
+    const a = createWorkspace('A');
+    const store = createWsStore([a], a.id, true);
+    // Single-workspace removal is refused early (workspaces.length <= 1).
+    store.getState().removeWorkspace(a.id);
+    expect(store.getState().inspectModeActive).toBe(true);
+  });
+
+  it('does nothing inspect-related on removeWorkspace when inspect was inactive', () => {
+    const a = createWorkspace('A');
+    const b = createWorkspace('B');
+    const store = createWsStore([a, b], a.id, false);
+    store.getState().removeWorkspace(a.id);
     expect(store.getState().inspectModeActive).toBe(false);
   });
 });
