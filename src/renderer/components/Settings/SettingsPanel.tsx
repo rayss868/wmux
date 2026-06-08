@@ -3,7 +3,7 @@ import { useStore } from '../../stores';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
-import { THEME_OPTIONS, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, type BuiltinThemeId, type ThemeId, type XtermPaletteId } from '../../themes';
+import { THEME_OPTIONS, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, tokenAttrs, type BuiltinThemeId, type ThemeId, type XtermPaletteId, type UIThemeTokenKey, type TokenRole } from '../../themes';
 import {
   TAILWIND_PALETTE,
   TAILWIND_SHADES,
@@ -1089,6 +1089,14 @@ interface TokenRowProps {
   overridden?: boolean;
   /** Reset this single token back to the base preset value. */
   onResetToBase?: () => void;
+  /** The editable token + role this row owns. Drives the inspect markers
+   *  (tokenAttrs) so the row is itself a click target, and lets the inspect
+   *  target-reaction (D-hover) find and auto-open the matching row. */
+  tokenKey?: UIThemeTokenKey;
+  tokenRole?: TokenRole;
+  /** True when this row is the current inspect target: on mount/transition it
+   *  scrolls into view, flashes, and opens its picker (D-hover). */
+  inspectTargeted?: boolean;
 }
 
 function TokenRow({
@@ -1103,14 +1111,42 @@ function TokenRow({
   nudgeHex,
   overridden,
   onResetToBase,
+  tokenKey,
+  tokenRole,
+  inspectTargeted,
 }: TokenRowProps) {
   const [open, setOpen] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [flash, setFlash] = useState(false);
   // Offer the nudge only when there's a real, reachable safe shade that
   // actually differs from the current value.
   const canNudge = !!contrast && !contrast.allPass && !!nudgeHex && nudgeHex.toUpperCase() !== value.toUpperCase();
 
+  // Inspect target-reaction (D-hover): when the overlay click selects this
+  // row's token, open its picker, scroll it into view, and briefly flash so the
+  // eye lands on the row that maps to what was just clicked on screen. The
+  // flash auto-clears; jsdom can't verify scroll/visual, so that part is
+  // dogfood-only — the open transition itself is the testable unit.
+  useEffect(() => {
+    if (!inspectTargeted) return;
+    setOpen(true);
+    rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setFlash(true);
+    const id = window.setTimeout(() => setFlash(false), 900);
+    return () => window.clearTimeout(id);
+  }, [inspectTargeted]);
+
   return (
-    <div className="flex flex-col gap-1 px-2 py-1.5">
+    <div
+      ref={rowRef}
+      className="flex flex-col gap-1 px-2 py-1.5 rounded transition-shadow"
+      // tokenAttrs makes the row itself an inspect target so Settings' own
+      // surface participates in point-and-style (requirement 6). Spread only
+      // when the row declares a token (all 10 editable rows do).
+      {...(tokenKey && tokenRole ? tokenAttrs(tokenKey, tokenRole) : {})}
+      data-testid={tokenKey ? `token-row-${tokenKey}` : undefined}
+      style={flash ? { boxShadow: '0 0 0 2px var(--accent-blue)' } : undefined}
+    >
       <button
         className={`flex items-center justify-between w-full rounded ${FOCUS_RING}`}
         onClick={() => setOpen((o) => !o)}
@@ -1264,6 +1300,24 @@ const TOKEN_DESCRIPTIONS: Record<UITokenSpec['key'], string> = {
 // text on a surface, so they're left out of the body-AA check.
 const CONTRAST_TOKENS: ReadonlySet<string> = new Set(['textMain', 'textSub', 'textMuted', 'accent']);
 
+// The representative inspect role for each editable token (requirement 6).
+// Backgrounds paint a fill ('bg'), the three text tokens paint text ('text'),
+// and the four accent/signal tokens paint accent-colored fills/strokes
+// ('accent'). The overlay's findTokenForElement keys off these via tokenAttrs
+// so a click on a Settings row routes back to the same row.
+const TOKEN_INSPECT_ROLE: Record<UITokenSpec['key'], TokenRole> = {
+  bgBase: 'bg',
+  bgSurface: 'bg',
+  bgMantle: 'bg',
+  textMain: 'text',
+  textSub: 'text',
+  textMuted: 'text',
+  accent: 'accent',
+  success: 'accent',
+  danger: 'accent',
+  warning: 'accent',
+};
+
 /**
  * Detect which built-in preset a CustomThemeColors most closely came from, by
  * exact-matching the 10 UI tokens. Returns null when it matches none (fully
@@ -1285,6 +1339,10 @@ function CustomThemeEditor() {
   const customThemeColors = useStore((s) => s.customThemeColors) ?? DEFAULT_CUSTOM_THEME;
   const setCustomThemeColors = useStore((s) => s.setCustomThemeColors);
   const updateCustomThemeColor = useStore((s) => s.updateCustomThemeColor);
+  // Inspect mode (D-hover): the entry button starts point-and-style; the
+  // target token (set by an overlay click) tells us which TokenRow to open.
+  const enterInspect = useStore((s) => s.enterInspect);
+  const inspectTargetToken = useStore((s) => s.inspectTargetToken);
 
   // The preset the user is comparing against for per-token "overridden" dots.
   // Seeded from an exact match (if the current colors equal a built-in), else
@@ -1317,6 +1375,22 @@ function CustomThemeEditor() {
   return (
     <div className="flex flex-col gap-2">
       <SectionLabel label={t('settings.customTheme')} />
+
+      {/* Point-and-style entry: shrink Settings to a bar and let the user click
+          a region on screen to edit its color (D-settings / D-hover). */}
+      <button
+        type="button"
+        data-testid="inspect-start"
+        onClick={() => enterInspect()}
+        className={`flex items-center gap-2 w-full px-3 py-2 rounded-lg text-left transition-colors ${FOCUS_RING}`}
+        style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--accent-blue)' }}
+      >
+        <span className="inline-flex items-center shrink-0" style={{ color: 'var(--accent-blue)' }}>
+          {/* Eyedropper-ish target glyph (shares the 14px line-icon grid). */}
+          <Icon><circle cx="7" cy="7" r="3" /><line x1="7" y1="1.5" x2="7" y2="3.5" /><line x1="7" y1="10.5" x2="7" y2="12.5" /><line x1="1.5" y1="7" x2="3.5" y2="7" /><line x1="10.5" y1="7" x2="12.5" y2="7" /></Icon>
+        </span>
+        <span className="text-[12px] font-medium">{t('settings.inspect.start')}</span>
+      </button>
 
       {/* Header: "Custom (based on …)" + Reset-to-preset control */}
       <div
@@ -1362,6 +1436,11 @@ function CustomThemeEditor() {
               const report = CONTRAST_TOKENS.has(key) ? reports[key as ForegroundTokenKey] : undefined;
               const nudge = report ? nudgeForReport(report, customThemeColors) : null;
               const overridden = customThemeColors[key].toUpperCase() !== baseColors[key].toUpperCase();
+              // key is one of the 10 UIThemeTokenKeys (UITokenSpec.key excludes
+              // only xtermPaletteId/xtermOverrides), so the cast is sound and the
+              // role map is exhaustive over exactly these keys.
+              const tokenKey = key as UIThemeTokenKey;
+              const role = TOKEN_INSPECT_ROLE[key];
               return (
                 <TokenRow
                   key={key}
@@ -1376,6 +1455,9 @@ function CustomThemeEditor() {
                   nudgeHex={nudge ? nudge.hex : undefined}
                   overridden={overridden}
                   onResetToBase={() => updateCustomThemeColor(key, baseColors[key])}
+                  tokenKey={tokenKey}
+                  tokenRole={role}
+                  inspectTargeted={isInspectTargetRow(inspectTargetToken, tokenKey, role)}
                 />
               );
             })}
@@ -1464,6 +1546,26 @@ function XtermOverrideEditor() {
   const setXtermOverride = useStore((s) => s.setXtermOverride);
   const clearXtermOverrides = useStore((s) => s.clearXtermOverrides);
   const [expanded, setExpanded] = useState(false);
+  // Inspect terminal-target reaction (D-terminal): a click on the terminal area
+  // sets inspectXtermTarget to 'background' | 'foreground'. When that happens we
+  // expand this section and flash the matching surface slot so the user lands
+  // on the right swatch. Tracked locally for the flash; the expand is the
+  // testable unit (jsdom can't verify scroll/flash visuals → dogfood).
+  const inspectXtermTarget = useStore((s) => s.inspectXtermTarget);
+  const flashRowRef = useRef<HTMLDivElement>(null);
+  const [flashSlot, setFlashSlot] = useState<'background' | 'foreground' | null>(null);
+
+  useEffect(() => {
+    if (!inspectXtermTarget) return;
+    setExpanded(true);
+    setFlashSlot(inspectXtermTarget);
+    // Defer scroll until the section has rendered its now-expanded body.
+    const raf = window.requestAnimationFrame(() => {
+      flashRowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
+    const id = window.setTimeout(() => setFlashSlot(null), 900);
+    return () => { window.cancelAnimationFrame(raf); window.clearTimeout(id); };
+  }, [inspectXtermTarget]);
 
   const presetId = (customThemeColors.xtermPaletteId as XtermPaletteId);
   const preset = XTERM_PALETTES[presetId] ?? XTERM_PALETTES['catppuccin-mocha'];
@@ -1513,10 +1615,16 @@ function XtermOverrideEditor() {
                 const overrideVal = overrides[key];
                 const effective = overrideVal ?? preset[key];
                 const isOverridden = typeof overrideVal === 'string';
+                // The inspect terminal-target highlights exactly the background /
+                // foreground surface slot it resolved to (D-terminal v1).
+                const isFlashed = flashSlot === key;
                 return (
                   <div
                     key={key}
-                    className="flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--bg-surface)] transition-colors"
+                    ref={isFlashed ? flashRowRef : undefined}
+                    data-testid={`xterm-slot-${key}`}
+                    className="flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--bg-surface)] transition-colors rounded"
+                    style={isFlashed ? { boxShadow: '0 0 0 2px var(--accent-blue)' } : undefined}
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
@@ -2585,13 +2693,131 @@ function TabAbout() {
 
 // ─── SettingsPanel ─────────────────────────────────────────────────────────────
 
+// ─── Inspect decision helpers (pure — unit-testable in the node env) ─────────
+//
+// The SettingsPanel behaviour that matters for inspect mode reduces to three
+// pure decisions. Extracting them keeps the (DOM-bound) component thin and lets
+// the node-env vitest suite assert the contract directly — the visual scroll /
+// flash remains dogfood-only, but the branch logic is fully covered.
+
+/**
+ * D-esc (mandatory regression): should an Escape keypress close Settings?
+ * NO while inspect is active (the overlay owns ESC → exitInspect); YES
+ * otherwise — preserving the pre-inspect behaviour exactly.
+ */
+export function shouldEscCloseSettings(inspectModeActive: boolean): boolean {
+  return !inspectModeActive;
+}
+
+/**
+ * D-settings: render the collapsed floating bar (true) vs the full modal
+ * (false). Collapse only when inspect minimized AND there is no pending target
+ * to edit, OR the user dismissed that target back to the bar.
+ */
+export function shouldShowInspectBar(
+  inspectMinimized: boolean,
+  hasTarget: boolean,
+  dismissedTarget: boolean,
+): boolean {
+  return inspectMinimized && (!hasTarget || dismissedTarget);
+}
+
+/**
+ * D-hover: does a given editable token row match the current inspect target?
+ * Both the token key and the role must match so e.g. a 'bg' click on bgSurface
+ * doesn't open an unrelated row.
+ */
+export function isInspectTargetRow(
+  target: { token: UIThemeTokenKey; role: TokenRole } | null,
+  tokenKey: UIThemeTokenKey,
+  role: TokenRole,
+): boolean {
+  return target !== null && target.token === tokenKey && target.role === role;
+}
+
+// ─── Inspect minimized bar (D-settings) ─────────────────────────────────────
+//
+// While point-and-style is active, the full Settings modal shrinks to a small
+// fixed corner bar so the live app underneath is visible to click. Pure prop
+// component (no store) so it renders under `renderToStaticMarkup` in tests.
+//
+// FIXED high-contrast styling on purpose: the user may be actively breaking the
+// theme tokens, so this bar must stay readable. It therefore NEVER uses
+// var(--*) — every color is a self-sufficient hardcoded pair, mirroring the
+// ContrastBadge rationale (plans/color-customization-inspect-mode.md §4.4).
+export function InspectMinimizedBar({
+  t,
+  onDone,
+}: {
+  t: (key: string, vars?: Record<string, string | number>) => string;
+  onDone: () => void;
+}) {
+  return (
+    <div
+      data-testid="inspect-minimized-bar"
+      role="status"
+      className="fixed bottom-4 right-4 z-50 flex items-center gap-3 rounded-lg px-4 py-3 shadow-2xl"
+      style={{
+        width: 320,
+        backgroundColor: '#111827',
+        color: '#F9FAFB',
+        border: '1px solid #374151',
+        boxShadow: '0 12px 32px rgba(0,0,0,0.6)',
+      }}
+    >
+      <span className="inline-flex items-center shrink-0" style={{ color: '#60A5FA' }}>
+        <Icon><circle cx="7" cy="7" r="3" /><line x1="7" y1="1.5" x2="7" y2="3.5" /><line x1="7" y1="10.5" x2="7" y2="12.5" /><line x1="1.5" y1="7" x2="3.5" y2="7" /><line x1="10.5" y1="7" x2="12.5" y2="7" /></Icon>
+      </span>
+      <span className="flex-1 text-[12px] font-medium truncate">{t('settings.inspect.picking')}</span>
+      <button
+        type="button"
+        data-testid="inspect-done"
+        onClick={onDone}
+        className="shrink-0 rounded px-2.5 py-1 text-[12px] font-semibold focus-visible:outline-none focus-visible:ring-2"
+        style={{ backgroundColor: '#2563EB', color: '#FFFFFF', border: '1px solid #1D4ED8' }}
+      >
+        {t('settings.inspect.done')}
+      </button>
+    </div>
+  );
+}
+
 export default function SettingsPanel() {
   const t = useT();
   const visible   = useStore((s) => s.settingsPanelVisible);
   const setVisible = useStore((s) => s.setSettingsPanelVisible);
 
+  // Inspect mode (D-settings / D-esc). When minimized AND no target is pending,
+  // render the small floating bar instead of the full modal; while inspect is
+  // active the ESC handler is suppressed (the overlay owns ESC → exitInspect).
+  const inspectModeActive = useStore((s) => s.inspectModeActive);
+  const inspectMinimized = useStore((s) => s.inspectMinimized);
+  const inspectTargetToken = useStore((s) => s.inspectTargetToken);
+  const inspectXtermTarget = useStore((s) => s.inspectXtermTarget);
+  const exitInspect = useStore((s) => s.exitInspect);
+
+  // A pending target (overlay clicked a region/terminal slot) temporarily
+  // restores the full modal so the user can edit that color — Settings stays
+  // mounted the whole time (D-settings). We don't mutate the store's
+  // inspectMinimized (owned by uiSlice); the local `dismissedTarget` lets the
+  // user collapse back to the bar after editing without leaving inspect.
+  const hasTarget = inspectTargetToken !== null || inspectXtermTarget !== null;
+  const [dismissedTarget, setDismissedTarget] = useState(false);
+  // Reset the dismissal whenever a *new* target arrives so the next click
+  // re-expands the editor even if the previous one was dismissed.
+  useEffect(() => {
+    if (hasTarget) setDismissedTarget(false);
+  }, [inspectTargetToken, inspectXtermTarget, hasTarget]);
+  const showBar = shouldShowInspectBar(inspectMinimized, hasTarget, dismissedTarget);
+
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // When a target arrives while collapsed, surface the editor on the Appearance
+  // tab so the auto-opened TokenRow / xterm slot is actually on screen.
+  useEffect(() => {
+    if (hasTarget && !dismissedTarget) setActiveTab('appearance');
+  }, [hasTarget, dismissedTarget]);
 
   const tabs: { id: TabId; label: string; icon: ReactNode }[] = [
     { id: 'general',            label: t('settings.tabGeneral'),         icon: <IconGeneral /> },
@@ -2603,20 +2829,44 @@ export default function SettingsPanel() {
     { id: 'about',              label: t('settings.tabAbout'),           icon: <IconAbout /> },
   ];
 
-  // Close on Escape
+  // Close on Escape (D-esc). While inspect is active the overlay owns ESC
+  // (ESC → exitInspect, leaving Settings mounted), so this handler MUST NOT
+  // close Settings — it no-ops. When inspect is NOT active, ESC closes Settings
+  // exactly as before (mandatory regression: the non-inspect path is unchanged).
   useEffect(() => {
     if (!visible) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // suppressed while inspect active — overlay handles ESC (D-esc).
+        if (!shouldEscCloseSettings(inspectModeActive)) return;
         e.stopPropagation();
         setVisible(false);
       }
     };
     window.addEventListener('keydown', handler, { capture: true });
     return () => window.removeEventListener('keydown', handler, { capture: true });
-  }, [visible, setVisible]);
+  }, [visible, setVisible, inspectModeActive]);
 
   if (!visible) return null;
+
+  // D-settings: collapsed to the floating bar while picking. "Done" exits
+  // inspect; Settings stays mounted (exitInspect keeps settingsPanelVisible).
+  if (showBar) {
+    return <InspectMinimizedBar t={t} onDone={() => exitInspect()} />;
+  }
+
+  // Close affordances (X / footer Close / backdrop). When inspect is active the
+  // full modal is only a temporary editor for a pending target — closing it
+  // collapses back to the floating bar so the user keeps picking, rather than
+  // tearing the whole Settings panel down out from under the overlay. When
+  // inspect is NOT active, this closes Settings as before.
+  const handleClose = () => {
+    if (inspectModeActive) {
+      setDismissedTarget(true);
+      return;
+    }
+    setVisible(false);
+  };
 
   return (
     // Backdrop
@@ -2624,7 +2874,7 @@ export default function SettingsPanel() {
       className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh]"
       style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) setVisible(false);
+        if (e.target === e.currentTarget) handleClose();
       }}
     >
       {/* Panel — 800x560 */}
@@ -2648,7 +2898,7 @@ export default function SettingsPanel() {
           <span className="text-sm font-semibold text-[color:var(--text-main)] font-mono tracking-wide">{t('settings.title')}</span>
           <button
             className={`inline-flex items-center rounded p-0.5 text-[color:var(--text-subtle)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}
-            onClick={() => setVisible(false)}
+            onClick={handleClose}
             aria-label={t('settings.close')}
           >
             <IconX />
@@ -2709,7 +2959,7 @@ export default function SettingsPanel() {
           <span className="text-[10px] text-[color:var(--text-muted)] font-mono">{t('settings.toggleHint')}</span>
           <button
             className={`text-xs px-2 py-1 rounded text-[color:var(--text-subtle)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}
-            onClick={() => setVisible(false)}
+            onClick={handleClose}
           >
             {t('settings.close')}
           </button>

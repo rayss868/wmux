@@ -335,6 +335,8 @@ export const en = {
   'settings.theme.resetToken': 'Reset this color to the preset',
 
   // Color inspect mode — point-and-style overlay (PR2 / S4)
+  'settings.inspect.start': 'Pick a color on screen',
+  'settings.inspect.picking': 'Picking a color…',
   'settings.inspect.appliesTo': 'Applies to {count} marked areas',
   'settings.inspect.followsSource': 'Follows {source}',
   'settings.inspect.notCustomizable': 'Not customizable yet',
