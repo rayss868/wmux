@@ -5,12 +5,36 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.0] — 2026-06-09 — terminal fonts, color customization, settings polish
+
+Headline: pick any installed terminal font (and ship the recommended ones so they work everywhere), a point-and-style color inspect mode for theming, and a settings UI polish pass. All dogfood-verified on a live build before tagging.
+
+### Added
+- **Pick any installed terminal font.** The font setting is now a combobox over every font installed on the machine — click to browse the full list (each option rendered in its own face), type to filter, with a live Latin+Hangul preview so you can confirm a mixed-mono font has fixed-width CJK glyphs before committing. A separate "custom" entry mode takes any family name by hand for not-yet-installed fonts. Fixes a silent `powershell.exe` ENOENT (a bare-name spawn that failed to resolve under Electron) which had made the installed-font enumeration return nothing — so the feature never actually worked before this. ([#155](https://github.com/openwong2kim/wmux/pull/155), resolves [#147](https://github.com/openwong2kim/wmux/issues/147))
+- **Bundled terminal fonts.** JetBrains Mono, Fira Code, and JetBrainsMonoHangul now ship with the app (alongside the existing Cascadia Code/Mono), so the recommended fonts — including fixed-width Hangul — work on every machine without a manual install. All under the SIL Open Font License 1.1; license texts are bundled and listed in THIRD_PARTY_NOTICES. ([#158](https://github.com/openwong2kim/wmux/pull/158))
+- **Point-and-style color inspect mode.** Click a chrome region to recolor it by theme token, with contrast-safety checks so a custom palette stays readable. ([#156](https://github.com/openwong2kim/wmux/pull/156))
+
+### Changed
+- **Settings tabs use SVG line icons** in place of the dated unicode glyphs. ([#148](https://github.com/openwong2kim/wmux/pull/148))
+- **Settings design-system pass** — shared primitives, accessibility fixes, and tab-label i18n. ([#150](https://github.com/openwong2kim/wmux/pull/150))
+- **i18n:** Claude integration and first-run setup tab bodies are now translated across 21 locales ([#152](https://github.com/openwong2kim/wmux/pull/152)); the color customization strings across 22 locales ([#157](https://github.com/openwong2kim/wmux/pull/157)).
+
+### Fixed
+- **Ctrl+J inserts a newline even with a CJK IME active.** Inside in-pane TUIs (codex, Claude Code) Ctrl+J intermittently failed to add a newline — it worked with the IME off and broke with a Chinese / Japanese / Korean IME on. The byte pipeline below xterm is transparent to `\n`; the keystroke was lost at xterm's keyboard layer, which derives Ctrl+&lt;letter&gt; from the deprecated `KeyboardEvent.keyCode`. With the IME enabled the keydown reports `keyCode === 229` ("Process") with `key !== 'j'`, so xterm's `65–90` branch never matched and emitted nothing. wmux now resolves the newline keys (Shift+Enter, Ctrl+J) from the physical `event.code` and writes the byte itself — the same IME-safe approach already used for the split shortcuts — so Ctrl+J sends `\n` regardless of IME state. It defers while an IME composition is active (so a preedit is never split) and when the user has bound Ctrl+J to a custom keybinding. xterm 6 has no kitty/modifyOtherKeys path, so the emitted byte matches its legacy output when no IME is active. ([#153](https://github.com/openwong2kim/wmux/pull/153))
+- **`--squirrel-firstrun` no longer becomes a never-quitting zombie.** On Windows the Squirrel first-run hook was misclassified, so the process neither initialized nor quit, leaving an idle GPU/network process behind after install. ([#154](https://github.com/openwong2kim/wmux/pull/154))
+
+### Contributors
+Thanks to the external contributors in this release:
+- **[@zer0ken](https://github.com/zer0ken)** — SVG settings-tab icons ([#148](https://github.com/openwong2kim/wmux/pull/148)) and the font picker proposal ([#147](https://github.com/openwong2kim/wmux/issues/147)).
+- **[@snowyukitty](https://github.com/snowyukitty)** — Ctrl+J newline fix under CJK IME ([#153](https://github.com/openwong2kim/wmux/pull/153)).
+
+Bundled fonts under the SIL Open Font License 1.1: JetBrains Mono (The JetBrains Mono Project Authors), Fira Code (The Fira Code Project Authors), and JetBrainsMonoHangul (Janghyub Seo).
+
 ## [2.17.1] — 2026-06-08 — MCP pane-lifecycle fixes
 
 Two small MCP fixes on top of v2.17.0, both dogfood-verified on a live build before tagging.
 
 ### Fixed
-- **Ctrl+J inserts a newline even with a CJK IME active.** Inside in-pane TUIs (codex, Claude Code) Ctrl+J intermittently failed to add a newline — it worked with the IME off and broke with a Chinese / Japanese / Korean IME on. The byte pipeline below xterm is transparent to `\n`; the keystroke was lost at xterm's keyboard layer, which derives Ctrl+&lt;letter&gt; from the deprecated `KeyboardEvent.keyCode`. With the IME enabled the keydown reports `keyCode === 229` ("Process") with `key !== 'j'`, so xterm's `65–90` branch never matched and emitted nothing. wmux now resolves the newline keys (Shift+Enter, Ctrl+J) from the physical `event.code` and writes the byte itself — the same IME-safe approach already used for the split shortcuts — so Ctrl+J sends `\n` regardless of IME state. It defers while an IME composition is active (so a preedit is never split) and when the user has bound Ctrl+J to a custom keybinding. xterm 6 has no kitty/modifyOtherKeys path, so the emitted byte matches its legacy output when no IME is active.
 - **`browser_close` no longer leaves an empty pane behind.** The UI close path removes a pane when its last surface is closed, but the MCP mirror only closed the surface — leaving an empty leaf that the "auto-create initial surface" effect backfilled with a fresh terminal. A `browser_open`/`browser_close` loop accreted blank PowerShell panes. The handler now snapshots whether the closed surface was the pane's last one *before* removing it, then cascades into `closePane` to mirror the UI path. A browser sharing a split pane with a terminal still only loses the surface; a browser that is a workspace's only (root) pane still gets an auto-terminal, matching the UI exactly. ([#144](https://github.com/openwong2kim/wmux/pull/144))
 - **Stale pid-map anchors are pruned on workspace/pane close.** The pid→ptyId anchor that backs MCP workspace-identity resolution was only pruned on `session:died`, so closing a workspace or pane through the UI (the `destroySession` path) leaked its anchor. Over time those stale entries could mis-resolve a ghost workspace identity. Closing now prunes the anchor immediately, in lockstep with the session teardown. ([#142](https://github.com/openwong2kim/wmux/pull/142))
 
