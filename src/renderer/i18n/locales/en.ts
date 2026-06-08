@@ -334,6 +334,20 @@ export const en = {
   'settings.theme.tokenOverridden': 'Changed from preset',
   'settings.theme.resetToken': 'Reset this color to the preset',
 
+  // Color inspect mode — point-and-style overlay (PR2 / S4)
+  'settings.inspect.appliesTo': 'Applies to {count} marked areas',
+  'settings.inspect.followsSource': 'Follows {source}',
+  'settings.inspect.notCustomizable': 'Not customizable yet',
+  'settings.inspect.done': 'Done',
+  'settings.inspect.banner': 'Click an area to edit its color · Esc to finish',
+  'settings.inspect.terminalBg': 'Terminal background',
+  'settings.inspect.terminalFg': 'Terminal text',
+  'settings.inspect.menuFill': 'Fill',
+  'settings.inspect.menuText': 'Text',
+  'settings.inspect.menuBorder': 'Border',
+  'settings.inspect.menuAccent': 'Accent',
+  'settings.inspect.proxyLabel': 'Edit {token} ({role})',
+
   // Floating pane (Quake-style dropdown terminal)
   'floatingPane.title': 'Terminal',
   'floatingPane.close': 'Close',

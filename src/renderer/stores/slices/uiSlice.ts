@@ -120,9 +120,16 @@ export interface UISlice {
   inspectModeActive: boolean;
   inspectMinimized: boolean;
   inspectTargetToken: { token: UIThemeTokenKey; role: TokenRole } | null;
+  // Set when a click lands on the terminal *area* (D-terminal v1): a single
+  // background/foreground slot rather than a UI token. The SettingsPanel (a
+  // separate task) reads this to scroll/open the xterm background/foreground
+  // editor. Null when no terminal slot is the current inspect target. Reset to
+  // null on exit alongside the other inspect fields.
+  inspectXtermTarget: 'background' | 'foreground' | null;
   enterInspect: () => void;
   exitInspect: () => void;
   setInspectTarget: (token: UIThemeTokenKey, role: TokenRole) => void;
+  setInspectXtermTarget: (target: 'background' | 'foreground' | null) => void;
 
   // ─── Layout ────────────────────────────────────────────────────────────
   sidebarPosition: 'left' | 'right';
@@ -434,12 +441,14 @@ export interface InspectStateFields {
   inspectModeActive: boolean;
   inspectMinimized: boolean;
   inspectTargetToken: { token: UIThemeTokenKey; role: TokenRole } | null;
+  inspectXtermTarget: 'background' | 'foreground' | null;
 }
 
 export function resetInspectState(state: InspectStateFields): void {
   state.inspectModeActive = false;
   state.inspectMinimized = false;
   state.inspectTargetToken = null;
+  state.inspectXtermTarget = null;
 }
 
 export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]], [], UISlice> = (set, get) => ({
@@ -604,6 +613,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   inspectModeActive: false,
   inspectMinimized: false,
   inspectTargetToken: null,
+  inspectXtermTarget: null,
 
   enterInspect: () => {
     // D-builtin: live color edits are a silent no-op unless theme==='custom'
@@ -638,6 +648,17 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setInspectTarget: (token, role) => set((state) => {
     state.inspectTargetToken = { token, role };
+    // A UI-token target and a terminal-slot target are mutually exclusive —
+    // picking a token clears any pending xterm slot so the editor opens exactly
+    // one section.
+    state.inspectXtermTarget = null;
+  }),
+
+  setInspectXtermTarget: (target) => set((state) => {
+    state.inspectXtermTarget = target;
+    // Symmetric to setInspectTarget: choosing a terminal slot clears the UI
+    // token target so only the xterm background/foreground editor opens.
+    if (target !== null) state.inspectTargetToken = null;
   }),
 
   // ─── Layout ────────────────────────────────────────────────────────────
