@@ -319,6 +319,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.unicode.activeVersion = '11';
     terminal.open(container);
 
+    // Paint the container backdrop with the xterm theme background so the 4px
+    // padding (and the sub-cell rounding gap xterm leaves around its grid) fades
+    // into the terminal content instead of exposing the app's --bg-base behind
+    // it. Without this, a theme whose UI base differs from its terminal palette
+    // (e.g. a dark custom base wrapping the light Hinomaru terminal) frames the
+    // terminal in a mismatched border. Falls back to no override when the theme
+    // omits a background. Re-applied on theme change in the font/theme effect.
+    container.style.backgroundColor = xtermTheme.background ?? '';
+
     // WebGL addon loading — driven by the shared webglContextPool, NOT called
     // directly. Chromium hard-caps simultaneous WebGL contexts (~16); exceeding
     // it force-evicts the oldest context and blanks that terminal. The pool
@@ -1044,6 +1053,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminalRef.current.options.fontFamily = `'${terminalFontFamily}', 'Consolas', 'Courier New', 'Malgun Gothic', monospace`;
     terminalRef.current.options.theme = xtermTheme;
     terminalRef.current.options.minimumContrastRatio = minimumContrastRatio;
+    // Keep the container backdrop in sync with the new theme background (see the
+    // create effect). Done before the selection/visibility fit guards so the
+    // colour tracks the theme even when a fit is skipped mid-selection.
+    if (containerRef.current) {
+      containerRef.current.style.backgroundColor = xtermTheme.background ?? '';
+    }
     // Selection-preservation guard — see ResizeObserver above.
     if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
       console.debug('[Terminal] font/theme fit skipped — active selection');
