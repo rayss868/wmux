@@ -290,4 +290,36 @@ export const id = {
   'claudeIntegration.usage.status.http-error': 'Kesalahan API Anthropic',
   'claudeIntegration.usage.status.network-error': 'Kesalahan jaringan',
   'claudeIntegration.usage.status.read-error': 'Kesalahan baca kredensial',
+
+  // Settings — Contrast checker
+  'settings.contrast.ok': 'Mudah dibaca',
+  'settings.contrast.warn': 'Kontras {ratio}:1 pada {surface} — sulit dibaca',
+  'settings.contrast.severe': 'Kontras {ratio}:1 pada {surface} — gagal WCAG, sangat sulit dibaca',
+  'settings.contrast.nudge': 'Gunakan tingkat terang yang aman',
+  'settings.contrast.nudgeUnavailable': 'Tidak ada tingkat terang yang aman pada rona ini',
+  'settings.contrast.surface.bgBase': 'dasar',
+  'settings.contrast.surface.bgSurface': 'permukaan',
+  'settings.contrast.surface.bgMantle': 'mantel',
+
+  // Settings — Theme presets and token overrides
+  'settings.theme.basedOn': 'Kustom (berdasarkan {preset})',
+  'settings.theme.resetToPreset': 'Atur ulang ke preset…',
+  'settings.theme.tokenOverridden': 'Diubah dari preset',
+  'settings.theme.resetToken': 'Atur ulang warna ini ke preset',
+
+  // Settings — Color inspector / picker
+  'settings.inspect.start': 'Pilih warna di layar',
+  'settings.inspect.picking': 'Memilih warna…',
+  'settings.inspect.appliesTo': 'Berlaku untuk {count} area yang ditandai',
+  'settings.inspect.followsSource': 'Mengikuti {source}',
+  'settings.inspect.notCustomizable': 'Belum dapat dikustomisasi',
+  'settings.inspect.done': 'Selesai',
+  'settings.inspect.banner': 'Klik area untuk mengedit warnanya · Esc untuk selesai',
+  'settings.inspect.terminalBg': 'Latar terminal',
+  'settings.inspect.terminalFg': 'Teks terminal',
+  'settings.inspect.menuFill': 'Isi',
+  'settings.inspect.menuText': 'Teks',
+  'settings.inspect.menuBorder': 'Batas',
+  'settings.inspect.menuAccent': 'Aksen',
+  'settings.inspect.proxyLabel': 'Edit {token} ({role})',
 } as const;

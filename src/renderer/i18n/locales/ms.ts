@@ -291,4 +291,36 @@ export const ms = {
   'claudeIntegration.usage.status.http-error': 'Ralat API Anthropic',
   'claudeIntegration.usage.status.network-error': 'Ralat rangkaian',
   'claudeIntegration.usage.status.read-error': 'Ralat membaca kelayakan',
+
+  // Settings — Contrast checker
+  'settings.contrast.ok': 'Boleh dibaca',
+  'settings.contrast.warn': 'Kontras {ratio}:1 pada {surface} — sukar dibaca',
+  'settings.contrast.severe': 'Kontras {ratio}:1 pada {surface} — gagal WCAG, sangat sukar dibaca',
+  'settings.contrast.nudge': 'Guna kecerahan selamat',
+  'settings.contrast.nudgeUnavailable': 'Tiada kecerahan selamat pada warna ini',
+  'settings.contrast.surface.bgBase': 'asas',
+  'settings.contrast.surface.bgSurface': 'permukaan',
+  'settings.contrast.surface.bgMantle': 'mantel',
+
+  // Settings — Custom theme tokens
+  'settings.theme.basedOn': 'Tersuai (berdasarkan {preset})',
+  'settings.theme.resetToPreset': 'Set semula ke praset…',
+  'settings.theme.tokenOverridden': 'Diubah daripada praset',
+  'settings.theme.resetToken': 'Set semula warna ini ke praset',
+
+  // Settings — Color inspector
+  'settings.inspect.start': 'Pilih warna pada skrin',
+  'settings.inspect.picking': 'Memilih warna…',
+  'settings.inspect.appliesTo': 'Terpakai pada {count} kawasan bertanda',
+  'settings.inspect.followsSource': 'Mengikut {source}',
+  'settings.inspect.notCustomizable': 'Belum boleh disesuaikan',
+  'settings.inspect.done': 'Selesai',
+  'settings.inspect.banner': 'Klik kawasan untuk ubah warnanya · Esc untuk selesai',
+  'settings.inspect.terminalBg': 'Latar belakang terminal',
+  'settings.inspect.terminalFg': 'Teks terminal',
+  'settings.inspect.menuFill': 'Isian',
+  'settings.inspect.menuText': 'Teks',
+  'settings.inspect.menuBorder': 'Sempadan',
+  'settings.inspect.menuAccent': 'Aksen',
+  'settings.inspect.proxyLabel': 'Ubah {token} ({role})',
 } as const;

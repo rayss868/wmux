@@ -290,4 +290,36 @@ export const fr = {
   'claudeIntegration.usage.status.http-error': 'Erreur de l\'API Anthropic',
   'claudeIntegration.usage.status.network-error': 'Erreur réseau',
   'claudeIntegration.usage.status.read-error': 'Erreur de lecture des identifiants',
+
+  // Settings — Contrast checker
+  'settings.contrast.ok': 'Lisible',
+  'settings.contrast.warn': 'Contraste {ratio}:1 sur {surface} — difficile à lire',
+  'settings.contrast.severe': 'Contraste {ratio}:1 sur {surface} — non conforme WCAG, très difficile à lire',
+  'settings.contrast.nudge': 'Utiliser une luminosité sûre',
+  'settings.contrast.nudgeUnavailable': 'Aucune luminosité sûre pour cette teinte',
+  'settings.contrast.surface.bgBase': 'base',
+  'settings.contrast.surface.bgSurface': 'surface',
+  'settings.contrast.surface.bgMantle': 'manteau',
+
+  // Settings — Theme preset / overrides
+  'settings.theme.basedOn': 'Personnalisé (basé sur {preset})',
+  'settings.theme.resetToPreset': 'Réinitialiser au préréglage…',
+  'settings.theme.tokenOverridden': 'Modifié par rapport au préréglage',
+  'settings.theme.resetToken': 'Rétablir cette couleur au préréglage',
+
+  // Settings — Color inspect / picker
+  'settings.inspect.start': 'Choisir une couleur à l\'écran',
+  'settings.inspect.picking': 'Sélection d\'une couleur…',
+  'settings.inspect.appliesTo': 'S\'applique à {count} zones marquées',
+  'settings.inspect.followsSource': 'Suit {source}',
+  'settings.inspect.notCustomizable': 'Pas encore personnalisable',
+  'settings.inspect.done': 'Terminé',
+  'settings.inspect.banner': 'Cliquez sur une zone pour modifier sa couleur · Échap pour terminer',
+  'settings.inspect.terminalBg': 'Arrière-plan du terminal',
+  'settings.inspect.terminalFg': 'Texte du terminal',
+  'settings.inspect.menuFill': 'Remplissage',
+  'settings.inspect.menuText': 'Texte',
+  'settings.inspect.menuBorder': 'Bordure',
+  'settings.inspect.menuAccent': 'Accent',
+  'settings.inspect.proxyLabel': 'Modifier {token} ({role})',
 } as const;

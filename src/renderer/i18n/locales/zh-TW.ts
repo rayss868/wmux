@@ -289,4 +289,36 @@ export const zhTW = {
   'claudeIntegration.usage.status.http-error': 'Anthropic API 錯誤',
   'claudeIntegration.usage.status.network-error': '網路錯誤',
   'claudeIntegration.usage.status.read-error': '憑證讀取錯誤',
+
+  // Settings — Contrast checker
+  'settings.contrast.ok': '可讀',
+  'settings.contrast.warn': '在 {surface} 上對比度為 {ratio}:1 — 不易閱讀',
+  'settings.contrast.severe': '在 {surface} 上對比度為 {ratio}:1 — 未達 WCAG 標準，非常難以閱讀',
+  'settings.contrast.nudge': '使用安全的明度',
+  'settings.contrast.nudgeUnavailable': '此色相沒有安全的明度',
+  'settings.contrast.surface.bgBase': '底色',
+  'settings.contrast.surface.bgSurface': '表層',
+  'settings.contrast.surface.bgMantle': '幔層',
+
+  // Settings — Theme presets
+  'settings.theme.basedOn': '自訂（以 {preset} 為基礎）',
+  'settings.theme.resetToPreset': '還原為預設組合…',
+  'settings.theme.tokenOverridden': '已從預設組合變更',
+  'settings.theme.resetToken': '將此顏色還原為預設組合',
+
+  // Settings — Color inspector
+  'settings.inspect.start': '在畫面上選取顏色',
+  'settings.inspect.picking': '正在選取顏色…',
+  'settings.inspect.appliesTo': '套用至 {count} 個標記區域',
+  'settings.inspect.followsSource': '跟隨 {source}',
+  'settings.inspect.notCustomizable': '尚無法自訂',
+  'settings.inspect.done': '完成',
+  'settings.inspect.banner': '點選區域以編輯其顏色 · 按 Esc 結束',
+  'settings.inspect.terminalBg': '終端機背景',
+  'settings.inspect.terminalFg': '終端機文字',
+  'settings.inspect.menuFill': '填色',
+  'settings.inspect.menuText': '文字',
+  'settings.inspect.menuBorder': '邊框',
+  'settings.inspect.menuAccent': '強調色',
+  'settings.inspect.proxyLabel': '編輯 {token}（{role}）',
 } as const;

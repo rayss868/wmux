@@ -291,4 +291,36 @@ export const uk = {
   'claudeIntegration.usage.status.http-error': 'Помилка API Anthropic',
   'claudeIntegration.usage.status.network-error': 'Помилка мережі',
   'claudeIntegration.usage.status.read-error': 'Помилка читання облікових даних',
+
+  // Settings — Contrast / theme accessibility
+  'settings.contrast.ok': 'Читабельно',
+  'settings.contrast.warn': 'Контраст {ratio}:1 на {surface} — важко читати',
+  'settings.contrast.severe': 'Контраст {ratio}:1 на {surface} — не відповідає WCAG, читати дуже важко',
+  'settings.contrast.nudge': 'Застосувати безпечну світлість',
+  'settings.contrast.nudgeUnavailable': 'Немає безпечної світлості для цього відтінку',
+  'settings.contrast.surface.bgBase': 'основа',
+  'settings.contrast.surface.bgSurface': 'поверхня',
+  'settings.contrast.surface.bgMantle': 'мантія',
+
+  // Settings — Theme presets and overrides
+  'settings.theme.basedOn': 'Користувацька (на основі {preset})',
+  'settings.theme.resetToPreset': 'Скинути до пресета…',
+  'settings.theme.tokenOverridden': 'Змінено від пресета',
+  'settings.theme.resetToken': 'Скинути цей колір до пресета',
+
+  // Settings — Color inspector / eyedropper
+  'settings.inspect.start': 'Вибрати колір на екрані',
+  'settings.inspect.picking': 'Вибір кольору…',
+  'settings.inspect.appliesTo': 'Застосовується до {count} позначених областей',
+  'settings.inspect.followsSource': 'Слідує за {source}',
+  'settings.inspect.notCustomizable': 'Ще не можна налаштувати',
+  'settings.inspect.done': 'Готово',
+  'settings.inspect.banner': 'Клацніть область, щоб змінити її колір · Esc — завершити',
+  'settings.inspect.terminalBg': 'Тло термінала',
+  'settings.inspect.terminalFg': 'Текст термінала',
+  'settings.inspect.menuFill': 'Заливка',
+  'settings.inspect.menuText': 'Текст',
+  'settings.inspect.menuBorder': 'Межа',
+  'settings.inspect.menuAccent': 'Акцент',
+  'settings.inspect.proxyLabel': 'Змінити {token} ({role})',
 } as const;

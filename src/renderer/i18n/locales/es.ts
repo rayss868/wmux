@@ -291,4 +291,36 @@ export const es = {
   'claudeIntegration.usage.status.http-error': 'Error de la API de Anthropic',
   'claudeIntegration.usage.status.network-error': 'Error de red',
   'claudeIntegration.usage.status.read-error': 'Error al leer las credenciales',
+
+  // Settings — Contrast checker
+  'settings.contrast.ok': 'Legible',
+  'settings.contrast.warn': 'Contraste {ratio}:1 sobre {surface} — difícil de leer',
+  'settings.contrast.severe': 'Contraste {ratio}:1 sobre {surface} — no cumple WCAG, muy difícil de leer',
+  'settings.contrast.nudge': 'Usar una luminosidad segura',
+  'settings.contrast.nudgeUnavailable': 'No hay luminosidad segura en este tono',
+  'settings.contrast.surface.bgBase': 'base',
+  'settings.contrast.surface.bgSurface': 'superficie',
+  'settings.contrast.surface.bgMantle': 'manto',
+
+  // Settings — Theme presets
+  'settings.theme.basedOn': 'Personalizado (basado en {preset})',
+  'settings.theme.resetToPreset': 'Restablecer al preajuste…',
+  'settings.theme.tokenOverridden': 'Cambiado respecto al preajuste',
+  'settings.theme.resetToken': 'Restablecer este color al del preajuste',
+
+  // Settings — Color inspector
+  'settings.inspect.start': 'Elige un color en pantalla',
+  'settings.inspect.picking': 'Eligiendo un color…',
+  'settings.inspect.appliesTo': 'Se aplica a {count} áreas marcadas',
+  'settings.inspect.followsSource': 'Sigue a {source}',
+  'settings.inspect.notCustomizable': 'Aún no es personalizable',
+  'settings.inspect.done': 'Listo',
+  'settings.inspect.banner': 'Haz clic en un área para editar su color · Esc para terminar',
+  'settings.inspect.terminalBg': 'Fondo del terminal',
+  'settings.inspect.terminalFg': 'Texto del terminal',
+  'settings.inspect.menuFill': 'Relleno',
+  'settings.inspect.menuText': 'Texto',
+  'settings.inspect.menuBorder': 'Borde',
+  'settings.inspect.menuAccent': 'Acento',
+  'settings.inspect.proxyLabel': 'Editar {token} ({role})',
 } as const;
