@@ -55,14 +55,29 @@ everything else from a fresh `pane.list`.
 3. **Handle `resync: true` (when `bootId` is unchanged).** You drifted past the
    ring. The seq space is intact, so you do not need to drop `paneId`/`ptyId`
    caches — but you may have missed metadata-changing events, so re-snapshot to
-   be safe. `droppedCount`, when present, tells you how many events you missed.
+   be safe. `droppedCount`, when present, tells you how many events fell out of
+   the ring. Note the resync reply still **delivers** the oldest page that
+   survived in the ring (`events` is not empty just because `resync` is set) —
+   an append-only consumer (a logger/recorder) should record that page and
+   continue from `nextCursor` instead of re-anchoring, so only the
+   `droppedCount` events are actually lost; see
+   [`recorder.mjs`](../../examples/event-recorder/recorder.mjs). The
+   re-anchor-to-`asOfSeq` recipe below is for **state-cache** consumers, where
+   the snapshot replaces the missed events.
 
 4. **Reconcile via `pane.list`, resume from `asOfSeq`.** `pane.list` returns
-   `{ asOfSeq, bootId, panes }`. Every event with `seq <= asOfSeq` is already
-   reflected in `panes[*].metadata`; events with `seq > asOfSeq` are the next
-   ones to consume. So set `cursor = asOfSeq` and continue polling. If the
-   `pane.list` `bootId` itself differs from what you just stored, treat it as a
-   restart (step 2) and drop the rest of your caches too.
+   `{ asOfSeq, bootId, panes }`. Metadata is consistent at that watermark:
+   every `pane.metadata.changed` with `seq <= asOfSeq` is already reflected in
+   `panes[*].metadata`, and events with `seq > asOfSeq` are the next ones to
+   consume. So set `cursor = asOfSeq` and continue polling. One boundary
+   caveat: the pane **tree** is captured just before `asOfSeq` is stamped, so a
+   pane created or closed in that instant can carry `seq <= asOfSeq` while the
+   snapshot misses it — if you track the exact pane set, tolerate events that
+   reference a `paneId` your cache doesn't know (treat an unknown
+   `pane.metadata.changed`/`pane.closed` as a cue to re-list rather than an
+   error). If the `pane.list` `bootId` itself differs from what you just
+   stored, treat it as a restart (step 2) and drop the rest of your caches
+   too.
 
 ## Code
 
@@ -86,7 +101,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 await reconcile('ws-1'); // initial bootstrap
 
 for (;;) {
-  const res = await client.rpc('events.poll', { cursor });
+  // Scope the poll to the workspace we reconcile. Omitting workspaceId
+  // returns events from EVERY workspace — they would pollute a paneCache
+  // that only tracks ws-1.
+  const res = await client.rpc('events.poll', { workspaceId: 'ws-1', cursor });
 
   if (bootId && res.bootId !== bootId) {
     // DAEMON RESTART — drop every cached id and cursor, re-snapshot from scratch.

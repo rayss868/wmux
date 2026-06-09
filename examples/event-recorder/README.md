@@ -140,7 +140,7 @@ Full flag reference.
 | `--workspace <id>` | first from `workspace.list` | Workspace to watch. |
 | `--types a,b,c` | all 8 | Comma-separated `WmuxEventType` filter. |
 | `--out <path>` | `./events.ndjson` | NDJSON output file (append). |
-| `--interval <ms>` | `1000` (min 20) | Poll interval. Stays under the 50 rpc/s socket cap. |
+| `--interval <ms>` | `1000` (min 50) | Poll interval. The floor keeps polls + annotate writes well under the 50 rpc/s socket cap. |
 | `--annotate` | off | Write a shared `label` + the recorder's `custom.*` metadata onto the watched pane. |
 | `--annotate-every <n>` | `10` | Annotate once per `n` recorded events. |
 | `--once` | off | Single poll then exit. |
@@ -209,10 +209,13 @@ returned `nextCursor` is **opaque** — the recorder passes it back verbatim and
 never increments or compares it (`PROTOCOL.md` §2.2).
 
 - **`bootId` change** ⇒ the daemon restarted under us. The recorder drops its
-  cursor and re-hydrates from a fresh `pane.list` snapshot (`PROTOCOL.md` §2.4).
+  cursor and re-hydrates from a fresh `pane.list` snapshot, re-anchoring to the
+  snapshot's `asOfSeq` in the new boot's seq space (`PROTOCOL.md` §2.4).
 - **`resync: true`** (with optional `droppedCount`) ⇒ the cursor drifted past
-  the ring window. The recorder re-anchors its cursor to the snapshot's
-  `asOfSeq` and resumes (`PROTOCOL.md` §2.5).
+  the ring window. The reply still delivers the oldest page that survived in
+  the ring, so the recorder writes that page first, continues from
+  `nextCursor` (only the `droppedCount` events are actually lost), and
+  refreshes its pane snapshot (`PROTOCOL.md` §2.5).
 
 `pane.list` is the snapshot primitive: it returns `{ asOfSeq, bootId, panes }`,
 where `asOfSeq` is the event watermark to resume polling from (`PROTOCOL.md` §3).

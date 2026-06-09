@@ -46,8 +46,9 @@ import { randomUUID } from 'node:crypto';
 // so it derives the pipe name the same way wmux does and reads the token file.
 
 function homeDir() {
-  // Mirrors the USERPROFILE || HOME dance in constants.ts getAuthTokenPath /
-  // getTcpPortPath. os.homedir() is the last-resort fallback.
+  // constants.ts getAuthTokenPath / getTcpPortPath use USERPROFILE || HOME
+  // (with an empty-string last resort). We add os.homedir() as a friendlier
+  // fallback for env-stripped shells; in any normal session all three agree.
   return process.env.USERPROFILE || process.env.HOME || os.homedir();
 }
 
@@ -91,6 +92,14 @@ export function endpoint() {
  * named pipe rejects the connection with EPERM (a known Windows pipe-ACL
  * edge case), wmux's PipeServer also listens on 127.0.0.1:<port> and writes
  * the chosen port to `~/.wmux-tcp-port`. Returns { host, port } or null.
+ *
+ * Caveat: the port file is removed only on clean daemon shutdown, so after a
+ * crash (or when wmux simply isn't running — pipe ENOENT) a STALE file can
+ * linger, and the client would offer the auth token to whatever local process
+ * now owns that loopback port. On a single-user machine this matches wmux's
+ * threat model (and the bundled client behaves the same way); on shared
+ * machines treat the fallback as advisory — the named pipe is the
+ * authenticated path.
  */
 function tcpFallback() {
   try {
@@ -107,7 +116,7 @@ function tcpFallback() {
  * A wmux RPC failure surfaced as a thrown Error. Carries the structured
  * `rejection` object (src/shared/rpc.ts RpcRejection) when the server attached
  * one, so callers can branch on `err.rejection.reason` (e.g. 'identity-status'
- * for the approval-retry idiom — PROTOCOL.md §4.4 / mcp-plugin-spec §4.4)
+ * for the approval-retry idiom — docs/api/mcp-plugin-spec.md §4.4)
  * without re-parsing the human-readable `error` string.
  */
 export class WmuxRpcError extends Error {

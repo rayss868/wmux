@@ -382,9 +382,11 @@ function line(s) { lines.push(s); console.log(s); }
   // ------------------------------------------------------------------
   // A single socket is capped at 50 rpc/s by PipeServer. We pace to just
   // under it (PER_SOCKET_RATE - 2) so the loop measures store+IPC latency,
-  // not the rate limiter rejecting us. This is therefore a CAP-BOUND
-  // throughput figure: the achieved writes/sec is the wire cap, and the
-  // latency percentiles are the real per-write cost behind it.
+  // not the rate limiter rejecting us. pacedLoop additionally AWAITS each
+  // call before dispatching the next, so the achieved writes/sec is
+  // min(pace ceiling, 1/latency): it reflects the wire cap only when the
+  // pace ceiling was actually reached; otherwise it is latency-bound and
+  // the percentiles are the honest per-write cost.
   {
     const durationMs = ARGS.duration * 1000;
     let writes = 0;
@@ -404,9 +406,12 @@ function line(s) { lines.push(s); console.log(s); }
     }, PER_SOCKET_RATE - 2, durationMs);
     const stats = summarize(latencies);
     const writesPerSec = round((latencies.length / elapsedMs) * 1000);
+    const paceCeiling = PER_SOCKET_RATE - 2;
+    const capBound = writesPerSec >= paceCeiling * 0.9;
     record('B1', {
       label: 'metadata write throughput (single socket, paced under cap)',
-      capBound: true,
+      capBound,
+      paceCeiling,
       writesPerSec,
       okWrites: latencies.length,
       errors: errors.length,
@@ -415,7 +420,9 @@ function line(s) { lines.push(s); console.log(s); }
       versionMonotonic: monotonic,
       finalVersion: lastVersion,
     });
-    line(`B1 writes/sec     : ${writesPerSec}  (CAP-BOUND: single socket pinned to ~${PER_SOCKET_RATE - 2}/s under the ${PER_SOCKET_RATE}/s wire cap)`);
+    line(`B1 writes/sec     : ${writesPerSec}  (${capBound
+      ? `CAP-BOUND: pinned at the ~${paceCeiling}/s pace under the ${PER_SOCKET_RATE}/s wire cap`
+      : `BELOW the ~${paceCeiling}/s pace ceiling — dispatch-cadence-bound (sequential await + sleep-timer granularity), not the wire cap; the latency percentiles are the real per-write cost`})`);
     line(`B1 write latency  : p50=${stats.p50}ms p95=${stats.p95}ms p99=${stats.p99}ms (n=${stats.count}, errors=${errors.length})`);
     line(`B1 version monotonic: ${monotonic ? 'PASS' : 'FAIL'} (final version=${lastVersion})`);
   }
@@ -479,14 +486,14 @@ function line(s) { lines.push(s); console.log(s); }
     await client2.connect();
 
     const target = RING_CAPACITY + 200; // comfortably past the window
-    let emitted = 0;
-    let firstDropAtBacklog = null;
-    let firstDropCount = null;
+    let emitted = 0;      // successful writes (each is exactly one ring event)
+    let emitErrors = 0;   // failed writes — must NOT count toward the backlog
+    let emitSeq = 0;
     const emitOne = (c, tag) => c.call('pane.setMetadata', {
       paneId, workspaceId: wsId,
-      custom: { [`bench.b3.${tag}`]: String(++emitted) },
+      custom: { [`bench.b3.${tag}`]: String(++emitSeq) },
       mergeMode: 'merge',
-    }).catch(() => {});
+    }).then(() => { emitted++; }, () => { emitErrors++; });
 
     // Burst, periodically peeking at droppedCount from the stale cursor.
     const burstStart = Date.now();
@@ -535,6 +542,7 @@ function line(s) { lines.push(s); console.log(s); }
       label: 'ring-overflow point + resync recovery',
       ringCapacity: RING_CAPACITY,
       eventsEmitted: emitted,
+      emitErrors,
       firstDropAtBacklog,
       firstDropCount,
       finalResync: resync,
@@ -543,7 +551,7 @@ function line(s) { lines.push(s); console.log(s); }
       recoveredViaPaneList: recovered,
       recoverAsOfSeq: asOfSeq,
     });
-    line(`B3 emitted        : ${emitted} events (ring=${RING_CAPACITY})`);
+    line(`B3 emitted        : ${emitted} events (ring=${RING_CAPACITY}, emit errors=${emitErrors})`);
     line(`B3 first drop at  : backlog≈${firstDropAtBacklog ?? 'n/a'} events (droppedCount=${firstDropCount ?? 'n/a'})`);
     line(`B3 final stale poll: resync=${resync} droppedCount=${droppedCount} ${(resync && droppedCount > 0) ? 'PASS' : 'FAIL'}`);
     line(`B3 recovery        : pane.list asOfSeq=${asOfSeq} bootId-stable=${bootIdBefore === bootIdAfter} ${recovered ? 'PASS' : 'FAIL'}`);
@@ -613,9 +621,11 @@ function line(s) { lines.push(s); console.log(s); }
   }
 
   line('--------------------------------------------------------');
-  line('Note: B1 writes/sec is CAP-BOUND by the per-socket wire limit, not the');
-  line('store. The store serializes writes in a synchronous critical section');
-  line('well above this rate; the external bottleneck is the rate limiter + IPC.');
+  line('Note: B1 paces a single socket under the per-socket wire cap AND awaits');
+  line('each write, so writes/sec = min(pace ceiling, 1/latency) — the B1 line');
+  line('above says which bound was hit. Either way the bottleneck is external');
+  line('(rate limiter + IPC round-trip): the store itself serializes writes in');
+  line('a synchronous critical section well above either bound.');
   line('Numbers are environment-dependent — re-run on the target machine.');
   line('========================================================');
 
@@ -638,11 +648,9 @@ function line(s) { lines.push(s); console.log(s); }
   console.log(jsonText);
   console.log('----- BENCH_JSON_END -----');
 
-  // Teardown. `daemon.shutdown` is only registered on the SEPARATE
-  // daemon-process pipe, not the main-process RPC surface we connect to here,
-  // so this is a best-effort no-op (the reply is "Unknown method", swallowed);
-  // the real teardown is the SIGTERM→SIGKILL on the spawned wmux.exe in cleanup().
-  try { await client.call('daemon.shutdown', {}); } catch {}
+  // Teardown: SIGTERM→SIGKILL on the spawned wmux.exe in cleanup(). (No RPC
+  // teardown — `daemon.shutdown` is only registered on the separate
+  // daemon-process pipe, and the client socket is already closed above.)
   await cleanup();
   process.exit(0);
 })().catch(async (e) => {

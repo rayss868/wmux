@@ -25,13 +25,17 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = path.resolve(import.meta.dirname, '..');
+// import.meta.dirname needs Node >= 20.11; package.json engines allows >= 18.
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 
 const SRC = {
   rpc: path.join(REPO_ROOT, 'src', 'shared', 'rpc.ts'),
   events: path.join(REPO_ROOT, 'src', 'shared', 'events.ts'),
   capMap: path.join(REPO_ROOT, 'src', 'main', 'mcp', 'methodCapabilityMap.ts'),
+  pipeServer: path.join(REPO_ROOT, 'src', 'main', 'pipe', 'PipeServer.ts'),
   pkg: path.join(REPO_ROOT, 'package.json'),
 };
 const OUT = path.join(REPO_ROOT, 'docs', 'api', 'reference.md');
@@ -105,6 +109,36 @@ function parseNumberConst(source, constName, file) {
     die(`could not find numeric \`export const ${constName}\` in ${path.relative(REPO_ROOT, file)}`);
   }
   return Number(m[1]);
+}
+
+/**
+ * Extract the PipeServer transport caps so the constants table can't drift.
+ * These aren't exported: three are `private static readonly NAME = <n>`, the
+ * line buffer is a module-level `const MAX_LINE_BUFFER = <a> * <b>`, and the
+ * per-socket RPC cap is a bare literal in the rate-limit branch
+ * (`if (limit.count > <n>)`). Each one dies loudly if the shape changes.
+ */
+function parsePipeServerCaps(source, file) {
+  const rel = path.relative(REPO_ROOT, file);
+  const staticNum = (name) => {
+    const m = new RegExp(
+      `private\\s+static\\s+readonly\\s+${name}\\s*=\\s*(\\d+)`,
+      'm',
+    ).exec(source);
+    if (!m) die(`could not find \`private static readonly ${name}\` in ${rel} — update the scanner or the table.`);
+    return Number(m[1]);
+  };
+  const bufM = /const\s+MAX_LINE_BUFFER\s*=\s*(\d+)\s*\*\s*(\d+)/m.exec(source);
+  if (!bufM) die(`could not find \`const MAX_LINE_BUFFER = <a> * <b>\` in ${rel} — update the scanner or the table.`);
+  const perSocketM = /if\s*\(\s*limit\.count\s*>\s*(\d+)\s*\)/m.exec(source);
+  if (!perSocketM) die(`could not find the per-socket \`limit.count > <n>\` cap in ${rel} — update the scanner or the table.`);
+  return {
+    maxConnections: staticNum('MAX_CONNECTIONS'),
+    globalRateLimit: staticNum('GLOBAL_RATE_LIMIT'),
+    maxNewConnectionsPerSec: staticNum('MAX_NEW_CONNECTIONS_PER_SEC'),
+    maxLineBuffer: Number(bufM[1]) * Number(bufM[2]),
+    perSocketRateLimit: Number(perSocketM[1]),
+  };
 }
 
 /**
@@ -210,6 +244,7 @@ function buildMarkdown() {
   const rpcSrc = read(SRC.rpc);
   const evSrc = read(SRC.events);
   const capSrc = read(SRC.capMap);
+  const pipeSrc = read(SRC.pipeServer);
   const pkg = JSON.parse(read(SRC.pkg));
 
   const methods = parseConstStringArray(rpcSrc, 'ALL_RPC_METHODS', SRC.rpc);
@@ -217,10 +252,22 @@ function buildMarkdown() {
   const ringCapacity = parseNumberConst(evSrc, 'RING_CAPACITY', SRC.events);
   const pollDefaultMax = parseNumberConst(evSrc, 'POLL_DEFAULT_MAX', SRC.events);
   const capMap = parseCapabilityMap(capSrc, SRC.capMap);
+  const caps = parsePipeServerCaps(pipeSrc, SRC.pipeServer);
 
-  // Sanity cross-check: every method in ALL_RPC_METHODS should appear in the
-  // capability map (Record<RpcMethod, ...> totality is a tsc invariant, but we
-  // surface a missing entry as '—' rather than silently dropping it).
+  // Sanity cross-check: every method in ALL_RPC_METHODS must appear in the
+  // capability map and vice versa. Record<RpcMethod, ...> totality is a tsc
+  // invariant, but a partial regex parse (e.g. an entry body the scanner can't
+  // follow) would otherwise ship a half-baked table — fail loudly instead.
+  const missingCap = methods.filter((m) => !capMap.has(m));
+  if (missingCap.length > 0) {
+    die(`METHOD_CAPABILITY parse is missing ${missingCap.length} method(s) from ALL_RPC_METHODS — scanner can't follow the entry shape; update the scanner:\n  ${missingCap.join('\n  ')}`);
+  }
+  const methodSet = new Set(methods);
+  const unknownCap = [...capMap.keys()].filter((m) => !methodSet.has(m));
+  if (unknownCap.length > 0) {
+    die(`METHOD_CAPABILITY has ${unknownCap.length} entr(y/ies) not in ALL_RPC_METHODS:\n  ${unknownCap.join('\n  ')}`);
+  }
+
   const lines = [];
   const p = (s = '') => lines.push(s);
 
@@ -264,9 +311,6 @@ function buildMarkdown() {
   p('  legacy envelope-less callers grandfather through).');
   p('- `riskClass` drives the approval-dialog wording; blank for `null` and');
   p('  `wmux.internal` methods.');
-  p('- `—` in the capability column means the method has no entry in the map');
-  p('  (should not happen — `Record<RpcMethod, …>` totality is a `tsc`');
-  p('  invariant).');
   p('');
 
   // Group methods, preserving ALL_RPC_METHODS order within each group.
@@ -289,16 +333,10 @@ function buildMarkdown() {
     p('| Method | Capability | Risk class |');
     p('|---|---|---|');
     for (const method of groupMethods) {
+      // Totality asserted above — every method has an entry.
       const entry = capMap.get(method);
-      let cap;
-      let risk;
-      if (!entry) {
-        cap = '—';
-        risk = '';
-      } else {
-        cap = entry.capability === null ? '`null`' : `\`${entry.capability}\``;
-        risk = entry.riskClass ? `\`${entry.riskClass}\`` : '';
-      }
+      const cap = entry.capability === null ? '`null`' : `\`${entry.capability}\``;
+      const risk = entry.riskClass ? `\`${entry.riskClass}\`` : '';
       p(`| \`${mdEscape(method)}\` | ${cap} | ${risk} |`);
     }
     p('');
@@ -333,18 +371,20 @@ function buildMarkdown() {
   p('|---|---|---|');
   p(`| Event ring capacity (\`RING_CAPACITY\`) | ${ringCapacity} | \`src/shared/events.ts\` |`);
   p(`| Default poll page (\`POLL_DEFAULT_MAX\`) | ${pollDefaultMax} | \`src/shared/events.ts\` |`);
-  // The rate-limit caps are private static fields of PipeServer; hardcoded
-  // here with a source citation since they aren't exported. Keep in sync with
-  // src/main/pipe/PipeServer.ts if those values change.
-  p('| Max concurrent connections (`MAX_CONNECTIONS`) | 50 | `src/main/pipe/PipeServer.ts` (private static) |');
-  p('| Per-socket RPC rate limit | 50 / s | `src/main/pipe/PipeServer.ts` (private static) |');
-  p('| Global RPC rate limit (`GLOBAL_RATE_LIMIT`) | 200 / s | `src/main/pipe/PipeServer.ts` (private static) |');
-  p('| New connections rate limit (`MAX_NEW_CONNECTIONS_PER_SEC`) | 30 / s (pre-auth) | `src/main/pipe/PipeServer.ts` (private static) |');
-  p('| Max line buffer (`MAX_LINE_BUFFER`) | 1 MB | `src/main/pipe/PipeServer.ts` |');
+  // The transport caps live in PipeServer (not exported); parsed from the
+  // source by parsePipeServerCaps so this table can't drift either.
+  p(`| Max concurrent connections (\`MAX_CONNECTIONS\`) | ${caps.maxConnections} | \`src/main/pipe/PipeServer.ts\` (private static) |`);
+  p(`| Per-socket RPC rate limit | ${caps.perSocketRateLimit} / s | \`src/main/pipe/PipeServer.ts\` |`);
+  p(`| Global RPC rate limit (\`GLOBAL_RATE_LIMIT\`) | ${caps.globalRateLimit} / s | \`src/main/pipe/PipeServer.ts\` (private static) |`);
+  p(`| New connections rate limit (\`MAX_NEW_CONNECTIONS_PER_SEC\`) | ${caps.maxNewConnectionsPerSec} / s (pre-auth) | \`src/main/pipe/PipeServer.ts\` (private static) |`);
+  p(`| Max line buffer (\`MAX_LINE_BUFFER\`) | ${caps.maxLineBuffer / (1024 * 1024)} MB | \`src/main/pipe/PipeServer.ts\` |`);
   p('');
   p('An unauthenticated request (missing/wrong token on the first line) gets');
-  p('the socket destroyed. Exceeding a rate limit or the line buffer also tears');
-  p('the connection down.');
+  p('the socket destroyed, as does overflowing the line buffer. Exceeding a');
+  p('rate limit does **not** drop the connection: the daemon replies');
+  p('`{ ok: false, error: "rate limited" }` (per-socket) or');
+  p('`{ ok: false, error: "rate limited (global)" }` and keeps the socket');
+  p('open — back off and retry, do not reconnect.');
   p('');
 
   return lines.join('\n') + '\n';
@@ -366,7 +406,9 @@ function main() {
   if (args.includes('--check')) {
     let current = null;
     try {
-      current = fs.readFileSync(OUT, 'utf8');
+      // Normalize CRLF: with core.autocrlf=true the checkout is CRLF while
+      // the generator emits LF — a byte-exact compare would always be stale.
+      current = fs.readFileSync(OUT, 'utf8').replace(/\r\n/g, '\n');
     } catch {
       // missing file = stale
     }

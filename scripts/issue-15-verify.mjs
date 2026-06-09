@@ -207,7 +207,12 @@ function runRecorderLegacyOnce(token) {
     } catch { /* leave false */ }
   }
   check('recorder wrote ≥1 well-formed NDJSON event', ndjsonLines > 0 && firstEventOk, `lines=${ndjsonLines}`);
-  if (rec.code !== 0) console.error(rec.err.split('\n').slice(-8).join('\n'));
+  if (rec.code !== 0) {
+    // The recorder logs to stderr; stdout is only --help text, but dump both
+    // on failure so nothing is hidden.
+    console.error(rec.err.split('\n').slice(-8).join('\n'));
+    if (rec.out.trim()) console.error(`[stdout] ${rec.out.split('\n').slice(-4).join('\n')}`);
+  }
 
   // ── Test B: enforce-mode identity contract for a non-first-party plugin ─────
   // Replicate exactly what the recorder does in identity mode, but stop at the

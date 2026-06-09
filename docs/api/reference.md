@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v2.17.1 sources.** This file is produced by
+> **Generated from wmux v2.18.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -36,9 +36,6 @@ Total: **96** methods (`ALL_RPC_METHODS` in
   legacy envelope-less callers grandfather through).
 - `riskClass` drives the approval-dialog wording; blank for `null` and
   `wmux.internal` methods.
-- `—` in the capability column means the method has no entry in the map
-  (should not happen — `Record<RpcMethod, …>` totality is a `tsc`
-  invariant).
 
 ### `workspace`
 
@@ -246,12 +243,15 @@ typed in `src/shared/events.ts`.
 | Event ring capacity (`RING_CAPACITY`) | 1024 | `src/shared/events.ts` |
 | Default poll page (`POLL_DEFAULT_MAX`) | 256 | `src/shared/events.ts` |
 | Max concurrent connections (`MAX_CONNECTIONS`) | 50 | `src/main/pipe/PipeServer.ts` (private static) |
-| Per-socket RPC rate limit | 50 / s | `src/main/pipe/PipeServer.ts` (private static) |
+| Per-socket RPC rate limit | 50 / s | `src/main/pipe/PipeServer.ts` |
 | Global RPC rate limit (`GLOBAL_RATE_LIMIT`) | 200 / s | `src/main/pipe/PipeServer.ts` (private static) |
 | New connections rate limit (`MAX_NEW_CONNECTIONS_PER_SEC`) | 30 / s (pre-auth) | `src/main/pipe/PipeServer.ts` (private static) |
 | Max line buffer (`MAX_LINE_BUFFER`) | 1 MB | `src/main/pipe/PipeServer.ts` |
 
 An unauthenticated request (missing/wrong token on the first line) gets
-the socket destroyed. Exceeding a rate limit or the line buffer also tears
-the connection down.
+the socket destroyed, as does overflowing the line buffer. Exceeding a
+rate limit does **not** drop the connection: the daemon replies
+`{ ok: false, error: "rate limited" }` (per-socket) or
+`{ ok: false, error: "rate limited (global)" }` and keeps the socket
+open — back off and retry, do not reconnect.
 

@@ -109,6 +109,13 @@ The example above connects to the named pipe / socket only. To add the Windows
 TCP fallback, retry `net.connect(tcpFallback())` inside the socket's `'error'`
 handler when `err.code` is `EPERM` or `ENOENT` and `tcpFallback()` is non-null.
 
+> **Fallback caveat:** `~/.wmux-tcp-port` is removed only on clean daemon
+> shutdown. After a crash — or when wmux simply isn't running (`ENOENT`) — a
+> stale file can linger, and a client following it would hand the auth token
+> to whatever local process now owns that loopback port. Fine under wmux's
+> single-user threat model; on shared machines prefer the named pipe and
+> treat the port file as advisory.
+
 ## Pitfalls
 
 - **The token file is a UUID, not JSON.** `JSON.parse` on it throws. Read it as
@@ -123,11 +130,13 @@ handler when `err.code` is `EPERM` or `ENOENT` and `tcpFallback()` is non-null.
 - **One reply per `id`; correlate, don't assume order.** Replies can interleave
   if you have multiple in-flight requests. Match on `id`.
 - **Caps you can hit:** `MAX_CONNECTIONS = 50` concurrent sockets per daemon;
-  50 RPC/s per socket and 200 RPC/s global (both return
-  `{ ok: false, error: "rate limited" }` without closing the socket); 30 new
-  connections/s pre-auth (excess sockets are destroyed); 1 MB max unframed line
-  buffer (a client that never sends `\n` is disconnected). Open one long-lived
-  socket and reuse it rather than reconnecting per call.
+  50 RPC/s per socket (returns `{ ok: false, error: "rate limited" }`) and
+  200 RPC/s global (returns `{ ok: false, error: "rate limited (global)" }`) —
+  the two strings differ, so match with `startsWith('rate limited')` rather
+  than exact equality; neither closes the socket. 30 new connections/s
+  pre-auth (excess sockets are destroyed); 1 MB max unframed line buffer (a
+  client that never sends `\n` is disconnected). Open one long-lived socket
+  and reuse it rather than reconnecting per call.
 - **Unauthorized destroys the socket.** A wrong token does not just error — the
   daemon closes the connection. Reconnect after fixing the token.
 

@@ -85,7 +85,7 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 |---|---|---|---|
 | `system.identify` | — | stable | `{ app, version, platform, electronVersion }`. |
 | `system.capabilities` | — | stable | Returns `{ methods: ALL_RPC_METHODS, features: { paneMetadata: { optimisticConcurrency: true, mergeModes: ['merge','replace','replaceShared'] }, events: { types: WMUX_EVENT_TYPES, maxRingSize: 1024, bootId } } }` (shipped). A per-method **stability-tier map** is still **planned** — it is not in the response today; this document remains the source of truth for tiers. |
-| `mcp.claimWorkspace` | `{ workspaceId }` | stable | An MCP client binds itself to a workspace. Subsequent metadata / event writes are scoped to it. Added in v2.7.2 to prevent active-pane hijacking by external MCPs. |
+| `mcp.claimWorkspace` | `{ name? }` | stable | **Creates** a dedicated workspace + PTY for an external MCP caller and returns `{ ptyId, workspaceId, workspaceName }` — it does not bind to an existing workspace (`workspaceId` is not a parameter). The caller pins subsequent calls to the returned `ptyId`/`workspaceId`; the user's active workspace is restored after creation. Added in v2.7.2 to prevent active-pane hijacking by external MCPs. See `src/main/pipe/handlers/workspace.rpc.ts`. |
 
 ### Display vocabulary (shared workspace state)
 

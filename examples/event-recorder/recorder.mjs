@@ -91,7 +91,7 @@ function parseArgs(argv) {
       case '--help': case '-h': out.help = true; break;
       case '--workspace': out.workspace = argv[++i]; break;
       case '--out': out.out = argv[++i]; break;
-      case '--interval': out.interval = Math.max(20, Number(argv[++i]) || 1000); break;
+      case '--interval': out.interval = Math.max(50, Number(argv[++i]) || 1000); break;
       case '--annotate-every': out.annotateEvery = Math.max(1, Number(argv[++i]) || 10); break;
       case '--types': {
         const raw = (argv[++i] || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -120,8 +120,9 @@ Usage: node recorder.mjs [options]
   --types a,b,c          Comma-separated WmuxEventType filter. Default: all 8.
                          (${ALL_EVENT_TYPES.join(', ')})
   --out <path>           NDJSON output file (default: ./events.ndjson).
-  --interval <ms>        Poll interval (default: 1000; min 20). Stays well
-                         under the 50 rpc/s per-socket cap.
+  --interval <ms>        Poll interval (default: 1000; min 50). The floor keeps
+                         the loop — polls plus annotate writes — well under the
+                         50 rpc/s per-socket cap.
   --annotate             Write a shared label + custom.event-recorder.{lastSeq,
                          count} onto the watched pane via optimistic concurrency
                          (PROTOCOL.md §1). The label shows in the pane header.
@@ -350,15 +351,49 @@ async function main() {
   let recorded = 0;             // total events written
   let watchedPaneId = null;     // first pane we see, used as the annotate target
 
+  // (g) Clean shutdown — flush file, close socket. Hoisted (function
+  // declaration) so the stream error handler below can call it.
+  let stopping = false;
+  function shutdown() {
+    if (stopping) return;
+    stopping = true;
+    log(`shutting down — recorded ${recorded} events to ${args.out}`);
+    try { outStream.end(); } catch { /* ignore */ }
+    client.close();
+    // Give the stream a tick to flush before exit.
+    setTimeout(() => process.exit(0), 100);
+  }
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  // Without a listener, a bad --out path / EACCES / disk-full raises an
+  // unhandled 'error' event and crashes mid-recording with a raw stack.
+  outStream.on('error', (err) => {
+    log(`output stream error on ${args.out}: ${err.message} — stopping`);
+    shutdown();
+  });
+
+  // Single write path: guarded so an in-flight poll that resolves during
+  // shutdown can't write after end.
+  function writeEvent(ev) {
+    if (stopping || outStream.writableEnded || outStream.destroyed) return;
+    outStream.write(JSON.stringify(ev) + '\n');
+    recorded++;
+    log(prettyEvent(ev));
+  }
+
   // pane.list is the snapshot primitive. We call it on start (to seed bootId +
   // the watched pane) and again after a resync/restart to re-hydrate.
   //
-  // `reAnchorCursor` distinguishes the two cases (PROTOCOL.md §2.5):
-  //   - initial connect: keep cursor at 0 so the first events.poll REPLAYS the
-  //     backlog still in the ring (the brief's "poll loop from cursor 0").
-  //   - resync / bootId-change / reconnect: re-anchor cursor to asOfSeq, the
-  //     watermark already reflected in this snapshot, so we resume cleanly
-  //     without re-replaying events the snapshot already accounts for.
+  // `reAnchorCursor` distinguishes the cases (PROTOCOL.md §2.5):
+  //   - initial connect / resync: keep the cursor where it is. On connect,
+  //     cursor 0 makes the first events.poll REPLAY the ring backlog; on
+  //     resync, nextCursor already points past the page the resync reply
+  //     delivered, and re-anchoring to asOfSeq would skip the rest of the
+  //     still-available ring.
+  //   - bootId change (daemon restart): the old seq space is gone — re-anchor
+  //     cursor to asOfSeq, the watermark this fresh snapshot already
+  //     reflects, so we resume cleanly in the new boot's seq space.
   async function hydrate(reason, reAnchorCursor) {
     const snap = await withApprovalRetry(
       client,
@@ -375,7 +410,11 @@ async function main() {
 
   await hydrate('initial', false);
 
-  // One poll iteration. Returns true to keep looping, false to stop.
+  // One poll iteration. Returns:
+  //   false        — terminal (user denied the plugin); stop the loop.
+  //   'reconcile'  — this iteration was a recovery hop (transport error,
+  //                  daemon restart, or resync), not a clean data poll.
+  //   true         — a clean data poll (zero or more events delivered).
   async function pollOnce() {
     let poll;
     try {
@@ -389,35 +428,51 @@ async function main() {
       if (err instanceof WmuxRpcError && err.rejection?.reason === 'identity-status' && err.rejection.status === 'denied') {
         return false;
       }
-      // Socket dropped (daemon bounce) — reconnect + re-hydrate on next loop.
-      log(`events.poll failed: ${err.message} — reconnecting`);
+      // Transient failure: rpc timeout, a rate-limit reply, or a dropped
+      // socket. Do NOT re-anchor the cursor here — re-anchoring skips events
+      // still sitting in the ring. Make sure the socket is alive and retry
+      // from the SAME cursor: a real daemon restart surfaces as a bootId
+      // change and a genuinely stale cursor surfaces as resync:true, both
+      // handled below on the next successful poll.
+      log(`events.poll failed: ${err.message} — retrying from the same cursor`);
       await sleep(args.interval);
-      try { await client.connect(); await hydrate('reconnect', true); } catch (e) { log(`reconnect failed: ${e.message}`); }
-      return true;
+      try { await client.connect(); } catch (e) { log(`reconnect failed: ${e.message}`); }
+      return 'reconcile';
     }
 
-    // bootId mismatch ⇒ daemon restarted under us (PROTOCOL.md §2.4). Drop ALL
-    // cached cursor/pane state and re-hydrate from a fresh snapshot.
+    // bootId mismatch ⇒ daemon restarted under us (PROTOCOL.md §2.4). The old
+    // seq space is gone: drop ALL cached cursor/pane state and re-anchor from
+    // a fresh snapshot.
     if (bootId && poll.bootId && poll.bootId !== bootId) {
       log(`bootId changed (${shortId(bootId)} → ${shortId(poll.bootId)}) — daemon restarted; re-hydrating`);
       await hydrate('boot-change', true);
-      return true;
+      return 'reconcile';
     }
     if (!bootId) bootId = poll.bootId;
 
     // resync ⇒ our cursor drifted past the ring window (or is in the future).
-    // Re-anchor to the snapshot's asOfSeq (PROTOCOL.md §2.5).
+    // The reply still DELIVERS the oldest surviving page (the bus re-anchors
+    // its effective cursor to the oldest ring entry — PROTOCOL.md §2.5), so
+    // record it first: only the `droppedCount` events that already fell out
+    // of the ring are actually lost. Then continue from nextCursor — it
+    // points past the delivered page, and subsequent polls drain the rest of
+    // the ring. Re-hydrate the snapshot (the watched pane may be gone) but do
+    // NOT re-anchor the cursor to asOfSeq: that would skip the still-
+    // available remainder. (A state-cache consumer that rebuilds from the
+    // snapshot instead would re-anchor here — see
+    // docs/how-to/handle-daemon-restart.md.)
     if (poll.resync) {
-      log(`resync: true${poll.droppedCount ? ` droppedCount=${poll.droppedCount}` : ''} — re-anchoring via pane.list`);
-      await hydrate('resync', true);
-      return true;
+      const survived = poll.events ?? [];
+      for (const ev of survived) writeEvent(ev);
+      cursor = poll.nextCursor;
+      log(`resync: true${poll.droppedCount ? ` droppedCount=${poll.droppedCount}` : ''} — recorded ${survived.length} surviving events; refreshing snapshot via pane.list`);
+      await hydrate('resync', false);
+      return 'reconcile';
     }
 
     // Append + pretty-log each delivered event.
     for (const ev of poll.events ?? []) {
-      outStream.write(JSON.stringify(ev) + '\n');
-      recorded++;
-      log(prettyEvent(ev));
+      writeEvent(ev);
     }
 
     // Advance the OPAQUE cursor — pass nextCursor back verbatim next time.
@@ -435,32 +490,15 @@ async function main() {
     return true;
   }
 
-  // (g) Clean SIGINT shutdown — flush file, close socket.
-  let stopping = false;
-  const shutdown = () => {
-    if (stopping) return;
-    stopping = true;
-    log(`shutting down — recorded ${recorded} events to ${args.out}`);
-    try { outStream.end(); } catch { /* ignore */ }
-    client.close();
-    // Give the stream a tick to flush before exit.
-    setTimeout(() => process.exit(0), 100);
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
-
   if (args.once) {
     // A single user-visible poll. But the first poll from cursor 0 against a
-    // long-running wmux may come back with resync:true (the ring already
-    // wrapped past seq 0) and re-anchor instead of delivering — so allow a few
-    // bounded reconciliation hops before the data poll lands. Each hop is one
-    // RPC round-trip, nowhere near the 50 rpc/s cap.
+    // long-running wmux may come back as a recovery hop (resync because the
+    // ring already wrapped past seq 0, or a transient transport error) — so
+    // allow a few bounded reconciliation hops before the clean data poll
+    // lands. Each hop is one RPC round-trip, nowhere near the 50 rpc/s cap.
     for (let i = 0; i < 4; i++) {
-      const before = recorded;
-      await pollOnce();
-      // Stop once we've delivered events, or once a clean (non-resync) poll
-      // returned with nothing new — both mean the ring is drained.
-      if (recorded > before || i >= 1) break;
+      const r = await pollOnce();
+      if (r !== 'reconcile') break; // terminal (false) or a clean data poll
     }
     log(`--once: recorded ${recorded} events to ${args.out}`);
     outStream.end();
@@ -473,7 +511,7 @@ async function main() {
   log(`polling every ${args.interval}ms (Ctrl+C to stop)`);
   while (!stopping) {
     const keepGoing = await pollOnce();
-    if (!keepGoing) break;
+    if (keepGoing === false) break;
     await sleep(args.interval);
   }
   shutdown();

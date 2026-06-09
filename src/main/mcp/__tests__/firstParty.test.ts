@@ -151,6 +151,19 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
         `${m} was dropped from FIRST_PARTY_METHODS — remove it from ALLOWED_RESERVED_FIRST_PARTY`,
       ).toBe(true);
     }
+
+    // Least-privilege direction: a reserved grant is only justified while the
+    // bundled server actually CALLS the method. If a tool is removed from
+    // src/mcp/**, its undeclarable wmux.internal grant must not linger as
+    // stale attack surface for a clientName impersonator.
+    const called = extractCalledMethods();
+    const stale = [...ALLOWED_RESERVED_FIRST_PARTY].filter((m) => !called.has(m)).sort();
+    expect(
+      stale,
+      `These reserved methods are first-party-granted but no longer called by ` +
+        `src/mcp/** — prune them from FIRST_PARTY_METHODS and from ` +
+        `ALLOWED_RESERVED_FIRST_PARTY (least privilege):\n  ${stale.join('\n  ')}`,
+    ).toEqual([]);
   });
 });
 

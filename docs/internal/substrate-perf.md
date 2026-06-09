@@ -55,7 +55,7 @@ Latency is wall-clock round-trip on the client socket (`process.hrtime`), so it 
 
 These bound *external* throughput far below the store's internal capacity. A single-threaded synchronous `MetadataStore.set()` can commit writes much faster than 50/s; the pipe just won't let one socket send them. So:
 
-- **B1 is deliberately CAP-BOUND.** The bench paces a single socket to just under the per-socket cap (`PER_SOCKET_RATE − 2`) so the loop measures store + IPC *latency* rather than the rate limiter rejecting requests. The reported writes/sec is therefore the wire cap, not the store ceiling. The latency percentiles behind that cap are the real per-write cost.
+- **B1 is paced under the cap — and sequential.** The bench paces a single socket to just under the per-socket cap (`PER_SOCKET_RATE − 2`) so the loop measures store + IPC *latency* rather than the rate limiter rejecting requests, and it **awaits each write (then sleeps to the pace gap) before dispatching the next**. The achieved writes/sec is therefore bounded by the loop's dispatch cadence — reply latency plus sleep-timer granularity (Windows timers are ~15 ms coarse) — and only reaches the pace ceiling when that cadence allows. In the §3 run it did not: the figure is **cadence-bound below the ceiling**, not the wire cap and not the store ceiling. The latency percentiles are the real per-write cost either way; the bench output labels which bound was hit.
 - **B3 and B4 use two sockets** (~2 × 48/s ≈ 96/s) to roughly double event-emission throughput while staying under the 200/s global cap.
 - The §8 Q5 spec of "1000 writes/sec" is **not reachable by a single external socket** by design — that rate is an internal-store figure. The bench characterizes the externally-observable substrate; the store's own headroom above the cap is argued from source in §4, not benchmarked over the wire (you cannot push 1000/s through a 50/s socket without measuring the rate limiter instead of the store).
 
@@ -79,11 +79,11 @@ The bench prints a results table and emits machine-readable JSON both to `--json
 
 Environment: `win32, Node v22.21.1, packaged app build 2.17.1 (out/wmux-win32-x64), --duration 10s, run 2026-06-09`
 
-### B1 — metadata write throughput (CAP-BOUND)
+### B1 — metadata write throughput (single socket, paced under cap)
 
 | Metric | Value |
 |---|---|
-| writes/sec (single socket, paced under 50/s cap) | 31.35 |
+| writes/sec (single socket, paced under 50/s cap) | 31.35 — **below the ~48/s pace ceiling**, i.e. dispatch-cadence-bound (sequential await ≈ 5.7 ms + sleep-timer granularity ≈ 15 ms ⇒ ~32 ms/cycle), **not** the wire cap and not the store; see §2.3 |
 | write latency p50 / p95 / p99 | 5.688 ms / 9.295 ms / 10.636 ms |
 | ok writes / errors over the window | 314 / 0 |
 | version monotonic | PASS (final version = 314) |
@@ -98,6 +98,8 @@ Environment: `win32, Node v22.21.1, packaged app build 2.17.1 (out/wmux-win32-x6
 | 1024 (`RING_CAPACITY`) | 2.115 ms | 3.637 ms | 314 |
 
 ### B3 — ring-overflow point + resync recovery
+
+> Counting caveat: in the run below the script counted *dispatched* writes and swallowed write errors without a counter (B1's `errors = 0` under the same caps makes silent B3 failures unlikely, but it was not proven). The script now counts only confirmed writes and reports `emit errors` separately — refresh this table on the next full run.
 
 | Metric | Value |
 |---|---|
@@ -132,7 +134,7 @@ The architecture predicts the shape of these results before the bench runs. Each
 
 ### 4.2 The wire caps, not the store, bound external throughput
 
-The store can commit far more than 50 writes/s — a synchronous in-memory `Map.set` plus a small JSON write is sub-millisecond. The binding constraint for an external client is the `PipeServer` per-socket cap of 50 rpc/s (and 200 rpc/s global). So the practical external bottleneck is **the rate limiter + IPC, not the store**. B1's writes/sec figure is the cap; the store has headroom above it that an external single socket cannot exercise. The §8 Q5 "1000 writes/sec" figure is an internal-store rate; reaching it over the wire would require ~20 sockets and would hit the 200/s global cap first.
+The store can commit far more than 50 writes/s — a synchronous in-memory `Map.set` plus a small JSON write is sub-millisecond. The binding constraint for an external client is the `PipeServer` per-socket cap of 50 rpc/s (and 200 rpc/s global). So the practical external bottleneck is **the rate limiter + IPC, not the store**. B1's writes/sec figure sits at or below that cap (cadence-bound in the §3 run — see §2.3); the store has headroom above it that an external single socket cannot exercise. The §8 Q5 "1000 writes/sec" figure is an internal-store rate; reaching it over the wire would require ~20 sockets and would hit the 200/s global cap first.
 
 ### 4.3 `snapshot()` does not block the write path (the §8 Q5 answer)
 

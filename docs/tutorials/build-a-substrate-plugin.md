@@ -12,10 +12,12 @@ approval flow. You do not need to have read any wmux source.
 - A wmux install. If you have one, skip step 1.
 - A clone of this repo (for the reference plugin under `examples/event-recorder/`).
 
-The plugin you will run is the **event recorder** — a ~150-line program that
-connects to wmux, polls the event bus, and prints each event as one JSON line.
-It lives at [`examples/event-recorder/`](../../examples/event-recorder/) with
-three files: `recorder.mjs` (the loop), `wmux-rpc.mjs` (the connection client),
+The plugin you will run is the **event recorder** — a small two-file program
+that connects to wmux, polls the event bus, records each event as one JSON
+line in an NDJSON file, and prints a one-line summary per event to the
+console. It lives at
+[`examples/event-recorder/`](../../examples/event-recorder/) with three
+files: `recorder.mjs` (the loop), `wmux-rpc.mjs` (the connection client),
 and `README.md`.
 
 ---
@@ -26,7 +28,7 @@ Install wmux (winget shown; Chocolatey and the GitHub release also work) and
 launch it:
 
 ```powershell
-winget install wmux
+winget install openwong2kim.wmux
 ```
 
 Then start it from the Start menu, or from a terminal:
@@ -61,15 +63,27 @@ node examples/event-recorder/recorder.mjs --legacy --once
   reconciliation hops if the ring already wrapped past the oldest event), prints
   what it finds, and exits.
 
-You will see one JSON line per event already in the ring — at minimum a
-`pane.created` and a `process.started` from when wmux launched its first pane.
-A line looks like:
+The console shows one summary line per event already in the ring — at minimum
+a `pane.created` and a `process.started` from when wmux launched its first
+pane:
+
+```text
+[recorder 2026-06-10T05:00:01.123Z] seq=1 pane.created ws=ws-1 pane=p-1
+[recorder 2026-06-10T05:00:01.456Z] seq=2 process.started ws=ws-1 pty=pty-1 pid=1234 shell=pwsh.exe
+[recorder 2026-06-10T05:00:01.460Z] --once: recorded 2 events to ./events.ndjson
+```
+
+The full event objects land in `events.ndjson`, one JSON line each:
+
+```powershell
+Get-Content events.ndjson
+```
 
 ```jsonc
 {"seq":2,"ts":1749470000123,"workspaceId":"ws-1","type":"process.started","ptyId":"pty-1","shell":"pwsh.exe"}
 ```
 
-That is a real event off the live bus. If you see lines, your external program
+Those are real events off the live bus. If you see them, your external program
 is authenticated and reading the substrate.
 
 > **If it prints nothing:** the ring may be empty if wmux just started and
@@ -98,12 +112,12 @@ Switch to the wmux window. Split the focused pane — press the wmux prefix then
 the split key (default: `Ctrl+B` then `%` for a horizontal split or `"` for a
 vertical split, or use the pane menu). A new terminal pane appears.
 
-Switch back to the recorder window. You will see new lines appear, in this
-shape:
+Switch back to the recorder window. You will see new summary lines appear (the
+full JSON objects are appended to `events.ndjson` at the same time):
 
-```jsonc
-{"seq":7,"ts":...,"workspaceId":"ws-1","type":"pane.created","paneId":"p-2"}
-{"seq":8,"ts":...,"workspaceId":"ws-1","type":"process.started","ptyId":"pty-2","shell":"pwsh.exe"}
+```text
+[recorder ...] seq=7 pane.created ws=ws-1 pane=p-2
+[recorder ...] seq=8 process.started ws=ws-1 pty=pty-2 pid=5678 shell=pwsh.exe
 ```
 
 You just watched a UI action in wmux flow through the substrate to an external
@@ -164,20 +178,24 @@ Now the recorder:
    - `meta.write:custom.event-recorder.*` — write its own namespaced subtree.
 4. Starts polling.
 
-Because wmux's production default is **enforce** mode, the first real
-`events.poll` comes back **rejected**, not with data:
+Because wmux's production default is **enforce** mode, the first gated RPC the
+recorder makes — `workspace.list`, to pick the workspace to watch — comes back
+**rejected**, not with data:
 
 ```jsonc
 {"ok":false,
- "error":"events.poll: awaiting user approval (promptId=abc123)",
+ "error":"workspace.list: awaiting user approval (promptId=abc123)",
  "rejection":{"reason":"identity-status","status":"unconfirmed",
               "pendingApproval":{"promptId":"abc123"}}}
 ```
 
-This is expected. The recorder detects `pendingApproval` and retries on a small
-backoff (the `withApprovalRetry` idiom). Meanwhile, look at the **wmux window**:
-an approval dialog has appeared, showing the plugin's name and the capabilities
-it declared.
+This is expected — the recorder prints
+`workspace.list: waiting for approval in the wmux UI (promptId=...)`, detects
+`pendingApproval`, and retries on a small backoff (the `withApprovalRetry`
+idiom). Every gated method gets the same treatment, so once approval lands the
+later `pane.list` and `events.poll` calls pass without a prompt. Meanwhile,
+look at the **wmux window**: an approval dialog has appeared, showing the
+plugin's name and the capabilities it declared.
 
 **This step needs the GUI** — the approval prompt is a wmux UI surface. Click
 **Approve**. The plugin's status moves to `trusted`. The recorder's next retry
@@ -185,8 +203,10 @@ succeeds and events start streaming again, exactly as in step 3 — but now the
 plugin is a named, user-approved identity instead of an anonymous legacy caller.
 
 > If you click **Deny**, the rejection's `status` flips to `denied` on the next
-> retry and the recorder stops — the substrate will keep denying it. To re-grant,
-> edit `~/.wmux/plugin-trust.json` (or re-run and approve).
+> retry and the recorder stops — the substrate will keep denying it. `denied`
+> is sticky: re-running does **not** produce a new approval prompt. To
+> re-grant, edit `~/.wmux/plugin-trust.json` (remove the plugin's entry or set
+> its status back to `unconfirmed`) and re-run.
 
 ---
 

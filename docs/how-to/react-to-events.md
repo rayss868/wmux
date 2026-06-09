@@ -60,11 +60,13 @@ There are exactly **eight** event types (`WmuxEventType` in
 
 6. **Watch for `resync: true` and `droppedCount`.** If your cursor drifted past
    the ring window (you polled too slowly during a burst), the response carries
-   `resync: true` and, when the drift is past the window, a `droppedCount`. On
-   `resync`, reconcile via `pane.list` and resume from its `asOfSeq` — again,
-   see [handle-daemon-restart](./handle-daemon-restart.md). The bus already
-   advanced your effective cursor to the oldest surviving event, so you will not
-   double-process.
+   `resync: true` and, when the drift is past the window, a `droppedCount`. The
+   bus already advanced your effective cursor to the oldest surviving event, so
+   the reply still **delivers** that oldest page — process it (you will not
+   double-process), then: a state-cache consumer reconciles via `pane.list` and
+   resumes from its `asOfSeq`; an append-only consumer just continues from
+   `nextCursor` so only the `droppedCount` events are lost. See
+   [handle-daemon-restart](./handle-daemon-restart.md).
 
 ## Code
 
