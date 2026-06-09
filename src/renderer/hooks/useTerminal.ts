@@ -18,6 +18,7 @@ import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
 import { webglContextPool } from '../terminal/webglContextPool';
+import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
 // Module-level terminal registry for scrollback persistence
@@ -183,9 +184,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   if (!webglTokenRef.current) webglTokenRef.current = `wgl-${++webglTokenSeq}`;
   // Pending deferred-WebGL-release timer (see WEBGL_HIDDEN_DISPOSE_DELAY_MS).
   const webglDisposeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Glyph-corruption repair scheduler (issue #166) — created by the main
+  // effect, also poked by the visibility effect on regain.
+  const glyphRepaintRef = useRef<GlyphRepaintScheduler | null>(null);
   const { ptyId, isVisible = true, scrollbackFile, onFirstData, onContextMenu } = options;
   const ptyIdRef = useRef(ptyId);
   ptyIdRef.current = ptyId;
+  // Live visibility for long-lived callbacks (the burst repaint below) — the
+  // closure value captured at mount would go stale across workspace switches.
+  const isVisibleRef = useRef(isVisible);
+  isVisibleRef.current = isVisible;
   const onFirstDataRef = useRef(onFirstData);
   onFirstDataRef.current = onFirstData;
   const onContextMenuRef = useRef(onContextMenu);
@@ -381,6 +389,43 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
     }
     disposeWebglRef.current = disposeWebgl;
+
+    // Issue #166 — defensive repaints for the "garbled glyphs until resize"
+    // corruption. Strategy and trigger rationale live in terminal/glyphRepaint.ts.
+    // Cost split: focus/visible clear the WebGL texture atlas (repairs atlas
+    // corruption; throttled — "focus" fires not just on mouse clicks but on
+    // every keyboard pane-nav / MCP pane.focus via useActivePaneFocus's
+    // term.focus(), so the throttle is load-bearing) AND force a full refresh
+    // (repairs dirty-region desync); burst-settle only refreshes — clearing a
+    // CJK-heavy atlas after every agent output burst would be constant
+    // re-rasterisation.
+    const glyphRepaint = createGlyphRepaintScheduler({
+      repaint: (reason) => {
+        if (terminalRef.current !== terminal) return;
+        // A hidden pane (background workspace/tab, display:none) skips the
+        // burst refresh — nobody can see the staleness, and the `visible`
+        // repaint on re-show repairs it at the moment it matters. Without
+        // this gate, N background agent panes each schedule a full-range
+        // refresh after every output burst.
+        if (reason === 'burst' && !isVisibleRef.current) return;
+        if (reason !== 'burst') {
+          try {
+            webglAddonRef.current?.clearTextureAtlas();
+          } catch {
+            // addon may be mid-dispose (pool eviction race) — refresh still runs
+          }
+        }
+        try {
+          terminal.refresh(0, terminal.rows - 1);
+        } catch {
+          // terminal may already be disposed
+        }
+      },
+    });
+    glyphRepaintRef.current = glyphRepaint;
+    const onTextareaFocus = () => glyphRepaint.onFocus();
+    // terminal.textarea exists once open() has run (above).
+    terminal.textarea?.addEventListener('focus', onTextareaFocus);
 
     // Only fit immediately if the container is actually visible (non-zero size).
     // If the workspace starts hidden (display:none), skip the initial fit so we
@@ -749,6 +794,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       removeDataListener = window.electronAPI.pty.onData((id, data) => {
         if (id === ptyId) {
           terminal.write(data);
+          glyphRepaint.onData(data.length);
           fireFirstData();
         }
       });
@@ -775,6 +821,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           return;
         }
         terminal.write(data);
+        glyphRepaint.onData(data.length);
         fireFirstData();
       });
 
@@ -972,6 +1019,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     return () => {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      terminal.textarea?.removeEventListener('focus', onTextareaFocus);
+      glyphRepaint.dispose();
+      glyphRepaintRef.current = null;
       autoCopy.dispose();
       selectionDisposable.dispose();
       pathLinkDisposable.dispose();
@@ -1112,6 +1162,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // ResizeObserver tick (after selection is released) handles the
       // deferred resize naturally.
       const id = requestAnimationFrame(() => {
+        // Issue #166 — repaint BEFORE the selection guard: neither the atlas
+        // clear nor refresh() touches the selection, and a stale pane must
+        // repair on view-switch-back even while a selection is live. Runs
+        // after the pool acquire above, so if a NEW addon was just created
+        // the atlas clear is a cheap no-op on a fresh atlas; the case this
+        // exists for is the fast switch where the old context (and its
+        // possibly stale atlas) was kept alive.
+        glyphRepaintRef.current?.onVisible();
         if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
           console.debug('[Terminal] visibility fit skipped — active selection');
           return;
