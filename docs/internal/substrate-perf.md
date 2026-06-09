@@ -77,47 +77,45 @@ The bench prints a results table and emits machine-readable JSON both to `--json
 
 > Numbers below are from one bench run on the environment noted. They are environment-dependent (pipe IPC latency, CPU, disk — each write persists `metadata.json` synchronously); re-run on the target machine before quoting. Re-generate verbatim with the §2.4 command and lift the values from the `BENCH_JSON` block.
 
-Environment: `win32, Node v22.21.1, packaged app build 2.17.1 (out/wmux-win32-x64), --duration 10s, run 2026-06-09`
+Environment: `win32, Node v22.21.1, packaged app build 2.17.1 (out/wmux-win32-x64), --duration 10s, run 2026-06-10`
 
 ### B1 — metadata write throughput (single socket, paced under cap)
 
 | Metric | Value |
 |---|---|
-| writes/sec (single socket, paced under 50/s cap) | 31.35 — **below the ~48/s pace ceiling**, i.e. dispatch-cadence-bound (sequential await ≈ 5.7 ms + sleep-timer granularity ≈ 15 ms ⇒ ~32 ms/cycle), **not** the wire cap and not the store; see §2.3 |
-| write latency p50 / p95 / p99 | 5.688 ms / 9.295 ms / 10.636 ms |
-| ok writes / errors over the window | 314 / 0 |
-| version monotonic | PASS (final version = 314) |
+| writes/sec (single socket, paced under 50/s cap) | 37.23 — **below the ~48/s pace ceiling**, i.e. dispatch-cadence-bound (sequential await ≈ 5.1 ms + sleep-timer granularity ⇒ ~27 ms/cycle), **not** the wire cap and not the store; see §2.3 |
+| write latency p50 / p95 / p99 | 5.089 ms / 8.028 ms / 9.226 ms |
+| ok writes / errors over the window | 373 / 0 |
+| version monotonic | PASS (final version = 373) |
 
 ### B2 — `events.poll` round-trip latency by page size
 
 | `max` | p50 | p95 | events returned |
 |---|---|---|---|
-| 1 | 1.038 ms | 1.883 ms | 1 |
-| 32 | 1.349 ms | 1.991 ms | 32 |
-| 256 (`POLL_DEFAULT_MAX`) | 1.972 ms | 2.551 ms | 256 |
-| 1024 (`RING_CAPACITY`) | 2.115 ms | 3.637 ms | 314 |
+| 1 | 1.04 ms | 2.687 ms | 1 |
+| 32 | 0.969 ms | 2.24 ms | 32 |
+| 256 (`POLL_DEFAULT_MAX`) | 1.911 ms | 3.531 ms | 256 |
+| 1024 (`RING_CAPACITY`) | 2.506 ms | 5.079 ms | 373 |
 
 ### B3 — ring-overflow point + resync recovery
 
-> Counting caveat: in the run below the script counted *dispatched* writes and swallowed write errors without a counter (B1's `errors = 0` under the same caps makes silent B3 failures unlikely, but it was not proven). The script now counts only confirmed writes and reports `emit errors` separately — refresh this table on the next full run.
-
 | Metric | Value |
 |---|---|
-| events emitted | 1230 |
-| backlog at which `droppedCount` first appears | ≈ 720 events (first `droppedCount` = 9) |
-| final stale poll: `resync` / `droppedCount` | resync: true / 519 |
+| events emitted (confirmed writes; emit errors counted separately) | 1230 / 0 errors |
+| backlog at which `droppedCount` first appears | ≈ 650 events (first `droppedCount` = 3) |
+| final stale poll: `resync` / `droppedCount` | resync: true / 585 |
 | `bootId` stable across the burst | true |
-| recovered via `pane.list` (`asOfSeq` returned) | PASS (`asOfSeq` = 1547) |
+| recovered via `pane.list` (`asOfSeq` returned) | PASS (`asOfSeq` = 1613) |
 
 ### B4 — snapshot latency idle vs. mid-burst (m0 §8 Q5)
 
 | Metric | Value |
 |---|---|
 | pane count (this harness) | 1 |
-| `pane.list` idle p50 / p95 | 1.78 ms / 3.022 ms |
-| `pane.list` mid-burst p50 / p95 | 1.751 ms / 5.43 ms |
-| mid-burst / idle p95 ratio | 1.797x (no copy-on-write needed — see §4.3 caveat) |
-| concurrent writes completed during the burst | 253 |
+| `pane.list` idle p50 / p95 | 1.718 ms / 3.933 ms |
+| `pane.list` mid-burst p50 / p95 | 1.616 ms / 6.354 ms |
+| mid-burst / idle p95 ratio | 1.616x (no copy-on-write needed — see §4.3 caveat) |
+| concurrent writes completed during the burst | 306 |
 
 ---
 
@@ -140,7 +138,7 @@ The store can commit far more than 50 writes/s — a synchronous in-memory `Map.
 
 `MetadataStore.snapshot()` iterates the in-memory `Map`, clones each entry, and reads `eventBus.latestSeq()` + `eventBus.bootId` — all in-memory, all synchronous, no I/O (`src/main/metadata/MetadataStore.ts`). Because it is synchronous and the store map is in-memory, a snapshot cannot be *preempted* by a concurrent write, and a write cannot be preempted by a snapshot — single-threaded JS runs each to completion. The only interaction is that a `pane.list` and a `pane.setMetadata` queued at the same tick run back-to-back, each adding its own latency to the other's wait, not multiplying it.
 
-So the §8 Q5 question — "does a snapshot mid-burst block the main process noticeably?" — has a structural answer: **no copy-on-write is needed.** The snapshot is O(panes) in clone cost and O(1) in seq/bootId reads; it never awaits. B4 confirms this empirically, with the nuance the prediction anticipated: **mid-burst p50 is flat** (1.751 ms vs. 1.78 ms idle — the median snapshot is no slower under concurrent writes, exactly what "no blocking" predicts), while **p95 rises to 1.797x idle** (5.43 ms vs. 3.022 ms). That tail elevation is the IPC dispatch queue, not the store: both `pane.list` and the background writer share one main-process event loop, so a snapshot occasionally queues behind a write (and vice versa) and pays that one write's latency as added wait — they run back-to-back, not concurrently, so the tail widens while the median holds. A *store-blocking* failure would have moved the median too. The ratio scales with concurrent traffic and pane count, not with any shared lock — there is none.
+So the §8 Q5 question — "does a snapshot mid-burst block the main process noticeably?" — has a structural answer: **no copy-on-write is needed.** The snapshot is O(panes) in clone cost and O(1) in seq/bootId reads; it never awaits. B4 confirms this empirically, with the nuance the prediction anticipated: **mid-burst p50 is flat** (1.616 ms vs. 1.718 ms idle — the median snapshot is no slower under concurrent writes, exactly what "no blocking" predicts), while **p95 rises to 1.616x idle** (6.354 ms vs. 3.933 ms). That tail elevation is the IPC dispatch queue, not the store: both `pane.list` and the background writer share one main-process event loop, so a snapshot occasionally queues behind a write (and vice versa) and pays that one write's latency as added wait — they run back-to-back, not concurrently, so the tail widens while the median holds. A *store-blocking* failure would have moved the median too. The ratio scales with concurrent traffic and pane count, not with any shared lock — there is none.
 
 **Caveat on pane count.** This harness has one pane, so B4's snapshot cost is a floor, not a worst case. Snapshot clone cost is O(number of panes with metadata): `snapshot()` walks the whole map and clones each `metadata` object. A daemon with hundreds of metadata-bearing panes pays proportionally more per `pane.list`. That cost is still synchronous and non-blocking in the preemption sense, but it lengthens the single critical section. See §5.
 

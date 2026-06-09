@@ -489,6 +489,8 @@ function line(s) { lines.push(s); console.log(s); }
     let emitted = 0;      // successful writes (each is exactly one ring event)
     let emitErrors = 0;   // failed writes — must NOT count toward the backlog
     let emitSeq = 0;
+    let firstDropAtBacklog = null;
+    let firstDropCount = null;
     const emitOne = (c, tag) => c.call('pane.setMetadata', {
       paneId, workspaceId: wsId,
       custom: { [`bench.b3.${tag}`]: String(++emitSeq) },
