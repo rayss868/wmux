@@ -223,7 +223,10 @@ Net behavior:
 - **OS peer-credential verification (pipe client PID → image path/signature).**
   The only truly-verified option, but the bundled server runs as `node.exe`
   spawned by Claude Code (not by wmux), so PID→image can't distinguish it from any
-  other node process; fragile cross-platform. Rejected.
+  other node process; fragile cross-platform. Rejected. Followed up as its own
+  design pass in `plans/issue-113-mcp-identity-verification-design.md` (#113),
+  which confirms peer-PID attestation and a per-launch nonce both fail to beat
+  this scoped allowlist and recommends deferral.
 
 ## 7. Rollout
 
