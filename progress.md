@@ -1,107 +1,64 @@
-# Progress Tracker — M0-c/d/e/f Team Mode
+# Progress — 색상 커스터마이징 인스펙트 모드 (2026-06-08)
 
 ## Summary
-- **Phase**: 0 (Init complete) → 3 (Implementation) 진입
-- **Started**: 2026-05-12
-- **Branch**: `feature/m0-b-handler-rewrite` (PR #34)
-- **Base**: `main` (PR #34 merge target)
-- **Size**: Large (Full Path, Phase 1·2 skip)
-- **Effort**: 1-1.5일 (4 단계 + 단계별 codex + 최종 2회 리뷰)
-- **Mode**: 순차 (worktree 안 씀)
-- **Done**: 4/4 | In Progress: 0 | Waiting: 0 | Blocked: 0
+- **Phase**: 5 완료 — **로컬 main에 FF 머지(8a14337)**. origin push는 사용자 확인 대기
+- dogfood fix 2건: 터미널 어두운 프레임(ae0b0fb, 컨테이너 배경=xterm), 인스펙트 picker 통과(8a14337, 루트 pointer-events:none → Done 없이 색선택 + 테두리 선택)
+- **동적검증**: inspectOverlay.dynamic.test.tsx — 실제 오버레이 createRoot 런타임 12시나리오 구동, 제품버그 0 (3b3ab27)
+- **최종 회귀**: 2523 pass / 4 fail (전부 daemon/main win32 timer flaky, renderer 전용 diff 무관, tsc clean)
+- **PR2 8커밋**: a9e922a→d561a14→5bf07bf→65ba344→456efba→44b0874(리뷰수정)→3b3ab27(동적하니스), base 3aba1e0(PR1)
+- **Branch**: PR1 `team/2026-06-08/color-safety-nets` (3aba1e0 ✓) → PR2 `team/2026-06-08/color-inspect`
+- **Base**: `main` (9d97f81)
+- **Size**: Large (Phase 1·2 = plan-eng-review로 등가 완료)
+- **Done**: 9/9 (PR1 T1·T2·T3 + PR2 F1·F2a·F2b·F3·F4) | In Progress: Phase 4 리뷰 | Blocked: 0
+- **Spec**: `plans/color-customization-inspect-mode.md` (Review Decisions LOCKED = 계약)
+- **PR1 검증**: 색상 테스트 34 pass, tsc clean, 회귀 0
+- **PR2 커밋**: a9e922a(F1 foundation) d561a14(F2a overlay) 5bf07bf(F2b settings) 65ba344(F3 marking) 456efba(F4 glue+invariants)
+- **전체 회귀**: 2497 pass / 4 fail (전부 daemon/main win32 timer flaky — renderer 전용 diff라 무관, tsc clean)
+- **F4가 잡은 P0**: pick이 exitInspect 호출 → 1클릭에 인스펙트 종료 버그 수정 + 캡처 양보 글루
 
 ## DAG
 ```
-M0-c (pane.list snapshot integration):    []
-M0-d (paneSlice mirror-only):              [M0-c]
-M0-e (SessionManager persist-then-publish): [M0-c]
-M0-f (wire-format additions):              [M0-c, M0-d, M0-e]
+# PR1 (color-safety-nets, main 기반)
+T1 (getContrastRatio 승격):        []
+T2 (대비 배지 + i18n):             [T1]
+T3 (프리셋/per-token 리셋 + i18n): []         # SettingsPanel 공유 → T2와 순차
+
+# PR2 (color-inspect, PR1 기반)
+S2 (tokenAttrs+파생맵+findToken):  []
+S3 (uiSlice 상태머신):             [S2]
+S5 (9 컴포넌트 표식):              [S2]
+S4 (InspectOverlay+AppLayout):     [S2, S3]
+S5b (SettingsPanel 진입+ESC억제):  [S2, S3, PR1머지]
+S6 (CI 불변식 + ESC 회귀 + 통합):  [S4, S5, S5b]
 ```
 
-순차 실행 (M0-d / M0-e 병렬 X — 같은 브랜치 충돌 회피).
-
 ## Phases
-- [x] Phase 0: Init (decisions, progress, handoff 생성)
+- [x] Phase 0: Init (branch from main, 폰트 격리, records)
 - [ ] Phase 3: Implementation
-  - [ ] M0-c → codex review → P1 fix (필요 시)
-  - [ ] M0-d → codex review → P1 fix
-  - [ ] M0-e → codex review → P1 fix
-  - [ ] M0-f → codex review → P1 fix
-- [ ] Phase 4: 최종 리뷰 (2회)
-  - [ ] Codex full-diff review (별도 세션, P1+P2 모두)
-  - [ ] Claude code-reviewer agent (별도 세션, opus)
-- [ ] Phase 5: 마무리 (테스트 전체 / 머지 옵션)
+  - [ ] PR1: T1 → T2/T3 (one frontend teammate, 결합도 기준 batch)
+  - [ ] PR2: S2 → (S3 ∥ S5) → (S4 ∥ S5b) → S6
+- [ ] Phase 3.5: 병합 (PR1 검증 → PR2 분기)
+- [ ] Phase 4: code-reviewer 전체 리뷰
+- [ ] Phase 5: 마무리 (전체 테스트 + ship 옵션, push는 사용자 확인)
 
-## Tasks
+## By Module
 
-### M0-c — `pane.list` snapshot integration
-- **Owner**: backend-developer (opus)
-- **Files**:
-  - `src/main/pipe/handlers/pane.rpc.ts` — `pane.list` handler
-- **Spec**:
-  - Handler 응답 envelope: `{ asOfSeq, bootId, panes: [{ ...paneInfo, metadata, version }] }`
-  - `asOfSeq` + `bootId` 는 이미 v2.8.0 envelope. metadata + version 만 추가.
-  - `MetadataStore.snapshot()` 호출하여 paneId → metadata + version map 빌드
-  - paneId 매칭 안 되는 entry 는 metadata/version 없이 (또는 빈 객체 + version 0)
-- **Tests** (~2):
-  1. `pane.list snapshot ≡ MetadataStore` — list 결과의 metadata + version 이 store.get() 와 일치
-  2. `stale renderer 아님` — burst write 후 list 가 최신 version 반환
-- **검증**: `npm test` 전체 통과 (1019 → 1021+) + tsc clean
+### PR1 — 안전망 (color-safety-nets)
+- [ ] T1 getContrastRatio export (`tailwindPalette.ts`) + `themes.test.ts` import 전환 + 단위
+- [ ] T2 대비 배지 (`SettingsPanel.tsx` CustomThemeEditor, StatusBadge 재사용, surface별 쌍, <AA amber/<3:1 assertive, "안전한 명도로" nudge) + i18n + 테스트
+- [ ] T3 프리셋/per-token 리셋 (`SettingsPanel.tsx`, builtinToCustom, undo dot) + i18n + 테스트
+- 검증: `npx tsc --noEmit` + `npx eslint` + `npx vitest run` 관련 + dogfood
 
-### M0-d — paneSlice mirror-only conversion
-- **Owner**: frontend-developer (opus)
-- **Files**:
-  - `src/renderer/stores/slices/paneSlice.ts`
-- **Spec**:
-  - metadata write 로직 제거 (M0-b 이후 거의 비어있을 것)
-  - paneSlice 가 metadata write API 노출 안 함 (compile-time write protect)
-  - `pane.metadata.changed` event subscriber 만 유지 → mirror only
-- **Tests** (1):
-  1. paneSlice 가 direct metadata write export 안 함 (type-level guard or runtime throw)
-- **검증**: 회귀 0 + tsc clean
-
-### M0-e — SessionManager persist-then-publish + hydrate
-- **Owner**: backend-developer (opus)
-- **Files**:
-  - `src/main/session/SessionManager.ts`
-  - `src/main/pipe/handlers/pane.rpc.ts` (write 순서)
-- **Spec**:
-  - `MetadataStore.set() → SessionManager.persist() → EventBus.publish()` 순서
-  - SessionManager 가 `MetadataStore.serialize()` 호출하여 metadata + version + schema_version 포함하여 저장
-  - hydrate 시 `MetadataStore.hydrate(serialized)` 호출
-- **Tests** (2):
-  1. `persist-then-publish` — persist 실패 시 publish 안 됨 (race spec #1)
-  2. `crash window` — persist 도중 죽으면 다음 hydrate 시 마지막 atomic write 까지 복원
-- **검증**: 회귀 0 + tsc clean
-
-### M0-f — wire-format additions
-- **Owner**: fullstack-developer (opus)
-- **Files**:
-  - `src/shared/rpc.ts` — setMetadata params: expectedVersion, mergeMode + VERSION_CONFLICT (이미 M0-a 에 일부)
-  - `src/shared/events.ts` — `PaneMetadataChangedEvent.version` (이미 optional 추가됨, 정리)
-  - `src/main/pipe/handlers/system.rpc.ts:36` — `features.paneMetadata` 객체화 `{ optimisticConcurrency, mergeModes }`
-  - `src/preload/index.ts` — pane.setMetadata 단방향화 + wire-format
-  - `src/renderer/hooks/useRpcBridge.ts` — wire-format
-  - `src/mcp/index.ts` — pane_set_metadata tool description 업데이트
-- **Tests** (3+):
-  1. wire-format 회귀 가드 (RPC schema)
-  2. `features.paneMetadata` 객체화 (truthy 호환)
-  3. v2.8.x client `merge: false` → 'replace' 변환 호환
-- **검증**: 회귀 0 + tsc clean
-
-## Codex Review Gates
-| 단계 | Codex review | Status |
-|------|--------------|--------|
-| M0-c commit | 단계별 (skill: codex review) | pending |
-| M0-d commit | 단계별 | pending |
-| M0-e commit | 단계별 | pending |
-| M0-f commit | 단계별 | done (1028 tests pass, tsc clean) |
-| Final | codex full-diff (별도 세션) | pending |
-| Final | claude code-reviewer (별도 세션) | pending |
+### PR2 — 인스펙트 (color-inspect)
+- [ ] S2 `tokenAttrs(token,role)` + 파생→소스 맵 + `findTokenForElement` (`themes.ts`) + 단위
+- [ ] S3 uiSlice inspect 상태머신 (enter/exit/배타/teardown, builtin→custom seed) + 단위
+- [ ] S5 9 컴포넌트 tokenAttrs 표식 (Sidebar/MiniSidebar/StatusBar/Pane/SurfaceTabs/Terminal래퍼/CommandPalette/NotificationPanel/FileTreePanel)
+- [ ] S4 `InspectOverlay.tsx` + `AppLayout.tsx` 마운트 (캡처레이어/elementsFromPoint/호버하이라이트+칩/클릭 disambiguation/터미널영역/포커스탈취/roving-tabindex/rAF rect sync/ESC/cleanup)
+- [ ] S5b `SettingsPanel.tsx` 인스펙트 진입 버튼 + ESC 억제 + TokenRow tokenAttrs + 타깃 scroll/flash
+- [ ] S6 CI 불변식(data-token∈tokens, 토큰10개 각≥1) + **ESC 회귀(필수)** + 통합 테스트
 
 ## Notes
-- 기준 테스트: 1019 pass (baseline) → 1028 pass after M0-f (+10: 6 pane.rpc M0-f + 4 system.rpc)
-- 회귀 0 mandatory. tsc clean, eslint 0 errors.
-- PR #34 force-push 금지. 새 commit 만 추가.
-- 사용자 확인 필요: `git push` 전 반드시 (memory `feedback_push_confirm.md`)
-- PR body + commit message + 코드 주석 모두 영어 (memory `feedback_pr_commit_english.md`)
+- push/PR/release는 사용자 확인 후 (memory feedback_push_confirm).
+- commit/PR/주석 영어, 대화 한국어 (memory feedback_pr_commit_english).
+- git add 명시 (memory feedback_git_add_explicit) — out-dogfood/ 등 untracked 잡파일 휩쓸기 금지.
+- 좌표/canvas/하이라이트 = GUI dogfood (jsdom 불가).

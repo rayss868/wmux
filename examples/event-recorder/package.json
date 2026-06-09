@@ -1,0 +1,18 @@
+{
+  "name": "@wmux-examples/event-recorder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference wmux substrate plugin: a dependency-free external event recorder that identifies itself, declares permissions, and streams lifecycle events to NDJSON.",
+  "bin": {
+    "wmux-event-recorder": "./recorder.mjs"
+  },
+  "scripts": {
+    "start": "node recorder.mjs",
+    "smoke": "node recorder.mjs --legacy --once"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

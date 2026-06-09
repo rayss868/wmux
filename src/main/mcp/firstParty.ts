@@ -25,13 +25,16 @@
 // user `denied` still wins (see PermissionEnforcer.check).
 //
 // Threat model (matches the spec's "declared, not verified" stance, rpc.ts):
-// recognition is by self-asserted clientName. On a single-user OS this is no
-// weaker than any local secret — a same-user process that wanted to
-// impersonate the host already holds the daemon auth token and could call the
-// pipe directly. What the scoped allowlist buys over a blanket bypass is that
-// even an impersonator only reaches the curated method set, never daemon.*,
-// workspace.new, company mutation, or other reserved surface. Documented in
-// docs/api/mcp-plugin-spec.md.
+// recognition is by self-asserted clientName. THIS IS BEST-EFFORT ATTRIBUTION,
+// NOT A SECURITY BOUNDARY AGAINST SAME-USER CODE. On a single-user OS it is no
+// weaker than any local secret — a same-user process that wanted to impersonate
+// the host already holds the daemon auth token and could call the pipe directly.
+// What the scoped allowlist buys over a blanket bypass is that even an
+// impersonator only reaches the curated method set, never daemon.*,
+// workspace.new, company mutation, or other reserved surface. Cryptographic
+// first-party identity (peer-PID, per-launch nonce) was evaluated and deferred
+// to a remote/multi-user transport (issue #113). Full residual-risk writeup +
+// the curated-allowlist invariant: docs/api/mcp-plugin-spec.md §2.4.
 
 import type { RpcMethod } from '../../shared/rpc';
 

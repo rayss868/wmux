@@ -92,6 +92,66 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
       expect(FIRST_PARTY_METHODS.has(m)).toBe(false);
     }
   });
+
+  // Belt regression for the #113 first-party residual-risk follow-up.
+  //
+  // The first-party bypass's ONLY incremental power over the normal
+  // declare/approve flow is the set of `wmux.internal` methods: permissionGrammar
+  // reserves the `wmux.*` prefix, so a reserved method can NEVER appear in a
+  // plugin declaration, which means name-recognition is the only code path that
+  // can ever reach one. So the security-relevant invariant is precisely: which
+  // RESERVED methods may the bypass touch? Pin that to the curated read/observe +
+  // company-scoped agent-messaging set. Everything else reserved — daemon
+  // control, workspace/surface lifecycle, company mutation, hooks.signal, notify
+  // — must stay unreachable through the bypass. The reserved set is DERIVED from
+  // METHOD_CAPABILITY (not hand-listed), so a newly-added `wmux.internal` method
+  // that someone also drops into FIRST_PARTY_METHODS trips this test unless it is
+  // consciously added to the exception set below.
+  it('first-party never reaches a reserved (wmux.internal) method outside the curated read/messaging exceptions', () => {
+    const reserved = (Object.keys(METHOD_CAPABILITY) as RpcMethod[]).filter(
+      (m) => METHOD_CAPABILITY[m].capability === 'wmux.internal',
+    );
+
+    // The ONLY reserved methods the bundled first-party server legitimately
+    // calls: a workspace/window read and the company-scoped A2A messaging tools.
+    // These are observe/message surfaces, not lifecycle or mutation.
+    const ALLOWED_RESERVED_FIRST_PARTY = new Set<RpcMethod>([
+      'surface.list',
+      'company.a2a.whoami',
+      'company.a2a.send',
+      'company.a2a.broadcast',
+      'company.a2a.inbox',
+      'company.a2a.ack',
+      'company.a2a.status',
+    ]);
+
+    const leaked = reserved
+      .filter((m) => FIRST_PARTY_METHODS.has(m))
+      .filter((m) => !ALLOWED_RESERVED_FIRST_PARTY.has(m))
+      .sort();
+    expect(
+      leaked,
+      `FIRST_PARTY_METHODS grants reserved wmux.internal lifecycle/mutation ` +
+        `methods the name-recognition bypass must never reach. Either the bundled ` +
+        `server should not call these, or — if one is genuinely required — widen ` +
+        `ALLOWED_RESERVED_FIRST_PARTY here with explicit security review:\n  ${leaked.join(
+          '\n  ',
+        )}`,
+    ).toEqual([]);
+
+    // Keep the exception set honest: every curated entry must still be a reserved
+    // method AND still be in the allowlist, or it is stale and should be pruned.
+    for (const m of ALLOWED_RESERVED_FIRST_PARTY) {
+      expect(
+        reserved.includes(m),
+        `${m} is no longer wmux.internal in methodCapabilityMap — re-review whether it still belongs in the first-party reserved exception`,
+      ).toBe(true);
+      expect(
+        FIRST_PARTY_METHODS.has(m),
+        `${m} was dropped from FIRST_PARTY_METHODS — remove it from ALLOWED_RESERVED_FIRST_PARTY`,
+      ).toBe(true);
+    }
+  });
 });
 
 describe('isFirstPartyClient', () => {
