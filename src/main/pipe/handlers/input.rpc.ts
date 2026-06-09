@@ -183,10 +183,29 @@ export function registerInputRpc(
    * terminal viewport text of the active surface.
    * Returns { ptyId: string, text: string }
    * Accepts optional { ptyId?, tail_lines? } params that the renderer honors.
+   *
+   * Like input.send / input.sendKey / terminal.readEvents, this resolves the
+   * target ptyId and asserts the caller's workspace owns it before reading, so
+   * a caller that learned a foreign PTY id cannot read another workspace's
+   * viewport (issue #163 — readScreen was the lone terminal-IO handler missing
+   * the assert). Internal callers (CLI/UI) pass no workspaceId and skip the
+   * check via assertWorkspaceOwnsPty's early return.
    */
-  router.register('input.readScreen', (params) =>
-    sendToRenderer(getWindow, 'input.readScreen', params ?? {}),
-  );
+  router.register('input.readScreen', async (params) => {
+    const p = params ?? {};
+
+    let ptyId: string;
+    if (typeof p['ptyId'] === 'string' && p['ptyId'].length > 0) {
+      ptyId = p['ptyId'];
+    } else {
+      ptyId = await resolveActivePtyId(getWindow);
+    }
+
+    const callerWs = typeof p['workspaceId'] === 'string' ? p['workspaceId'] : undefined;
+    await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.readScreen');
+
+    return sendToRenderer(getWindow, 'input.readScreen', { ...p, ptyId });
+  });
 
   /**
    * terminal.readEvents — return structured OSC 133 prompt/command events
