@@ -100,4 +100,32 @@ describe('input.readScreen — cross-workspace ownership (issue #163)', () => {
       expect.anything(),
     );
   });
+
+  it('reads the caller workspace active pane when ptyId is omitted, independent of UI focus', async () => {
+    // Regression guard (PR review): the renderer scopes the active-pane lookup
+    // to params.workspaceId, so a legit caller naming its own ws must read its
+    // own active pane even when the user's UI focus is on another workspace.
+    // Resolving via a workspaceId-less resolveActivePtyId would read the
+    // UI-focused pane and wrongly reject this caller.
+    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+      if (method === 'input.readScreen') return Promise.resolve({ ptyId: 'daemon-self', text: 'mine' });
+      if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-self' });
+      return Promise.resolve(null);
+    });
+
+    const res = await setup().dispatch({
+      id: '4',
+      method: 'input.readScreen',
+      params: { workspaceId: 'ws-self' },
+    });
+
+    expect(res.ok).toBe(true);
+    // the read forwarded workspaceId so the renderer scopes the lookup to it,
+    // not to a focus-based default.
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'input.readScreen',
+      expect.objectContaining({ workspaceId: 'ws-self' }),
+    );
+  });
 });
