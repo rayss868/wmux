@@ -180,13 +180,45 @@ export function registerInputRpc(
 
   /**
    * input.readScreen — delegates to the renderer to capture the current
-   * terminal viewport text of the active surface.
+   * terminal viewport text of a surface.
    * Returns { ptyId: string, text: string }
    * Accepts optional { ptyId?, tail_lines? } params that the renderer honors.
+   *
+   * Ownership is enforced so a caller that learned a foreign PTY id cannot read
+   * another workspace's viewport (issue #163 — readScreen was the lone
+   * terminal-IO handler missing the assert). Two paths:
+   *   - Explicit ptyId: assert BEFORE reading, so a foreign viewport is never
+   *     even captured.
+   *   - No ptyId: forward params as-is so the renderer resolves the active pane
+   *     scoped to params.workspaceId. This preserves the old passthrough — the
+   *     caller's OWN active pane, not the globally UI-focused one (resolving via
+   *     a workspaceId-less resolveActivePtyId would read whatever the user has
+   *     focused and wrongly reject a legit same-workspace caller). Re-assert the
+   *     returned ptyId as defense in depth.
+   * Internal callers (CLI/UI) pass no workspaceId; assertWorkspaceOwnsPty then
+   * early-returns and the check is skipped.
    */
-  router.register('input.readScreen', (params) =>
-    sendToRenderer(getWindow, 'input.readScreen', params ?? {}),
-  );
+  router.register('input.readScreen', async (params) => {
+    const p = params ?? {};
+    const callerWs = typeof p['workspaceId'] === 'string' ? p['workspaceId'] : undefined;
+
+    if (typeof p['ptyId'] === 'string' && p['ptyId'].length > 0) {
+      await assertWorkspaceOwnsPty(getWindow, p['ptyId'], callerWs, 'input.readScreen');
+      return sendToRenderer(getWindow, 'input.readScreen', p);
+    }
+
+    const result = await sendToRenderer(getWindow, 'input.readScreen', p);
+    const readPtyId =
+      result !== null &&
+      typeof result === 'object' &&
+      typeof (result as Record<string, unknown>)['ptyId'] === 'string'
+        ? (result as Record<string, string>)['ptyId']
+        : undefined;
+    if (readPtyId) {
+      await assertWorkspaceOwnsPty(getWindow, readPtyId, callerWs, 'input.readScreen');
+    }
+    return result;
+  });
 
   /**
    * terminal.readEvents — return structured OSC 133 prompt/command events
