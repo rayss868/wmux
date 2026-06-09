@@ -161,6 +161,27 @@ const config: ForgeConfig = {
         unpack: '**/node_modules/node-pty/prebuilds/**',
       });
 
+      // 3a. Invalidate @electron/asar's in-memory header cache for this archive.
+      //
+      // @electron/asar memoizes parsed archive headers in a module-level
+      // `filesystemCache` keyed by archive path. Step 1's `extractAll(asarPath)`
+      // populated that cache with the ORIGINAL (pre-repack) header. The in-place
+      // repack above overwrites app.asar on disk but does NOT refresh the cache,
+      // so the cached entry now carries stale file offsets.
+      //
+      // `electron-forge make` runs packaging and the makers in ONE process, and
+      // every `require('@electron/asar')` resolves to the same hoisted instance.
+      // So the Linux maker-deb / maker-rpm chain (electron-installer-common's
+      // readMetadata) later calls `asar.extractFile(asarPath, 'package.json')`
+      // against this same stale cache — reading at the old offset, which now
+      // lands inside the new archive's data section (bundled JS), and feeding
+      // non-JSON bytes to JSON.parse:
+      //   "Unexpected token ... is not valid JSON".
+      // Windows (Squirrel) and macOS (DMG/ZIP) makers never read app.asar this
+      // way, which is why the breakage was Linux-only (issue #159). Dropping the
+      // cache entry forces the next reader to re-parse the freshly written header.
+      asar.uncache(asarPath);
+
       // 4. Cleanup temp
       fs.rmSync(tempDir, { recursive: true });
       console.log('[postPackage] Done — node-pty bundled in asar.');
