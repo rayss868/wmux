@@ -285,12 +285,6 @@ jobs:
   linux:
     name: Build Linux
     needs: build
-    # Best-effort: @electron-forge/maker-deb currently throws a JSON parse error
-    # ("Unexpected token ... is not valid JSON") while building the .deb, which
-    # failed the whole leg. Linux artifacts are append-only and never block the
-    # Windows release, so a failure here must not red-flag the run. Tracked for a
-    # proper maker-deb fix; remove this once the deb build is green.
-    continue-on-error: true
     if: vars.ENABLE_CROSS_PLATFORM_RELEASE == 'true'
     runs-on: ubuntu-22.04
     permissions:
