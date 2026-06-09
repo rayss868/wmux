@@ -259,14 +259,21 @@ This is the reconciliation primitive for §2.5.
 
 ## 4. Permission enforcement
 
-The substrate has four enforcement points. All four exist to prevent one MCP from doing something it wasn't authorized to do.
+The substrate has four enforcement points. All four exist to prevent one MCP from doing something it wasn't authorized to do. Points #1–#3 are live at method-dispatch as of PR #71 (Phase 2.2); the full enforce-mode contract — mode flag, `RpcRejection` wire shape, and the `pendingApproval` retry idiom — is in [`api/mcp-plugin-spec.md`](./api/mcp-plugin-spec.md) §4.4 and summarized below the table.
 
 | # | Point | Status | Notes |
 |---|---|---|---|
-| 1 | Method dispatch | Phase 2.1 follow-up (record-only in first PR) | `wmuxPermissions` declared via `mcp.declarePermissions` filters which RPC methods this plugin may call. Enforcement lands in the follow-up PR; the first PR only records declarations to the trust DB so plugins can wire grammar today. |
-| 2 | Metadata path write | Phase 2.1 follow-up (record-only in first PR) | `meta.write[:<path-glob>]` scopes writes to specific `custom.<namespace>.*` paths. Same staging as #1. |
-| 3 | Event subscription | Phase 2.1 follow-up (record-only in first PR) | `events.subscribe[:<type-glob>]` scopes which events `events.poll` may return. Same staging as #1. |
+| 1 | Method dispatch | **Enforced — `enforce` mode, production default (PR #71)** | `wmuxPermissions` declared via `mcp.declarePermissions` gates which RPC methods a plugin may call. A method whose required capability (`methodCapabilityMap`) isn't covered by the trust record's declaration is rejected at dispatch with `rejection.reason: 'capability-not-declared'` and the handler never runs. |
+| 2 | Metadata path write | **Enforced — same dispatch gate (PR #71)** | `meta.write[:<path-glob>]` scopes writes to specific `custom.<namespace>.*` paths (plus the top-level `label`/`role`/`status` fields). `pane.setMetadata` / `pane.clearMetadata` extract the touched paths and, being all-or-nothing, reject the entire call with `paths-partially-allowed` if any touched path isn't covered by the declaration. |
+| 3 | Event subscription | **Enforced — same dispatch gate (PR #71)** | `events.subscribe[:<type-glob>]` scopes which event types `events.poll` may request. A poll whose `types` aren't covered by the declared glob is rejected; an unfiltered poll (`types` omitted, treated as `**`) requires an unrestricted `events.subscribe` grant. |
 | 4 | Workspace claim | **v2.7.2 (already shipped)** | `mcp.claimWorkspace` binds a plugin to a workspace. Subsequent writes targeting other workspaces are rejected. Unrelated to `wmuxPermissions` grammar — predates it. |
+
+**Enforce vs shadow.** The gate runs in one of two modes, read from `mcp.mode` in `~/.wmux/config.json`:
+
+- **`enforce`** (production default) — a non-`allow` outcome turns into an `RpcResponse` failure carrying the structured `rejection`; the handler is not invoked.
+- **`shadow`** (dev / `npm start` / `NODE_ENV=test` default) — the same outcome is logged to `~/.wmux/shadow-rejections.log` and the handler still runs, so a bad declaration during dogfood can't lock a developer out.
+
+Either default can be overridden explicitly via the config key. The enforcement decision is computed by a single pure function (`PermissionEnforcer.check`) shared by both modes, so shadow logs predict exactly what enforce mode would reject. Requests without a `clientName` envelope are grandfathered as `legacy` (§4.1) and always allowed.
 
 ### 4.1 Identity (Phase 2.1 first PR — shipped)
 
@@ -459,5 +466,6 @@ Things external clients may run into that aren't bugs but are explicit substrate
 | Draft 2 | 2026-05-16 | Phase 1 M4 — adds §6.1 `workspaceId` resolution paths (env / PID-tree walk / `mcp.claimWorkspace` / legacy `activeWorkspaceId` fallback). §7 limitation entry rewritten to point at §6.1 and to define the path-D removal as a Phase 2.1 work item rather than a v3.0 blocker. |
 | Draft 3 | 2026-05-18 | Phase 2.1 follow-up — §4.2 adds structured rejection result for `mcp.declarePermissions` (discriminated union with per-entry `errors`) and the trust-DB invariants subsection: capability-widening demotion, LRU eviction cap, transport-close identity clear. No method-dispatch enforcement yet. |
 | Draft 4 | 2026-06-01 | Substrate 3.0 lifecycle boundary — adds §7 (daemon lifecycle three-tier model, config contract for the 5 new lifecycle knobs, lifecycle facts/event deferral to v3.1) and the §8 "Lifecycle neutrality" boundary entry. Documents resource-floor neutrality: substrate refuses/GCs on pressure/count, never evicts a live session on idle/age (that is outer-layer policy). Renumbered prior §7/§8 → §8/§9. |
+| Draft 5 | 2026-06-09 | §4 corrected to reflect shipped enforcement. Points #1–#3 (method dispatch, metadata path write, event subscription) are no longer "record-only" — enforce-mode dispatch gating shipped in PR #71 (Phase 2.2) as the production default, with `shadow` the dev/test default. Adds the enforce-vs-shadow mode summary and points at `api/mcp-plugin-spec.md` §4.4 for the full wire contract. No wire-format change — clarifies status only. |
 
 This document evolves alongside the implementation. Changes that affect the wire contract require a major-version bump per [`api/versioning.md`](./api/versioning.md). Changes that clarify existing semantics ship in any release.
