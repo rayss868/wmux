@@ -325,22 +325,26 @@ Plugins announce themselves with two RPCs. Both are idempotent and never reject 
 
 ## 5. Named Pipe security model
 
-The wmux daemon exposes the JSON-RPC surface over a Windows Named Pipe at `\\.\pipe\wmux-rpc-<token>`.
+The wmux daemon exposes the JSON-RPC surface over a local IPC endpoint. On Windows this is a Named Pipe at `\\.\pipe\wmux-<username>`, where `<username>` is `os.userInfo().username` (resolved from the OS, not `%USERNAME%`, because env vars are not reliably inherited by MCP subprocesses spawned by Claude Code). On POSIX it is a Unix domain socket at `~/.wmux.sock`. See `getPipeName` in `src/shared/constants.ts`.
+
+**Windows TCP fallback.** When the named pipe cannot be reached because it returns `EPERM` (some elevation scenarios — e.g. an elevated client reaching a non-elevated daemon), the daemon also listens on `127.0.0.1:<port>` and writes the chosen port to `~/.wmux-tcp-port`. A client that hits `EPERM`/`ENOENT` on the pipe reads that file and connects to the loopback port instead; the same token authenticates. See `PipeServer.startTcpFallback` in `src/main/pipe/PipeServer.ts`.
+
+**In-pane plugins.** wmux injects `WMUX_AUTH_TOKEN` and `WMUX_SOCKET_PATH` into every PTY it spawns (`ENV_KEYS` in `src/shared/constants.ts`). A plugin running *inside* a wmux pane reads its token and endpoint from those env vars and never touches the token file. A plugin launched from a non-wmux terminal reads the token file and derives the endpoint itself.
 
 ### 5.1 Token-based authentication
 
-Every connection must present the token from `%APPDATA%\wmux\pipe-token` in the first request:
+Every connection must present the token from `~/.wmux-auth-token` (the path returned by `getAuthTokenPath`; `~` resolves to `%USERPROFILE%` on Windows, `$HOME` on POSIX) in the first request:
 
 ```jsonc
 {
   "id": "req-1",
   "method": "system.identify",
   "params": {},
-  "token": "<base64-encoded-token>"
+  "token": "<uuid-token>"
 }
 ```
 
-The token is a random UUIDv4 (122 bits of entropy, via `crypto.randomUUID()`) generated on first daemon launch and persisted to disk; it is reused across boots and rotated only on explicit request (planned CLI: `wmux pipe rotate-token`). The file is written with `secureWriteTokenFile` and re-hardened on every load by `reHardenTokenFileAcl` — on Windows the DACL is rebuilt so the ONLY surviving entry is Full control for the owner: inheritance is disabled and discarded and every pre-existing ACE (inherited or explicit, including a broad `Everyone`/`Users` grant) is dropped. The rebuild uses the .NET `FileInfo.SetAccessControl` overload, which writes the DACL ONLY — never the owner/group/SACL — so it needs no privilege and works on the already-protected token left by older versions (a plain `Set-Acl` would throw `SeSecurityPrivilege`; a plain `icacls /grant:r` would leave an explicit broad ACE in place). The owner is identified by SID rather than `%USERNAME%` so that non-ASCII profile names are not mangled. On SKUs where PowerShell is unavailable the helper falls back to `icacls` (owner Full control, `/inheritance:r`, then explicit `/remove:g` of the well-known broad SIDs).
+The file contains a single plain UUID string (no JSON wrapper). The token is a random UUIDv4 (122 bits of entropy, via `crypto.randomUUID()`) generated on first daemon launch and persisted to disk; it is reused across boots and rotated only on explicit request (planned CLI: `wmux pipe rotate-token`). The file is written with `secureWriteTokenFile` and re-hardened on every load by `reHardenTokenFileAcl` — on Windows the DACL of `~/.wmux-auth-token` is rebuilt so the ONLY surviving entry is Full control for the owner: inheritance is disabled and discarded and every pre-existing ACE (inherited or explicit, including a broad `Everyone`/`Users` grant) is dropped. The rebuild uses the .NET `FileInfo.SetAccessControl` overload, which writes the DACL ONLY — never the owner/group/SACL — so it needs no privilege and works on the already-protected token left by older versions (a plain `Set-Acl` would throw `SeSecurityPrivilege`; a plain `icacls /grant:r` would leave an explicit broad ACE in place). The owner is identified by SID rather than `%USERNAME%` so that non-ASCII profile names are not mangled. On SKUs where PowerShell is unavailable the helper falls back to `icacls` (owner Full control, `/inheritance:r`, then explicit `/remove:g` of the well-known broad SIDs).
 
 ### 5.2 Connection cap
 
@@ -467,5 +471,6 @@ Things external clients may run into that aren't bugs but are explicit substrate
 | Draft 3 | 2026-05-18 | Phase 2.1 follow-up — §4.2 adds structured rejection result for `mcp.declarePermissions` (discriminated union with per-entry `errors`) and the trust-DB invariants subsection: capability-widening demotion, LRU eviction cap, transport-close identity clear. No method-dispatch enforcement yet. |
 | Draft 4 | 2026-06-01 | Substrate 3.0 lifecycle boundary — adds §7 (daemon lifecycle three-tier model, config contract for the 5 new lifecycle knobs, lifecycle facts/event deferral to v3.1) and the §8 "Lifecycle neutrality" boundary entry. Documents resource-floor neutrality: substrate refuses/GCs on pressure/count, never evicts a live session on idle/age (that is outer-layer policy). Renumbered prior §7/§8 → §8/§9. |
 | Draft 5 | 2026-06-09 | §4 corrected to reflect shipped enforcement. Points #1–#3 (method dispatch, metadata path write, event subscription) are no longer "record-only" — enforce-mode dispatch gating shipped in PR #71 (Phase 2.2) as the production default, with `shadow` the dev/test default. Adds the enforce-vs-shadow mode summary and points at `api/mcp-plugin-spec.md` §4.4 for the full wire contract. No wire-format change — clarifies status only. |
+| Draft 6 | 2026-06-09 | §5 transport correction. The Windows pipe is `\\.\pipe\wmux-<username>` (`os.userInfo().username`), NOT `wmux-rpc-<token>`; the token lives at `~/.wmux-auth-token` as a plain UUID, NOT `%APPDATA%\wmux\pipe-token`. Adds the POSIX Unix-domain-socket endpoint (`~/.wmux.sock`), the Windows loopback TCP fallback (`~/.wmux-tcp-port`, used on pipe `EPERM`), and the note that wmux PTYs inherit `WMUX_AUTH_TOKEN`/`WMUX_SOCKET_PATH` so in-pane plugins authenticate without reading the file. No wire-format change — corrects the documented endpoint/token paths to match `src/shared/constants.ts` and `PipeServer`. |
 
 This document evolves alongside the implementation. Changes that affect the wire contract require a major-version bump per [`api/versioning.md`](./api/versioning.md). Changes that clarify existing semantics ship in any release.
