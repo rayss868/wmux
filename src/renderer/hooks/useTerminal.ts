@@ -281,7 +281,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // spurious row-change events on resize; the dedicated reflow logic
       // suppresses them, which in turn keeps SelectionService from
       // unconditionally clearing the user's selection mid-drag.
-      windowsPty: { backend: 'conpty', buildNumber: 21376 },
+      // macOS/Linux PTY는 ConPTY가 아니므로 이 reflow 경로를 켜면 오히려
+      // focus/resize 시 줄바꿈이 어긋나 글자가 깨진다(좌측 팬 garble). win32 한정.
+      ...(window.electronAPI.platform === 'win32'
+        ? { windowsPty: { backend: 'conpty' as const, buildNumber: 21376 } }
+        : {}),
     });
 
     const fitAddon = new FitAddon();
