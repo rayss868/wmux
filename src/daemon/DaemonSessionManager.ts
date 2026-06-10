@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events';
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { DaemonSession, DaemonSessionState, DaemonConfig } from './types';
 import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
@@ -9,6 +11,7 @@ import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection } from './shell-integration';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
+import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { createDefaultConfig } from './config';
 
 const DEFAULT_COLS = 80;
@@ -474,91 +477,28 @@ export class DaemonSessionManager extends EventEmitter {
   /** Resolve a bare shell name (e.g. 'powershell.exe') to an absolute path. */
   private resolveShellPath(cmd: string | undefined): string | null {
     if (!cmd) return null;
-    const fs = require('fs');
-    const path = require('path');
     // Already absolute?
     if (path.isAbsolute(cmd)) {
-      try { if (fs.existsSync(cmd)) return cmd; } catch {}
+      // On Windows the path may be a Store App Execution Alias that
+      // existsSync misses and node-pty cannot spawn — resolve it (#179/#183).
+      if (process.platform === 'win32') return resolveLaunchableWindowsExe(cmd);
+      try { if (fs.existsSync(cmd)) return cmd; } catch { /* fall through */ }
       return null;
     }
-    // Bare name — try well-known Windows locations
-    if (process.platform === 'win32') {
-      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
-      const lookup: Record<string, string[]> = {
-        'powershell.exe': [
-          `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
-        ],
-        'pwsh.exe': [
-          `${progFiles}\\PowerShell\\7\\pwsh.exe`,
-        ],
-        'cmd.exe': [
-          `${systemRoot}\\System32\\cmd.exe`,
-        ],
-        'bash.exe': [
-          `${systemRoot}\\System32\\bash.exe`,
-          `${progFiles}\\Git\\bin\\bash.exe`,
-        ],
-        'wsl.exe': [
-          `${systemRoot}\\System32\\wsl.exe`,
-        ],
-      };
-      const basename = path.basename(cmd).toLowerCase();
-      const candidates = lookup[basename] || [];
-      for (const c of candidates) {
-        try { if (fs.existsSync(c)) return c; } catch {}
-      }
-    } else if (process.platform === 'darwin') {
-      // mac: common shell names → absolute paths.
-      const lookup: Record<string, string[]> = {
-        'zsh': ['/bin/zsh'],
-        'bash': ['/bin/bash'],
-        'pwsh': ['/opt/homebrew/bin/pwsh', '/usr/local/bin/pwsh'],
-        'fish': ['/opt/homebrew/bin/fish', '/usr/local/bin/fish'],
-      };
-      const basename = path.basename(cmd).toLowerCase();
-      const candidates = lookup[basename] || [];
-      for (const c of candidates) {
-        try { if (fs.existsSync(c)) return c; } catch {}
-      }
-    } else if (process.platform === 'linux') {
-      // linux: common shell names → absolute paths.
-      const lookup: Record<string, string[]> = {
-        'bash': ['/bin/bash'],
-        'zsh': ['/usr/bin/zsh', '/bin/zsh'],
-        'pwsh': ['/usr/bin/pwsh', '/snap/bin/pwsh'],
-        'fish': ['/usr/bin/fish'],
-      };
-      const basename = path.basename(cmd).toLowerCase();
-      const candidates = lookup[basename] || [];
-      for (const c of candidates) {
-        try { if (fs.existsSync(c)) return c; } catch {}
-      }
-    }
+    // Bare name — shared well-known location tables (win/mac/linux), single
+    // source with the main process (#185).
+    const resolved = resolveBareShellName(cmd);
+    if (resolved) return resolved;
     return cmd; // fallback to original (let pty.spawn try PATH)
   }
 
   private getDefaultShell(): string {
     if (process.platform === 'win32') {
-      const fs = require('fs');
-      // PowerShell 7 first, then Windows PowerShell 5.1 — mirrors
-      // ShellDetector's priority so the daemon picks the same default as the
-      // main process (issue #176). 5.1 ships on every Windows box, so a
-      // 5.1-first order would mask an installed pwsh 7 forever.
-      const candidates = [
-        `${process.env.ProgramFiles}\\PowerShell\\7\\pwsh.exe`,
-        `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
-        'powershell.exe',
-        'cmd.exe',
-      ];
-      for (const shell of candidates) {
-        try {
-          if (fs.existsSync(shell)) return shell;
-        } catch {
-          /* skip */
-        }
-      }
-      return 'cmd.exe';
+      // Shared resolution (#183): PowerShell 7 first (traditional install OR
+      // Store App Execution Alias, resolved to its spawnable package target),
+      // then Windows PowerShell 5.1 — the exact same priority and candidate
+      // table as the main process's ShellDetector (#176/#179).
+      return getWindowsDefaultShell();
     }
     if (isMac) return process.env.SHELL || '/bin/zsh';
     return process.env.SHELL || '/bin/bash';
