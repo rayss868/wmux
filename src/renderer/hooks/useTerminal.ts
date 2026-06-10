@@ -17,6 +17,7 @@ import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
+import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
 import { webglContextPool } from '../terminal/webglContextPool';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
@@ -327,6 +328,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // positioning (Claude Code, vim, etc.) collide frames over Korean text.
     terminal.unicode.activeVersion = '11';
     terminal.open(container);
+
+    // Issue #167: keep the hidden IME textarea empty while idle. xterm only
+    // clears it on blur, so IME-committed text accumulates there after it was
+    // already sent to the PTY, and external field-replacing injectors (voice
+    // IME like AutoGLM) "replace" that residue with destructive results — the
+    // forwarded DELs wipe the user's already-typed line. Upstream:
+    // xtermjs/xterm.js#6012. Gated off under screenReaderMode, where xterm
+    // intentionally retains the text until blur for announcement (wmux never
+    // enables that option today).
+    const imeResidueGuard = terminal.options.screenReaderMode
+      ? null
+      : attachImeResidueGuard(terminal);
 
     // Paint the container backdrop with the xterm theme background so the 4px
     // padding (and the sub-cell rounding gap xterm leaves around its grid) fades
@@ -1022,6 +1035,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
+      imeResidueGuard?.dispose();
       autoCopy.dispose();
       selectionDisposable.dispose();
       pathLinkDisposable.dispose();
