@@ -314,7 +314,13 @@ const config: ForgeConfig = {
       // multiplexer that already executes arbitrary shell commands.
       // Documented in README §6 + docs/SECURITY.md §1.4 — keep in sync.
       [FuseV1Options.RunAsNode]: true,
-      [FuseV1Options.EnableCookieEncryption]: true,
+      // 서명된 빌드에서만 쿠키 암호화를 켠다. macOS os_crypt는 keychain에서 암호화
+      // 키를 읽는데, 미서명(로컬 dev/UNSIGNED) 바이너리는 hardened runtime 자격이
+      // 없어 keychain 접근이 거부된다(errSecAuthFailed -25293, 매 실행 콘솔 에러).
+      // Apple 자격증명 3개가 모두 있는 정식 빌드에서만 활성화한다.
+      [FuseV1Options.EnableCookieEncryption]: Boolean(
+        process.env.APPLE_TEAM_ID && process.env.APPLE_ID && process.env.APPLE_APP_SPECIFIC_PASSWORD,
+      ),
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
       [FuseV1Options.EnableNodeCliInspectArguments]: false,
       // Disabled: postPackage hook repacks asar (for node-pty), which changes the hash.

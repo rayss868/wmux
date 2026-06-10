@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import type { RpcResponse, DaemonEvent } from '../shared/rpc';
 import { FLUSH_DONE_MARKER } from '../daemon/SessionPipe';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
+import { dataSuffix } from '../shared/constants';
 import { connectWithRetry, type ConnectAttemptResult } from './daemonConnectRetry';
 
 // RCA A2 — single source of truth in shared/timeouts.ts so the renderer's
@@ -521,9 +522,9 @@ export function getDaemonPipeName(): string {
   const path = require('path');
   const username = os.userInfo().username || 'default';
   if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\wmux-daemon-${username}`;
+    return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
   }
-  return path.join(os.homedir(), '.wmux-daemon.sock');
+  return path.join(os.homedir(), `.wmux-daemon${dataSuffix()}.sock`);
 }
 
 /** Read the daemon auth token from disk. Returns empty string if not found. */
