@@ -1,5 +1,7 @@
 # wmux — Windows Terminal Multiplexer for AI Agents (cmux alternative)
 
+<img width="924" height="217" alt="wmux-banner" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
+
 > **wmux is LSP-for-terminals** — a neutral substrate that lets external tools build workflow intelligence on top of any terminal session.
 > Native Windows terminal multiplexer with split panes, MCP bridge, and browser automation — purpose-built for running Claude Code, Codex CLI, and Gemini CLI side by side. No WSL required.
 
