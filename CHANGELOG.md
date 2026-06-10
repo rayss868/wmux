@@ -5,6 +5,39 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] — 2026-06-10 — external-tooling foundation, PowerShell 7 by default, terminal UX, cross-workspace hardening
+
+Milestone release. Headline: a reference plugin and workflow-friendly APIs that make wmux a foundation external tools build on, PowerShell 7 chosen as the default shell wherever it's installed (including Store builds), a batch of terminal UX (font zoom, configurable start directory, split CWD inheritance), and the close of the cross-workspace terminal read/write isolation gap. No breaking changes — this is a milestone version bump, not a wire-format or config break; existing sessions, profiles, and configs carry over untouched. All dogfood-verified on a live build before tagging.
+
+### Added
+- **Terminal starting directory + split CWD inheritance.** New panes can inherit the active pane's working directory on split, with a global/per-profile setting for the default startup directory and a toggle for inheritance — a priority chain that leaves the main process and daemon untouched. ([#177](https://github.com/openwong2kim/wmux/pull/177), resolves [#173](https://github.com/openwong2kim/wmux/issues/173) / [#174](https://github.com/openwong2kim/wmux/issues/174) / [#175](https://github.com/openwong2kim/wmux/issues/175))
+- **Keyboard zoom for terminal font size.** `Ctrl+=` / `Ctrl+-` / `Ctrl+0` grow, shrink, and reset the terminal font, resolved from the physical key code so it's IME-safe, clamped to 12–24px. ([#172](https://github.com/openwong2kim/wmux/pull/172), resolves [#171](https://github.com/openwong2kim/wmux/issues/171))
+- **Rename a workspace from the right-click menu.** A Rename entry on the workspace context menu, reusing the existing inline-rename flow (same as double-click). ([#184](https://github.com/openwong2kim/wmux/pull/184))
+- **Substrate reference plugin and restructured docs.** A reference MCP plugin, Diátaxis-organized documentation, a drift fix, API codegen, and a performance characterization pass — closing the external-tooling API request and giving integrators a worked example to build against. ([#165](https://github.com/openwong2kim/wmux/pull/165), closes [#15](https://github.com/openwong2kim/wmux/issues/15))
+
+### Changed
+- **PowerShell 7 is preferred over Windows PowerShell 5.1 as the default shell** wherever it's installed — including Microsoft Store builds exposed only through the WindowsApps App Execution Alias. The alias is both detected (via reparse-point resolution; `existsSync` alone misses the 85-byte symlink stub) and actually launchable (the stub can't be spawned directly by node-pty, so wmux resolves it to the real package target). Shell resolution is now single-sourced between the main process and the daemon, so the two can't drift. ([#178](https://github.com/openwong2kim/wmux/pull/178), [#180](https://github.com/openwong2kim/wmux/pull/180), [#181](https://github.com/openwong2kim/wmux/pull/181), [#186](https://github.com/openwong2kim/wmux/pull/186); resolves [#176](https://github.com/openwong2kim/wmux/issues/176), [#179](https://github.com/openwong2kim/wmux/issues/179), [#183](https://github.com/openwong2kim/wmux/issues/183), [#185](https://github.com/openwong2kim/wmux/issues/185))
+
+### Security
+- **Cross-workspace terminal read/write via spoofable workspace identity is closed.** A token-holding external MCP client could spoof `WMUX_WORKSPACE_ID` to a victim workspace and, naming that workspace's ptyId, read or write its terminal — the main-side ownership assert only verified that the ptyId belonged to the (attacker-supplied) workspaceId, not that the caller was entitled to that workspace. **Part 1** gave `input.readScreen` the `assertWorkspaceOwnsPty` check its sibling handlers already had (it was the one terminal-IO handler that skipped it). **Part 2** removed the spoofable identity the assert trusts: terminal tools (`terminal_read` / `terminal_read_events` / `terminal_send` / `terminal_send_key`) now resolve their workspace from verified PID-mapped identity only, never the env hint — a genuine external caller gets a dedicated claimed workspace, an explicit foreign ptyId fails closed, and a boot-reconcile grace keeps a first-party caller from being misclassified during a daemon respawn. ([#164](https://github.com/openwong2kim/wmux/pull/164) + [#188](https://github.com/openwong2kim/wmux/pull/188), resolves [#163](https://github.com/openwong2kim/wmux/issues/163))
+
+### Fixed
+- **Prefix-mode Toggle Zoom now actually zooms.** The tmux-style prefix Toggle Zoom toggled internal state but no rendering code read it, so the keystroke was consumed with no visible change. The zoomed pane is now rendered full-bleed (siblings hidden) and exactly restored on toggle-off, with split/close coherence and a ZOOM badge. ([#187](https://github.com/openwong2kim/wmux/pull/187), resolves [#182](https://github.com/openwong2kim/wmux/issues/182))
+- **Garbled glyphs clear without a manual resize.** Panes could render corrupted glyphs until a border drag forced a repaint; wmux now repaints defensively. ([#168](https://github.com/openwong2kim/wmux/pull/168), resolves [#166](https://github.com/openwong2kim/wmux/issues/166))
+- **IME input no longer wipes the typed line.** xterm's hidden IME textarea is cleared when idle, so a voice/IME input method (e.g. AutoGLM) no longer discards the already-typed line. ([#170](https://github.com/openwong2kim/wmux/pull/170), resolves [#167](https://github.com/openwong2kim/wmux/issues/167))
+- **Sidebar hide/expand controls mirror correctly when docked on the right.** ([#160](https://github.com/openwong2kim/wmux/pull/160))
+- **The `@electron/asar` header cache is dropped after the postPackage repack**, so the packaged asar can't be stale. ([#161](https://github.com/openwong2kim/wmux/pull/161))
+- **Restored the bench B3 drop-tracking variables** lost in an earlier refactor and refreshed the perf numbers. ([#169](https://github.com/openwong2kim/wmux/pull/169))
+
+### Contributors
+Thanks to the external contributors and reporters in this release:
+- **[@matdac6](https://github.com/matdac6)** — workspace Rename context-menu entry ([#184](https://github.com/openwong2kim/wmux/pull/184)), first contribution.
+- **[@zer0ken](https://github.com/zer0ken)** — PowerShell 7 default-shell fixes ([#178](https://github.com/openwong2kim/wmux/pull/178), [#181](https://github.com/openwong2kim/wmux/pull/181)) and the issues behind the shell-resolution and CWD work ([#176](https://github.com/openwong2kim/wmux/issues/176), [#173](https://github.com/openwong2kim/wmux/issues/173) / [#174](https://github.com/openwong2kim/wmux/issues/174) / [#175](https://github.com/openwong2kim/wmux/issues/175), [#183](https://github.com/openwong2kim/wmux/issues/183), [#185](https://github.com/openwong2kim/wmux/issues/185)).
+- **[@Dzirik](https://github.com/Dzirik)** — Toggle Zoom bug report ([#182](https://github.com/openwong2kim/wmux/issues/182)).
+- **[@arcqiufeng](https://github.com/arcqiufeng)** — terminal zoom shortcut report ([#171](https://github.com/openwong2kim/wmux/issues/171)).
+- **[@zhenzoo](https://github.com/zhenzoo)** — garbled-glyph ([#166](https://github.com/openwong2kim/wmux/issues/166)) and IME line-wipe ([#167](https://github.com/openwong2kim/wmux/issues/167)) reports.
+- **[@alphabeen](https://github.com/alphabeen)** — external-tooling API request ([#15](https://github.com/openwong2kim/wmux/issues/15)).
+
 ## [2.18.0] — 2026-06-09 — terminal fonts, color customization, settings polish
 
 Headline: pick any installed terminal font (and ship the recommended ones so they work everywhere), a point-and-style color inspect mode for theming, and a settings UI polish pass. All dogfood-verified on a live build before tagging.
