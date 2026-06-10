@@ -1,5 +1,13 @@
 # TODOS
 
+## Invalidate pinned MCP terminal route when its workspace dies
+- **What:** `paneResolver`에 `clearPin()` export 추가 후, `callRpc`의 stale-identity 자가치유 경로(`index.ts:64,68`, `isStaleIdentityResult` → `invalidateWorkspaceId()`)에서 pin도 함께 클리어.
+- **Why:** 외부 MCP 호출자가 claim한 전용 workspace를 사용자가 세션 중간에 수동 종료하면, 프로세스 수명 pin이 죽은 PTY를 계속 가리켜 그 호출자의 terminal 도구가 MCP 재시작 전까지 영구 실패한다. `invalidateWorkspaceId()`는 verified 캐시만 self-heal하고 pin은 건드리지 않는다.
+- **Pros:** 외부 호출자도 workspace 종료 후 다음 호출에서 재claim으로 자가치유.
+- **Cons:** paneResolver 공개 API에 clearPin 추가 + callRpc 결합. 소규모지만 모듈 경계 확장.
+- **Context:** 이번 #163 Part 2가 만든 결함이 아니라 기존 `resolveDefaultPtyId`의 ptyId pin에도 있던 선재 결함(verified-only path는 PR #125부터 존재). Part 2 리뷰(plan-eng-review)에서 R4로 식별. 시작점: `src/mcp/paneResolver.ts`(pin 상태) + `src/mcp/index.ts:62-72`(callRpc).
+- **Depends on:** #163 Part 2 ship 후 (PinnedRoute 도입 이후 위에서 작업)
+
 ## Daemon reconnection retry on tray restore
 - **What:** DaemonClient에 reconnection retry loop 추가
 - **Why:** 트레이 복원 시 데몬이 아직 이전 shutdown 시퀀스 중일 수 있음. 현재 daemon.onConnected는 "늦은 연결"만 처리하고, "재연결"은 미지원. Outside voice가 지적한 레이스 컨디션.
