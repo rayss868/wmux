@@ -332,6 +332,12 @@ The installer isn't code-signed yet, so Windows SmartScreen flags it as coming f
 
 wmux detects AI coding agents for status display purposes only. It does not call any AI APIs, capture agent outputs, or automate agent interactions. Users are responsible for complying with their AI provider's Terms of Service.
 
+## Contributors
+
+Thanks to everyone who has contributed to wmux! 🙌
+
+[![Contributors](https://contrib.rocks/image?repo=openwong2kim/wmux)](https://github.com/openwong2kim/wmux/graphs/contributors)
+
 ## License
 
 MIT
