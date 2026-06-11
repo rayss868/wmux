@@ -41,9 +41,13 @@ export function registerPluginSchemePrivileges(): void {
 
 const PLUGIN_PAGE_CSP = [
   "default-src 'none'",
-  // Bundled assets only — same plugin origin. 'unsafe-inline' for styles
-  // keeps small hand-written plugin pages practical; scripts stay strict.
-  `script-src ${PLUGIN_PROTOCOL_SCHEME}:`,
+  // Bundled assets + inline. 'unsafe-inline' is deliberate for BOTH scripts
+  // and styles: the page runs in an opaque-origin sandbox with no
+  // connect-src, so an inline script has exactly the same reach as a
+  // bundled one (the postMessage bridge) — banning it would only force
+  // single-file plugins to split out a .js with zero security gain.
+  // The CSP's real job here is blocking network exfil and foreign frames.
+  `script-src ${PLUGIN_PROTOCOL_SCHEME}: 'unsafe-inline'`,
   `style-src ${PLUGIN_PROTOCOL_SCHEME}: 'unsafe-inline'`,
   `img-src ${PLUGIN_PROTOCOL_SCHEME}: data:`,
   `font-src ${PLUGIN_PROTOCOL_SCHEME}:`,

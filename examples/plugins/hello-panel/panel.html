@@ -75,11 +75,13 @@
         await refresh();
       } else if (command === 'badge-first-pane') {
         try {
-          const panes = await request('pane.list');
-          const first = Array.isArray(panes) && panes[0];
-          if (first && first.paneId) {
+          // pane.list returns { asOfSeq, bootId, panes: [{ id, ... }] }
+          const result = await request('pane.list');
+          const panes = Array.isArray(result) ? result : (result && result.panes) || [];
+          const paneId = panes[0] && panes[0].id;
+          if (paneId) {
             await request('ui.decoratePane', {
-              paneId: first.paneId,
+              paneId,
               badge: 'HELLO',
               tooltip: 'hello-panel demo badge',
               color: 'green',
