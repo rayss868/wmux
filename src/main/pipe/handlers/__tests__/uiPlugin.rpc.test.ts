@@ -6,6 +6,16 @@ import { IPC } from '../../../../shared/constants';
 
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), removeHandler: vi.fn() } }));
 
+// The handler resolves the live pane tree via sendToRenderer('pane.list').
+// Mock it to report a known pane set so existence validation is testable.
+const KNOWN_PANES = ['pane-1', 'p', 'pane-real'];
+vi.mock('../_bridge', () => ({
+  sendToRenderer: vi.fn(async (_getWin: unknown, channel: string) => {
+    if (channel === 'pane.list') return { panes: KNOWN_PANES.map((id) => ({ id })) };
+    return null;
+  }),
+}));
+
 function setup() {
   const send = vi.fn();
   const win = { isDestroyed: () => false, webContents: { send } } as unknown as BrowserWindow;
@@ -62,6 +72,19 @@ describe('ui.decoratePane', () => {
     // Badge that sanitizes to empty behaves as a clear.
     await ctx.router.dispatch(CALL({ paneId: 'p', badge: '\x01\x02' }, 'p1'));
     expect((ctx.send.mock.calls.at(-1)?.[1] as { badge: string | null }).badge).toBeNull();
+  });
+
+  it('rejects a paneId that is not in the live pane tree (forgery / store-flood guard)', async () => {
+    const res = await ctx.router.dispatch(CALL({ paneId: 'pane-ghost', badge: 'X' }, 'p1'));
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/unknown paneId/);
+    expect(ctx.send).not.toHaveBeenCalledWith(IPC.PLUGIN_PANE_DECORATION, expect.anything());
+  });
+
+  it('allows clearing (badge:null) even for a pane no longer in the tree', async () => {
+    const res = await ctx.router.dispatch(CALL({ paneId: 'pane-ghost', badge: null }, 'p1'));
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.result).toEqual({ applied: false, cleared: true });
   });
 
   it('rejects invalid paneId, badge type, and unknown colors', async () => {

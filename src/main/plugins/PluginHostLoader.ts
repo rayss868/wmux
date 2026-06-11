@@ -48,6 +48,13 @@ export function getPluginsDir(): string {
  * Normalize a bundle-relative URL path inside `dir` (already realpathed),
  * or null when it escapes. Strictly-inside check: the bundle dir itself is
  * not servable, only files under it.
+ *
+ * Lexical-only: `path.resolve` collapses `..`/encoded traversal and the
+ * strict-prefix check rejects escapes. This does NOT defend against a
+ * symlink/junction *file inside* the bundle pointing back out — callers
+ * that serve the file (the protocol handler) MUST additionally realpath
+ * the result via `resolveWithinReal`. Used as-is only for existence checks
+ * at load time, where following an in-bundle symlink is harmless.
  */
 function resolveWithin(dir: string, urlPath: string): string | null {
   const decoded = urlPath.replace(/^\/+/, '');
@@ -56,6 +63,30 @@ function resolveWithin(dir: string, urlPath: string): string | null {
   const prefix = dir.endsWith(path.sep) ? dir : dir + path.sep;
   if (!resolved.startsWith(prefix)) return null;
   return resolved;
+}
+
+/**
+ * Like `resolveWithin`, then realpath the resolved target and re-check
+ * containment. This closes the symlink-file escape: a file *inside* the
+ * bundle that is a symlink/junction to an out-of-bundle target (e.g.
+ * `bundle/leak.html -> C:\Users\x\.ssh\id_rsa`) passes the lexical check
+ * but its realpath lands outside the bundle, so we reject it. `dir` is
+ * already realpathed at load time, so comparing realpaths is apples to
+ * apples. A non-existent target (realpath throws) returns null — the
+ * protocol handler then 404s, same as a missing file.
+ */
+function resolveWithinReal(dir: string, urlPath: string): string | null {
+  const lexical = resolveWithin(dir, urlPath);
+  if (lexical === null) return null;
+  let real: string;
+  try {
+    real = fs.realpathSync(lexical);
+  } catch {
+    return null;
+  }
+  const prefix = dir.endsWith(path.sep) ? dir : dir + path.sep;
+  if (real !== lexical && !real.startsWith(prefix)) return null;
+  return real;
 }
 
 export class PluginHostLoader {
@@ -189,7 +220,9 @@ export class PluginHostLoader {
   resolveBundlePath(pluginName: string, urlPath: string): string | null {
     const plugin = this.plugins.get(pluginName);
     if (!plugin) return null;
-    return resolveWithin(plugin.dir, urlPath);
+    // realpath-checked: this result is served to an iframe, so an in-bundle
+    // symlink must not be allowed to escape (see resolveWithinReal).
+    return resolveWithinReal(plugin.dir, urlPath);
   }
 
   /** Renderer-facing summaries with the current trust status attached. */

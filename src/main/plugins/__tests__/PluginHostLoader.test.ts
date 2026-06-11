@@ -126,6 +126,25 @@ describe('PluginHostLoader', () => {
       // Unknown plugin name never resolves, even to a real directory.
       expect(loader.resolveBundlePath('outside.txt', '/panel.html')).toBeNull();
     });
+
+    it('rejects an in-bundle symlink whose target escapes the bundle', async () => {
+      writeBundle(root, 'demo', MANIFEST('demo'), { 'panel.html': 'x' });
+      const secret = path.join(root, 'secret.txt');
+      fs.writeFileSync(secret, 'TOP SECRET');
+      const link = path.join(root, 'demo', 'leak.html');
+      try {
+        fs.symlinkSync(secret, link, 'file');
+      } catch {
+        // Windows without Developer Mode / admin can't create symlinks — skip.
+        return;
+      }
+      const loader = new PluginHostLoader(makeTrustStore(), root);
+      await loader.loadAll();
+      // Lexically inside the bundle, but its realpath escapes → rejected.
+      expect(loader.resolveBundlePath('demo', '/leak.html')).toBeNull();
+      // A real in-bundle file still resolves.
+      expect(loader.resolveBundlePath('demo', '/panel.html')).not.toBeNull();
+    });
   });
 
   it('summaries carry the live trust status', async () => {

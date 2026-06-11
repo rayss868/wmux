@@ -135,6 +135,14 @@ export class TerminalNotificationParser {
 
     let payload = rawPayload;
     if (base64 && payload.length > 0) {
+      // Guard the decode input: a single chunk can't usefully carry more than
+      // MAX_PENDING_CHARS of decoded text (the assembler caps total accepted
+      // chars anyway), so cap the base64 source before decoding to avoid a
+      // large transient allocation from a hostile multi-MB chunk. base64 is
+      // ~4/3 the byte size, so 2× the char cap is a safe over-estimate.
+      if (payload.length > MAX_PENDING_CHARS * 2) {
+        payload = payload.slice(0, MAX_PENDING_CHARS * 2);
+      }
       try {
         payload = Buffer.from(payload, 'base64').toString('utf8');
       } catch {

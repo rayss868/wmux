@@ -1092,6 +1092,19 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       }
       return;
     }
+    // Defense-in-depth cap (main already validates paneId against the live
+    // pane tree, but a renderer-side bound means a bug there can't grow this
+    // store without limit): at most MAX_DECORATED_PANES_PER_PLUGIN distinct
+    // panes decorated by one plugin. New panes past the cap are dropped;
+    // updates to already-decorated panes always apply.
+    const MAX_DECORATED_PANES_PER_PLUGIN = 64;
+    if (!state.pluginPaneDecorations[paneId]?.[plugin]) {
+      let count = 0;
+      for (const byPlugin of Object.values(state.pluginPaneDecorations)) {
+        if (byPlugin[plugin]) count++;
+      }
+      if (count >= MAX_DECORATED_PANES_PER_PLUGIN) return;
+    }
     if (!state.pluginPaneDecorations[paneId]) {
       state.pluginPaneDecorations[paneId] = {};
     }

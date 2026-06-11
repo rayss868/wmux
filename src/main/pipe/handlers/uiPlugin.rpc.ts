@@ -14,6 +14,7 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { IPC } from '../../../shared/constants';
+import { sendToRenderer } from './_bridge';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -35,7 +36,7 @@ const VALID_COLORS = new Set(['accent', 'red', 'yellow', 'green', 'blue']);
 const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/g;
 
 export function registerUiPluginRpc(router: RpcRouter, getWindow: GetWindow): void {
-  router.register('ui.decoratePane', (params, ctx) => {
+  router.register('ui.decoratePane', async (params, ctx) => {
     const plugin = ctx?.clientName;
     if (!plugin) {
       throw new Error('ui.decoratePane: requires a plugin identity (clientName)');
@@ -43,6 +44,32 @@ export function registerUiPluginRpc(router: RpcRouter, getWindow: GetWindow): vo
     const paneId = params['paneId'];
     if (typeof paneId !== 'string' || paneId.length === 0 || paneId.length > 64) {
       throw new Error('ui.decoratePane: invalid paneId');
+    }
+
+    // Pane-existence check. Without it a plugin could (a) forge a badge on an
+    // arbitrary id it can't see, and (b) flood the renderer store with
+    // entries for ids that never existed (unbounded growth). Resolving
+    // against the live pane tree bounds decorations to real panes — which is
+    // also the natural cap, since the pane set is bounded. A `null` clear is
+    // allowed through unconditionally so a plugin can always retract a
+    // decoration even after the pane closed.
+    const clearing = params['badge'] === null || params['badge'] === undefined;
+    if (!clearing) {
+      let knownPaneIds: Set<string>;
+      try {
+        const panes = (await sendToRenderer(getWindow, 'pane.list', {})) as
+          | { panes?: Array<{ id?: unknown }> }
+          | Array<{ id?: unknown }>;
+        const list = Array.isArray(panes) ? panes : (panes?.panes ?? []);
+        knownPaneIds = new Set(
+          list.map((p) => (typeof p?.id === 'string' ? p.id : '')).filter(Boolean),
+        );
+      } catch {
+        throw new Error('ui.decoratePane: could not resolve pane list');
+      }
+      if (!knownPaneIds.has(paneId)) {
+        throw new Error(`ui.decoratePane: unknown paneId "${paneId}"`);
+      }
     }
 
     const rawBadge = params['badge'];
@@ -84,6 +111,6 @@ export function registerUiPluginRpc(router: RpcRouter, getWindow: GetWindow): vo
     if (win && !win.isDestroyed()) {
       win.webContents.send(IPC.PLUGIN_PANE_DECORATION, decoration);
     }
-    return Promise.resolve({ applied: badge !== null, cleared: badge === null });
+    return { applied: badge !== null, cleared: badge === null };
   });
 }
