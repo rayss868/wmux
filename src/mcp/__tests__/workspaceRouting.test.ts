@@ -127,6 +127,15 @@ describe('MCP workspace routing (source-level invariants)', () => {
     }
   });
 
+  it('PlaywrightEngine auto-open is wired to requireWorkspaceId (#190)', () => {
+    // getPage()'s auto-open issues browser.open OUTSIDE any tool handler, so
+    // the per-tool requireWorkspaceId() guard (invariant 2) cannot cover it.
+    // index.ts injects the strict resolver into the engine so auto-open is
+    // pinned to the calling session and fails closed (skips auto-open) on a
+    // resolve miss, never reaching the renderer's active-workspace fallback.
+    expect(src).toMatch(/setWorkspaceIdResolver\(\s*requireWorkspaceId\s*\)/);
+  });
+
   it('browser_session_start is GLOBAL — carries no workspace identity (no resolver calls)', () => {
     // Session start manages a single global profile + CDP port; the RPC handler
     // ignores workspaceId. Requiring identity here would protect no routing and
