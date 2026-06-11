@@ -964,11 +964,14 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
-  sessionManager.on('session:active', (payload: { sessionId: string }) => {
+  sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string }) => {
     const event: DaemonEvent = {
       type: 'activity.active',
       sessionId: payload.sessionId,
-      data: null,
+      // gate로 확정된 에이전트 이름을 data에 실어 main으로 전달한다(없으면 null).
+      // daemon mode running 상태에 agentName을 채우는 경로(local mode는
+      // PTYBridge가 getLastAgent로 직접 처리).
+      data: payload.agentName ?? null,
     };
     pipeServer.broadcast(event);
   });

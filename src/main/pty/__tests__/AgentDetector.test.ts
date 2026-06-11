@@ -3,12 +3,28 @@ import { AgentDetector } from '../AgentDetector';
 
 describe('AgentDetector', () => {
   describe('agent status emission', () => {
+    it('gate 매칭 시 "running" 시작 이벤트를 1회 emit한다 (배너만으로 agentName 확정)', () => {
+      // Claude Code v2.1.x처럼 idle prompt hint가 "❯"만 남아 patterns가
+      // 매칭되지 않아도, 시작 배너(gate)만으로 detection이 활성화돼야 한다.
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Claude Code v2.1.172\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'running' });
+      expect(det.getLastAgent()).toBe('Claude Code');
+      // 같은 세션에서 배너가 다시 나와도 재발화하지 않는다 (activeAgents 가드).
+      det.feed('Claude Code v2.1.172\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+    });
+
     it('emits "waiting" for "shift+tab to cycle" Claude prompt', () => {
       const det = new AgentDetector();
       const cb = vi.fn();
       det.onEvent(cb);
-      // gate first
+      // gate first — gate 매칭은 'running' 시작 이벤트를 발화하므로 분리해 무시
       det.feed('Claude Code starting up\n');
+      cb.mockClear();
       det.feed('  shift+tab to cycle modes\n');
       expect(cb).toHaveBeenCalledTimes(1);
       expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'waiting' });
@@ -19,6 +35,7 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('Claude Code starting up\n');
+      cb.mockClear(); // gate 'running' 무시 — esc 라인 자체는 emit하면 안 된다
       det.feed('press esc to interrupt\n');
       // Previously this falsely emitted 'waiting'. After the fix, no agent
       // event should fire for this line.
@@ -56,6 +73,7 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       const unsub = det.onEvent(cb);
       det.feed('Claude Code starting up\n');
+      cb.mockClear(); // gate 'running' 분리
       det.feed('  shift+tab to cycle\n');
       expect(cb).toHaveBeenCalledTimes(1);
 
@@ -73,6 +91,7 @@ describe('AgentDetector', () => {
       det.onEvent(b);
       unsubA();
       det.feed('Claude Code\n');
+      b.mockClear(); // gate 'running' 분리 (a는 이미 unsub됨)
       det.feed('  shift+tab to cycle\n');
       expect(a).not.toHaveBeenCalled();
       expect(b).toHaveBeenCalledTimes(1);
@@ -85,6 +104,7 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('Claude Code\n');
+      cb.mockClear(); // gate 'running' 분리
       det.feed('  shift+tab to cycle\n');
       det.feed('  shift+tab to cycle\n');
       det.feed('  shift+tab to cycle\n');
@@ -96,6 +116,7 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('Claude Code\n');
+      cb.mockClear(); // gate 'running' 분리
       det.feed('  shift+tab to cycle\n');
       expect(cb).toHaveBeenCalledTimes(1);
 
@@ -109,6 +130,7 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('aider v0.50.0\n');
+      cb.mockClear(); // gate 'running' 분리
       det.feed('aider>\n');
       det.feed('Applied edit to src/foo.ts\n');
       expect(cb).toHaveBeenCalledTimes(2);
@@ -123,7 +145,8 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('Claude Code\n  shift+tab to cycle\n');
-      expect(cb).toHaveBeenCalledTimes(1);
+      // gate 'running' + 패턴 'waiting' = 2 emit. 분리되지 않았다면 0이다.
+      expect(cb).toHaveBeenCalledTimes(2);
     });
 
     it('splits on lone \\r (carriage return redraw)', () => {
@@ -134,7 +157,7 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('Claude Code\r  shift+tab to cycle\r');
-      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb).toHaveBeenCalledTimes(2); // gate 'running' + 'waiting'
     });
 
     it('keeps \\r\\n intact (no double-split)', () => {
@@ -142,7 +165,7 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('Claude Code\r\n  shift+tab to cycle\r\n');
-      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb).toHaveBeenCalledTimes(2); // gate 'running' + 'waiting'
     });
   });
 
@@ -155,6 +178,7 @@ describe('AgentDetector', () => {
       const cb = vi.fn();
       det.onEvent(cb);
       det.feed('\x1b[?25hClaude Code starting\n');
+      cb.mockClear(); // gate 'running' 분리
       det.feed('\x1b[?25l  shift+tab to cycle\n');
       expect(cb).toHaveBeenCalledTimes(1);
     });

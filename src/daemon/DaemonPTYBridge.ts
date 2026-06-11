@@ -79,7 +79,12 @@ export class DaemonPTYBridge extends EventEmitter {
     // reach into them the way local-mode PTYBridge does (Codex P1).
     this.activeUnsubscribe = activityMonitor.onActive((ptyId) => {
       this.agentDetector?.resetEmissionState();
-      this.emit('active', { sessionId: ptyId });
+      // gate로 확정된 에이전트 이름을 active 이벤트에 함께 싣는다. main의
+      // DaemonNotificationRouter는 daemon AgentDetector에 직접 닿지 못하지만,
+      // 같은 daemon 프로세스인 여기서는 getLastAgent()가 닿는다. 이게 있어야
+      // idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x 등)도 running
+      // 상태에서 agentName이 채워진다.
+      this.emit('active', { sessionId: ptyId, agentName: this.agentDetector?.getLastAgent() ?? undefined });
     });
 
     // OSC events → cwd (OSC 7) and prompt/command markers (OSC 133)

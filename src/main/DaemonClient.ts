@@ -413,7 +413,11 @@ export class DaemonClient extends EventEmitter {
           this.emit('session:idle', { sessionId: event.sessionId });
           break;
         case 'activity.active':
-          this.emit('session:active', { sessionId: event.sessionId });
+          // data에 실린 gate 확정 agentName(없으면 null)을 함께 전달.
+          this.emit('session:active', {
+            sessionId: event.sessionId,
+            agentName: typeof event.data === 'string' ? event.data : undefined,
+          });
           break;
         case 'agent.event':
           this.emit('session:agent', { sessionId: event.sessionId, event: event.data });

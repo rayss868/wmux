@@ -344,10 +344,19 @@ export class AgentDetector {
       }
     }
 
-    // Check agent gates — activate agents when their gate pattern matches
+    // Check agent gates — activate agents when their gate pattern matches.
+    // gate가 처음 매칭되는 순간 'running'으로 한 번 emit한다. 이렇게 하면
+    // 에이전트별 idle prompt 패턴(Claude의 "bypass permissions on" 등)이
+    // 버전에 따라 사라져도(예: Claude Code v2.1.x는 입력대기 hint가 "❯"만
+    // 남음) 시작 배너(gate)만으로 agentName이 확정된다 — detection이 patterns
+    // 유지보수에 덜 의존하게 된다. activeAgents 가드로 세션당 1회만 발화한다.
     for (const ap of AGENT_PATTERNS) {
       if (ap.gate && !this.activeAgents.has(ap.agent) && ap.gate.test(clean)) {
         this.activeAgents.add(ap.agent);
+        this.lastAgent = ap.agent;
+        for (const cb of this.callbacks) {
+          cb({ agent: ap.agent, status: 'running', message: 'Agent started' });
+        }
       }
     }
 
