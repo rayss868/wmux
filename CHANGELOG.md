@@ -5,6 +5,18 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Non-selected panes no longer render garbled or blank glyphs when switching pane selection.** After long use with content-heavy panes, switching the selected pane could corrupt the *other* panes. xterm's WebGL addon shares one glyph texture atlas across every same-config terminal (`CharAtlasCache`); the focus/visible defensive repaint called `clearTextureAtlas()`, which empties that **shared** atlas and rebuilds only the newly-focused pane — the siblings kept stale per-cell texture coordinates and sampled an emptied/repositioned atlas. The repaint now does a full-range `refresh()` only and never touches the shared atlas; the earlier "garbled glyphs after a burst" case ([#166](https://github.com/openwong2kim/wmux/issues/166)) was already covered by the burst-path refresh, which never cleared the atlas. ([#196](https://github.com/openwong2kim/wmux/pull/196), resolves [#191](https://github.com/openwong2kim/wmux/issues/191))
+- **MCP workspace-identity resolution no longer blocks the event loop.** The identity PID-tree walk used a synchronous `execFileSync` per ancestor; it now walks the tree with async `execFile`, preserving the resolution result and the source invariant. ([#195](https://github.com/openwong2kim/wmux/pull/195), resolves [#194](https://github.com/openwong2kim/wmux/issues/194))
+- **Playwright auto-open is pinned to the calling session's workspace.** `browser.open` without an explicit workspaceId opened the browser in whichever workspace happened to be active; the engine now resolves the calling session's workspace and fails closed instead of falling back to the active one. ([#193](https://github.com/openwong2kim/wmux/pull/193), resolves [#190](https://github.com/openwong2kim/wmux/issues/190))
+- **Esc now reaches the terminal under a CJK IME.** While a CJK IME composition was active (keyCode 229), xterm dropped the Esc keystroke; wmux now matches the physical key code and injects Esc directly, the same class of fix as the Ctrl+J newline issue. ([#189](https://github.com/openwong2kim/wmux/pull/189))
+
+### Contributors
+- **[@zer0ken](https://github.com/zer0ken)** — shared-atlas pane-corruption fix ([#196](https://github.com/openwong2kim/wmux/pull/196)), non-blocking MCP identity walk ([#195](https://github.com/openwong2kim/wmux/pull/195)), and Playwright workspace pinning ([#193](https://github.com/openwong2kim/wmux/pull/193)).
+- **[@snowyukitty](https://github.com/snowyukitty)** — CJK IME Esc fix ([#189](https://github.com/openwong2kim/wmux/pull/189)).
+
 ## [3.0.0] — 2026-06-10 — external-tooling foundation, PowerShell 7 by default, terminal UX, cross-workspace hardening
 
 Milestone release. Headline: a reference plugin and workflow-friendly APIs that make wmux a foundation external tools build on, PowerShell 7 chosen as the default shell wherever it's installed (including Store builds), a batch of terminal UX (font zoom, configurable start directory, split CWD inheritance), and the close of the cross-workspace terminal read/write isolation gap. No breaking changes — this is a milestone version bump, not a wire-format or config break; existing sessions, profiles, and configs carry over untouched. All dogfood-verified on a live build before tagging.
