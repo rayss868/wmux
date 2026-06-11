@@ -1,9 +1,12 @@
 <!DOCTYPE html>
 <!--
-  Reference wmux UI plugin panel. Demonstrates the v1 bridge handshake:
+  Reference wmux UI plugin panel. Demonstrates the v1 bridge:
     1. wait for the host's { v: 1, kind: 'init' } message carrying a MessagePort
     2. send { v: 1, id, kind: 'request', method, params? } envelopes on the port
     3. match { kind: 'response' } envelopes by id
+    4. receive { kind: 'event' } pushes (requires events.subscribe) and
+       { kind: 'command' } palette invocations (requires ui.commands)
+    5. decorate a pane via the ui.decoratePane RPC (requires ui.pane-decoration)
 
   Install for dogfooding: copy this directory to ~/.wmux/plugins/hello-panel/
 -->
@@ -14,11 +17,15 @@
     body { margin: 0; padding: 8px; font: 11px monospace; color: #cdd6f4; background: transparent; }
     li { margin: 2px 0; }
     .err { color: #f38ba8; }
+    .dim { color: #6c7086; }
+    #events { max-height: 60px; overflow-y: auto; }
   </style>
 </head>
 <body>
   <div id="status">waiting for host…</div>
   <ul id="list"></ul>
+  <div class="dim">last events:</div>
+  <div id="events" class="dim"></div>
   <script>
     'use strict';
     let port = null;
@@ -39,30 +46,72 @@
       port = e.ports[0];
       port.onmessage = (ev) => {
         const r = ev.data;
-        if (!r || r.v !== 1 || r.kind !== 'response') return;
-        const p = pending.get(r.id);
-        if (!p) return;
-        pending.delete(r.id);
-        if (r.error) p.reject(new Error(r.error.message));
-        else p.resolve(r.result);
+        if (!r || r.v !== 1) return;
+        if (r.kind === 'response') {
+          const p = pending.get(r.id);
+          if (!p) return;
+          pending.delete(r.id);
+          if (r.error) p.reject(new Error(r.error.message));
+          else p.resolve(r.result);
+        } else if (r.kind === 'event') {
+          appendEvent(r.event);
+        } else if (r.kind === 'command') {
+          runCommand(r.command);
+        }
       };
-      main();
+      void refresh();
     });
 
-    async function main() {
+    function appendEvent(event) {
+      const box = document.getElementById('events');
+      const line = document.createElement('div');
+      line.textContent = (event && event.type) || '(unknown event)';
+      box.prepend(line);
+      while (box.children.length > 10) box.removeChild(box.lastChild);
+    }
+
+    async function runCommand(command) {
+      if (command === 'refresh') {
+        await refresh();
+      } else if (command === 'badge-first-pane') {
+        try {
+          const panes = await request('pane.list');
+          const first = Array.isArray(panes) && panes[0];
+          if (first && first.paneId) {
+            await request('ui.decoratePane', {
+              paneId: first.paneId,
+              badge: 'HELLO',
+              tooltip: 'hello-panel demo badge',
+              color: 'green',
+            });
+          }
+        } catch (err) {
+          showError(err);
+        }
+      }
+    }
+
+    function showError(err) {
+      const status = document.getElementById('status');
+      status.textContent = 'error: ' + err.message;
+      status.className = 'err';
+    }
+
+    async function refresh() {
       const status = document.getElementById('status');
       const list = document.getElementById('list');
+      list.textContent = '';
       try {
         const workspaces = await request('workspace.list');
         status.textContent = (workspaces?.length ?? 0) + ' workspace(s)';
+        status.className = '';
         for (const ws of workspaces ?? []) {
           const li = document.createElement('li');
           li.textContent = ws.name ?? ws.id;
           list.appendChild(li);
         }
       } catch (err) {
-        status.textContent = 'error: ' + err.message;
-        status.className = 'err';
+        showError(err);
       }
     }
   </script>

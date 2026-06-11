@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **96** methods (`ALL_RPC_METHODS` in
+Total: **97** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -212,6 +212,12 @@ Total: **96** methods (`ALL_RPC_METHODS` in
 | Method | Capability | Risk class |
 |---|---|---|
 | `hooks.signal` | `wmux.internal` |  |
+
+### `other`
+
+| Method | Capability | Risk class |
+|---|---|---|
+| `ui.decoratePane` | `ui.pane-decoration` | `ui` |
 
 ---
 

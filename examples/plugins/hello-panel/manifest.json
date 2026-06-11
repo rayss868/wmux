@@ -1,10 +1,21 @@
 {
   "name": "hello-panel",
-  "version": "0.1.0",
-  "description": "Reference wmux UI plugin: a sidebar panel that lists workspaces over the bridge.",
-  "capabilities": ["ui.sidebar", "workspace.read"],
+  "version": "0.2.0",
+  "description": "Reference wmux UI plugin: workspace list, event feed, palette command, and a pane badge.",
+  "capabilities": [
+    "ui.sidebar",
+    "ui.commands",
+    "ui.pane-decoration",
+    "workspace.read",
+    "pane.read",
+    "events.subscribe"
+  ],
   "activationEvents": ["onStartup"],
   "contributes": {
-    "sidebar": { "title": "Hello Panel", "entry": "panel.html" }
+    "sidebar": { "title": "Hello Panel", "entry": "panel.html" },
+    "commands": [
+      { "id": "refresh", "title": "Refresh workspace list" },
+      { "id": "badge-first-pane", "title": "Badge the first pane" }
+    ]
   }
 }

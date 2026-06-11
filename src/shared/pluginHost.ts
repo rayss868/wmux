@@ -53,7 +53,19 @@ export interface BridgeEvent {
   event: WmuxEvent;
 }
 
-export type BridgeEnvelope = BridgeRequest | BridgeResponse | BridgeEvent;
+/**
+ * Host→plugin command invocation (additive v1 extension, schema-freeze
+ * rule 1): fired when the user runs one of the plugin's contributed
+ * palette commands. `command` is the manifest `contributes.commands[].id`.
+ */
+export interface BridgeCommand {
+  v: typeof PLUGIN_BRIDGE_VERSION;
+  id: null;
+  kind: 'command';
+  command: string;
+}
+
+export type BridgeEnvelope = BridgeRequest | BridgeResponse | BridgeEvent | BridgeCommand;
 
 /**
  * Validate an inbound message from a plugin iframe. Hostile iframes can

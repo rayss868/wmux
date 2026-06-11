@@ -6,6 +6,8 @@ import { useIpc } from '../../hooks/useIpc';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { tokenAttrs } from '../../themes';
+import { usePlugins } from '../../plugins/usePlugins';
+import { postPluginCommand } from '../../plugins/pluginFrameRegistry';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -135,6 +137,8 @@ export default function CommandPalette() {
 
   const recentCommands = useStore((s) => s.recentCommands);
   const togglePalette = useStore((s) => s.toggleCommandPalette);
+  // Plugin-contributed palette commands (B-1 ui.commands).
+  const { plugins } = usePlugins();
 
   const buildItems = useCallback((): PaletteItemData[] => {
     const items: PaletteItemData[] = [];
@@ -408,6 +412,27 @@ export default function CommandPalette() {
       },
     });
 
+    // Plugin-contributed commands (B-1 ui.commands). Trusted plugins only —
+    // the same mount gate the panel hosts apply. Execution posts a
+    // kind:'command' envelope to the plugin's frame; if the frame isn't
+    // mounted yet, pluginFrameRegistry queues it and asks PluginPanels to
+    // expand the panel so the frame comes up and flushes the queue.
+    for (const plugin of plugins) {
+      if (plugin.trustStatus !== 'trusted' || !plugin.contributes.commands) continue;
+      for (const cmd of plugin.contributes.commands) {
+        items.push({
+          id: `plugin-${plugin.name}-${cmd.id}`,
+          label: `${plugin.name}: ${cmd.title}`,
+          category: 'command' as PaletteCategory,
+          icon: <IconCommand />,
+          action: () => {
+            postPluginCommand(plugin.name, cmd.id);
+            setVisible(false);
+          },
+        });
+      }
+    }
+
     // Recent terminal commands — show most recent first, max 20
     const recentReversed = [...recentCommands].reverse().slice(0, 20);
     for (const cmd of recentReversed) {
@@ -460,7 +485,7 @@ export default function CommandPalette() {
     }
 
     return items;
-  }, [workspaces, activeWorkspaceId, layoutTemplates, setVisible, ipcInvoke, recentCommands, togglePalette]);
+  }, [workspaces, activeWorkspaceId, layoutTemplates, setVisible, ipcInvoke, recentCommands, togglePalette, plugins]);
 
   // -------------------------------------------------------------------------
   // Filtered + scored results — useMemo to cache across renders

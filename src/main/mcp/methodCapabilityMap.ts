@@ -202,6 +202,10 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'meta.setProgress': { capability: 'meta.write', riskClass: 'metadata' },
   'meta.setSkills':   { capability: 'meta.write', riskClass: 'metadata' },
 
+  // --- Plugin host UI (B-1). Pane decorations are data pushed through the
+  //     bridge and rendered by the host — never plugin DOM inside a pane.
+  'ui.decoratePane':  { capability: 'ui.pane-decoration', riskClass: 'ui' },
+
   // --- Events (spec §3.5). Capability is `events.subscribe`; method is
   //     `events.poll`. `params.types` controls the topic filter; undefined
   //     means "everything" which only an unrestricted declaration satisfies.

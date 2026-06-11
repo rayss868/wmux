@@ -27,6 +27,7 @@ import { useActivePaneFocus } from '../../hooks/useActivePaneFocus';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
+import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../shared/types';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
@@ -278,6 +279,8 @@ export default function AppLayout() {
   useActivePaneFocus();
   useNotificationListener();
   useRpcBridge();
+  // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
+  usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();
 
   // ─── File drop — handled in preload where File.path is accessible ──────

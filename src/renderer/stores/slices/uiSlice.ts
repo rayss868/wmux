@@ -395,6 +395,17 @@ export interface UISlice {
   zoomedPaneId: string | null;
   togglePaneZoom: (paneId: string) => void;
 
+  // ─── Plugin pane decorations (B-1 ui.pane-decoration) ─────────────
+  // paneId → plugin → decoration. Written by the ui.decoratePane RPC push
+  // (usePaneDecorationChannel); badge=null payloads delete the entry.
+  // Not persisted: plugins re-assert decorations on reconnect.
+  pluginPaneDecorations: Record<string, Record<string, { badge: string; tooltip?: string; color?: string }>>;
+  setPluginPaneDecoration: (
+    plugin: string,
+    paneId: string,
+    decoration: { badge: string; tooltip?: string; color?: string } | null,
+  ) => void;
+
   // ─── Scrollback bookmarks ─────────────────────────────────────────
   terminalBookmarks: Record<string, number[]>;
   addBookmark: (ptyId: string, line: number) => void;
@@ -1066,6 +1077,25 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   togglePaneZoom: (paneId) => set((state) => {
     state.zoomedPaneId = state.zoomedPaneId === paneId ? null : paneId;
+  }),
+
+  // ─── Plugin pane decorations (B-1 ui.pane-decoration) ─────────────
+  pluginPaneDecorations: {},
+
+  setPluginPaneDecoration: (plugin, paneId, decoration) => set((state) => {
+    if (decoration === null) {
+      const forPane = state.pluginPaneDecorations[paneId];
+      if (!forPane) return;
+      delete forPane[plugin];
+      if (Object.keys(forPane).length === 0) {
+        delete state.pluginPaneDecorations[paneId];
+      }
+      return;
+    }
+    if (!state.pluginPaneDecorations[paneId]) {
+      state.pluginPaneDecorations[paneId] = {};
+    }
+    state.pluginPaneDecorations[paneId][plugin] = decoration;
   }),
 
   // ─── Scrollback bookmarks ─────────────────────────────────────────

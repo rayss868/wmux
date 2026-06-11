@@ -125,6 +125,8 @@ export const IPC = {
   // fires on a rejected RPC. Resolves with { approved } after the user
   // answers the standard PermissionApprovalDialog.
   PLUGINS_REQUEST_APPROVAL: 'plugins:request-approval',
+  // Main → renderer push for `ui.decoratePane` — payload PluginPaneDecoration.
+  PLUGIN_PANE_DECORATION: 'plugins:pane-decoration',
 } as const;
 
 // Daemon process exit codes. A spawned daemon that finds the canonical control

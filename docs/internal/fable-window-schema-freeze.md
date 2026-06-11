@@ -173,7 +173,10 @@ type BridgeEnvelope =
   | { v: 1; id: string; kind: 'request';  method: string; params?: unknown }
   | { v: 1; id: string; kind: 'response'; result?: unknown;
       error?: { code: string; message: string } }
-  | { v: 1; id: null;   kind: 'event';    event: WmuxEvent };
+  | { v: 1; id: null;   kind: 'event';    event: WmuxEvent }
+  // Additive v1 extension (rule 1): host→plugin palette-command invocation.
+  // `command` is the manifest `contributes.commands[].id`.
+  | { v: 1; id: null;   kind: 'command';  command: string };
 ```
 
 - `v` is the bridge protocol version; v1 frozen here. Unknown `kind` ignored.

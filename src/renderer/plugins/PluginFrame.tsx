@@ -5,6 +5,12 @@ import {
   parseBridgeRequest,
   type BridgeResponse,
 } from '../../shared/pluginHost';
+import { registerFrame } from './pluginFrameRegistry';
+
+// Cadence for the host-side events.poll forwarding loop (see below). The
+// poll is an in-process ring read in main — cheap enough for 1 Hz per
+// mounted frame.
+const EVENT_POLL_INTERVAL_MS = 1000;
 
 /**
  * Sandboxed plugin iframe + postMessage bridge (B-1 core).
@@ -27,14 +33,23 @@ import {
  * posts `{ v: 1, kind: 'init' }` with port2 transferred. targetOrigin is
  * `'*'` by necessity — a sandboxed frame's origin is opaque ("null") and
  * unmatchable; the port transfer is still point-to-point to this frame.
+ *
+ * Event forwarding (`forwardEvents`): the host polls `events.poll` THROUGH
+ * the plugin's own RPC identity (so the events.subscribe capability and the
+ * notifications.read gate apply unchanged) and pushes results to the frame
+ * as `kind:'event'` envelopes. The cursor starts at the current ring head —
+ * plugins see events from mount time, not a history replay. A rejected poll
+ * stops the loop (the plugin didn't declare events.subscribe).
  */
 export default function PluginFrame({
   pluginName,
   entry,
+  forwardEvents = false,
   className,
 }: {
   pluginName: string;
   entry: string;
+  forwardEvents?: boolean;
   className?: string;
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -44,17 +59,61 @@ export default function PluginFrame({
     if (!iframe) return;
     let port: MessagePort | null = null;
     let disposed = false;
+    let unregisterFrame: (() => void) | null = null;
+    let eventTimer: ReturnType<typeof setInterval> | null = null;
 
-    const respond = (msg: BridgeResponse) => {
+    const post = (msg: unknown) => {
       try {
         port?.postMessage(msg);
       } catch {
         /* port may be closed mid-flight during unmount */
       }
     };
+    const respond = (msg: BridgeResponse) => post(msg);
+
+    const stopEventLoop = () => {
+      if (eventTimer !== null) {
+        clearInterval(eventTimer);
+        eventTimer = null;
+      }
+    };
+
+    const startEventLoop = () => {
+      stopEventLoop();
+      let cursor: number | null = null; // null until the head is established
+      let inFlight = false;
+      eventTimer = setInterval(() => {
+        if (disposed || inFlight) return;
+        inFlight = true;
+        window.electronAPI.plugins
+          .rpc(pluginName, 'events.poll', cursor === null ? {} : { cursor })
+          .then((raw) => {
+            const resp = raw as { ok?: boolean; result?: { events?: unknown[]; nextCursor?: number } } | null;
+            if (!resp || resp.ok !== true || !resp.result) {
+              // Rejected (capability missing) or malformed — stop polling.
+              stopEventLoop();
+              return;
+            }
+            const head = typeof resp.result.nextCursor === 'number' ? resp.result.nextCursor : 0;
+            if (cursor === null) {
+              // First poll establishes the head; its (historical) events
+              // are discarded so plugins start at "now".
+              cursor = head;
+              return;
+            }
+            cursor = head;
+            for (const event of resp.result.events ?? []) {
+              post({ v: PLUGIN_BRIDGE_VERSION, id: null, kind: 'event', event });
+            }
+          })
+          .catch(() => stopEventLoop())
+          .finally(() => { inFlight = false; });
+      }, EVENT_POLL_INTERVAL_MS);
+    };
 
     const onLoad = () => {
       port?.close();
+      unregisterFrame?.();
       const channel = new MessageChannel();
       port = channel.port1;
       port.onmessage = (e: MessageEvent) => {
@@ -85,16 +144,26 @@ export default function PluginFrame({
           });
       };
       iframe.contentWindow?.postMessage({ v: PLUGIN_BRIDGE_VERSION, kind: 'init' }, '*', [channel.port2]);
+
+      // Palette command delivery (kind:'command' envelopes) + queued flush.
+      unregisterFrame = registerFrame(pluginName, (command) => {
+        post({ v: PLUGIN_BRIDGE_VERSION, id: null, kind: 'command', command });
+      });
+
+      if (forwardEvents) startEventLoop();
     };
 
     iframe.addEventListener('load', onLoad);
     return () => {
       disposed = true;
+      stopEventLoop();
       iframe.removeEventListener('load', onLoad);
+      unregisterFrame?.();
+      unregisterFrame = null;
       port?.close();
       port = null;
     };
-  }, [pluginName, entry]);
+  }, [pluginName, entry, forwardEvents]);
 
   return (
     <iframe

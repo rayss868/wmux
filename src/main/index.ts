@@ -33,6 +33,7 @@ import { registerEventsRpc } from './pipe/handlers/events.rpc';
 import { PluginHostLoader } from './plugins/PluginHostLoader';
 import { registerPluginSchemePrivileges, registerPluginProtocolHandler } from './plugins/pluginProtocol';
 import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
+import { registerUiPluginRpc } from './pipe/handlers/uiPlugin.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
 import { ShadowRejectionLogger } from './audit/shadowRejectionLog';
@@ -442,6 +443,7 @@ registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker);
 registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter, (clientName) => getPluginTrustStore().get(clientName));
+registerUiPluginRpc(rpcRouter, () => mainWindow);
 registerMcpPluginRpc(rpcRouter);
 // Plugin host IPC (B-1): plugins:list + the iframe bridge forwarder. Same
 // RpcRouter instance, so plugin-iframe RPCs hit the identical enforcement

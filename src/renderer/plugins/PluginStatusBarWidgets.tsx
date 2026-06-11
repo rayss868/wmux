@@ -1,5 +1,6 @@
 import { usePlugins } from './usePlugins';
 import PluginFrame from './PluginFrame';
+import { declaresEventsCapability } from './PluginPanels';
 
 /**
  * Status-bar widget host (B-1 `ui.statusbar` contribution point). Mounts
@@ -23,7 +24,11 @@ export default function PluginStatusBarWidgets({ alignment }: { alignment: 'left
         if (!statusbar) return null;
         return (
           <div key={plugin.name} style={{ width: 120, height: 20, overflow: 'hidden' }} title={plugin.name}>
-            <PluginFrame pluginName={plugin.name} entry={statusbar.entry} />
+            <PluginFrame
+              pluginName={plugin.name}
+              entry={statusbar.entry}
+              forwardEvents={declaresEventsCapability(plugin)}
+            />
           </div>
         );
       })}

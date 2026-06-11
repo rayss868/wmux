@@ -11,6 +11,7 @@ import SurfaceTabs from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { tokenAttrs } from '../../themes';
+import PaneDecorations from '../../plugins/PaneDecorations';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -203,6 +204,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       data-derived="accentCursor"
     >
       <ErrorBoundary name="pane">
+      {/* Plugin badges (B-1 ui.pane-decoration) — host-rendered data only */}
+      <PaneDecorations paneId={pane.id} />
       {isZoomed && (
         <button
           onClick={(e) => {

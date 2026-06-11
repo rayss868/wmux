@@ -186,6 +186,17 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.PLUGINS_RPC, pluginName, method, params) as Promise<unknown>,
     requestApproval: (pluginName: string) =>
       ipcRenderer.invoke(IPC.PLUGINS_REQUEST_APPROVAL, pluginName) as Promise<{ approved: boolean }>,
+    onPaneDecoration: (callback: (decoration: {
+      plugin: string;
+      paneId: string;
+      badge: string | null;
+      tooltip?: string;
+      color?: string;
+    }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, decoration: Parameters<typeof callback>[0]) => callback(decoration);
+      ipcRenderer.on(IPC.PLUGIN_PANE_DECORATION, listener);
+      return () => { ipcRenderer.removeListener(IPC.PLUGIN_PANE_DECORATION, listener); };
+    },
   },
   daemon: {
     onConnected: (callback: () => void) => {

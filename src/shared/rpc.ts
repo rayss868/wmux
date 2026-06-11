@@ -104,6 +104,7 @@ export type RpcMethod =
   | 'notify'
   | 'meta.setStatus'
   | 'meta.setProgress'
+  | 'ui.decoratePane'
   | 'system.identify'
   | 'system.capabilities'
   | 'browser.open'
@@ -203,6 +204,7 @@ export const ALL_RPC_METHODS = [
   'notify',
   'meta.setStatus',
   'meta.setProgress',
+  'ui.decoratePane',
   'system.identify',
   'system.capabilities',
   'browser.open',
