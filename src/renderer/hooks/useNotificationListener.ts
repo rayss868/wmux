@@ -325,6 +325,18 @@ export function useNotificationListener() {
             // Only update CWD from the active pane's active surface to prevent
             // stale PTYs from overwriting the current directory.
             applyToWorkspace(ws.id, !isActivePtySurface(ws, ptyId));
+            // agentStatus='running'은 주기적으로 오지만 agentName(session:agent
+            // gate emit)은 1회성이라, ptyId↔surface 매핑이 준비되기 전에 발화하면
+            // 영영 유실된다. 매핑이 생긴 지금(running 수신 + agentName 비어 있음)
+            // main의 lastAgentNameByPty 캐시에서 race-free하게 pull해 메운다.
+            if (rest.agentStatus === 'running' && !ws.metadata?.agentName) {
+              const targetWsId = ws.id;
+              void window.electronAPI.metadata.resolveAgent(ptyId).then((name) => {
+                if (name) {
+                  useStore.getState().updateWorkspaceMetadata(targetWsId, { agentName: name });
+                }
+              });
+            }
             break;
           }
         }

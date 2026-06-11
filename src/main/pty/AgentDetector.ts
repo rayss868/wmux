@@ -107,7 +107,10 @@ const AGENT_PATTERNS: AgentPattern[] = [
   {
     agent: 'Claude Code',
     slug: 'claude',
-    gate: /Claude Code|claude-code|╭.*Claude/,
+    // \s* — Claude Code TUI는 배너 "Claude Code"를 셀 단위 커서 이동으로 그려,
+    // ANSI strip 후 "Claude"와 "Code" 사이 공백이 사라진 "ClaudeCode"가 된다.
+    // 공백을 선택적으로 둬야 daemon mode에서도 gate가 매칭된다(핵심 race 원인).
+    gate: /Claude\s*Code|claude-code|╭.*Claude/,
     patterns: [
       // Waiting — Claude Code's unique idle prompt fragments.
       //
@@ -324,6 +327,32 @@ export class AgentDetector {
     for (const line of lines) {
       this.processLine(line);
     }
+
+    // 미완성 라인(아직 개행이 안 온 redraw)의 gate도 미리 검사한다. claude처럼
+    // 시작 배너를 개행 없이 커서 이동으로 그리는 TUI는 "Claude Code vX"가
+    // lineBuffer에 갇혀 라인 완성이 영영 안 될 수 있고, 그러면 gate가 chunk
+    // 타이밍에 따라 가끔만 매칭돼 agentName 감지가 불안정해진다. patterns는
+    // 라인 완성 후에만 검사하지만(부분 매칭 오탐 방지), gate는 활성화 신호일
+    // 뿐이라 미완성 라인에서 미리 봐도 안전하다.
+    const tail = this.lineBuffer.replace(ANSI_STRIP, '').trim();
+    if (tail) this.checkGates(tail);
+  }
+
+  /**
+   * gate 매칭 → 에이전트 활성화 + 'running' 시작 이벤트 1회 emit + lastAgent
+   * 설정. 라인 완성 여부와 무관하게 호출할 수 있도록 분리(feed의 미완성 라인
+   * 검사와 processLine 양쪽에서 사용). activeAgents 가드로 세션당 1회만 발화.
+   */
+  private checkGates(clean: string): void {
+    for (const ap of AGENT_PATTERNS) {
+      if (ap.gate && !this.activeAgents.has(ap.agent) && ap.gate.test(clean)) {
+        this.activeAgents.add(ap.agent);
+        this.lastAgent = ap.agent;
+        for (const cb of this.callbacks) {
+          cb({ agent: ap.agent, status: 'running', message: 'Agent started' });
+        }
+      }
+    }
   }
 
   private processLine(line: string): void {
@@ -345,20 +374,11 @@ export class AgentDetector {
     }
 
     // Check agent gates — activate agents when their gate pattern matches.
-    // gate가 처음 매칭되는 순간 'running'으로 한 번 emit한다. 이렇게 하면
-    // 에이전트별 idle prompt 패턴(Claude의 "bypass permissions on" 등)이
-    // 버전에 따라 사라져도(예: Claude Code v2.1.x는 입력대기 hint가 "❯"만
-    // 남음) 시작 배너(gate)만으로 agentName이 확정된다 — detection이 patterns
-    // 유지보수에 덜 의존하게 된다. activeAgents 가드로 세션당 1회만 발화한다.
-    for (const ap of AGENT_PATTERNS) {
-      if (ap.gate && !this.activeAgents.has(ap.agent) && ap.gate.test(clean)) {
-        this.activeAgents.add(ap.agent);
-        this.lastAgent = ap.agent;
-        for (const cb of this.callbacks) {
-          cb({ agent: ap.agent, status: 'running', message: 'Agent started' });
-        }
-      }
-    }
+    // gate가 처음 매칭되는 순간 'running'으로 한 번 emit한다(checkGates). idle
+    // prompt 패턴(Claude의 "bypass permissions on" 등)이 버전에 따라 사라져도
+    // (Claude Code v2.1.x는 입력대기 hint가 "❯"만 남음) 시작 배너(gate)만으로
+    // agentName이 확정된다.
+    this.checkGates(clean);
 
     // Only check patterns for agents that are confirmed active (gate matched)
     for (const ap of AGENT_PATTERNS) {

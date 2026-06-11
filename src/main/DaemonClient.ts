@@ -308,6 +308,20 @@ export class DaemonClient extends EventEmitter {
     };
   }
 
+  /**
+   * daemon AgentDetector가 gate로 확정한 에이전트 표시명을 조회한다(없으면 null).
+   * renderer detection pull의 권위 소스 — session:agent emit 전파 race를 우회한다.
+   */
+  async getAgentName(sessionId: string): Promise<string | null> {
+    try {
+      const result = await this.rpc('daemon.getAgentName', { id: sessionId });
+      const name = (result as { agentName?: unknown })?.agentName;
+      return typeof name === 'string' && name ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Whether the daemon control pipe is connected. */
   get isConnected(): boolean {
     return this.connected;

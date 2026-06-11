@@ -292,6 +292,17 @@ function markDaemonReady(): void {
 // live `daemonClient` value via closure, which means a renderer that
 // reloaded after a mid-session daemon disconnect still gets a truthful
 // answer instead of a cached stale one.
+// renderer가 agentStatus='running'을 받았는데 그 ptyId의 agentName이 아직
+// 비어 있을 때 호출한다(1회성 session:agent emit을 매핑 준비 전에 놓친 경우).
+// daemon AgentDetector를 직접 조회한다 — router 캐시(lastAgentNameByPty)는
+// session:agent emit 도착에 의존해 같은 race를 타므로 쓰지 않는다. daemon은
+// 배너를 직접 feed받아 lastAgent를 설정하므로 전파 race와 무관한 권위 소스다.
+ipcMain.handle('detection:resolveAgent', async (_e, ptyId: string) => {
+  const id = typeof ptyId === 'string' ? ptyId : '';
+  if (!id) return null;
+  return (await daemonClient?.getAgentName(id)) ?? null;
+});
+
 ipcMain.handle('daemon:get-ready-state', async () => {
   if (!daemonReadyDecided) {
     await new Promise<void>((resolve) => {

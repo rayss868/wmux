@@ -741,6 +741,15 @@ function registerRpcHandlers(
     return sessionManager.listSessions();
   });
 
+  // daemon.getAgentName — daemon AgentDetector가 gate로 확정한 에이전트 표시명을
+  // 직접 조회한다. renderer detection pull의 권위 소스: main으로의 session:agent
+  // emit 전파(타이밍 race)를 우회해, 배너 매칭이 됐다면 항상 정답을 준다.
+  pipeServer.onRpc('daemon.getAgentName', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const session = id ? sessionManager.getSession(id) : undefined;
+    return { agentName: session?.bridge.getLastAgent() ?? null };
+  });
+
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events
   // from a session's PromptEventLog. Falls back to an empty response when the
   // session doesn't exist so callers can degrade gracefully.

@@ -136,6 +136,10 @@ const electronAPI = {
       ipcRenderer.on(IPC.METADATA_UPDATE, listener);
       return () => { ipcRenderer.removeListener(IPC.METADATA_UPDATE, listener); };
     },
+    // gate로 확정된 agentName을 main 캐시에서 pull. running 수신 시 agentName이
+    // 비어 있으면 호출해, 매핑 준비 전에 놓친 1회성 session:agent emit을 메운다.
+    resolveAgent: (ptyId: string) =>
+      ipcRenderer.invoke('detection:resolveAgent', ptyId) as Promise<string | null>,
   },
   rpc: {
     onCommand: (

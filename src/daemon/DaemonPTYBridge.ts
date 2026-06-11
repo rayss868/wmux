@@ -183,6 +183,16 @@ export class DaemonPTYBridge extends EventEmitter {
     this.muted = muted;
   }
 
+  /**
+   * gate로 확정된 에이전트 표시명(없으면 null). daemon 프로세스 안의
+   * AgentDetector가 배너를 직접 feed받아 설정하므로, main으로의 1회성
+   * session:agent emit 전파(타이밍 race)와 무관하게 권위 있는 값을 준다.
+   * renderer의 detection pull이 이 값을 직접 조회한다.
+   */
+  getLastAgent(): string | null {
+    return this.agentDetector?.getLastAgent() ?? null;
+  }
+
   /** Whether the bridge is currently dropping PTY output. */
   get isMuted(): boolean {
     return this.muted;

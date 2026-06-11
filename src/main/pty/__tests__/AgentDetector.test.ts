@@ -18,6 +18,18 @@ describe('AgentDetector', () => {
       expect(cb).toHaveBeenCalledTimes(1);
     });
 
+    it('개행 없이 미완성 라인에 머무는 시작 배너도 gate 매칭한다 (claude TUI 대응)', () => {
+      // claude는 시작 배너를 개행 없이 커서 이동으로 그려 "Claude Code vX"가
+      // lineBuffer에 갇혀 라인 완성이 안 될 수 있다. 그래도 gate는 검사돼야 한다.
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Claude Code v2.1.172'); // 개행 없음
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'running' });
+      expect(det.getLastAgent()).toBe('Claude Code');
+    });
+
     it('emits "waiting" for "shift+tab to cycle" Claude prompt', () => {
       const det = new AgentDetector();
       const cb = vi.fn();
