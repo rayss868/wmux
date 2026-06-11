@@ -217,7 +217,7 @@ Total: **96** methods (`ALL_RPC_METHODS` in
 
 ## Event types
 
-The EventBus exposes **8** event types
+The EventBus exposes **9** event types
 (`WMUX_EVENT_TYPES` in `src/shared/events.ts`), polled via `events.poll`.
 Wire shapes (the fields beyond the common `seq` / `ts` / `workspaceId` /
 `type`) are documented in [`inventory.md`](./inventory.md#event-types) and
@@ -233,6 +233,7 @@ typed in `src/shared/events.ts`.
 | `process.started` |
 | `process.exited` |
 | `agent.lifecycle` |
+| `notification.received` |
 
 ---
 

@@ -1018,6 +1018,19 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
+  // Desktop-notification sequences (OSC 9/777/99) parsed in the daemon
+  // bridge. Broadcast so main can tee them onto the EventBus as
+  // `notification.received` and drive toasts/badges — same projection
+  // pattern as prompt.event above.
+  sessionManager.on('session:notification', (payload: { sessionId: string; event: { source: string; title: string | null; body: string; ts: number } }) => {
+    const event: DaemonEvent = {
+      type: 'notification.event',
+      sessionId: payload.sessionId,
+      data: payload.event,
+    };
+    pipeServer.broadcast(event);
+  });
+
   // Working-directory change (OSC 7 / prompt scrape, detected in the daemon
   // bridge). Broadcast so main can forward it to the renderer as
   // IPC.CWD_CHANGED, giving daemon-mode panes the same live per-surface cwd

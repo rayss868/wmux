@@ -342,6 +342,14 @@ export class DaemonSessionManager extends EventEmitter {
       this.emit('session:prompt', payload);
     });
 
+    // Desktop-notification sequences (OSC 9/777/99) parsed in the bridge.
+    // Re-emitted so daemon/index.ts can broadcast them to main, which tees
+    // them onto the EventBus as `notification.received` — same projection
+    // pattern as session:prompt above.
+    bridge.on('notification', (payload) => {
+      this.emit('session:notification', payload);
+    });
+
     bridge.on('cwd', (payload: { sessionId: string; cwd: string }) => {
       meta.cwd = payload.cwd;
       // Forward across the daemon→main boundary so the renderer can live-update

@@ -298,6 +298,7 @@ export interface DaemonEvent {
     | 'activity.idle'
     | 'activity.active'
     | 'prompt.event'
+    | 'notification.event'
     | 'cwd.changed';
   sessionId: string;
   data: unknown;

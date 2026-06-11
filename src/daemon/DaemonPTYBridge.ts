@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { IPty } from 'node-pty';
 import { OscParser } from '../main/pty/OscParser';
+import { TerminalNotificationParser } from '../main/pty/oscNotification';
 import { AgentDetector } from '../main/pty/AgentDetector';
 import { ActivityMonitor } from '../main/pty/ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
@@ -15,6 +16,7 @@ import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
  *  - 'data'     → Buffer (raw PTY output)
  *  - 'cwd'      → { sessionId: string, cwd: string }
  *  - 'agent'    → { sessionId: string, event: AgentEvent }
+ *  - 'notification' → { sessionId, event: TerminalNotification & { ts } }
  *  - 'critical' → { sessionId: string, event: CriticalEvent }
  *  - 'active'   → { sessionId: string }                — onActive cycle start
  *  - 'idle'     → { sessionId: string }                — onActiveToIdle
@@ -87,11 +89,23 @@ export class DaemonPTYBridge extends EventEmitter {
       this.emit('active', { sessionId: ptyId, agentName: this.agentDetector?.getLastAgent() ?? undefined });
     });
 
-    // OSC events → cwd (OSC 7) and prompt/command markers (OSC 133)
+    // Terminal desktop-notification sequences (OSC 9/777/99). Stateful for
+    // OSC 99 chunk assembly, so it lives per-bridge like OscParser itself.
+    const notificationParser = new TerminalNotificationParser();
+
+    // OSC events → cwd (OSC 7), prompt/command markers (OSC 133), and
+    // desktop notifications (OSC 9/777/99)
     oscParser.onOsc((event) => {
       if (event.code === 7) {
         const cwd = parseOsc7Cwd(event.data);
         this.emit('cwd', { sessionId, cwd });
+        return;
+      }
+      if (event.code === 9 || event.code === 99 || event.code === 777) {
+        const notification = notificationParser.handle(event.code, event.data);
+        if (notification) {
+          this.emit('notification', { sessionId, event: { ...notification, ts: Date.now() } });
+        }
         return;
       }
       if (event.code === 133 && promptLog) {

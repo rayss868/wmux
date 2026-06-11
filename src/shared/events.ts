@@ -50,7 +50,8 @@ export type WmuxEventType =
   | 'workspace.metadata.changed'
   | 'process.started'
   | 'process.exited'
-  | 'agent.lifecycle';
+  | 'agent.lifecycle'
+  | 'notification.received';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -61,6 +62,7 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'process.started',
   'process.exited',
   'agent.lifecycle',
+  'notification.received',
 ] as const;
 
 export interface WmuxEventBase {
@@ -206,6 +208,30 @@ export interface AgentLifecycleEvent extends WmuxEventBase {
   exitCode?: number | null;
 }
 
+/**
+ * Fires when a terminal program emits a desktop-notification escape sequence
+ * (OSC 9, OSC 777 `notify`, or kitty OSC 99). Parsed once in the process
+ * that owns the PTY (daemon by default, main in local mode); both modes emit
+ * the identical shape. Normative parsing/sanitization rules are frozen in
+ * docs/internal/fable-window-schema-freeze.md §1.
+ *
+ * NOT dedup-gated: every sequence the program emits becomes an event.
+ * Rate-limiting/suppression is a surface (toast/ring) policy, not a bus
+ * policy. Like `agent.lifecycle`, the event is dropped when the owning
+ * workspace can't be resolved (scope-less events would leak across
+ * workspace isolation).
+ */
+export interface NotificationReceivedEvent extends WmuxEventBase {
+  type: 'notification.received';
+  ptyId: string;
+  /** Which escape sequence produced this notification. */
+  source: 'osc9' | 'osc777' | 'osc99';
+  /** Sanitized title (≤256 chars), null when no separate title was carried. */
+  title: string | null;
+  /** Sanitized body (≤4096 chars). Always non-empty. */
+  body: string;
+}
+
 export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
@@ -214,7 +240,8 @@ export type WmuxEvent =
   | WorkspaceMetadataChangedEvent
   | ProcessStartedEvent
   | ProcessExitedEvent
-  | AgentLifecycleEvent;
+  | AgentLifecycleEvent
+  | NotificationReceivedEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;

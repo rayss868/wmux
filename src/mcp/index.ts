@@ -514,9 +514,10 @@ server.tool(
         'process.started',
         'process.exited',
         'agent.lifecycle',
+        'notification.received',
       ]))
       .optional()
-      .describe('Filter to specific event types. Omit to receive all types. `agent.lifecycle` carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input), source (hook|detector|osc133), agent slug (nullable when source=osc133 and no agent context), decision (emit|dedup), and optional exitCode (osc133 only). It fires on three signals: (1) an inner agent (Claude Code, Codex CLI, ...) finishes a turn (source=hook|detector, kind=agent.stop), (2) an agent surfaces a y/N approval prompt mid-turn (source=detector, kind=agent.awaiting_input), or (3) any OSC 133-instrumented shell command completes (source=osc133, kind=agent.stop, with exitCode). Orchestrators that previously polled `terminal_read_events` for OSC 133 boundaries can switch to ring-buffer polling here at the same cadence.'),
+      .describe('Filter to specific event types. Omit to receive all types. `notification.received` fires when a terminal program emits a desktop-notification escape sequence (OSC 9, OSC 777 notify, kitty OSC 99) and carries ptyId, source (osc9|osc777|osc99), title (nullable), and body. `agent.lifecycle` carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input), source (hook|detector|osc133), agent slug (nullable when source=osc133 and no agent context), decision (emit|dedup), and optional exitCode (osc133 only). It fires on three signals: (1) an inner agent (Claude Code, Codex CLI, ...) finishes a turn (source=hook|detector, kind=agent.stop), (2) an agent surfaces a y/N approval prompt mid-turn (source=detector, kind=agent.awaiting_input), or (3) any OSC 133-instrumented shell command completes (source=osc133, kind=agent.stop, with exitCode). Orchestrators that previously polled `terminal_read_events` for OSC 133 boundaries can switch to ring-buffer polling here at the same cadence.'),
     max: z.number().int().positive().max(1024).optional().describe('Max events to return per poll. Default 256.'),
   },
   async ({ cursor, types, max }) => {

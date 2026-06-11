@@ -239,6 +239,32 @@ export class DaemonNotificationRouter {
     }
   }
 
+  /**
+   * Tee a daemon-parsed terminal notification (OSC 9/777/99) onto the
+   * EventBus as `notification.received`. Same workspace-resolution-or-drop
+   * contract as the lifecycle tees above: an event without a workspace
+   * scope would route to the wrong subscriber, so dropping is safer.
+   */
+  private async emitNotificationReceived(
+    ptyId: string,
+    notification: { source: 'osc9' | 'osc777' | 'osc99'; title: string | null; body: string },
+  ): Promise<void> {
+    try {
+      const workspaceId = await this.resolveWorkspaceIdForPty(ptyId);
+      if (!workspaceId) return;
+      eventBus.emit({
+        type: 'notification.received',
+        workspaceId,
+        ptyId,
+        source: notification.source,
+        title: notification.title,
+        body: notification.body,
+      });
+    } catch (err) {
+      console.warn('[DaemonNotificationRouter] emitNotificationReceived error:', err);
+    }
+  }
+
   start(): void {
     const onAgent = (payload: { sessionId: string; event: unknown }) => {
       try {
@@ -304,6 +330,35 @@ export class DaemonNotificationRouter {
         void this.emitOsc133Lifecycle(payload.sessionId, exitCode);
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:prompt error:', err);
+      }
+    };
+
+    // Terminal desktop notifications (OSC 9/777/99) parsed in the daemon.
+    // Surface parity with the local-mode PTYBridge OSC switch (in-app
+    // notification + toast), plus the EventBus `notification.received` tee
+    // that both modes share. Smarter surface policy (attention ring,
+    // focus-aware suppression) layers on top of the EventBus event later.
+    const onNotification = (payload: { sessionId: string; event: unknown }) => {
+      try {
+        const ev = payload.event as { source?: string; title?: string | null; body?: string } | null;
+        if (!ev || typeof ev !== 'object') return;
+        if (ev.source !== 'osc9' && ev.source !== 'osc777' && ev.source !== 'osc99') return;
+        if (typeof ev.body !== 'string' || ev.body.length === 0) return;
+        const title = typeof ev.title === 'string' && ev.title.length > 0 ? ev.title : null;
+        const win = this.getWindow();
+        sendNotification(win, payload.sessionId, {
+          type: 'info',
+          title: title ?? 'Terminal',
+          body: ev.body,
+        });
+        toastManager.show(title ?? 'Terminal', ev.body);
+        void this.emitNotificationReceived(payload.sessionId, {
+          source: ev.source,
+          title,
+          body: ev.body,
+        });
+      } catch (err) {
+        console.warn('[DaemonNotificationRouter] session:notification error:', err);
       }
     };
 
@@ -389,6 +444,7 @@ export class DaemonNotificationRouter {
     this.daemonClient.on('session:idle', onIdle);
     this.daemonClient.on('session:critical', onCritical);
     this.daemonClient.on('session:prompt', onPrompt);
+    this.daemonClient.on('session:notification', onNotification);
     this.daemonClient.on('session:died', onSessionEnd);
     this.daemonClient.on('session:destroyed', onSessionEnd);
 
@@ -408,6 +464,7 @@ export class DaemonNotificationRouter {
       () => this.daemonClient.off('session:idle', onIdle),
       () => this.daemonClient.off('session:critical', onCritical),
       () => this.daemonClient.off('session:prompt', onPrompt),
+      () => this.daemonClient.off('session:notification', onNotification),
       () => this.daemonClient.off('session:died', onSessionEnd),
       () => this.daemonClient.off('session:destroyed', onSessionEnd),
       unsubscribeMeta,

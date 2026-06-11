@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron';
 import { PTYManager } from './PTYManager';
 import { OscParser } from './OscParser';
+import { TerminalNotificationParser } from './oscNotification';
 import { AgentDetector, agentDisplayToSlug } from './AgentDetector';
 import { ActivityMonitor } from './ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from './cwdDetect';
@@ -241,6 +242,12 @@ export class PTYBridge {
     const oscParser = new OscParser();
     this.oscParsers.set(ptyId, oscParser);
 
+    // Desktop-notification sequences (OSC 9/777/99). Stateful for OSC 99
+    // chunk assembly, so it lives per-PTY alongside the OscParser. Captured
+    // by the onOsc closure below; no separate cleanup needed — it dies with
+    // the closure when the parser is dropped in cleanupInstance.
+    const notificationParser = new TerminalNotificationParser();
+
     const agentDetector = new AgentDetector();
     this.agentDetectors.set(ptyId, agentDetector);
 
@@ -257,19 +264,34 @@ export class PTYBridge {
           break;
         }
         case 9:
-        case 99: {
-          const notification = { type: 'info' as const, title: 'Terminal', body: event.data };
+        case 99:
+        case 777: {
+          // Desktop-notification sequences, parsed per the frozen rules in
+          // docs/internal/fable-window-schema-freeze.md §1 (ConEmu OSC 9
+          // subcommand exclusion, OSC 777 `notify` gate, kitty OSC 99
+          // chunk assembly + base64). Replaces the previous raw-payload
+          // toast, which fired on ConEmu progress spam and showed
+          // unsanitized kitty metadata as the body.
+          const parsed = notificationParser.handle(event.code, event.data);
+          if (!parsed) break;
+          const notification = {
+            type: 'info' as const,
+            title: parsed.title ?? 'Terminal',
+            body: parsed.body,
+          };
           sendNotification(win, ptyId, notification);
           toastManager.show(notification.title, notification.body);
-          break;
-        }
-        case 777: {
-          const parts = event.data.split(';');
-          const title = parts[1] || 'Notification';
-          const body = parts.slice(2).join(';') || '';
-          const notification = { type: 'info' as const, title, body };
-          sendNotification(win, ptyId, notification);
-          toastManager.show(title, body);
+          // EventBus tee shared with daemon mode — see NotificationReceivedEvent.
+          if (instance.workspaceId) {
+            eventBus.emit({
+              type: 'notification.received',
+              workspaceId: instance.workspaceId,
+              ptyId,
+              source: parsed.source,
+              title: parsed.title,
+              body: parsed.body,
+            });
+          }
           break;
         }
         case 7727: {

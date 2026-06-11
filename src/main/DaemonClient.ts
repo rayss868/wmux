@@ -446,6 +446,13 @@ export class DaemonClient extends EventEmitter {
           // matching the local-mode PTYBridge.OscParser case 133 path.
           this.emit('session:prompt', { sessionId: event.sessionId, event: event.data });
           break;
+        case 'notification.event':
+          // Desktop-notification sequence (OSC 9/777/99) parsed daemon-side.
+          // DaemonNotificationRouter tees this onto the EventBus as a
+          // `notification.received` event and drives the toast surface,
+          // matching the local-mode PTYBridge OSC 9/99/777 path.
+          this.emit('session:notification', { sessionId: event.sessionId, event: event.data });
+          break;
         case 'cwd.changed':
           // Working-directory change detected daemon-side; surfaced to the
           // renderer (via pty.handler) as IPC.CWD_CHANGED for live per-surface
