@@ -5,7 +5,9 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.1.0] — 2026-06-12 — UI plugin host, workspace context sidebar, terminal notifications
+
+Headline: wmux panes and sidebars are now extensible by third-party UI plugins running in sandboxed iframes under the same permission stack as MCP plugins; the workspace sidebar shows live zero-config context (git branch, PR status, process-scoped listening ports, latest notification); and standard terminal notification escape sequences (OSC 9/777/99) are parsed into first-class events. Plus a batch of rendering and MCP-routing fixes. All features dogfood-verified on a live build.
 
 ### Added
 - **Workspace context sidebar (X1): live git branch, PR status, scoped listening ports, and latest notification per workspace — zero config.** The sidebar now shows each workspace's git branch via an `fs.watch` on `.git/HEAD` (no polling; linked worktrees detected and marked), the current branch's PR number/state/CI checks from a 5-minute `gh` cache (silently absent when `gh` isn't installed; click opens the PR), listening TCP ports matched against each pane's own process tree (previously the port list was machine-global — every workspace showed the same first-20 ports), and a one-line summary of the latest terminal notification. All context flows through the existing `workspace.metadata.changed` event, so MCP clients and plugins see the same data the sidebar does.
