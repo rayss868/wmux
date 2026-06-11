@@ -93,6 +93,17 @@ describe('wrapHandler', () => {
     expect(entry.error_code).toBe('RESOURCE_EXHAUSTED' satisfies IpcErrorCode);
   });
 
+  it('classifies a daemon "rate limited" error as RESOURCE_EXHAUSTED', async () => {
+    // DaemonPipeServer rate-limit. 분류 없이는 UNKNOWN → '알 수 없는 오류'
+    // 토스트/콘솔 도배가 된다(리사이즈 burst 등).
+    const wrapped = wrapHandler('pty:create', (_event: unknown) => {
+      throw new Error('rate limited');
+    });
+    await expect(wrapped({} as never)).rejects.toThrow();
+    const entry = parseLoggedEntry(writtenLines[0]);
+    expect(entry.error_code).toBe('RESOURCE_EXHAUSTED' satisfies IpcErrorCode);
+  });
+
   it('stamps the RESOURCE_EXHAUSTED code into the message prefix', async () => {
     const err = new Error(
       'Cannot create new terminal: 200 active sessions already running. ' +

@@ -111,6 +111,13 @@ function classifyError(err: unknown): IpcErrorCode {
     return 'RESOURCE_EXHAUSTED';
   }
 
+  // 데몬 rate-limit(DaemonPipeServer PER_SOCKET/GLOBAL_RATE_LIMIT). 리사이즈
+  // burst 등 일시적 부하 신호다. UNKNOWN으로 두면 콘솔/토스트가 '알 수 없는
+  // 오류'로 도배되므로 RESOURCE_EXHAUSTED로 분류한다.
+  if (lower.includes('rate limit')) {
+    return 'RESOURCE_EXHAUSTED';
+  }
+
   return 'UNKNOWN';
 }
 

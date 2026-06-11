@@ -4,28 +4,32 @@ import type { RpcResponse } from '../../shared/rpc';
 
 interface PaneInfo {
   id: string;
-  type: 'leaf' | 'branch';
-  direction?: string;
-  activeSurfaceId?: string;
+  surfaceCount?: number;
+  active?: boolean;
+  cwd?: string;
 }
 
 function formatPaneList(result: unknown): void {
-  const list = result as PaneInfo[];
-  if (!Array.isArray(list) || list.length === 0) {
+  // pane.list RPC는 { asOfSeq, bootId, panes: [...] } 형태를 반환한다. 과거엔
+  // result 자체를 PaneInfo[]로 캐스트해 Array.isArray가 항상 false → 팬이
+  // 있어도 "No panes found"로 표시되던 버그가 있었다(--json은 정상). panes를
+  // 추출해서 렌더한다.
+  const panes = (result as { panes?: unknown } | null)?.panes;
+  const list = Array.isArray(panes) ? (panes as PaneInfo[]) : [];
+  if (list.length === 0) {
     console.log('No panes found.');
     return;
   }
   const maxId = Math.max(...list.map((p) => p.id.length));
-  console.log('ID'.padEnd(maxId + 2) + 'TYPE'.padEnd(8) + 'DETAILS');
-  console.log('-'.repeat(maxId + 30));
+  console.log('ID'.padEnd(maxId + 2) + 'SURFACES'.padEnd(10) + 'ACTIVE'.padEnd(8) + 'CWD');
+  console.log('-'.repeat(maxId + 40));
   for (const p of list) {
-    let details = '';
-    if (p.type === 'leaf' && p.activeSurfaceId) {
-      details = `active surface: ${p.activeSurfaceId}`;
-    } else if (p.type === 'branch' && p.direction) {
-      details = `direction: ${p.direction}`;
-    }
-    console.log(p.id.padEnd(maxId + 2) + p.type.padEnd(8) + details);
+    console.log(
+      p.id.padEnd(maxId + 2) +
+        String(p.surfaceCount ?? '').padEnd(10) +
+        (p.active ? 'yes' : 'no').padEnd(8) +
+        (p.cwd ?? ''),
+    );
   }
 }
 

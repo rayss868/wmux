@@ -163,6 +163,23 @@ appInit();
 
 function appInit(): void {
 
+// 인스턴스 격리: dev 빌드(!app.isPackaged)는 packaged 빌드 및 다른 체크아웃의
+// 빌드와 SingletonLock·userData·소켓·~/.wmux를 공유해 충돌한다(둘 다 productName
+// "wmux"). dev일 때 WMUX_DATA_SUFFIX='-dev'를 박아 모든 경로(소켓/토큰/데몬/홈)를
+// 격리하고, userData도 분리한다. daemon은 spawn 시 이 env를 상속받아 같은 suffix
+// 경로를 쓴다. packaged 기본은 suffix 빈 문자열이라 기존 경로와 100% 동일.
+// setPath('userData')는 app ready 전에 호출해야 효력이 있으므로 lock 체크보다 먼저 둔다.
+if (!app.isPackaged && !process.env.WMUX_DATA_SUFFIX) {
+  process.env.WMUX_DATA_SUFFIX = '-dev';
+}
+if (process.env.WMUX_DATA_SUFFIX) {
+  try {
+    app.setPath('userData', app.getPath('userData') + process.env.WMUX_DATA_SUFFIX);
+  } catch (err) {
+    console.error('[Main] userData 격리 setPath 실패:', err);
+  }
+}
+
 let isQuitting = false;
 // tmux-style persistence: a normal Quit (window-close intercept / tray
 // "Quit (keep sessions running)") only DETACHES from the daemon — live PTY
@@ -275,6 +292,17 @@ function markDaemonReady(): void {
 // live `daemonClient` value via closure, which means a renderer that
 // reloaded after a mid-session daemon disconnect still gets a truthful
 // answer instead of a cached stale one.
+// renderer가 agentStatus='running'을 받았는데 그 ptyId의 agentName이 아직
+// 비어 있을 때 호출한다(1회성 session:agent emit을 매핑 준비 전에 놓친 경우).
+// daemon AgentDetector를 직접 조회한다 — router 캐시(lastAgentNameByPty)는
+// session:agent emit 도착에 의존해 같은 race를 타므로 쓰지 않는다. daemon은
+// 배너를 직접 feed받아 lastAgent를 설정하므로 전파 race와 무관한 권위 소스다.
+ipcMain.handle('detection:resolveAgent', async (_e, ptyId: string) => {
+  const id = typeof ptyId === 'string' ? ptyId : '';
+  if (!id) return null;
+  return (await daemonClient?.getAgentName(id)) ?? null;
+});
+
 ipcMain.handle('daemon:get-ready-state', async () => {
   if (!daemonReadyDecided) {
     await new Promise<void>((resolve) => {
@@ -842,13 +870,26 @@ app.on('ready', async () => {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+  // dev에서 Vite dev server가 아직 준비 전이거나(포트 점유로 5174 지연) 죽었을 때
+  // did-fail-load가 발생한다. 기존엔 2초 고정 간격으로 무한 reload해 콘솔을
+  // ERR_CONNECTION_REFUSED로 도배했다. 지수 백오프 + 재시도 상한으로 교체한다.
+  let didFailLoadCount = 0;
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    // ERR_ABORTED(-3): 새 내비게이션이 이전 로드를 정상 취소한 경우 — 재시도 불필요.
+    if (errorCode === -3) return;
     console.error('[Main] Page failed to load:', errorCode, errorDescription);
+    didFailLoadCount += 1;
+    if (didFailLoadCount > 10) {
+      console.error('[Main] did-fail-load 10회 초과 — 자동 reload 중단. dev server(npm start)나 빌드 자산을 확인하세요.');
+      return;
+    }
+    const delay = Math.min(500 * 2 ** (didFailLoadCount - 1), 30_000);
     setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
-    }, 2000);
+    }, delay);
   });
   mainWindow.webContents.on('did-finish-load', () => {
+    didFailLoadCount = 0; // 로드 성공 — 백오프 카운터 리셋
     console.log('[Main] Page loaded successfully');
   });
   // M0-e — hydrate MetadataStore from disk, then wire the persist callback

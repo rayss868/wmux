@@ -12,13 +12,14 @@ import { getWmuxDir } from './config';
  * Coverage:
  *   - PowerShell 5.1 / 7+  (powershell.exe, pwsh.exe)
  *   - Bash 4.4+            (Git Bash, WSL)
+ *   - zsh 5.x              (macOS 기본 셸 — ZDOTDIR 가로채기 방식)
  *
  * Explicitly NOT covered:
  *   - cmd.exe              (no prompt hook, OSC 133 is a no-op there)
- *   - zsh / fish           (v3 roadmap)
+ *   - fish                 (v3 roadmap)
  */
 
-const INTEGRATION_VERSION = 3;
+const INTEGRATION_VERSION = 4;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
@@ -156,6 +157,77 @@ esac
 `;
 
 // -----------------------------------------------------------------------
+// zsh 5.x (macOS 기본 셸) — ZDOTDIR 가로채기 방식.
+//
+// zsh는 bash의 --rcfile 같은 옵션이 없다. 대신 시작 시 $ZDOTDIR(미설정 시
+// $HOME)의 .zshenv → .zprofile → .zshrc → .zlogin을 로드한다. 그래서 wmux는
+// ZDOTDIR을 자기 디렉토리로 바꿔 띄우고, 그 안의 stub들이 사용자의 원래 zsh
+// 파일을 먼저 source한 뒤(WMUX_USER_ZDOTDIR로 원래 위치 전달) .zshrc에서만
+// OSC 133 hook을 추가한다. VS Code / iTerm2와 동일한 표준 기법.
+//
+// 핵심 안전장치: 사용자 설정을 절대 잃지 않도록 4개 파일 모두 원래 것을
+// source하고, .zshrc 끝에서 ZDOTDIR을 사용자 값으로 복원해 이후 셸 동작이
+// 평소와 동일하게 유지되게 한다.
+// -----------------------------------------------------------------------
+
+// 공통: 원래 ZDOTDIR(없으면 HOME) 위임. <hook>은 파일별 OSC 133 추가분.
+const ZSH_ENV = `# wmux shell integration — zsh .zshenv stub (v${INTEGRATION_VERSION})
+__wmux_uzd="\${WMUX_USER_ZDOTDIR:-$HOME}"
+[ -r "$__wmux_uzd/.zshenv" ] && source "$__wmux_uzd/.zshenv"
+`;
+
+const ZSH_PROFILE = `# wmux shell integration — zsh .zprofile stub (v${INTEGRATION_VERSION})
+__wmux_uzd="\${WMUX_USER_ZDOTDIR:-$HOME}"
+[ -r "$__wmux_uzd/.zprofile" ] && source "$__wmux_uzd/.zprofile"
+`;
+
+const ZSH_LOGIN = `# wmux shell integration — zsh .zlogin stub (v${INTEGRATION_VERSION})
+__wmux_uzd="\${WMUX_USER_ZDOTDIR:-$HOME}"
+[ -r "$__wmux_uzd/.zlogin" ] && source "$__wmux_uzd/.zlogin"
+`;
+
+const ZSH_RC = `# wmux shell integration — OSC 133 semantic markers (zsh, v${INTEGRATION_VERSION})
+# Emits prompt/command boundaries so wmux's daemon can index command output.
+
+__wmux_uzd="\${WMUX_USER_ZDOTDIR:-$HOME}"
+
+# 사용자의 실제 .zshrc를 먼저 로드해 alias/PATH/테마(oh-my-zsh 등)를 보존한다.
+[ -r "$__wmux_uzd/.zshrc" ] && source "$__wmux_uzd/.zshrc"
+
+# ZDOTDIR을 사용자 값으로 되돌린다. 이후 서브셸/재로드가 평소처럼 동작하도록.
+if [ "$__wmux_uzd" = "$HOME" ]; then
+  unset ZDOTDIR
+else
+  export ZDOTDIR="$__wmux_uzd"
+fi
+
+# 옵트아웃: WMUX_SHELL_INTEGRATION=0 이면 OSC 133 markers를 달지 않는다.
+if [ "\${WMUX_SHELL_INTEGRATION:-1}" = "0" ]; then
+  return 0 2>/dev/null
+fi
+
+# preexec: 명령 실행 직전 → C (command start)
+__wmux_preexec() { printf '\\033]133;C\\a'; }
+# precmd: 프롬프트 출력 직전 → D;<exit> (이전 명령 종료) + A (프롬프트 시작)
+__wmux_precmd() { local __ec=$?; printf '\\033]133;D;%d\\a\\033]133;A\\a' "$__ec"; }
+
+autoload -Uz add-zsh-hook 2>/dev/null
+if (( \${+functions[add-zsh-hook]} )); then
+  add-zsh-hook preexec __wmux_preexec
+  add-zsh-hook precmd __wmux_precmd
+else
+  typeset -ga preexec_functions precmd_functions
+  preexec_functions+=(__wmux_preexec)
+  precmd_functions+=(__wmux_precmd)
+fi
+
+# B (프롬프트 끝 / 사용자 입력 시작)을 PROMPT 끝에 한 번만 추가.
+if [[ "$PROMPT" != *"133;B"* ]]; then
+  PROMPT="\${PROMPT}"$'\\033]133;B\\a'
+fi
+`;
+
+// -----------------------------------------------------------------------
 // Installer
 // -----------------------------------------------------------------------
 
@@ -166,6 +238,8 @@ export function getShellIntegrationDir(): string {
 export interface ShellIntegrationPaths {
   pwsh: string;
   bash: string;
+  /** zsh ZDOTDIR로 쓸 디렉토리 (.zshenv/.zprofile/.zlogin/.zshrc 포함). */
+  zshDir: string;
 }
 
 /**
@@ -176,6 +250,7 @@ export function installShellIntegration(): ShellIntegrationPaths {
   const dir = getShellIntegrationDir();
   const pwshPath = path.join(dir, 'wmux-shell-init.ps1');
   const bashPath = path.join(dir, 'wmux-shell-init.bash');
+  const zshDir = path.join(dir, 'zsh');
   const versionPath = path.join(dir, VERSION_FILE);
 
   if (!fs.existsSync(dir)) {
@@ -184,7 +259,12 @@ export function installShellIntegration(): ShellIntegrationPaths {
 
   let needsWrite = true;
   try {
-    if (fs.existsSync(versionPath) && fs.existsSync(pwshPath) && fs.existsSync(bashPath)) {
+    if (
+      fs.existsSync(versionPath) &&
+      fs.existsSync(pwshPath) &&
+      fs.existsSync(bashPath) &&
+      fs.existsSync(path.join(zshDir, '.zshrc'))
+    ) {
       const existing = fs.readFileSync(versionPath, 'utf-8').trim();
       if (existing === String(INTEGRATION_VERSION)) {
         needsWrite = false;
@@ -197,21 +277,31 @@ export function installShellIntegration(): ShellIntegrationPaths {
   if (needsWrite) {
     fs.writeFileSync(pwshPath, PWSH_INIT, { encoding: 'utf-8', mode: 0o600 });
     fs.writeFileSync(bashPath, BASH_INIT, { encoding: 'utf-8', mode: 0o600 });
+    // zsh: ZDOTDIR 디렉토리에 4개 stub 작성 (사용자 설정 위임 + .zshrc만 OSC 133).
+    if (!fs.existsSync(zshDir)) {
+      fs.mkdirSync(zshDir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(zshDir, '.zshenv'), ZSH_ENV, { encoding: 'utf-8', mode: 0o600 });
+    fs.writeFileSync(path.join(zshDir, '.zprofile'), ZSH_PROFILE, { encoding: 'utf-8', mode: 0o600 });
+    fs.writeFileSync(path.join(zshDir, '.zlogin'), ZSH_LOGIN, { encoding: 'utf-8', mode: 0o600 });
+    fs.writeFileSync(path.join(zshDir, '.zshrc'), ZSH_RC, { encoding: 'utf-8', mode: 0o600 });
     fs.writeFileSync(versionPath, String(INTEGRATION_VERSION), { encoding: 'utf-8', mode: 0o600 });
   }
 
-  return { pwsh: pwshPath, bash: bashPath };
+  return { pwsh: pwshPath, bash: bashPath, zshDir };
 }
 
 /**
  * Classify a shell executable path into one of the integration families.
  * Returns null when no known integration exists (e.g. cmd.exe, zsh today).
  */
-export function classifyShell(shellPath: string): 'pwsh' | 'bash' | null {
+export function classifyShell(shellPath: string): 'pwsh' | 'bash' | 'zsh' | null {
   if (!shellPath) return null;
-  const base = path.basename(shellPath).toLowerCase();
+  // 로그인 셸은 argv[0]가 '-zsh'처럼 앞에 '-'가 붙는다.
+  const base = path.basename(shellPath).toLowerCase().replace(/^-/, '');
   if (base === 'powershell.exe' || base === 'pwsh.exe' || base === 'pwsh') return 'pwsh';
   if (base === 'bash.exe' || base === 'bash') return 'bash';
+  if (base === 'zsh') return 'zsh';
   return null;
 }
 
@@ -237,6 +327,16 @@ export function buildSpawnInjection(shellPath: string): SpawnInjection | null {
     return {
       args: ['-NoLogo', '-NoExit', '-Command', `. '${paths.pwsh.replace(/'/g, "''")}'`],
       env: { WMUX_SHELL_INTEGRATION: '1' },
+    };
+  }
+
+  if (kind === 'zsh') {
+    // zsh: ZDOTDIR을 wmux zsh 디렉토리로 바꿔 OSC 133 stub들이 로드되게 한다.
+    // 원래 ZDOTDIR(사용자 .zshrc 위치)은 DaemonSessionManager가 spawn 직전에
+    // WMUX_USER_ZDOTDIR로 보존하므로, stub들이 사용자 설정을 먼저 source한다.
+    return {
+      args: ['-i'],
+      env: { WMUX_SHELL_INTEGRATION: '1', ZDOTDIR: paths.zshDir },
     };
   }
 

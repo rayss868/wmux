@@ -307,18 +307,17 @@ export class DaemonNotificationRouter {
       }
     };
 
-    const onActive = (payload: { sessionId: string }) => {
+    const onActive = (payload: { sessionId: string; agentName?: string }) => {
       try {
-        // Intentionally omit `agentName`: the daemon's AgentDetector owns
-        // the last-agent name, and we can't reach into it from main. If we
-        // emitted `agentName: ''` here, the renderer's Object.assign would
-        // clobber the legitimate name set by the previous session:agent
-        // event, making the sidebar label flicker to blank on every burst.
-        // Leaving the field out preserves the prior name; the next
-        // session:agent event will refresh it.
+        // daemon이 active 이벤트에 gate로 확정한 agentName을 실어 보낸다(있으면).
+        // 이게 있어야 idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x:
+        // 입력대기 hint가 "❯"만 남음)도 running 상태에서 agentName이 채워진다.
+        // 없으면 필드를 생략해 이전 이름을 보존한다 — 빈 문자열로 덮으면 renderer의
+        // Object.assign이 정당한 이름을 지워 사이드바 라벨이 매 버스트마다 깜빡인다.
         broadcastMetadataUpdate(this.getWindow(), {
           ptyId: payload.sessionId,
           agentStatus: 'running',
+          ...(payload.agentName ? { agentName: payload.agentName } : {}),
         });
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:active error:', err);

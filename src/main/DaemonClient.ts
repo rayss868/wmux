@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import type { RpcResponse, DaemonEvent } from '../shared/rpc';
 import { FLUSH_DONE_MARKER } from '../daemon/SessionPipe';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
+import { dataSuffix } from '../shared/constants';
 import { connectWithRetry, type ConnectAttemptResult } from './daemonConnectRetry';
 
 // RCA A2 — single source of truth in shared/timeouts.ts so the renderer's
@@ -307,6 +308,20 @@ export class DaemonClient extends EventEmitter {
     };
   }
 
+  /**
+   * daemon AgentDetector가 gate로 확정한 에이전트 표시명을 조회한다(없으면 null).
+   * renderer detection pull의 권위 소스 — session:agent emit 전파 race를 우회한다.
+   */
+  async getAgentName(sessionId: string): Promise<string | null> {
+    try {
+      const result = await this.rpc('daemon.getAgentName', { id: sessionId });
+      const name = (result as { agentName?: unknown })?.agentName;
+      return typeof name === 'string' && name ? name : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Whether the daemon control pipe is connected. */
   get isConnected(): boolean {
     return this.connected;
@@ -412,7 +427,11 @@ export class DaemonClient extends EventEmitter {
           this.emit('session:idle', { sessionId: event.sessionId });
           break;
         case 'activity.active':
-          this.emit('session:active', { sessionId: event.sessionId });
+          // data에 실린 gate 확정 agentName(없으면 null)을 함께 전달.
+          this.emit('session:active', {
+            sessionId: event.sessionId,
+            agentName: typeof event.data === 'string' ? event.data : undefined,
+          });
           break;
         case 'agent.event':
           this.emit('session:agent', { sessionId: event.sessionId, event: event.data });
@@ -521,9 +540,9 @@ export function getDaemonPipeName(): string {
   const path = require('path');
   const username = os.userInfo().username || 'default';
   if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\wmux-daemon-${username}`;
+    return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
   }
-  return path.join(os.homedir(), '.wmux-daemon.sock');
+  return path.join(os.homedir(), `.wmux-daemon${dataSuffix()}.sock`);
 }
 
 /** Read the daemon auth token from disk. Returns empty string if not found. */

@@ -79,7 +79,12 @@ export class DaemonPTYBridge extends EventEmitter {
     // reach into them the way local-mode PTYBridge does (Codex P1).
     this.activeUnsubscribe = activityMonitor.onActive((ptyId) => {
       this.agentDetector?.resetEmissionState();
-      this.emit('active', { sessionId: ptyId });
+      // gate로 확정된 에이전트 이름을 active 이벤트에 함께 싣는다. main의
+      // DaemonNotificationRouter는 daemon AgentDetector에 직접 닿지 못하지만,
+      // 같은 daemon 프로세스인 여기서는 getLastAgent()가 닿는다. 이게 있어야
+      // idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x 등)도 running
+      // 상태에서 agentName이 채워진다.
+      this.emit('active', { sessionId: ptyId, agentName: this.agentDetector?.getLastAgent() ?? undefined });
     });
 
     // OSC events → cwd (OSC 7) and prompt/command markers (OSC 133)
@@ -114,6 +119,18 @@ export class DaemonPTYBridge extends EventEmitter {
 
     // PTY data handler
     const onDataDisposable = ptyProcess.onData((data: string) => {
+      // AgentDetector는 순수 텍스트 분석(side effect 없음)이라 muted 구간에서도
+      // 돌려야 한다. recovery 세션은 첫 resize 전까지 muted인데, 그 사이에
+      // 에이전트 시작 배너("Claude Code vX" 등)가 출력되면 gate 정규식이 영구
+      // 미활성화되어 이후 모든 status 감지가 죽는다(daemon mode agent detection
+      // 갭). feed만 muted 체크 앞으로 끌어올리고, ring buffer write·emit 등
+      // side effect는 여전히 muted로 차단해 geometry mismatch 오염은 막는다.
+      try {
+        agentDetector.feed(data);
+      } catch {
+        // detection 실패가 데이터 포워딩을 막아선 안 된다.
+      }
+
       // Muted: drop the chunk before any side effect. Recovery sessions
       // run muted until their first resize so the geometry mismatch
       // window (Bug 2 in v2.8.0) doesn't pollute the ring buffer.
@@ -123,7 +140,6 @@ export class DaemonPTYBridge extends EventEmitter {
         ringBuffer.write(buf);
         activityMonitor.feed(sessionId, buf.length);
         oscParser.process(data);
-        agentDetector.feed(data);
 
         // Prompt-based CWD detection
         promptBuffer += data;
@@ -165,6 +181,16 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   setMuted(muted: boolean): void {
     this.muted = muted;
+  }
+
+  /**
+   * gate로 확정된 에이전트 표시명(없으면 null). daemon 프로세스 안의
+   * AgentDetector가 배너를 직접 feed받아 설정하므로, main으로의 1회성
+   * session:agent emit 전파(타이밍 race)와 무관하게 권위 있는 값을 준다.
+   * renderer의 detection pull이 이 값을 직접 조회한다.
+   */
+  getLastAgent(): string | null {
+    return this.agentDetector?.getLastAgent() ?? null;
   }
 
   /** Whether the bridge is currently dropping PTY output. */

@@ -3,10 +3,11 @@ import path from 'node:path';
 import os from 'node:os';
 import type { DaemonConfig } from './types';
 import { getWindowsDefaultShell } from '../shared/shellResolution';
+import { dataSuffix } from '../shared/constants';
 
-/** ~/.wmux directory */
+/** ~/.wmux directory (인스턴스 격리 suffix 반영 — main에서 상속된 WMUX_DATA_SUFFIX) */
 export function getWmuxDir(): string {
-  return path.join(os.homedir(), '.wmux');
+  return path.join(os.homedir(), `.wmux${dataSuffix()}`);
 }
 
 /** Path to daemon config file */
@@ -24,13 +25,13 @@ function getDefaultShell(): string {
   return process.env.SHELL || '/bin/sh';
 }
 
-/** Generate default pipe name for current platform */
+/** Generate default pipe name for current platform (격리 suffix 반영) */
 function getDefaultPipeName(): string {
   const username = os.userInfo().username || 'default';
   if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\wmux-daemon-${username}`;
+    return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
   }
-  return path.join(os.homedir(), '.wmux-daemon.sock');
+  return path.join(os.homedir(), `.wmux-daemon${dataSuffix()}.sock`);
 }
 
 /**

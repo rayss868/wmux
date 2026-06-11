@@ -8,7 +8,7 @@ import type { DaemonSession, DaemonSessionState, DaemonConfig } from './types';
 import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
-import { buildSpawnInjection } from './shell-integration';
+import { buildSpawnInjection, classifyShell } from './shell-integration';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
@@ -220,6 +220,13 @@ export class DaemonSessionManager extends EventEmitter {
     try {
       const injection = buildSpawnInjection(cmd);
       if (injection) {
+        // zsh ZDOTDIR 가로채기: injection이 ZDOTDIR을 wmux 디렉토리로 덮어쓰기
+        // 전에, 사용자의 원래 ZDOTDIR(없으면 HOME)을 WMUX_USER_ZDOTDIR로 보존한다.
+        // stub .zshenv/.zshrc가 이 값으로 사용자 설정을 복원하므로, 보존을
+        // 빠뜨리면 사용자 .zshrc(PATH/alias 등)가 통째로 날아간다.
+        if (classifyShell(cmd) === 'zsh' && !env['WMUX_USER_ZDOTDIR']) {
+          env['WMUX_USER_ZDOTDIR'] = env['ZDOTDIR'] || env['HOME'] || os.homedir();
+        }
         spawnArgs = injection.args;
         for (const [k, v] of Object.entries(injection.env)) {
           env[k] = v;

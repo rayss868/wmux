@@ -124,6 +124,15 @@ export const IPC = {
 // well clear of Node's own 1/2/9-ish fatal codes.
 export const DAEMON_EXIT_ALREADY_RUNNING = 75;
 
+// 인스턴스 격리용 경로 suffix. main 프로세스가 dev 빌드(!app.isPackaged)에서
+// WMUX_DATA_SUFFIX='-dev'를 설정하고, daemon은 spawn 시 env로 이를 상속한다.
+// 이 헬퍼를 모든 소켓/토큰/디렉토리 경로에 적용해, dev 빌드와 packaged 빌드(또는
+// 다른 체크아웃의 빌드)가 같은 SingletonLock·소켓·~/.wmux를 두고 충돌하지 않게
+// 한다. 미설정(packaged 기본) 시 빈 문자열이라 기존 경로와 100% 동일.
+export function dataSuffix(): string {
+  return process.env.WMUX_DATA_SUFFIX || '';
+}
+
 // Named Pipe / Unix socket path for wmux API
 // Fixed name so MCP clients (e.g. Claude Code) can reconnect across wmux restarts
 export function getPipeName(): string {
@@ -131,10 +140,10 @@ export function getPipeName(): string {
     // Use os.userInfo() instead of process.env.USERNAME — env vars may not
     // be inherited by MCP subprocesses spawned by Claude Code
     const username = require('os').userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-${username}`;
+    return `\\\\.\\pipe\\wmux${dataSuffix()}-${username}`;
   }
   const home = require('os').homedir() || '/tmp';
-  return `${home}/.wmux.sock`;
+  return `${home}/.wmux${dataSuffix()}.sock`;
 }
 
 // Environment variable names injected into PTY sessions
@@ -150,21 +159,20 @@ export const ENV_KEYS = {
 // Auth token file path — written by wmux main process, read by MCP server
 export function getAuthTokenPath(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  return `${home}/.wmux-auth-token`;
+  return `${home}/.wmux${dataSuffix()}-auth-token`;
 }
 
 // PID-to-workspace mapping directory — written by PTYManager, read by MCP server
 // to resolve workspace identity when env vars don't propagate through Claude Code
 export function getPidMapDir(): string {
-  const home = process.env.USERPROFILE || process.env.HOME || '';
-  return `${home}/.wmux/pid-map`;
+  return `${getWmuxHomeDir()}/pid-map`;
 }
 
 // TCP port file path — written by PipeServer, read by MCP clients as fallback
 // when Windows named pipe EPERM blocks direct pipe connections
 export function getTcpPortPath(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  return `${home}/.wmux-tcp-port`;
+  return `${home}/.wmux${dataSuffix()}-tcp-port`;
 }
 
 // wmux user home directory — root for plugin-trust.json, pid-map/, and other
@@ -172,7 +180,7 @@ export function getTcpPortPath(): string {
 // of truth so callers don't reimplement the USERPROFILE/HOME dance.
 export function getWmuxHomeDir(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  return `${home}/.wmux`;
+  return `${home}/.wmux${dataSuffix()}`;
 }
 
 // Plugin trust database — see `docs/api/mcp-plugin-spec.md`. Written by main
