@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **UI plugin host: sandboxed sidebar panels, status-bar widgets, pane badges, and palette commands.** Drop a bundle in `~/.wmux/plugins/<name>/` with a `manifest.json` and wmux hosts its UI in a sandboxed iframe (opaque origin, no network — the postMessage bridge is the only channel out). Plugin RPCs dispatch through the same permission stack as MCP plugins (trust DB, capability enforcement, approval prompts), with new capabilities `ui.sidebar` / `ui.statusbar` / `ui.pane-decoration` / `ui.commands` / `notifications.read`. Includes a reference plugin under `examples/plugins/hello-panel`. Verified end-to-end on a live build (approval flow → mount → bridge RPC → pane badge).
 - **Terminal desktop notifications (OSC 9 / OSC 777 / OSC 99) are now parsed and surfaced as events.** Programs that emit the standard notification escape sequences — iTerm2-style OSC 9, urxvt `OSC 777;notify`, and the kitty OSC 99 desktop-notification protocol (including chunked and base64 payloads) — produce a new `notification.received` event on the event bus (pollable via `wmux_events_poll`) in both daemon and local PTY modes. ConEmu's OSC 9 progress subcommands no longer trigger spurious toasts, and notification text is sanitized and length-capped. Groundwork for the attention-ring / toast-routing notification system.
 
 ### Fixed
