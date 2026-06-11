@@ -338,7 +338,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!ws) return [];
     // Search ALL leaf panes, not just active — so MCP can find browser surfaces anywhere
     const leaves = findLeafPanes(ws.rootPane);
-    // Use workspace metadata cwd/gitBranch as the live values (updated via shell integration)
+    // X1 cwd-staleness fix: the per-surface cwd (live-updated via OSC 7 /
+    // prompt scrape through updateSurfaceCwd) is authoritative. The
+    // workspace-level metadata cwd is whichever ACTIVE surface last changed
+    // directory — using it first stamped that one path onto every surface
+    // in the workspace, which is exactly the stale `surface_list` cwd bug.
     const liveCwd = ws.metadata?.cwd;
     const liveGitBranch = ws.metadata?.gitBranch;
     const surfaces = [];
@@ -349,7 +353,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           ptyId: s.ptyId,
           title: s.title,
           shell: s.shell,
-          cwd: liveCwd || s.cwd,
+          cwd: s.cwd || liveCwd,
           gitBranch: liveGitBranch,
           surfaceType: s.surfaceType || 'terminal',
           browserUrl: s.browserUrl,
@@ -450,13 +454,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const liveGitBranch = ws.metadata?.gitBranch;
     const leaves = findLeafPanes(ws.rootPane);
     return leaves.map((l) => {
-      // Use the first terminal surface's cwd as the pane's cwd, prefer live metadata
+      // X1 cwd-staleness fix (same as surface.list): per-surface cwd is
+      // authoritative; workspace metadata cwd is only the fallback.
       const firstSurface = l.surfaces.find((s) => s.surfaceType !== 'browser');
       return {
         id: l.id,
         surfaceCount: l.surfaces.length,
         active: l.id === ws.activePaneId,
-        cwd: liveCwd || firstSurface?.cwd,
+        cwd: firstSurface?.cwd || liveCwd,
         gitBranch: liveGitBranch,
         metadata: l.metadata,
       };

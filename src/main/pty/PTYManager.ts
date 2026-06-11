@@ -252,6 +252,15 @@ export class PTYManager {
     return result;
   }
 
+  /** X1 — sessionId/pid pairs for the local-mode PortWatcher provider. */
+  getActiveSessionPids(): { sessionId: string; pid: number }[] {
+    const result: { sessionId: string; pid: number }[] = [];
+    for (const instance of this.instances.values()) {
+      result.push({ sessionId: instance.id, pid: instance.process.pid });
+    }
+    return result;
+  }
+
   disposeAll(): void {
     for (const id of Array.from(this.instances.keys())) {
       this.dispose(id);

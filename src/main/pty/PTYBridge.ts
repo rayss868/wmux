@@ -281,6 +281,17 @@ export class PTYBridge {
           };
           sendNotification(win, ptyId, notification);
           toastManager.show(notification.title, notification.body);
+          // X1 — sidebar "latest notification" line (schema-freeze §2),
+          // parity with DaemonNotificationRouter's fold.
+          broadcastMetadataUpdate(win, {
+            ptyId,
+            lastNotificationText: {
+              ts: Date.now(),
+              title: parsed.title,
+              body: parsed.body,
+              source: parsed.source,
+            },
+          });
           // EventBus tee shared with daemon mode — see NotificationReceivedEvent.
           if (instance.workspaceId) {
             eventBus.emit({

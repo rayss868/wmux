@@ -1,0 +1,125 @@
+import { describe, it, expect, vi } from 'vitest';
+import { PrStatusCache, mapGhPrView } from '../PrStatusCache';
+
+describe('mapGhPrView', () => {
+  it('maps an open PR with passing checks', () => {
+    expect(mapGhPrView({
+      number: 42,
+      state: 'OPEN',
+      isDraft: false,
+      url: 'https://github.com/o/r/pull/42',
+      statusCheckRollup: [
+        { status: 'COMPLETED', conclusion: 'SUCCESS' },
+        { status: 'COMPLETED', conclusion: 'NEUTRAL' },
+      ],
+    })).toEqual({ number: 42, state: 'open', checks: 'passing', url: 'https://github.com/o/r/pull/42' });
+  });
+
+  it('draft beats open; merged/closed beat draft', () => {
+    expect(mapGhPrView({ number: 1, state: 'OPEN', isDraft: true, url: 'u' })?.state).toBe('draft');
+    expect(mapGhPrView({ number: 1, state: 'MERGED', isDraft: true, url: 'u' })?.state).toBe('merged');
+    expect(mapGhPrView({ number: 1, state: 'CLOSED', isDraft: false, url: 'u' })?.state).toBe('closed');
+  });
+
+  it('any failure wins over pending', () => {
+    expect(mapGhPrView({
+      number: 2, state: 'OPEN', url: 'u',
+      statusCheckRollup: [
+        { status: 'IN_PROGRESS' },
+        { status: 'COMPLETED', conclusion: 'FAILURE' },
+      ],
+    })?.checks).toBe('failing');
+  });
+
+  it('in-progress checks map to pending', () => {
+    expect(mapGhPrView({
+      number: 3, state: 'OPEN', url: 'u',
+      statusCheckRollup: [{ status: 'QUEUED' }],
+    })?.checks).toBe('pending');
+  });
+
+  it('StatusContext-variant entries (state, no conclusion) are honored', () => {
+    expect(mapGhPrView({
+      number: 4, state: 'OPEN', url: 'u',
+      statusCheckRollup: [{ state: 'FAILURE' }],
+    })?.checks).toBe('failing');
+  });
+
+  it('empty rollup means checks null', () => {
+    expect(mapGhPrView({ number: 5, state: 'OPEN', url: 'u', statusCheckRollup: [] })?.checks).toBeNull();
+  });
+
+  it('rejects payloads missing number/url', () => {
+    expect(mapGhPrView({ state: 'OPEN', url: 'u' })).toBeNull();
+    expect(mapGhPrView({ number: 6, state: 'OPEN' })).toBeNull();
+  });
+});
+
+describe('PrStatusCache', () => {
+  const PR_JSON = JSON.stringify({ number: 7, state: 'OPEN', isDraft: false, url: 'https://x/pull/7', statusCheckRollup: [] });
+
+  it('caches within the TTL and refetches after it', async () => {
+    let now = 0;
+    const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
+    const cache = new PrStatusCache(() => now, exec);
+
+    const first = await cache.get('D:\\repo', 'main');
+    expect(first?.number).toBe(7);
+    expect(exec).toHaveBeenCalledTimes(1);
+
+    now = 4 * 60 * 1000;
+    await cache.get('D:\\repo', 'main');
+    expect(exec).toHaveBeenCalledTimes(1); // still cached
+
+    now = 6 * 60 * 1000;
+    await cache.get('D:\\repo', 'main');
+    expect(exec).toHaveBeenCalledTimes(2); // TTL expired
+  });
+
+  it('keys the cache by cwd+branch', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
+    const cache = new PrStatusCache(() => 0, exec);
+    await cache.get('D:\\a', 'main');
+    await cache.get('D:\\b', 'main');
+    await cache.get('D:\\a', 'feat');
+    expect(exec).toHaveBeenCalledTimes(3);
+  });
+
+  it('coalesces concurrent callers onto one gh subprocess', async () => {
+    let resolve!: (v: { stdout: string }) => void;
+    const exec = vi.fn().mockReturnValue(new Promise<{ stdout: string }>((r) => { resolve = r; }));
+    const cache = new PrStatusCache(() => 0, exec);
+    const p1 = cache.get('D:\\repo', 'main');
+    const p2 = cache.get('D:\\repo', 'main');
+    resolve({ stdout: PR_JSON });
+    const [a, b] = await Promise.all([p1, p2]);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(a?.number).toBe(7);
+    expect(b?.number).toBe(7);
+  });
+
+  it('"no PR" failures resolve null quietly and are cached', async () => {
+    const exec = vi.fn().mockRejectedValue(Object.assign(new Error('no pull requests found'), { code: 1 }));
+    const cache = new PrStatusCache(() => 0, exec);
+    expect(await cache.get('D:\\repo', 'main')).toBeNull();
+    expect(await cache.get('D:\\repo', 'main')).toBeNull();
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('gh missing (ENOENT) disables the cache permanently for this process', async () => {
+    const exec = vi.fn().mockRejectedValue(Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }));
+    const cache = new PrStatusCache(() => 0, exec);
+    expect(await cache.get('D:\\a', 'main')).toBeNull();
+    expect(await cache.get('D:\\b', 'other')).toBeNull();
+    expect(exec).toHaveBeenCalledTimes(1); // never probed again
+  });
+
+  it('invalidate() forces a refetch before the TTL', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
+    const cache = new PrStatusCache(() => 0, exec);
+    await cache.get('D:\\repo', 'main');
+    cache.invalidate('D:\\repo', 'main');
+    await cache.get('D:\\repo', 'main');
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
+});

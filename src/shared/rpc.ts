@@ -301,7 +301,13 @@ export interface DaemonEvent {
     | 'activity.active'
     | 'prompt.event'
     | 'notification.event'
-    | 'cwd.changed';
+    | 'cwd.changed'
+    // X1 workspace-context sidebar (schema-freeze §2). Per-session live
+    // context detected where the PTY lives:
+    //   context.git   → { branch: string | null, isWorktree: boolean }
+    //   context.ports → { ports: Array<{ port: number, pid: number }> }
+    | 'context.git'
+    | 'context.ports';
   sessionId: string;
   data: unknown;
 }

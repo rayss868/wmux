@@ -352,6 +352,18 @@ export class DaemonNotificationRouter {
           body: ev.body,
         });
         toastManager.show(title ?? 'Terminal', ev.body);
+        // X1 — fold the latest notification text into the sidebar metadata
+        // (schema-freeze §2 lastNotificationText). The renderer merges it
+        // into WorkspaceMetadata and renders the one-line summary.
+        broadcastMetadataUpdate(win, {
+          ptyId: payload.sessionId,
+          lastNotificationText: {
+            ts: Date.now(),
+            title,
+            body: ev.body,
+            source: ev.source,
+          },
+        });
         void this.emitNotificationReceived(payload.sessionId, {
           source: ev.source,
           title,

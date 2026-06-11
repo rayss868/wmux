@@ -48,6 +48,7 @@ import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonCl
 import { raceDaemonShutdown } from './daemonShutdownRace';
 import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
+import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
 import { ensureDaemon, killDaemonByPidFile } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
@@ -271,6 +272,10 @@ async function refreshTraySessionCount(): Promise<void> {
 // PTYBridge writes to in local mode. Without it, daemon mode would render
 // the notification pipeline 100% inert (Codex 2nd review #1).
 let daemonNotificationRouter: DaemonNotificationRouter | null = null;
+// X1 — folds daemon context.git/context.ports broadcasts into the sidebar
+// metadata channel (and drives the gh PR cache). Same lifecycle as the
+// notification router above.
+let workspaceContextRouter: WorkspaceContextRouter | null = null;
 // Owns the daemon respawn lifecycle: initial bootstrap, disconnect detection,
 // exponential-backoff respawn attempts, active health-ping probe, and the
 // renderer-facing IPC events (daemon:reconnecting / :reconnected /
@@ -719,6 +724,10 @@ app.on('ready', async () => {
       daemonNotificationRouter?.stop();
       daemonNotificationRouter = new DaemonNotificationRouter(client, () => mainWindow, () => hookSignalRouter);
       daemonNotificationRouter.start();
+      // X1 — context fold (git branch / worktree / ports / PR badge).
+      workspaceContextRouter?.stop();
+      workspaceContextRouter = new WorkspaceContextRouter(client, () => mainWindow);
+      workspaceContextRouter.start();
       if (mainWindow && !mainWindow.isDestroyed()) {
         // RCA A3/A8 — every install (initial AND every reconnect/respawn) emits
         // daemon:connected, which drives the renderer's late reconcile. Logging
@@ -748,6 +757,8 @@ app.on('ready', async () => {
       console.warn('[Main] Daemon disconnected, falling back to local PTY');
       daemonNotificationRouter?.stop();
       daemonNotificationRouter = null;
+      workspaceContextRouter?.stop();
+      workspaceContextRouter = null;
       daemonClient = null;
       // Phase A — A6. Notify the renderer so the daemon-mode .txt
       // write/load gates open again (local mode preserves the

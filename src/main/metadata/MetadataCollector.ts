@@ -3,6 +3,11 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+// X1: the old machine-global getListeningPorts()/collect() pair is gone —
+// ports are now PID-tree-scoped via PortWatcher (src/main/pty/portWatch.ts)
+// and the metadata poll assembles payloads from watcher-fed caches
+// (metadata.handler.buildMetadataPayload). Only the git-branch exec
+// fallback remains, for sessions the fs.watch GitContextWatcher missed.
 export class MetadataCollector {
   async getGitBranch(cwd: string): Promise<string | undefined> {
     try {
@@ -15,47 +20,5 @@ export class MetadataCollector {
     } catch {
       return undefined;
     }
-  }
-
-  async getListeningPorts(pid?: number): Promise<number[]> {
-    if (pid !== undefined && !(Number.isInteger(pid) && pid > 0)) {
-      return [];
-    }
-    try {
-      // Use PowerShell to get listening TCP connections
-      const script = pid
-        ? `Get-NetTCPConnection -State Listen -OwningProcess ${pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort`
-        : `Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -ne 0 -and $_.OwningProcess -ne 4 } | Select-Object -ExpandProperty LocalPort | Sort-Object -Unique | Select-Object -First 20`;
-
-      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', script], {
-        timeout: 5000,
-      });
-
-      const ports = stdout
-        .trim()
-        .split(/\r?\n/)
-        .map((s) => parseInt(s.trim(), 10))
-        .filter((p) => !isNaN(p) && p > 0);
-
-      return [...new Set(ports)].sort((a, b) => a - b);
-    } catch {
-      return [];
-    }
-  }
-
-  async collect(cwd?: string, shellBranch?: string): Promise<{ gitBranch?: string; cwd?: string; listeningPorts?: number[] }> {
-    const [gitBranch, listeningPorts] = await Promise.all([
-      // If shell integration already provided a branch, skip the expensive git exec
-      shellBranch
-        ? Promise.resolve(shellBranch)
-        : cwd ? this.getGitBranch(cwd) : Promise.resolve(undefined),
-      this.getListeningPorts(),
-    ]);
-
-    return {
-      gitBranch,
-      cwd,
-      listeningPorts: listeningPorts.length > 0 ? listeningPorts : undefined,
-    };
   }
 }

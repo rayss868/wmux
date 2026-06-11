@@ -16,6 +16,7 @@ import { registerPTYHandlers } from './handlers/pty.handler';
 import { registerShellHandlers } from './handlers/shell.handler';
 import { registerFontHandlers } from './handlers/fonts.handler';
 import { registerMetadataHandlers } from './handlers/metadata.handler';
+import { startLocalContextWatch } from '../metadata/localContextWatch';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
 import { registerFsHandlers } from './handlers/fs.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
@@ -47,12 +48,22 @@ export function registerAllHandlers(
   // import-block note above for the race rationale.
   const cleanupShell = registerShellHandlers();
   const cleanupFonts = registerFontHandlers();
-  const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow);
+  const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow, {
+    // X1: daemon-backed sessions never appear in ptyManager — disable the
+    // local liveness prune so daemon-mode cwd/branch caches survive between
+    // event-driven updates (cleanup rides session:died via the context router).
+    localPtyOwnership: !daemonClient,
+  });
   registerClipboardHandlers();
   const cleanupFs = registerFsHandlers();
   const cleanupMcp = options.mcpRegistrar
     ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
     : null;
+
+  // X1 local-mode context watchers (git HEAD fs.watch + PID-tree ports).
+  // Daemon mode gets the same data from the daemon process via
+  // WorkspaceContextRouter, so this only mounts when main owns the PTYs.
+  const cleanupLocalContext = daemonClient ? null : startLocalContextWatch(ptyManager, getWindow);
 
   // Sync toast setting from renderer
   const onToastEnabled = (_event: Electron.IpcMainEvent, enabled: boolean): void => {
@@ -110,6 +121,7 @@ export function registerAllHandlers(
     cleanupShell();
     cleanupFonts();
     cleanupMetadata();
+    if (cleanupLocalContext) cleanupLocalContext();
     cleanupFs();
     if (cleanupMcp) cleanupMcp();
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);

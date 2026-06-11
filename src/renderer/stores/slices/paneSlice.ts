@@ -54,6 +54,15 @@ export interface PaneSlice {
   // agent resumes / the PTY exits (PTYBridge broadcasts running/idle).
   surfaceAgentStatus: Record<string, AgentStatus>;
   setSurfaceAgentStatus: (ptyId: string, status: AgentStatus | null) => void;
+  // X1: per-surface listening ports keyed by ptyId. Main emits ports per PTY
+  // (PID-tree scoped); the workspace-level sidebar value is the UNION over
+  // the workspace's surfaces, computed at write time in
+  // useNotificationListener. Without this map, multi-pane workspaces
+  // last-writer-win on metadata.listeningPorts and the sidebar flickers
+  // (pane A's [8123] erased by pane B's [] on every poll tick). Transient —
+  // never persisted (buildSessionData allowlist excludes it).
+  surfacePorts: Record<string, number[]>;
+  setSurfacePorts: (ptyId: string, ports: number[] | null) => void;
   // Issue #173: transient map of pane id → cwd inherited from the pane that
   // was split. Written by splitPane, consumed (and cleared) by the AppLayout
   // empty-leaf PTY funnel. Deliberately NOT persisted — buildSessionData's
@@ -124,6 +133,17 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       state.surfaceAgentStatus[ptyId] = status;
     } else {
       delete state.surfaceAgentStatus[ptyId];
+    }
+  }),
+
+  surfacePorts: {},
+
+  setSurfacePorts: (ptyId, ports) => set((state: StoreState) => {
+    if (!ptyId) return;
+    if (ports && ports.length > 0) {
+      state.surfacePorts[ptyId] = ports;
+    } else {
+      delete state.surfacePorts[ptyId];
     }
   }),
 

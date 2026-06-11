@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { IPC } from '../../../shared/constants';
 import type { MetadataUpdatePayload } from '../../../shared/types';
 import { MetadataCollector } from '../../metadata/MetadataCollector';
+import { prStatusCache } from '../../metadata/PrStatusCache';
 import { PTYManager } from '../../pty/PTYManager';
 import { wrapHandler } from '../wrapHandler';
 
@@ -25,19 +26,74 @@ const collector = new MetadataCollector();
 // Track CWD per ptyId (updated via OSC 7, prompt detection, or initial registration)
 const cwdMap = new Map<string, string>();
 
-// Track git branch per ptyId (updated via OSC 7727 shell integration hook)
+// Track git branch per ptyId. X1: fed by the fs.watch GitContextWatcher
+// (daemon broadcast → WorkspaceContextRouter, or localContextWatch in local
+// mode); OSC 7727 shell integration also still writes here.
 const branchMap = new Map<string, string>();
+
+// X1 — linked-worktree flag per ptyId (same watcher as branchMap).
+const worktreeMap = new Map<string, boolean>();
+
+// X1 — PID-tree-scoped listening ports per ptyId, fed by PortWatcher.
+// Replaces the old machine-global Get-NetTCPConnection scan that showed the
+// same first-20 ports on every workspace.
+const portsMap = new Map<string, number[]>();
+
+// X1 — local-mode hook: GitContextWatcher needs to re-resolve the repo on
+// every cwd change, and updateCwd() is the single funnel both PTY modes
+// already call. Daemon mode registers nothing here (the daemon process owns
+// the watcher); local mode registers via localContextWatch.
+type CwdListener = (ptyId: string, cwd: string) => void;
+const cwdListeners = new Set<CwdListener>();
+export function onCwdUpdate(listener: CwdListener): () => void {
+  cwdListeners.add(listener);
+  return () => { cwdListeners.delete(listener); };
+}
+
+/**
+ * Build the poll/request payload for one PTY from the watcher-fed caches.
+ * `gh` PR resolution rides the 5 min PrStatusCache TTL, so including it on
+ * the 5 s tick costs one subprocess per repo per TTL window.
+ */
+async function buildMetadataPayload(ptyId: string): Promise<MetadataUpdatePayload | null> {
+  const cwd = cwdMap.get(ptyId);
+  if (!cwd) return null;
+  // Watcher/shell-integration branch wins; exec git only as fallback so a
+  // session that predates the watcher (or a watch failure) still resolves.
+  const gitBranch = branchMap.get(ptyId) ?? (await collector.getGitBranch(cwd)) ?? '';
+  const payload: MetadataUpdatePayload = { ptyId, cwd, gitBranch };
+  const isWorktree = worktreeMap.get(ptyId);
+  if (isWorktree !== undefined) payload.gitIsWorktree = isWorktree;
+  const ports = portsMap.get(ptyId);
+  if (ports !== undefined) payload.listeningPorts = ports;
+  if (gitBranch) {
+    payload.pr = await prStatusCache.get(cwd, gitBranch);
+  } else {
+    payload.pr = null;
+  }
+  return payload;
+}
 
 export function registerMetadataHandlers(
   ptyManager: PTYManager,
   getWindow: () => BrowserWindow | null,
+  // X1: in daemon mode, PTYs live in the daemon — `ptyManager.get()` is
+  // empty for every daemon session, and the historical unconditional prune
+  // wiped cwdMap within one tick of registration (which is why the 5 s poll
+  // never produced metadata on the default production path). Liveness-prune
+  // only when this process actually owns the PTYs; daemon-session cleanup
+  // is event-driven via WorkspaceContextRouter's session:died/destroyed.
+  opts: { localPtyOwnership?: boolean } = {},
 ): () => void {
+  const localPtyOwnership = opts.localPtyOwnership !== false;
   // Handle metadata request from renderer
   ipcMain.removeHandler(IPC.METADATA_REQUEST);
   ipcMain.handle(IPC.METADATA_REQUEST, wrapHandler(IPC.METADATA_REQUEST, async (_event: Electron.IpcMainInvokeEvent, ptyId: string) => {
-    const cwd = cwdMap.get(ptyId);
-    const shellBranch = branchMap.get(ptyId);
-    return collector.collect(cwd, shellBranch);
+    const payload = await buildMetadataPayload(ptyId);
+    if (!payload) return {};
+    const rest = { ...payload };
+    delete rest.ptyId;
+    return rest;
   }));
 
   // Periodic metadata polling (every 5 seconds)
@@ -48,29 +104,26 @@ export function registerMetadataHandlers(
 
     for (const [ptyId] of cwdMap) {
       const instance = ptyManager.get(ptyId);
-      if (!instance) {
+      if (localPtyOwnership && !instance) {
         cwdMap.delete(ptyId);
         branchMap.delete(ptyId);
+        worktreeMap.delete(ptyId);
+        portsMap.delete(ptyId);
         continue;
       }
 
       // On Linux/macOS, try reading /proc/PID/cwd for live CWD detection
-      if (process.platform !== 'win32') {
+      if (instance && process.platform !== 'win32') {
         try {
           const liveCwd = await fs.promises.readlink(`/proc/${instance.process.pid}/cwd`);
           if (liveCwd && liveCwd !== cwdMap.get(ptyId)) {
-            cwdMap.set(ptyId, liveCwd);
+            updateCwd(ptyId, liveCwd);
           }
         } catch { /* not available on macOS without /proc */ }
       }
 
-      const cwd = cwdMap.get(ptyId);
-      if (cwd) {
-        // If shell integration provided a branch via OSC 7727, skip git exec polling
-        const shellBranch = branchMap.get(ptyId);
-        const metadata = await collector.collect(cwd, shellBranch);
-        broadcastMetadataUpdate(win, { ptyId, ...metadata });
-      }
+      const payload = await buildMetadataPayload(ptyId);
+      if (payload) broadcastMetadataUpdate(win, payload);
     }
   }, 5000);
 
@@ -83,6 +136,9 @@ export function registerMetadataHandlers(
 
 export function updateCwd(ptyId: string, cwd: string): void {
   cwdMap.set(ptyId, cwd);
+  for (const listener of cwdListeners) {
+    try { listener(ptyId, cwd); } catch { /* listener errors must not break PTY flow */ }
+  }
 }
 
 export function removeCwd(ptyId: string): void {
@@ -103,4 +159,26 @@ export function getCwd(ptyId: string): string | undefined {
 
 export function getBranch(ptyId: string): string | undefined {
   return branchMap.get(ptyId);
+}
+
+// ── X1 watcher-fed caches ──
+
+export function updateWorktree(ptyId: string, isWorktree: boolean): void {
+  worktreeMap.set(ptyId, isWorktree);
+}
+
+export function removeWorktree(ptyId: string): void {
+  worktreeMap.delete(ptyId);
+}
+
+export function updatePorts(ptyId: string, ports: number[]): void {
+  portsMap.set(ptyId, ports);
+}
+
+export function removePorts(ptyId: string): void {
+  portsMap.delete(ptyId);
+}
+
+export function getPorts(ptyId: string): number[] | undefined {
+  return portsMap.get(ptyId);
 }

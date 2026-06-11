@@ -518,6 +518,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // 2. uiSlice fields (cross-slice mutation within the same immer set).
       state.floatingPanePtyId = null;
       state.terminalBookmarks = {};
+      // X1 per-surface port map is ptyId-keyed — same wipe contract.
+      if (state.surfacePorts) state.surfacePorts = {};
 
       // 3. companySlice — member.ptyId across all departments.
       if (state.company) {

@@ -300,10 +300,24 @@ export function useNotificationListener() {
       // neither means "active workspace" (e.g. meta.setStatus from a CLI).
       const { ptyId, workspaceId: payloadWsId, ...rest } = payload;
 
-      const applyToWorkspace = (wsId: string, restrictCwd: boolean) => {
-        const data: Partial<typeof rest> = restrictCwd ? (() => {
-          const { cwd: _cwd, ...withoutCwd } = rest;
-          return withoutCwd;
+      // X1: workspace metadata is one record per workspace, but context
+      // updates arrive per-PTY. Two rules keep multi-pane workspaces from
+      // flickering (pane A's branch line erased by pane B's empty value on
+      // every 5s tick):
+      //  - exclusive fields (cwd, git context, PR) only follow the ACTIVE
+      //    pane's active surface — same policy cwd always had;
+      //  - listeningPorts go through the per-surface map and the workspace
+      //    value is recomputed as the UNION over its surfaces, so a dev
+      //    server in a background pane stays visible and order of arrival
+      //    doesn't matter.
+      const applyToWorkspace = (wsId: string, restrictContext: boolean) => {
+        const data: Partial<typeof rest> = restrictContext ? (() => {
+          const passthrough = { ...rest };
+          delete passthrough.cwd;
+          delete passthrough.gitBranch;
+          delete passthrough.gitIsWorktree;
+          delete passthrough.pr;
+          return passthrough;
         })() : rest;
         if (Object.keys(data).length > 0) {
           state.updateWorkspaceMetadata(wsId, data as Parameters<typeof state.updateWorkspaceMetadata>[1]);
@@ -322,8 +336,22 @@ export function useNotificationListener() {
         for (const ws of state.workspaces) {
           const found = findSurfaceByPtyId(ws.rootPane, ptyId);
           if (found) {
-            // Only update CWD from the active pane's active surface to prevent
-            // stale PTYs from overwriting the current directory.
+            // X1 — ports: store per-surface, publish the workspace union.
+            if (Array.isArray(rest.listeningPorts)) {
+              state.setSurfacePorts(ptyId, rest.listeningPorts);
+              const merged = new Set<number>();
+              const collectPtyIds = (pane: Pane): string[] =>
+                pane.type === 'leaf'
+                  ? pane.surfaces.map((s) => s.ptyId).filter(Boolean)
+                  : pane.children.flatMap(collectPtyIds);
+              const freshPorts = useStore.getState().surfacePorts;
+              for (const id of collectPtyIds(ws.rootPane)) {
+                for (const p of freshPorts[id] ?? []) merged.add(p);
+              }
+              rest.listeningPorts = [...merged].sort((a, b) => a - b);
+            }
+            // Only update exclusive context (cwd/git/PR) from the active
+            // pane's active surface to prevent stale PTYs from overwriting it.
             applyToWorkspace(ws.id, !isActivePtySurface(ws, ptyId));
             // agentStatus='running'은 주기적으로 오지만 agentName(session:agent
             // gate emit)은 1회성이라, ptyId↔surface 매핑이 준비되기 전에 발화하면

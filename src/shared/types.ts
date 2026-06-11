@@ -187,6 +187,30 @@ export interface WorkspaceMetadata {
   // them, and the listener (T7) skips toast/sound/ring/flashFrame.
   // undefined === false === not muted.
   notificationsMuted?: boolean;
+  // ── X1 workspace-context sidebar (schema-freeze §2, additive) ──
+  /** True when gitBranch comes from a linked worktree, not the main checkout. */
+  gitIsWorktree?: boolean;
+  /** PR for the current branch, from `gh pr view --json` (5 min TTL cache).
+   *  Absent when gh is not installed or no PR exists. `null` clears. */
+  pr?: PrStatus | null;
+  /** Latest notification.received summary for the sidebar line. */
+  lastNotificationText?: LastNotificationText;
+}
+
+/** X1 — PR status for the current branch (schema-freeze §2). */
+export interface PrStatus {
+  number: number;
+  state: 'open' | 'draft' | 'merged' | 'closed';
+  checks: 'pending' | 'passing' | 'failing' | null;
+  url: string;
+}
+
+/** X1 — latest terminal notification summary (schema-freeze §2). */
+export interface LastNotificationText {
+  ts: number;
+  title: string | null;
+  body: string;
+  source: 'osc9' | 'osc777' | 'osc99';
 }
 
 // === Agent status ===
@@ -222,6 +246,11 @@ export interface MetadataUpdatePayload {
   // ptyId/workspaceId is provided.
   status?: string;
   progress?: number;
+  // X1 workspace-context fields (schema-freeze §2). `pr: null` clears a PR
+  // that no longer applies (branch switched, PR closed without successor).
+  gitIsWorktree?: boolean;
+  pr?: PrStatus | null;
+  lastNotificationText?: LastNotificationText;
 }
 
 // === Status indicator colors ===

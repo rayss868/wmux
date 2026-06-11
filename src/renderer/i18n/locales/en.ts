@@ -31,6 +31,19 @@ export const en = {
   'workspace.closeCancel': 'Cancel',
   'workspace.closeConfirmYes': 'Close',
 
+  // X1 workspace-context sidebar (git branch / PR / ports / notification)
+  'workspace.gitBranch': 'Git branch',
+  'workspace.gitWorktree': 'Linked worktree',
+  'workspace.prState.open': 'Open',
+  'workspace.prState.draft': 'Draft',
+  'workspace.prState.merged': 'Merged',
+  'workspace.prState.closed': 'Closed',
+  'workspace.prChecks.pending': 'checks pending',
+  'workspace.prChecks.passing': 'checks passing',
+  'workspace.prChecks.failing': 'checks failing',
+  'workspace.listeningPorts': 'Listening ports',
+  'workspace.lastNotification': 'Latest notification',
+
   // Workspace profile (env + startup command for new panes)
   'workspaceProfile.title': 'Workspace profile',
   'workspaceProfile.subtitle': 'Environment for new panes in "{name}"',

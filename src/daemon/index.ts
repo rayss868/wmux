@@ -11,6 +11,8 @@ import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { createSnapshotRunner } from './snapshotRunner';
 import { RingBuffer } from './RingBuffer';
+import { GitContextWatcher } from '../main/pty/gitContextWatch';
+import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink } from './util/logSink';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
@@ -1057,6 +1059,89 @@ function wireEvents(
   });
 }
 
+// === X1 workspace-context watchers (schema-freeze §2) ===
+
+/**
+ * Wire the per-session git-branch watcher (fs.watch on .git/HEAD, no
+ * polling) and the PID-tree→listening-port watcher (10 s interval) to the
+ * DaemonEvent broadcast channel. Returns a dispose function consumed by
+ * shutdown().
+ *
+ * Lifecycle:
+ *  - session:created → start tracking the session's cwd + pid
+ *  - session:cwd     → re-resolve the repo for the new cwd
+ *  - session:died / session:destroyed → drop the session's watcher state
+ *    (PortWatcher self-prunes via the listLiveSessions provider)
+ */
+function wireContextWatchers(
+  sessionManager: DaemonSessionManager,
+  pipeServer: DaemonPipeServer,
+): () => void {
+  const gitWatcher = new GitContextWatcher();
+  const portWatcher = new PortWatcher(() =>
+    sessionManager.listLiveSessions().map((s) => ({ sessionId: s.id, pid: s.pid })),
+  );
+
+  gitWatcher.on('git', (payload: { sessionId: string; branch: string | null; isWorktree: boolean }) => {
+    try {
+      const event: DaemonEvent = {
+        type: 'context.git',
+        sessionId: payload.sessionId,
+        data: { branch: payload.branch, isWorktree: payload.isWorktree },
+      };
+      pipeServer.broadcast(event);
+    } catch (err) {
+      log('warn', `context.git broadcast failed for ${payload.sessionId}:`, err);
+    }
+  });
+
+  portWatcher.on('ports', (payload: { sessionId: string; ports: Array<{ port: number; pid: number }> }) => {
+    try {
+      const event: DaemonEvent = {
+        type: 'context.ports',
+        sessionId: payload.sessionId,
+        data: { ports: payload.ports },
+      };
+      pipeServer.broadcast(event);
+    } catch (err) {
+      log('warn', `context.ports broadcast failed for ${payload.sessionId}:`, err);
+    }
+  });
+
+  const onCreated = (payload: { session: { id: string; cwd: string } }) => {
+    gitWatcher.update(payload.session.id, payload.session.cwd);
+  };
+  const onCwd = (payload: { sessionId: string; cwd: string }) => {
+    gitWatcher.update(payload.sessionId, payload.cwd);
+  };
+  const onGone = (payload: { id: string }) => {
+    gitWatcher.remove(payload.id);
+  };
+  sessionManager.on('session:created', onCreated);
+  sessionManager.on('session:cwd', onCwd);
+  sessionManager.on('session:died', onGone);
+  sessionManager.on('session:destroyed', onGone);
+
+  portWatcher.start();
+
+  // Seed git context for sessions recovered before this wiring ran.
+  for (const s of sessionManager.listLiveSessions()) {
+    gitWatcher.update(s.id, s.cwd);
+  }
+
+  return () => {
+    sessionManager.off('session:created', onCreated);
+    sessionManager.off('session:cwd', onCwd);
+    sessionManager.off('session:died', onGone);
+    sessionManager.off('session:destroyed', onGone);
+    portWatcher.stop();
+    gitWatcher.dispose();
+  };
+}
+
+/** Set in main(); consumed by shutdown(). */
+let disposeContextWatchers: (() => void) | null = null;
+
 // === State builder ===
 
 /** Cached boot ID — populated at startup via initBootId() */
@@ -1132,6 +1217,10 @@ async function shutdown(
 
   // Stop watchdog
   watchdog.stop();
+
+  // Stop X1 context watchers (port poll timer + git fs.watch handles)
+  try { disposeContextWatchers?.(); } catch { /* best effort */ }
+  disposeContextWatchers = null;
 
   // Stop process monitor
   processMonitor.unwatchAll();
@@ -1316,6 +1405,9 @@ async function main(): Promise<void> {
 
   // 6. Wire events
   wireEvents(sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, sessionDataListeners);
+
+  // 6b. X1 workspace-context watchers (git HEAD fs.watch + PID-tree ports)
+  disposeContextWatchers = wireContextWatchers(sessionManager, pipeServer);
 
   // 7. Start control pipe
   await pipeServer.start();

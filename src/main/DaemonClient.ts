@@ -459,6 +459,16 @@ export class DaemonClient extends EventEmitter {
           // cwd. event.data is the resolved cwd string.
           this.emit('session:cwd', { sessionId: event.sessionId, cwd: event.data as string });
           break;
+        case 'context.git':
+          // X1 — git branch/worktree from the daemon's fs.watch on
+          // .git/HEAD. WorkspaceContextRouter folds it into the sidebar
+          // metadata and triggers the gh PR lookup.
+          this.emit('session:git', { sessionId: event.sessionId, data: event.data });
+          break;
+        case 'context.ports':
+          // X1 — PID-tree-scoped listening ports (10 s daemon poll).
+          this.emit('session:ports', { sessionId: event.sessionId, data: event.data });
+          break;
         default:
           break;
       }

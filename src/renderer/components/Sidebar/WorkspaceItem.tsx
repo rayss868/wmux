@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import type { AgentStatus, Workspace } from '../../../shared/types';
+import type { AgentStatus, PrStatus, Workspace, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
@@ -32,6 +32,95 @@ function AgentStatusDot({ status, agentName }: { status: AgentStatus; agentName?
     >
       {icon.dot}
     </span>
+  );
+}
+
+/**
+ * X1 — PR badge for the current branch. Color encodes state; the trailing
+ * dot encodes CI checks. Clicking opens the PR in the default browser.
+ */
+function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
+  const t = useT();
+  const stateColor =
+    pr.state === 'open' ? 'var(--accent-green)'
+    : pr.state === 'merged' ? 'var(--accent-blue)'
+    : pr.state === 'closed' ? 'var(--accent-red)'
+    : 'var(--text-muted)'; // draft
+  const checksGlyph =
+    pr.checks === 'passing' ? '✓'
+    : pr.checks === 'failing' ? '✗'
+    : pr.checks === 'pending' ? '●'
+    : '';
+  const checksColor =
+    pr.checks === 'passing' ? 'var(--accent-green)'
+    : pr.checks === 'failing' ? 'var(--accent-red)'
+    : 'var(--text-muted)';
+  const stateLabel = t(`workspace.prState.${pr.state}`);
+  const title = pr.checks
+    ? `#${pr.number} — ${stateLabel}, ${t(`workspace.prChecks.${pr.checks}`)}`
+    : `#${pr.number} — ${stateLabel}`;
+  return (
+    <span
+      className="flex items-center gap-0.5 flex-shrink-0 cursor-pointer hover:underline"
+      style={{ color: stateColor }}
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        window.electronAPI.shell?.openExternal?.(pr.url);
+      }}
+    >
+      #{pr.number}
+      {checksGlyph && <span style={{ color: checksColor }}>{checksGlyph}</span>}
+    </span>
+  );
+}
+
+/**
+ * X1 — one-line live context under the workspace name: git branch
+ * (worktree-aware), PR badge, PID-tree-scoped listening ports, and the
+ * latest terminal notification. Renders nothing until metadata arrives —
+ * zero-config, no reserved blank space.
+ */
+function WorkspaceContextLine({ metadata }: { metadata: WorkspaceMetadata }): React.ReactElement | null {
+  const t = useT();
+  const ports = metadata.listeningPorts ?? [];
+  const hasContext = Boolean(metadata.gitBranch) || Boolean(metadata.pr) || ports.length > 0;
+  const note = metadata.lastNotificationText;
+  if (!hasContext && !note) return null;
+  return (
+    <>
+      {hasContext && (
+        <div className="flex items-center gap-1.5 mt-0.5 text-[9px] font-mono text-[var(--text-muted)] min-w-0">
+          {metadata.gitBranch && (
+            <span
+              className="truncate max-w-[120px]"
+              title={`${t('workspace.gitBranch')}: ${metadata.gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
+            >
+              ⎇ {metadata.gitBranch}
+              {metadata.gitIsWorktree ? <span className="text-[var(--accent-blue)]">⊕</span> : null}
+            </span>
+          )}
+          {metadata.pr && <PrBadge pr={metadata.pr} />}
+          {ports.length > 0 && (
+            <span
+              className="truncate flex-shrink-0"
+              title={`${t('workspace.listeningPorts')}: ${ports.join(', ')}`}
+            >
+              {ports.slice(0, 3).map((p) => `:${p}`).join(' ')}
+              {ports.length > 3 ? ` +${ports.length - 3}` : ''}
+            </span>
+          )}
+        </div>
+      )}
+      {note && (
+        <div
+          className="mt-0.5 text-[9px] text-[var(--text-muted)] truncate"
+          title={`${t('workspace.lastNotification')}: ${note.title ? `${note.title} — ` : ''}${note.body}`}
+        >
+          🔔 {note.title ? `${note.title}: ` : ''}{note.body}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -309,6 +398,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
                   </span>
                 )}
               </div>
+              {metadata && <WorkspaceContextLine metadata={metadata} />}
             </>
           )}
         </div>
