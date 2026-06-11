@@ -7,6 +7,7 @@ import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseGlyph } from './sidebarGlyphs';
+import PluginPanels from '../../plugins/PluginPanels';
 
 // Pane 트리에서 모든 leaf의 PTY를 dispose
 function disposeAllPtys(pane: Pane) {
@@ -127,6 +128,9 @@ export default function Sidebar() {
           />
         ))}
       </div>
+
+      {/* Plugin sidebar panels (B-1 ui.sidebar contribution point) */}
+      <PluginPanels />
 
       {/* Footer — when docked right, mirror the row so the collapse arrow sits
           on the inner edge facing the content area (issue #151). */}

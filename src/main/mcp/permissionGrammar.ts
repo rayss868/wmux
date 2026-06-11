@@ -49,6 +49,18 @@ const KNOWN_CAPABILITIES = new Set<string>([
   'a2a.send',
   'a2a.execute',
   'a2a.read',
+  // Plugin host UI contribution points (B-1). Enforced at contribution
+  // registration time — the host refuses to mount the iframe/widget when
+  // the capability is missing or the plugin isn't trusted; per-RPC
+  // enforcement stays with the regular method capabilities above.
+  'ui.sidebar',
+  'ui.statusbar',
+  'ui.pane-decoration',
+  'ui.commands',
+  // Opt-in for notification.received events on events.poll. Bare
+  // events.subscribe deliberately does NOT include notification events —
+  // they carry terminal-program-controlled text (schema-freeze §4).
+  'notifications.read',
 ]);
 
 // Reserved capability prefix — substrate-internal surface, never grantable

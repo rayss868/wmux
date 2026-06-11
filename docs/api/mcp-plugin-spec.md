@@ -107,7 +107,7 @@ Examples:
 | `meta.write:custom.dashboard.**` | Same, but `**` also crosses `.` so nested keys match. |
 | `events.subscribe:pane.*` | Subscribe to `pane.created`, `pane.closed`, `pane.focused`, `pane.metadata.changed`. |
 
-### 3.2 Capability whitelist (v3.0)
+### 3.2 Capability whitelist (v3.1)
 
 ```
 pane.read           pane.write          pane.create         pane.delete
@@ -115,7 +115,7 @@ pane.search
 
 meta.read           meta.write
 
-events.subscribe
+events.subscribe    notifications.read
 
 workspace.read      workspace.claim
 
@@ -123,9 +123,18 @@ terminal.send       terminal.read
 
 browser.navigate    browser.click       browser.type
 browser.screenshot  browser.evaluate    browser.read
+browser.cookies     browser.emulate
 
 a2a.send            a2a.execute         a2a.read
+
+ui.sidebar          ui.statusbar        ui.pane-decoration
+ui.commands
 ```
+
+Notes:
+
+- `notifications.read` opts in to `notification.received` events on `events.poll`. A plugin with a declared capability set that lacks it has notification events filtered out of poll results (they carry terminal-program-controlled text). Callers without a declaration are grandfathered.
+- `ui.*` capabilities gate the plugin-host UI contribution points (sandboxed sidebar panels, status-bar widgets, pane decorations, palette commands). They are enforced at contribution mount time by the host — the iframe/widget is refused for non-trusted plugins — rather than per-RPC. See `docs/internal/fable-window-schema-freeze.md` §4.
 
 Reserved prefixes (declaring these is always rejected):
 

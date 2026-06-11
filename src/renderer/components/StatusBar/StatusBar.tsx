@@ -4,6 +4,7 @@ import { useT } from '../../hooks/useT';
 import type { Notification, Workspace } from '../../../shared/types';
 import { UsageWidgetView } from './UsageWidget';
 import { tokenAttrs } from '../../themes';
+import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 
 /**
  * Compute the unread notification count, excluding notifications whose
@@ -172,6 +173,8 @@ export default function StatusBar() {
             {t('statusBar.company')}
           </span>
         )}
+        {/* Plugin status-bar widgets (B-1 ui.statusbar, left-aligned) */}
+        <PluginStatusBarWidgets alignment="left" />
       </div>
 
       {/* Right: status indicators */}
@@ -189,6 +192,8 @@ export default function StatusBar() {
           subscriptionType={usage.subscriptionType}
           nowMs={nowMs}
         />
+        {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}
+        <PluginStatusBarWidgets alignment="right" />
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {memUsage && <span>{memUsage}</span>}
         <span>{timeStr}</span>

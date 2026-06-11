@@ -1,0 +1,10 @@
+{
+  "name": "hello-panel",
+  "version": "0.1.0",
+  "description": "Reference wmux UI plugin: a sidebar panel that lists workspaces over the bridge.",
+  "capabilities": ["ui.sidebar", "workspace.read"],
+  "activationEvents": ["onStartup"],
+  "contributes": {
+    "sidebar": { "title": "Hello Panel", "entry": "panel.html" }
+  }
+}

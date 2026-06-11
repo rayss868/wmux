@@ -176,3 +176,88 @@ describe('events.rpc — events.poll', () => {
     }
   });
 });
+
+describe('events.rpc — notifications.read opt-in gate', () => {
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  function emitMixed() {
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-1', paneId: 'p1' });
+    eventBus.emit({
+      type: 'notification.received', workspaceId: 'ws-1', ptyId: 't1',
+      source: 'osc9', title: null, body: 'hello',
+    });
+  }
+
+  function routerWithTrust(declared: string[] | undefined): RpcRouter {
+    const router = new RpcRouter();
+    registerEventsRpc(router, async (name) =>
+      name === 'declared-plugin'
+        ? {
+            name, status: 'trusted' as const, firstSeen: 1, lastSeen: 1,
+            ...(declared ? { declaredCapabilities: declared } : {}),
+          }
+        : undefined,
+    );
+    return router;
+  }
+
+  it('filters notification.received for a declared plugin without notifications.read', async () => {
+    emitMixed();
+    const router = routerWithTrust(['events.subscribe']);
+    const res = await router.dispatch({
+      id: 'n1', method: 'events.poll', params: {}, clientName: 'declared-plugin',
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const result = res.result as { events: Array<{ type: string }> };
+      expect(result.events.map((e) => e.type)).toEqual(['pane.created']);
+    }
+  });
+
+  it('delivers notification.received when notifications.read is declared (bare or glob)', async () => {
+    for (const cap of ['notifications.read', 'notifications.read:ws-*']) {
+      eventBus.reset();
+      emitMixed();
+      const router = routerWithTrust(['events.subscribe', cap]);
+      const res = await router.dispatch({
+        id: 'n2', method: 'events.poll', params: {}, clientName: 'declared-plugin',
+      });
+      if (res.ok) {
+        const result = res.result as { events: Array<{ type: string }> };
+        expect(result.events.map((e) => e.type)).toEqual(['pane.created', 'notification.received']);
+      }
+    }
+  });
+
+  it('grandfathers callers without a declaration or without an identity envelope', async () => {
+    emitMixed();
+    const router = routerWithTrust(undefined);
+    // Declared identity but no declaredCapabilities → grandfathered.
+    const declared = await router.dispatch({
+      id: 'n3', method: 'events.poll', params: {}, clientName: 'declared-plugin',
+    });
+    if (declared.ok) {
+      expect((declared.result as { events: unknown[] }).events).toHaveLength(2);
+    }
+    // No clientName at all → grandfathered.
+    const anonymous = await router.dispatch({ id: 'n4', method: 'events.poll', params: {} });
+    if (anonymous.ok) {
+      expect((anonymous.result as { events: unknown[] }).events).toHaveLength(2);
+    }
+  });
+
+  it('an explicit notification.received types request returns nothing when unentitled', async () => {
+    emitMixed();
+    const router = routerWithTrust(['events.subscribe']);
+    const res = await router.dispatch({
+      id: 'n5', method: 'events.poll',
+      params: { types: ['notification.received'] }, clientName: 'declared-plugin',
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect((res.result as { events: unknown[] }).events).toHaveLength(0);
+    }
+  });
+});

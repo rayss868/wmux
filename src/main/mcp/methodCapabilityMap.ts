@@ -70,6 +70,8 @@ export type RiskClass =
   | 'pane-lifecycle'   // create/focus/list panes
   | 'workspace'        // workspace claim/read
   | 'a2a'              // agent-to-agent messaging
+  | 'ui'               // plugin host UI contribution points (B-1)
+  | 'notifications'    // terminal desktop-notification text (OSC 9/777/99)
   | 'internal';        // wmux.internal — never surfaced
 
 /**
@@ -362,6 +364,15 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
   'a2a.send':    'a2a',
   'a2a.execute': 'a2a',
   'a2a.read':    'a2a',
+  // Plugin host UI contribution points (B-1) — enforced at mount time by
+  // the renderer host, not per-RPC; classed here so the approval dialog
+  // renders real copy instead of fallback text.
+  'ui.sidebar':         'ui',
+  'ui.statusbar':       'ui',
+  'ui.pane-decoration': 'ui',
+  'ui.commands':        'ui',
+  // notification.received opt-in (events.poll gate)
+  'notifications.read': 'notifications',
 };
 
 /**
@@ -435,6 +446,18 @@ export const RISK_CLASS_COPY: Record<RiskClass, RiskClassCopy> = {
     summary: 'Can read and claim workspaces',
     detail:
       'The plugin can see the list of workspaces and attribute its RPC calls to a specific one. No data leakage between workspaces.',
+  },
+  'ui': {
+    severity: 'neutral',
+    summary: 'Can add panels and widgets to the wmux UI',
+    detail:
+      'The plugin renders its own interface in a sandboxed frame (sidebar panel, status-bar widget, pane badges, or command-palette entries). The frame cannot read your terminal or other UI — any data access requires the capabilities listed separately.',
+  },
+  'notifications': {
+    severity: 'caution',
+    summary: 'Can read terminal notification text',
+    detail:
+      'Receives the title and body of desktop notifications emitted by programs in your terminals (OSC 9/777/99). Notification text is program-controlled and can include fragments of command output.',
   },
   'internal': {
     severity: 'critical',

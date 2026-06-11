@@ -114,6 +114,17 @@ export const IPC = {
   // First-run wizard event channels (renderer-side `on()` listeners)
   FIRST_RUN_SAMPLE_TASK_READY: 'first-run:sample-task-ready',
   FIRST_RUN_SAMPLE_TASK_TIMEOUT: 'first-run:sample-task-timeout',
+  // Plugin host (B-1). PLUGINS_LIST returns loaded UI plugin summaries +
+  // load failures; PLUGINS_RPC forwards a validated bridge request from a
+  // plugin iframe through the shared RpcRouter (clientName pinned main-side).
+  PLUGINS_LIST: 'plugins:list',
+  PLUGINS_RPC: 'plugins:rpc',
+  // Renderer-initiated approval prompt for an unconfirmed plugin. Without
+  // this, UI plugins dead-lock: the host only mounts trusted iframes, an
+  // unmounted iframe makes no RPCs, and the Phase 2.2 approval prompt only
+  // fires on a rejected RPC. Resolves with { approved } after the user
+  // answers the standard PermissionApprovalDialog.
+  PLUGINS_REQUEST_APPROVAL: 'plugins:request-approval',
 } as const;
 
 // Daemon process exit codes. A spawned daemon that finds the canonical control

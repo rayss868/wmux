@@ -30,6 +30,9 @@ import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
 import { registerCompanyRpc } from './pipe/handlers/company.rpc';
 import { registerEventsRpc } from './pipe/handlers/events.rpc';
+import { PluginHostLoader } from './plugins/PluginHostLoader';
+import { registerPluginSchemePrivileges, registerPluginProtocolHandler } from './plugins/pluginProtocol';
+import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
 import { ShadowRejectionLogger } from './audit/shadowRejectionLog';
@@ -219,6 +222,12 @@ const autoUpdater = new AutoUpdater(() => mainWindow);
 
 const rpcRouter = new RpcRouter();
 const pipeServer = new PipeServer(rpcRouter);
+
+// Plugin host (B-1). Scheme privileges MUST be registered before app
+// 'ready'; the loader itself is constructed inside the ready handler (it
+// reads ~/.wmux) and the protocol/IPC layers read it through this binding.
+registerPluginSchemePrivileges();
+let pluginHostLoader: PluginHostLoader | null = null;
 const mcpRegistrar = new McpRegistrar();
 const webviewCdpManager = new WebviewCdpManager(cdpPort);
 
@@ -432,8 +441,12 @@ registerSystemRpc(rpcRouter);
 registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker);
 registerCompanyRpc(rpcRouter, () => mainWindow);
-registerEventsRpc(rpcRouter);
+registerEventsRpc(rpcRouter, (clientName) => getPluginTrustStore().get(clientName));
 registerMcpPluginRpc(rpcRouter);
+// Plugin host IPC (B-1): plugins:list + the iframe bridge forwarder. Same
+// RpcRouter instance, so plugin-iframe RPCs hit the identical enforcement
+// stack as pipe clients. Registered once, outside the handler swap cycle.
+registerPluginHostHandlers(rpcRouter, () => pluginHostLoader, () => approvalQueue);
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
 const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter);
@@ -580,6 +593,24 @@ app.on('ready', async () => {
   // race window at the cost of a brief solid-color window during the
   // first daemon spawn — `backgroundColor: '#1e1e2e'` keeps that visible
   // bridge inoffensive.
+  // Plugin host (B-1): discover UI plugin bundles and serve them over
+  // wmux-plugin:// to sandboxed iframes. Registered before the window
+  // loads so panel iframes never race the protocol handler. Best-effort:
+  // a broken plugins dir must never block app boot.
+  try {
+    const loader = new PluginHostLoader(getPluginTrustStore());
+    await loader.loadAll();
+    pluginHostLoader = loader;
+    const failures = loader.listFailures();
+    logLine('info', 'main', `plugin host: ${loader.list().length} plugin(s) loaded, ${failures.length} failed`);
+    for (const f of failures) {
+      logLine('warn', 'main', `plugin host: skipped "${f.name}": ${f.errors.join('; ')}`);
+    }
+  } catch (err) {
+    logLine('warn', 'main', `plugin host load failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  registerPluginProtocolHandler(() => pluginHostLoader);
+
   mainWindow = createWindow({ deferLoad: true });
   console.log(`[Main] Window created (renderer load deferred): ${!!mainWindow}`);
   logLine('info', 'main', `window created (deferred): present=${!!mainWindow}`);

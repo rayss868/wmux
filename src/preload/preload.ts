@@ -173,6 +173,20 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.FS_CHANGED, listener); };
     },
   },
+  // Plugin host (B-1). `list` returns loaded UI plugin summaries + load
+  // failures; `rpc` forwards a host-validated bridge request from a plugin
+  // iframe to main, where it dispatches through the shared RpcRouter with
+  // clientName pinned to the plugin (full permission enforcement applies).
+  plugins: {
+    list: () => ipcRenderer.invoke(IPC.PLUGINS_LIST) as Promise<{
+      plugins: unknown[];
+      failures: Array<{ name: string; errors: string[] }>;
+    }>,
+    rpc: (pluginName: string, method: string, params?: Record<string, unknown>) =>
+      ipcRenderer.invoke(IPC.PLUGINS_RPC, pluginName, method, params) as Promise<unknown>,
+    requestApproval: (pluginName: string) =>
+      ipcRenderer.invoke(IPC.PLUGINS_REQUEST_APPROVAL, pluginName) as Promise<{ approved: boolean }>,
+  },
   daemon: {
     onConnected: (callback: () => void) => {
       const listener = () => callback();
