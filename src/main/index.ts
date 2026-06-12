@@ -1026,6 +1026,24 @@ app.on('ready', async () => {
   autoUpdater.start();
 });
 
+// Browser-pane popup policy (X3). The BrowserPanel webview sets allowpopups
+// (without it the guest-view manager rejects window.open before any handler
+// runs), and this handler is the actual gate: never create a new window;
+// load http(s) popups (target=_blank links) in the SAME webview instead so
+// in-pane browsing keeps working. Applies to every <webview> guest — the
+// only one in the app is BrowserPanel. Known limitation: window.open-based
+// OAuth flows that postMessage back to their opener cannot work with the
+// same-view replacement.
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() !== 'webview') return;
+  contents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://') || url.startsWith('http://')) {
+      void contents.loadURL(url);
+    }
+    return { action: 'deny' };
+  });
+});
+
 app.on('window-all-closed', () => {
   // Don't quit — stay alive in system tray.
   // Actual quit is triggered from the tray "Quit" menu item.

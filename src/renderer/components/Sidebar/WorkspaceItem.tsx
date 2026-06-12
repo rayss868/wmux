@@ -5,6 +5,7 @@ import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces } from '../../utils/paneTraversal';
+import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 
 interface WorkspaceItemProps {
@@ -81,7 +82,11 @@ function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
  * latest terminal notification. Renders nothing until metadata arrives —
  * zero-config, no reserved blank space.
  */
-function WorkspaceContextLine({ metadata }: { metadata: WorkspaceMetadata }): React.ReactElement | null {
+function WorkspaceContextLine({ metadata, onPortClick }: {
+  metadata: WorkspaceMetadata;
+  /** X3 — open http://localhost:<port> in this workspace's browser pane. */
+  onPortClick: (port: number) => void;
+}): React.ReactElement | null {
   const t = useT();
   const ports = metadata.listeningPorts ?? [];
   const hasContext = Boolean(metadata.gitBranch) || Boolean(metadata.pr) || ports.length > 0;
@@ -102,12 +107,24 @@ function WorkspaceContextLine({ metadata }: { metadata: WorkspaceMetadata }): Re
           )}
           {metadata.pr && <PrBadge pr={metadata.pr} />}
           {ports.length > 0 && (
-            <span
-              className="truncate flex-shrink-0"
-              title={`${t('workspace.listeningPorts')}: ${ports.join(', ')}`}
-            >
-              {ports.slice(0, 3).map((p) => `:${p}`).join(' ')}
-              {ports.length > 3 ? ` +${ports.length - 3}` : ''}
+            <span className="flex items-center gap-1 flex-shrink-0">
+              {ports.slice(0, 3).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  className="cursor-pointer hover:text-[var(--accent-blue)] hover:underline"
+                  title={t('workspace.openPortTooltip', { port: p })}
+                  aria-label={t('workspace.openPortTooltip', { port: p })}
+                  onClick={(e) => { e.stopPropagation(); onPortClick(p); }}
+                >
+                  :{p}
+                </button>
+              ))}
+              {ports.length > 3 ? (
+                <span title={`${t('workspace.listeningPorts')}: ${ports.join(', ')}`}>
+                  +{ports.length - 3}
+                </span>
+              ) : null}
             </span>
           )}
         </div>
@@ -165,6 +182,14 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace.metadata;
+
+  // X1→X3 bridge: a listening-port badge click jumps to the workspace and
+  // shows http://localhost:<port> in its browser pane (reusing one if the
+  // workspace already has it).
+  const handlePortClick = (port: number) => {
+    useStore.getState().setActiveWorkspace(workspace.id);
+    openUrlInBrowserPane(`http://localhost:${port}`, { workspaceId: workspace.id });
+  };
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
@@ -398,7 +423,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
                   </span>
                 )}
               </div>
-              {metadata && <WorkspaceContextLine metadata={metadata} />}
+              {metadata && <WorkspaceContextLine metadata={metadata} onPortClick={handlePortClick} />}
             </>
           )}
         </div>

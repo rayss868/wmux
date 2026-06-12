@@ -4,6 +4,7 @@ import { useStore } from '../../stores';
 import { useIpc } from '../../hooks/useIpc';
 import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
+import { openTerminalUrl } from '../../utils/browserPaneActions';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { isFileDrag } from '../../../shared/dragDrop';
 import ViCopyMode from './ViCopyMode';
@@ -241,8 +242,11 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   }, [ptyId, terminalRef]);
 
   const handleOpenLink = useCallback((url: string) => {
-    window.electronAPI.shell.openExternal(url);
-  }, []);
+    // Smart routing: localhost → browser pane, external → system browser.
+    // The owning workspace is passed explicitly — in multiview this terminal
+    // may live in a non-active tile where activeWorkspaceId would lie.
+    openTerminalUrl(url, { workspaceId: ownerWorkspaceId, ptyId: ptyId ?? undefined });
+  }, [ownerWorkspaceId, ptyId]);
 
   const handleCopyLink = useCallback((url: string) => {
     void window.clipboardAPI.writeText(url);

@@ -1,44 +1,17 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import BrowserToolbar from './BrowserToolbar';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
+import {
+  BROWSER_NAVIGATE_EVENT,
+  isSafeBrowserUrl,
+  type BrowserNavigateDetail,
+} from '../../utils/browserPane';
 
-// ---------------------------------------------------------------------------
-// URL safety check — only allow http: and https: schemes
-// ---------------------------------------------------------------------------
-
-function isSafeUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return ['http:', 'https:'].includes(parsed.protocol);
-  } catch {
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Declare the webview element for TypeScript
-// ---------------------------------------------------------------------------
-
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace JSX {
-    interface IntrinsicElements {
-      webview: React.DetailedHTMLProps<
-        React.HTMLAttributes<Electron.WebviewTag> & {
-          src?: string;
-          partition?: string;
-          allowpopups?: string;
-          disablewebsecurity?: string;
-          preload?: string;
-          useragent?: string;
-          nodeintegration?: string;
-          webpreferences?: string;
-        },
-        Electron.WebviewTag
-      >;
-    }
-  }
-}
+// The <webview> intrinsic comes from @types/react's built-in
+// WebViewHTMLAttributes — with the automatic JSX runtime (React.JSX
+// namespace) a local `declare global { namespace JSX }` augmentation is dead
+// code, so none is declared here.
 
 // ---------------------------------------------------------------------------
 // Props
@@ -58,6 +31,7 @@ interface BrowserPanelProps {
 
 export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, onClose }: BrowserPanelProps) {
   const t = useT();
+  const updateBrowserUrl = useStore((s) => s.updateBrowserUrl);
   const webviewRef = useRef<Electron.WebviewTag>(null);
   const [currentUrl, setCurrentUrl] = useState(initialUrl);
   const [isLoading, setIsLoading] = useState(false);
@@ -114,11 +88,16 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
 
     const onDidNavigate = (e: Electron.DidNavigateEvent) => {
       setCurrentUrl(e.url);
+      // Persist the URL on the surface so a session restore reopens the page
+      // the user last saw, not the one the surface was created with. Catches
+      // toolbar, in-page and MCP/CDP-driven navigations alike.
+      updateBrowserUrl(surfaceId, e.url);
       updateNavState();
     };
 
     const onDidNavigateInPage = (e: Electron.DidNavigateInPageEvent) => {
       setCurrentUrl(e.url);
+      updateBrowserUrl(surfaceId, e.url);
       updateNavState();
     };
 
@@ -141,7 +120,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
       wv.removeEventListener('did-navigate-in-page', onDidNavigateInPage as EventListener);
       wv.removeEventListener('page-title-updated', onTitleUpdated as EventListener);
     };
-  }, [updateNavState]);
+  }, [updateNavState, updateBrowserUrl, surfaceId]);
 
   // F12 opens DevTools for the webview
   useEffect(() => {
@@ -157,7 +136,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
   }, [isActive]);
 
   const handleNavigate = useCallback((url: string) => {
-    if (!isSafeUrl(url)) return;
+    if (!isSafeBrowserUrl(url)) return;
     const wv = webviewRef.current;
     if (!wv) return;
     if (isReady) {
@@ -168,6 +147,20 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     }
     setCurrentUrl(url);
   }, [isReady]);
+
+  // Imperative navigation channel for openUrlInBrowserPane (terminal link
+  // clicks, sidebar port badges, browser.open RPC). The store's browserUrl is
+  // written first by the helper — this event only moves the already-mounted
+  // webview. No isActive gate: a background tab must navigate too.
+  useEffect(() => {
+    const onNavigateEvent = (e: Event) => {
+      const detail = (e as CustomEvent<BrowserNavigateDetail>).detail;
+      if (!detail || detail.surfaceId !== surfaceId) return;
+      handleNavigate(detail.url);
+    };
+    document.addEventListener(BROWSER_NAVIGATE_EVENT, onNavigateEvent);
+    return () => document.removeEventListener(BROWSER_NAVIGATE_EVENT, onNavigateEvent);
+  }, [surfaceId, handleNavigate]);
 
   const handleBack = useCallback(() => {
     webviewRef.current?.goBack();
@@ -401,6 +394,15 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
           ref={webviewRef as React.RefObject<Electron.WebviewTag>}
           src={initialUrl}
           partition={partition}
+          // Required for target=_blank / window.open to reach the main
+          // process at all — without it the guest-view manager rejects the
+          // popup before setWindowOpenHandler runs. The handler in
+          // src/main/index.ts then denies the popup and loads http(s) URLs
+          // in this same webview instead.
+          // Must be a STRING despite the boolean typing: react-dom strips
+          // boolean-valued non-data/aria attributes (setValueForAttribute),
+          // so allowpopups={true} would silently never reach the DOM.
+          allowpopups={'true' as unknown as boolean}
           data-surface-id={surfaceId}
           style={{
             width: '100%',

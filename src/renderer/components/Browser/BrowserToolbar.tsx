@@ -1,18 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useT } from '../../hooks/useT';
-
-// ---------------------------------------------------------------------------
-// URL safety check — only allow http: and https: schemes
-// ---------------------------------------------------------------------------
-
-function isSafeUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return ['http:', 'https:'].includes(parsed.protocol);
-  } catch {
-    return false;
-  }
-}
+import { isSafeBrowserUrl } from '../../utils/browserPane';
 
 // ---------------------------------------------------------------------------
 // SVG Icon components
@@ -160,7 +148,7 @@ export default function BrowserToolbar({
         url = `https://www.google.com/search?q=${encodeURIComponent(url)}`;
       }
     }
-    if (!isSafeUrl(url)) return;
+    if (!isSafeBrowserUrl(url)) return;
     setInputValue(url);
     onNavigate(url);
     inputRef.current?.blur();

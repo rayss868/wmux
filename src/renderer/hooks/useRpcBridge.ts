@@ -10,6 +10,7 @@ import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
 import { setExecuteApprovalResolver } from '../utils/executeApproval';
+import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import { terminalRegistry } from './useTerminal';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
@@ -794,66 +795,32 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const targetWsId = typeof params.workspaceId === 'string'
       ? params.workspaceId
       : store.activeWorkspaceId;
-    const ws = store.workspaces.find((w) => w.id === targetWsId);
-    if (!ws) return { error: 'no active workspace' };
     const url = typeof params.url === 'string' ? params.url : undefined;
-    const partition = typeof params.partition === 'string' ? params.partition : 'persist:wmux-default';
+    // Forward the partition only when the caller named one — the old reuse
+    // path force-reset an unspecified partition to the default, remounting
+    // the webview (the partition is part of BrowserPanel's key) and dropping
+    // the login session.
+    const partition = typeof params.partition === 'string' ? params.partition : undefined;
 
-    // Check if a browser surface already exists anywhere — reuse it
-    const leaves = findLeafPanes(ws.rootPane);
-    for (const leaf of leaves) {
-      const existingBrowser = leaf.surfaces.find((s) => s.surfaceType === 'browser');
-      if (existingBrowser) {
-        const surfaceId = existingBrowser.id;
-        const paneIdForBrowser = leaf.id;
-        // Navigate existing browser to the new URL if provided — must go through setState (Immer)
-        useStore.setState((state) => {
-          const w = state.workspaces.find((w2) => w2.id === targetWsId);
-          if (!w) return;
-          const p = findPaneById(w.rootPane, paneIdForBrowser);
-          if (!p || p.type !== 'leaf') return;
-          const surf = p.surfaces.find((s) => s.id === surfaceId);
-          if (surf) {
-            if (url) {
-              surf.browserUrl = url;
-            }
-            surf.browserPartition = partition;
-          }
-          p.activeSurfaceId = surfaceId;
-        });
-        return { ok: true, surfaceId, url: url || existingBrowser.browserUrl, reused: true };
-      }
+    // Shared open-or-reuse algorithm (terminal links / port badges use the
+    // same one). focusPane:false keeps the user's terminal pane focused.
+    // Reuse now actually navigates the webview (store write + navigate
+    // event) — the old in-place setState only changed browserUrl, which the
+    // mounted webview never reads.
+    const result = openUrlInBrowserPane(url, {
+      workspaceId: targetWsId,
+      partition,
+      focusPane: false,
+    });
+
+    if (!result.ok) {
+      if (result.error === 'pane-cap') return { error: 'pane cap reached (max 20 per workspace)' };
+      if (result.error === 'invalid-url') return { error: 'browser.open: invalid url (http/https only)' };
+      return { error: 'no active workspace' };
     }
-
-    // No existing browser — split the active pane horizontally,
-    // then add browser surface to the new (right) pane.
-    // This uses PaneContainer's proven split mechanism instead of
-    // trying to render terminal+browser in the same leaf pane.
-    const paneId = ws.activePaneId;
-    const ok = store.splitPane(paneId, 'horizontal', targetWsId);
-    // At the per-workspace leaf cap splitPane is a no-op (and pushes its own
-    // toast). Bail out before addBrowserSurface so we don't drop a browser tab
-    // on the still-active original terminal pane.
-    if (!ok) return { error: 'pane cap reached (max 20 per workspace)' };
-
-    // After split, the new pane becomes active
-    const afterSplit = useStore.getState();
-    const afterSplitWs = afterSplit.workspaces.find((w) => w.id === targetWsId);
-    if (!afterSplitWs) return { ok: true };
-
-    const newPaneId = afterSplitWs.activePaneId;
-    afterSplit.addBrowserSurface(newPaneId, url, partition, targetWsId);
-
-    // Focus back to the original terminal pane so user can keep typing
-    afterSplit.setActivePane(paneId);
-
-    const updated = useStore.getState();
-    const updatedWs = updated.workspaces.find((w) => w.id === targetWsId);
-    if (!updatedWs) return { ok: true };
-    const newPane = findPaneById(updatedWs.rootPane, newPaneId);
-    if (!newPane || newPane.type !== 'leaf') return { ok: true };
-    const surface = newPane.surfaces[newPane.surfaces.length - 1];
-    return { ok: true, surfaceId: surface?.id, url: url || 'https://google.com' };
+    return result.reused
+      ? { ok: true, surfaceId: result.surfaceId, url: result.url, reused: true }
+      : { ok: true, surfaceId: result.surfaceId, url: result.url };
   }
 
   if (method === 'browser.session.applyProfile') {

@@ -5,6 +5,7 @@ import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
+import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import { tokenAttrs } from '../../themes';
 import { usePlugins } from '../../plugins/usePlugins';
 import { postPluginCommand } from '../../plugins/pluginFrameRegistry';
@@ -235,21 +236,9 @@ export default function CommandPalette() {
       {
         label: t('palette.cmd.openBrowser'),
         action: () => {
-          const state = useStore.getState();
-          const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-          if (ws) {
-            // splitPane returns false when the workspace has hit the leaf cap
-            // (paneSlice toasts the user). Bail out so the browser surface
-            // does not get attached to the still-active original pane.
-            const ok = state.splitPane(ws.activePaneId, 'horizontal');
-            if (ok) {
-              const newState = useStore.getState();
-              const newWs = newState.workspaces.find((w) => w.id === newState.activeWorkspaceId);
-              if (newWs) {
-                newState.addBrowserSurface(newWs.activePaneId);
-              }
-            }
-          }
+          // forceNew: the explicit "Open Browser" command always creates a
+          // fresh split — reuse is for link/port clicks (browserPaneActions).
+          openUrlInBrowserPane(undefined, { forceNew: true });
           setVisible(false);
         },
       },

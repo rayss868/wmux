@@ -6,6 +6,7 @@ import { t } from '../i18n';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import { useIpc } from './useIpc';
 import { pastePtyChunked } from '../utils/clipboardChunk';
+import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -621,24 +622,12 @@ export function useKeyboard() {
         return;
       }
 
-      // Ctrl+Shift+L: Open browser panel in a new horizontal split
+      // Ctrl+Shift+L: Open browser panel in a new horizontal split. forceNew
+      // keeps the explicit-creation semantics — link/port clicks reuse an
+      // existing browser pane, but this shortcut always makes another one.
       if (cmdOrCtrl && shift && !alt && key === 'L') {
         e.preventDefault();
-        const state = store.getState();
-        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-        if (ws) {
-          // splitPane returns false at the leaf cap (and surfaces its own
-          // toast). Bail out so we don't drop a browser surface on the still-
-          // active original terminal pane.
-          const ok = state.splitPane(ws.activePaneId, 'horizontal');
-          if (ok) {
-            const newState = store.getState();
-            const newWs = newState.workspaces.find((w) => w.id === newState.activeWorkspaceId);
-            if (newWs) {
-              newState.addBrowserSurface(newWs.activePaneId);
-            }
-          }
-        }
+        openUrlInBrowserPane(undefined, { forceNew: true });
         return;
       }
 

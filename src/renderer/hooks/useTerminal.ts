@@ -11,6 +11,7 @@ import { XTERM_THEMES, extractXtermColors, type ThemeId, type BuiltinThemeId } f
 import { isLight } from '../tailwindPalette';
 import { isDaemonModeActive } from '../daemon/daemonMode';
 import { pastePtyChunked, chunkOnDataIfNeeded } from '../utils/clipboardChunk';
+import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
@@ -292,8 +293,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
     const unicode11Addon = new Unicode11Addon();
-    const webLinksAddon = new WebLinksAddon((_event, uri) => {
-      window.electronAPI.shell.openExternal(uri);
+    // Smart link routing (X3): localhost URLs open in the embedded browser
+    // pane, external ones in the system browser; Ctrl/Cmd+click inverts. The
+    // ptyId identifies the owning workspace (multiview-safe reverse lookup).
+    const webLinksAddon = new WebLinksAddon((event, uri) => {
+      openTerminalUrl(uri, {
+        modifierHeld: event.ctrlKey || event.metaKey,
+        ptyId: ptyIdRef.current || undefined,
+      });
     });
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);

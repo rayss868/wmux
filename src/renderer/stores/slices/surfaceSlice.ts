@@ -2,13 +2,17 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createSurface, generateId } from '../../../shared/types';
+import { isSafeBrowserUrl } from '../../utils/browserPane';
 
 export interface SurfaceSlice {
   addSurface: (paneId: string, ptyId: string, shell: string, cwd: string) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
   closeSurface: (paneId: string, surfaceId: string) => void;
-  setActiveSurface: (paneId: string, surfaceId: string) => void;
+  /** Activate a surface tab. `workspaceId` lets RPC/helper callers target a
+   * non-active workspace (defaults to the active one — existing callers are
+   * unchanged). */
+  setActiveSurface: (paneId: string, surfaceId: string, workspaceId?: string) => void;
   nextSurface: (paneId: string) => void;
   prevSurface: (paneId: string) => void;
   updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string) => void;
@@ -22,6 +26,16 @@ export interface SurfaceSlice {
    * the tab tooltip rely on. No-op for an empty ptyId or an unknown pty.
    */
   updateSurfaceCwd: (ptyId: string, cwd: string) => void;
+  /**
+   * Persist the browser surface's current URL. Driven by BrowserPanel's
+   * did-navigate events (user clicks, toolbar, MCP/CDP navigations alike), so
+   * a session restore reopens the page the user last saw instead of the URL
+   * the surface was created with. Only http(s) URLs are recorded —
+   * about:blank / devtools schemes must not survive into session.json — and a
+   * same-value write returns without mutating (immer keeps the object
+   * identity, so zustand does not notify; SPAs spam did-navigate-in-page).
+   */
+  updateBrowserUrl: (surfaceId: string, url: string) => void;
   updateBrowserPartition: (partition: string, surfaceId?: string) => void;
 }
 
@@ -107,8 +121,8 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     }
   }),
 
-  setActiveSurface: (paneId, surfaceId) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  setActiveSurface: (paneId, surfaceId, workspaceId) => set((state: StoreState) => {
+    const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;
@@ -169,6 +183,23 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
           const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
           if (surface) { surface.cwd = cwd; return true; }
           return false;
+        }
+        return pane.children.some(updateInPane);
+      };
+      if (updateInPane(ws.rootPane)) return;
+    }
+  }),
+
+  updateBrowserUrl: (surfaceId, url) => set((state: StoreState) => {
+    if (!isSafeBrowserUrl(url)) return;
+    for (const ws of state.workspaces) {
+      const updateInPane = (pane: Pane): boolean => {
+        if (pane.type === 'leaf') {
+          const surface = pane.surfaces.find((s) => s.id === surfaceId);
+          if (!surface) return false;
+          if (surface.surfaceType !== 'browser') return true; // found but not a browser — ignore
+          if (surface.browserUrl !== url) surface.browserUrl = url;
+          return true;
         }
         return pane.children.some(updateInPane);
       };

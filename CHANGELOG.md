@@ -5,6 +5,16 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **The embedded browser pane is now wired into the terminal workflow (X3).** Clicking a URL printed in a terminal routes smartly: localhost / 127.0.0.1 URLs open in the workspace's embedded browser pane (reusing the existing pane and navigating it), external URLs open in the system browser, and Ctrl/Cmd+click inverts the choice. The sidebar's listening-port badges (X1) are now clickable — one click shows `http://localhost:<port>` in that workspace's browser pane, un-zooming any pane that would hide it. `target="_blank"` links inside the browser pane now work and open in the same pane (popup windows stay blocked). `Ctrl+Shift+L` and the palette's "Open Browser" keep their always-create-a-new-pane behavior.
+- **Browser panes restore on the page you last visited.** Every navigation — toolbar, in-page links, agent-driven CDP navigations alike — is persisted per surface, so a session restore reopens each browser pane on its last URL instead of the one it was created with.
+
+### Fixed
+- **`browser.open` on an existing browser surface now actually navigates the webview.** The reuse path only rewrote store state, which the mounted webview never re-reads — the MCP call reported success while the page stayed put.
+- **`browser.open` no longer resets an unspecified partition to the default.** The forced reset remounted the webview (the partition is part of its render key) and dropped the login session.
+
 ## [3.1.0] — 2026-06-12 — UI plugin host, workspace context sidebar, terminal notifications
 
 Headline: wmux panes and sidebars are now extensible by third-party UI plugins running in sandboxed iframes under the same permission stack as MCP plugins; the workspace sidebar shows live zero-config context (git branch, PR status, process-scoped listening ports, latest notification); and standard terminal notification escape sequences (OSC 9/777/99) are parsed into first-class events. Plus a batch of rendering and MCP-routing fixes. All features dogfood-verified on a live build.

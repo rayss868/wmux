@@ -42,6 +42,7 @@ export const en = {
   'workspace.prChecks.passing': 'checks passing',
   'workspace.prChecks.failing': 'checks failing',
   'workspace.listeningPorts': 'Listening ports',
+  'workspace.openPortTooltip': 'Open http://localhost:{port} in a browser pane',
   'workspace.lastNotification': 'Latest notification',
 
   // Workspace profile (env + startup command for new panes)
