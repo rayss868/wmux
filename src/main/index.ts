@@ -624,19 +624,14 @@ app.on('ready', async () => {
       : path.join(__dirname, '..', '..', 'assets', 'icon.png'),
   });
 
-  // First-launch race fix: create the BrowserWindow but DEFER renderer
-  // navigation until after the daemon bootstrap completes below. Loading
-  // the renderer here used to race the LOCAL→DAEMON handler swap inside
-  // `DaemonRespawnController.bootstrap()` — on fresh PCs the daemon spawn
-  // stretches into hundreds of ms (Defender realtime scan + ASAR cold
-  // cache + ConPTY cold start), and any `pty.write` issued from a renderer
-  // that mounted in LOCAL mode but reached the DAEMON-swapped handler
-  // silently dropped because `sessionPipes.get('pty-N')` is undefined.
-  // Symptom: "first keystroke doesn't register" / "only the first
-  // keystroke registers" on cold-start. Deferring navigation closes the
-  // race window at the cost of a brief solid-color window during the
-  // first daemon spawn — `backgroundColor: '#1e1e2e'` keeps that visible
-  // bridge inoffensive.
+  // Create the BrowserWindow but DEFER renderer navigation until the
+  // explicit loadMainRenderer() call below — after the console-message
+  // relay, recovery hooks, and tray wiring are attached, and after the
+  // daemon bootstrap has been KICKED (S-A Step 1 runs the renderer load in
+  // parallel with the bootstrap; see the comment at the loadMainRenderer
+  // call site for why the dda4c0c LOCAL-id-into-DAEMON-handler race that
+  // originally motivated full serialization is now closed by the
+  // get-ready-state resolver queue + paneGate instead of by ordering).
   // Plugin host (B-1): discover UI plugin bundles and serve them over
   // wmux-plugin:// to sandboxed iframes. Registered before the window
   // loads so panel iframes never race the protocol handler. Best-effort:
@@ -851,11 +846,72 @@ app.on('ready', async () => {
     },
   });
   markBoot('daemon-bootstrap-start');
-  try {
-    await daemonRespawnController.bootstrap();
-  } catch (err) {
+  // S-A Step 1 — kick the bootstrap WITHOUT awaiting so the renderer load
+  // below runs in parallel with the daemon spawn/connect (boot-trace showed
+  // renderer ~625 ms vs bootstrap ~464 ms serialized back-to-back; the
+  // shorter leg now hides behind the longer one). The .catch preserves the
+  // v2.8.1 invariant: a bootstrap failure must still fall through to
+  // markDaemonReady() so the renderer unblocks into local-PTY mode.
+  const daemonBootstrapP = daemonRespawnController.bootstrap().catch((err) => {
     console.warn('[Main] Daemon auto-start failed, using local PTY:', err);
+  });
+
+  // S-A Step 1 — load the renderer NOW, in parallel with the daemon
+  // bootstrap above. This deliberately reopens the dda4c0c window (renderer
+  // mounting while the LOCAL→DAEMON handler swap happens mid-flight), which
+  // is safe today because two defenses that did not exist back then both
+  // gate the race:
+  //   (a) the renderer's first `daemon.whenReady()` invoke parks in the
+  //       `daemon:get-ready-state` pending-resolver queue until
+  //       markDaemonReady() flushes it after the bootstrap settles, and
+  //   (b) paneGate keeps every renderer `pty.create` path closed until the
+  //       startup reconcile (which itself awaits whenReady) flips it to
+  //       'ready' — so no pty id can be minted against a mid-swap handler
+  //       topology.
+  // Companion changes gate the renderer paths that became reachable under
+  // the new timing: AppLayout's late-reconcile listener plus the three
+  // event-driven pty.create entry points (Ctrl+T, Ctrl+` floating pane,
+  // palette new-surface) whose handlers live outside the paneGate
+  // placeholder subtree.
+  //
+  // Load-failure recovery (adversarial review P2): these listeners used to
+  // be registered later in the ready handler with no intervening await, so
+  // they could not miss the first load failure. Now that an `await
+  // daemonBootstrapP` sits between the load and the rest of the handler,
+  // they must be attached BEFORE loadMainRenderer() or a did-fail-load
+  // fired during the bootstrap await (dev server not up yet, corrupt
+  // packaged assets) would escape the auto-reload backoff entirely.
+  //
+  // dev에서 Vite dev server가 아직 준비 전이거나(포트 점유로 5174 지연) 죽었을 때
+  // did-fail-load가 발생한다. 기존엔 2초 고정 간격으로 무한 reload해 콘솔을
+  // ERR_CONNECTION_REFUSED로 도배했다. 지수 백오프 + 재시도 상한으로 교체한다.
+  let didFailLoadCount = 0;
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    // ERR_ABORTED(-3): 새 내비게이션이 이전 로드를 정상 취소한 경우 — 재시도 불필요.
+    if (errorCode === -3) return;
+    console.error('[Main] Page failed to load:', errorCode, errorDescription);
+    didFailLoadCount += 1;
+    if (didFailLoadCount > 10) {
+      console.error('[Main] did-fail-load 10회 초과 — 자동 reload 중단. dev server(npm start)나 빌드 자산을 확인하세요.');
+      return;
+    }
+    const delay = Math.min(500 * 2 ** (didFailLoadCount - 1), 30_000);
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+    }, delay);
+  });
+  mainWindow.webContents.on('did-finish-load', () => {
+    didFailLoadCount = 0; // 로드 성공 — 백오프 카운터 리셋
+    console.log('[Main] Page loaded successfully');
+  });
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    loadMainRenderer(mainWindow);
+    markBoot('renderer-load-triggered');
+    logLine('info', 'main', 'renderer load triggered in parallel with daemon bootstrap');
   }
+
+  await daemonBootstrapP;
   markBoot('daemon-bootstrap-end');
 
   // v2.8.1 hotfix (Bug 3): unblock any renderer that already invoked
@@ -864,25 +920,13 @@ app.on('ready', async () => {
   // mainWindow.reload() recovery paths (renderer crash, unresponsive,
   // did-fail-load) still get a truthful answer instead of deadlocking
   // on a one-shot event the previous preload instance consumed.
-  // Order matters: mark ready BEFORE loading the renderer so the very
-  // first `daemon.whenReady()` invoke from the renderer resolves on its
-  // synchronous path (no pending-resolver queueing) and AppLayout can
-  // reconcile immediately against the now-stable handler topology.
+  // With the parallel renderer load above, the FIRST whenReady() invoke
+  // typically arrives before the bootstrap settles — it parks in the
+  // pending-resolver queue and this call flushes it with the now-final
+  // `daemonClient` value. Order still matters: mark ready only AFTER the
+  // bootstrap promise settles so the flushed answer reflects the decided
+  // daemon-vs-local topology.
   markDaemonReady();
-
-  // First-launch race fix companion: now that `cleanupHandlers` reflects
-  // the final daemon-vs-local handler topology and `markDaemonReady()`
-  // has unblocked future `daemon.whenReady()` calls, it is safe to load
-  // the renderer. Every subsequent `pty.create` from the renderer will
-  // be routed by the correct handler and produce a correctly-formatted
-  // id (`daemon-XX` in daemon mode, `pty-N` in local mode) — eliminating
-  // the LOCAL-id-into-DAEMON-handler silent-drop race documented above
-  // the `createWindow({ deferLoad: true })` call.
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    loadMainRenderer(mainWindow);
-    markBoot('renderer-load-triggered');
-    logLine('info', 'main', 'renderer load triggered after daemon bootstrap');
-  }
 
   // Handle system sleep/wake — verify PTY processes survived.
   //
@@ -955,28 +999,6 @@ app.on('ready', async () => {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
-  });
-  // dev에서 Vite dev server가 아직 준비 전이거나(포트 점유로 5174 지연) 죽었을 때
-  // did-fail-load가 발생한다. 기존엔 2초 고정 간격으로 무한 reload해 콘솔을
-  // ERR_CONNECTION_REFUSED로 도배했다. 지수 백오프 + 재시도 상한으로 교체한다.
-  let didFailLoadCount = 0;
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-    // ERR_ABORTED(-3): 새 내비게이션이 이전 로드를 정상 취소한 경우 — 재시도 불필요.
-    if (errorCode === -3) return;
-    console.error('[Main] Page failed to load:', errorCode, errorDescription);
-    didFailLoadCount += 1;
-    if (didFailLoadCount > 10) {
-      console.error('[Main] did-fail-load 10회 초과 — 자동 reload 중단. dev server(npm start)나 빌드 자산을 확인하세요.');
-      return;
-    }
-    const delay = Math.min(500 * 2 ** (didFailLoadCount - 1), 30_000);
-    setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
-    }, delay);
-  });
-  mainWindow.webContents.on('did-finish-load', () => {
-    didFailLoadCount = 0; // 로드 성공 — 백오프 카운터 리셋
-    console.log('[Main] Page loaded successfully');
   });
   // M0-e — hydrate MetadataStore from disk, then wire the persist callback
   // so subsequent `metadataStore.set/clear/onPaneDeleted` flush to disk
