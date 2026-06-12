@@ -196,6 +196,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalFontFamily: state.terminalFontFamily,
     defaultShell: state.defaultShell,
     splitInheritsCwd: state.splitInheritsCwd,
+    imeResidueGuardEnabled: state.imeResidueGuardEnabled,
     startupDirectory: state.startupDirectory || undefined,
     scrollbackLines: state.scrollbackLines,
     scrollbackRestoreEnabled: state.scrollbackRestoreEnabled,

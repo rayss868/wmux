@@ -129,6 +129,7 @@ export const en = {
   'terminal.openPathBlocked': 'Executable blocked — opened parent folder',
   'terminal.openPathFailed': "Couldn't open — showing folder",
   'terminal.bookmarkAdded': 'Bookmark added',
+  'terminal.imeInputRecovered': 'Keyboard input was stuck in the IME and has been recovered automatically',
 
   // Context menu
   'contextMenu.copy': 'Copy',
@@ -184,6 +185,8 @@ export const en = {
   'settings.startupDirectoryPlaceholder': 'e.g. C:\\Projects',
   'settings.splitInheritsCwd': 'Splits inherit directory',
   'settings.splitInheritsCwdDesc': 'A pane created by splitting starts in the original pane\'s current directory.',
+  'settings.imeResidueGuard': 'Clear IME residue while idle',
+  'settings.imeResidueGuardDesc': 'Protects against voice-input tools that replace leftover IME text destructively. Leave off unless you use such a tool — the clearing can confuse some IMEs.',
   'settings.updates': 'Updates',
   'settings.wmuxUpdates': 'wmux updates',
   'settings.updateFailed': 'Failed to check for updates',

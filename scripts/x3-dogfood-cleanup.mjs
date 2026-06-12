@@ -3,7 +3,7 @@
 import { chromium } from 'playwright-core';
 
 const CDP = process.env.CDP;
-const WS_NAME = 'Workspace 7';
+const WS_NAME = process.env.WS_NAME || 'Workspace 7';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function findRenderer(ctx) {

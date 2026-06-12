@@ -19,6 +19,7 @@ import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
 import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
+import { attachImeStormGuard } from '../terminal/imeStormGuard';
 import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
@@ -27,6 +28,21 @@ import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectP
 // Module-level terminal registry for scrollback persistence
 const terminalRegistry = new Map<string, Terminal>();
 export { terminalRegistry };
+
+// Registration push channel. Restored terminals register only after their
+// async scrollback load completes — often far beyond useActivePaneFocus's
+// 10-frame retry window during a session-restore boot — so polling alone
+// leaves DOM focus on <body> until the user switches panes. Subscribers get
+// the ptyId the moment registerTerminal runs.
+const terminalRegistrationListeners = new Set<(ptyId: string) => void>();
+export function onTerminalRegistered(listener: (ptyId: string) => void): () => void {
+  terminalRegistrationListeners.add(listener);
+  return () => terminalRegistrationListeners.delete(listener);
+}
+function registerTerminal(ptyId: string, terminal: Terminal): void {
+  terminalRegistry.set(ptyId, terminal);
+  for (const listener of [...terminalRegistrationListeners]) listener(ptyId);
+}
 
 // Monotonic token source so each useTerminal instance gets a stable, unique key
 // in the shared WebGL context pool. We never key the pool on ptyId directly —
@@ -349,9 +365,29 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // xtermjs/xterm.js#6012. Gated off under screenReaderMode, where xterm
     // intentionally retains the text until blur for announcement (wmux never
     // enables that option today).
-    const imeResidueGuard = terminal.options.screenReaderMode
+    // Off by default since v3.1.1: the wipe is a programmatic mutation of the
+    // IME-owned textarea, and it is the prime suspect for the field-reported
+    // "input dead until remount" 229-claim storms on Korean Windows (the
+    // exact trigger is machine-dependent and did not reproduce locally). The
+    // AutoGLM-style voice-injector protection it provides is opt-in via
+    // Settings → Terminal. Read once at terminal creation, like the other
+    // constructor-time options.
+    const imeResidueGuard = (terminal.options.screenReaderMode || !useStore.getState().imeResidueGuardEnabled)
       ? null
       : attachImeResidueGuard(terminal);
+
+    // Dead-input self-healing (always on): if the IME claim-storm signature
+    // shows up — consecutive keyCode-229 keydowns across distinct keys with
+    // zero composition activity — resync the IME context with a blur/refocus
+    // (the same thing a remount does) and tell the user what happened.
+    const imeStormGuard = attachImeStormGuard(terminal, {
+      onRecover: ({ count, codes }) => {
+        console.error(
+          `[wmux:ime] keydown-229 claim storm on pty=${ptyId} (${count} keys: ${codes.join(', ')}) — IME context resynced via blur/refocus`,
+        );
+        useStore.getState().pushToast({ message: t('terminal.imeInputRecovered'), level: 'info' });
+      },
+    });
 
     // Paint the container backdrop with the xterm theme background so the 4px
     // padding (and the sub-cell rounding gap xterm leaves around its grid) fades
@@ -967,7 +1003,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // completes. Setting it synchronously before the async load lets
         // the 5s autosave tick dump an empty/partial buffer over the
         // previous scrollback file on disk.
-        terminalRegistry.set(ptyId, terminal);
+        registerTerminal(ptyId, terminal);
       }).catch((err) => {
         // Instrumentation: surface the real failure reason. Previously this
         // catch silently swallowed errors, including "No handler registered
@@ -989,12 +1025,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
         if (pendingData.length > 0) fireFirstData();
         pendingData.length = 0;
-        terminalRegistry.set(ptyId, terminal);
+        registerTerminal(ptyId, terminal);
       });
     } else {
       connectPty();
       // No scrollback to restore — register immediately for fresh terminals.
-      terminalRegistry.set(ptyId, terminal);
+      registerTerminal(ptyId, terminal);
       // Fix D — daemon (re)attach is owned by the daemon-mode effect below
       // (fires at mount if active, or on a later daemon:connected). connectPty
       // above has already registered pty.onData/onExit, so replay lands safely.
@@ -1076,6 +1112,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
       imeResidueGuard?.dispose();
+      imeStormGuard.dispose();
       autoCopy.dispose();
       selectionDisposable.dispose();
       pathLinkDisposable.dispose();

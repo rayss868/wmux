@@ -389,6 +389,12 @@ export interface SessionData {
    */
   splitInheritsCwd?: boolean;
   /**
+   * Issue #167 idle-clearing of xterm's hidden IME textarea (protects
+   * against field-replacing voice injectors). Default false since v3.1.1 —
+   * the wipe is the prime suspect for IME claim storms that deaden input.
+   */
+  imeResidueGuardEnabled?: boolean;
+  /**
    * Issue #175: global default starting directory for new terminals.
    * Empty/unset → os.homedir(). Per-workspace profile.startupCwd overrides.
    */

@@ -912,6 +912,8 @@ function TabGeneral() {
   const setScrollbackRestoreEnabled = useStore((s) => s.setScrollbackRestoreEnabled);
   const splitInheritsCwd = useStore((s) => s.splitInheritsCwd);
   const setSplitInheritsCwd = useStore((s) => s.setSplitInheritsCwd);
+  const imeResidueGuardEnabled = useStore((s) => s.imeResidueGuardEnabled);
+  const setImeResidueGuardEnabled = useStore((s) => s.setImeResidueGuardEnabled);
   const startupDirectory = useStore((s) => s.startupDirectory);
   const setStartupDirectory = useStore((s) => s.setStartupDirectory);
   const autoUpdateEnabled = useStore((s) => s.autoUpdateEnabled);
@@ -988,6 +990,13 @@ function TabGeneral() {
             checked={splitInheritsCwd}
             onChange={setSplitInheritsCwd}
             label={t('settings.splitInheritsCwd')}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.imeResidueGuard')} description={t('settings.imeResidueGuardDesc')}>
+          <Toggle
+            checked={imeResidueGuardEnabled}
+            onChange={setImeResidueGuardEnabled}
+            label={t('settings.imeResidueGuard')}
           />
         </SettingRow>
         <SettingRow label={t('settings.scrollbackLines')} description={t('settings.scrollbackDesc')}>

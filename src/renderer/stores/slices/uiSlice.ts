@@ -89,6 +89,13 @@ export interface UISlice {
   splitInheritsCwd: boolean;
   setSplitInheritsCwd: (enabled: boolean) => void;
 
+  // Idle-clearing of xterm's hidden IME textarea (issue #167, AutoGLM-style
+  // voice injectors). Default OFF since v3.1.1: the programmatic wipe is the
+  // prime suspect for field-reported IME claim storms that kill keyboard
+  // input until the terminal remounts. Applies to newly created terminals.
+  imeResidueGuardEnabled: boolean;
+  setImeResidueGuardEnabled: (enabled: boolean) => void;
+
   // Issue #175: global default starting directory for new terminals.
   // '' = unset → os.homedir() fallback in the spawn layer.
   startupDirectory: string;
@@ -626,6 +633,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setSplitInheritsCwd: (enabled) => set((state) => {
     state.splitInheritsCwd = enabled;
+  }),
+
+  imeResidueGuardEnabled: false,
+
+  setImeResidueGuardEnabled: (enabled) => set((state) => {
+    state.imeResidueGuardEnabled = enabled;
   }),
 
   startupDirectory: '',

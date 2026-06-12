@@ -84,6 +84,7 @@ export const ko = {
   'terminal.openPathBlocked': '실행 파일 차단됨 — 부모 폴더만 열림',
   'terminal.openPathFailed': '열 수 없음 — 폴더 위치 표시',
   'terminal.bookmarkAdded': '북마크 추가됨',
+  'terminal.imeInputRecovered': '한글 입력기에 키 입력이 갇혀 있어 자동으로 복구했습니다',
 
   // Context menu
   'contextMenu.copy': '복사',
@@ -139,6 +140,8 @@ export const ko = {
   'settings.startupDirectoryPlaceholder': '예: C:\\Projects',
   'settings.splitInheritsCwd': '분할 시 디렉토리 계승',
   'settings.splitInheritsCwdDesc': '창 분할로 생긴 새 패널이 원래 패널의 현재 디렉토리에서 시작합니다.',
+  'settings.imeResidueGuard': 'IME 잔여 텍스트 자동 비우기',
+  'settings.imeResidueGuardDesc': '잔여 IME 텍스트를 파괴적으로 덮어쓰는 음성 입력 도구로부터 보호합니다. 해당 도구를 쓰지 않으면 꺼 두세요 — 일부 입력기와 충돌할 수 있습니다.',
   'settings.updates': '업데이트',
   'settings.wmuxUpdates': 'wmux 업데이트',
   'settings.updateFailed': '업데이트 확인 실패',
