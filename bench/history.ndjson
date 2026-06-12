@@ -4,3 +4,4 @@
 {"ts":"2026-06-12T13:01:17.026Z","commit":"3d698a9","mode":"ci","appVersion":"3.2.0","coldFirstPtyDataMs":2402,"echoP95Ms":13,"frameP95Ms":26,"frame8P95Ms":25.2,"ramIdleBytes":589492224,"ram8Bytes":1495080960}
 {"ts":"2026-06-12T15:19:00.530Z","commit":"334a2cb","mode":"ci","appVersion":"3.2.0","coldFirstPtyDataMs":2168,"echoP95Ms":14.2,"frameP95Ms":25.2,"frame8P95Ms":25.6,"ramIdleBytes":604147712,"ram8Bytes":1541705728}
 {"ts":"2026-06-12T15:30:10.677Z","commit":"782400a","mode":"ci","appVersion":"3.2.0","coldFirstPtyDataMs":2010,"echoP95Ms":15,"frameP95Ms":25,"frame8P95Ms":25.8,"ramIdleBytes":720609280,"ram8Bytes":1479712768}
+{"ts":"2026-06-12T15:39:39.367Z","commit":"a3bdb84","mode":"ci","appVersion":"3.2.0","coldFirstPtyDataMs":1341,"echoP95Ms":13.5,"frameP95Ms":25.5,"frame8P95Ms":25.5,"ramIdleBytes":723472384,"ram8Bytes":1530503168}
