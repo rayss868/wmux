@@ -5,7 +5,9 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.2.0] — 2026-06-12 — wmux CLI on your PATH, wmux.json project config, click-to-jump notifications, perf gate
+
+Headline: every shell — inside or outside wmux — gets a `wmux` command with verified self-pane identity; a repo-root `wmux.json` turns "open this repo" into a fully arranged workspace (custom commands + declarative pane layout) behind a byte-exact trust gate; clicking a desktop toast now jumps straight to the pane that fired it; and a benchmark harness with a CI regression gate puts real numbers behind the performance story (echo p95 29.2 ms, no degradation at 8 panes). Plus cross-workspace browser-close routing, a multi-image paste fix, and Smart App Control install guidance.
 
 ### Added
 - **Clicking an OS toast now jumps to the pane that fired it (X2).** Desktop notifications — agent turn-ends, OSC 9/777/99 terminal notifications, process-exit errors, and external `wmux notify` calls — carry their originating pane context. Clicking the toast restores and focuses the window, switches to the owning workspace, activates the pane and the exact surface (tab) that produced the notification, marks its unread notifications read, and clears the attention ring. Toasts from `wmux notify --workspace <id>` jump to that workspace; if the source terminal closed between toast and click, the click degrades to the old focus-the-window behavior.
@@ -23,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Pasting multiple images in a row no longer invalidates the earlier ones** (#201). Each image paste deleted the previous `wmux-paste` temp file, so pasting several screenshots into Claude Code left only the most recent path readable. Temp files now survive the session (a startup sweep removes stale ones older than 24h) and get a random suffix so rapid pastes can't collide.
 - **`browser_close` / `wmux browser close` can no longer tear down a browser pane the user is viewing in another workspace.** `browser.open` was pinned to the caller's workspace in #193, but `browser.close` kept resolving "the browser pane" inside the UI-active workspace — an agent in workspace A issuing a close took down whatever browser the user happened to be looking at in workspace B, or got a spurious "not found" when B had none. Close now routes the same way open does: MCP resolves the calling workspace (fail-closed), the CLI uses its verified self-pane identity (with a `--workspace` override), and an explicit `surfaceId` — which is globally unique — is found across all workspaces. `surface.close` with an explicit id likewise no longer fails with "surface not found" when the surface lives outside the active workspace. Callers that pass no workspace at all keep the active-workspace behavior.
+
+### Contributors
+- **[@alphabeen](https://github.com/alphabeen)** — Smart App Control installation investigation ([#200](https://github.com/openwong2kim/wmux/issues/200)): a complete diagnostic timeline (registry state, Code Integrity 3077 events, the transient cloud-reputation behavior, and why v2.x was unaffected) that became the new SAC install guidance verbatim. Exemplary report — thank you!
 
 ## [3.1.1] — 2026-06-12 — browser pane wired into the workflow, IME input self-healing
 
