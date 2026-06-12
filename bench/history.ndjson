@@ -1,1 +1,2 @@
 {"ts":"2026-06-12T11:58:13.363Z","commit":"eda3242","mode":"ci","appVersion":"3.1.1","coldFirstPtyDataMs":2309,"echoP95Ms":13.2,"frameP95Ms":25.4,"frame8P95Ms":25.5,"ramIdleBytes":789835776,"ram8Bytes":1516699648}
+{"ts":"2026-06-12T12:04:03.639Z","commit":"b3115a9","mode":"ci","appVersion":"3.1.1","coldFirstPtyDataMs":2766,"echoP95Ms":13.3,"frameP95Ms":25.4,"frame8P95Ms":25.7,"ramIdleBytes":787103744,"ram8Bytes":1518895104}
