@@ -52,6 +52,14 @@ choco install wmux
 
 > **Seeing a "Windows protected your PC" warning?** The installer is not yet Authenticode-signed (free code signing via SignPath is being set up — see **Code signing** below), so Windows SmartScreen flags it as from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. Installing via **winget** or **Chocolatey** above avoids this prompt entirely, since those package managers run in a trusted context.
 
+> **Installer blocked with no "Run anyway" option?** If **Smart App Control (SAC)** is enabled on your Windows 11 device, the unsigned installer may be blocked outright — no SmartScreen dialog, no override. SAC enforcement is separate from SmartScreen and relies on Microsoft's cloud reputation, so a block can be transient: the same binary may install successfully hours later once the hash gains reputation, with no local changes ([#200](https://github.com/openwong2kim/wmux/issues/200)). Check whether SAC is the cause:
+>
+> ```powershell
+> Get-MpComputerStatus | Select-Object SmartAppControlState
+> ```
+>
+> If it reports `On`, your options are: install via **winget** or **Chocolatey** above, retry the installer later, or build from source (see below). Blocked attempts also log Code Integrity **Event ID 3077** in Event Viewer.
+
 **One-liner (PowerShell):** downloads the prebuilt Setup.exe from the latest release and verifies its SHA-256 before launching it (no Node/Python/build tools needed).
 ```powershell
 irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
@@ -318,6 +326,9 @@ No. wmux is fully native Windows (ConPTY + Electron). No WSL, Cygwin, or MSYS2 n
 
 **Why does Windows show a "Windows protected your PC" warning when I run the installer?**
 The installer isn't code-signed yet, so Windows SmartScreen flags it as coming from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. To avoid the prompt entirely, install via `winget install openwong2kim.wmux` or `choco install wmux`; those package managers run in a trusted context, so SmartScreen never appears.
+
+**The installer is blocked and there's no "Run anyway" button. What's going on?**
+Your device likely has **Smart App Control (SAC)** enabled — a Windows 11 feature separate from SmartScreen that blocks unsigned binaries with no user override. Check with `Get-MpComputerStatus | Select-Object SmartAppControlState` in PowerShell. SAC decisions come from Microsoft's cloud reputation service, so blocks can be transient — the same installer may succeed hours later without any local changes ([#200](https://github.com/openwong2kim/wmux/issues/200)). Workarounds: install via winget or Chocolatey, retry later, or build from source.
 
 ---
 

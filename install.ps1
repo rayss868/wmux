@@ -264,6 +264,12 @@ if (-not $FromSource) {
     Write-Host "  Note: the installer is not yet code-signed, so Windows SmartScreen may" -ForegroundColor DarkGray
     Write-Host "        show 'unknown publisher' — click More info -> Run anyway." -ForegroundColor DarkGray
     Write-Host ""
+    Write-Host "  If the installer is blocked with NO 'Run anyway' option, Smart App Control" -ForegroundColor DarkGray
+    Write-Host "  (SAC) may be enforcing on this device. Check with:" -ForegroundColor DarkGray
+    Write-Host "      Get-MpComputerStatus | Select-Object SmartAppControlState" -ForegroundColor DarkGray
+    Write-Host "  SAC blocks can be transient (cloud reputation) — retry later, or install" -ForegroundColor DarkGray
+    Write-Host "  via winget/Chocolatey. Details: github.com/openwong2kim/wmux/issues/200" -ForegroundColor DarkGray
+    Write-Host ""
     return
 }
 
