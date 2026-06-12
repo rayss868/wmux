@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **wmux now signals when Claude Code is waiting on an `AskUserQuestion` prompt** ([#212](https://github.com/openwong2kim/wmux/pull/212), thanks [@matdac6](https://github.com/matdac6)). When Claude Code shows its multi-line boxed question UI inside a wmux pane, the pane's sidebar dot turns yellow and the awaiting-input sound fires — the same signal you already get for single-line approval prompts. Previously "awaiting input" was detected only by the regex `AgentDetector`, which is anchored to single-line prompts (`Do you want to proceed?`) and never matched the boxed `AskUserQuestion` layout, so a user who looked away got no cue that the agent was blocked on them. The fix is signal-based, not another regex: a `PreToolUse` hook scoped to the `AskUserQuestion` tool maps to the existing `awaiting_input` status (guarded on `tool_name` so a future broad matcher can't tunnel spurious signals). The dot clears automatically when you answer and the agent resumes. No new UI — it reuses the existing status, sound, and dot.
 - **Cold-start boot-phase instrumentation (S-A).** The main process now emits one cheap `[boot-trace]` line per boot milestone (process spawn → module eval → app-ready → plugin load → daemon bootstrap with spawn/pipe/ping sub-phases → ready end), plus a JSON summary that lands in the daily log file; the daemon exposes its own boot marks through `daemon.ping`. The perf bench collects both and prints a derived phase-attribution table, so a cold-start regression now points at the guilty phase instead of a single opaque number. First run of the new table immediately attributed ~70% of the measured cold start to the auth-token ACL hardening's synchronous PowerShell shell-outs (one in the main process, one in the daemon) — the optimization target for the follow-up PR. Zero telemetry: stderr and local log files only.
 
 ### Changed
@@ -18,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Token ACL hardening silently degraded to icacls when wmux was launched from PowerShell 7 (Store install).** The inherited `PSModulePath` leads with pwsh 7's Core-edition Modules directory, so the Windows PowerShell 5.1 child failed to auto-load its own `Microsoft.PowerShell.Management`/`Security` modules (`CommandNotFoundException` on `Get-Item`), and the #124 DACL rebuild — the only primitive that removes pre-existing explicit broad ACEs — never ran, falling back to icacls on every boot. The 5.1 child now gets `PSModulePath` stripped from its environment so it reconstructs its own default module path regardless of which shell spawned wmux. Found via the new boot traces: the measured "hardening cost" on a pwsh7-launched dev box was actually a failing PowerShell plus the fallback.
+
+### Contributors
+- **[@matdac6](https://github.com/matdac6)** — `AskUserQuestion` awaiting-input notification ([#212](https://github.com/openwong2kim/wmux/pull/212)), their second contribution after the workspace Rename context-menu item (#184). A clean signal-based fix with a root-cause writeup, a `tool_name` guard against spurious signals, and tests on the wmux side — thank you!
 
 ## [3.2.0] — 2026-06-12 — wmux CLI on your PATH, wmux.json project config, click-to-jump notifications, perf gate
 
