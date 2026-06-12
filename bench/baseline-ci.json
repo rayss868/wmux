@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "tool": "perf-bench.mjs",
+    "mode": "ci",
+    "appVersion": "3.1.1",
+    "commit": "eda3242",
+    "startedAt": "2026-06-12T11:57:04.871Z",
+    "finishedAt": "2026-06-12T11:58:12.506Z",
+    "platform": "win32",
+    "arch": "x64",
+    "cpuModel": "AMD EPYC 9V74 80-Core Processor                ",
+    "cpuCount": 4,
+    "totalMemBytes": 17174360064,
+    "osRelease": "10.0.26100",
+    "nodeVersion": "v22.22.3",
+    "config": {
+      "coldRuns": 3,
+      "inputSamples": 80,
+      "inputSamples8": 40
+    }
+  },
+  "scenarios": {
+    "coldStart": {
+      "runs": [
+        {
+          "cdpReadyMs": 162,
+          "pipeReadyMs": 1739,
+          "rendererReadyMs": 2197,
+          "firstPtyDataMs": 2309,
+          "fcpMs": 1911.4
+        },
+        {
+          "cdpReadyMs": 171,
+          "pipeReadyMs": 1675,
+          "rendererReadyMs": 2119,
+          "firstPtyDataMs": 2207,
+          "fcpMs": 1855.6
+        },
+        {
+          "cdpReadyMs": 154,
+          "pipeReadyMs": 1997,
+          "rendererReadyMs": 2508,
+          "firstPtyDataMs": 2521,
+          "fcpMs": 2187.3
+        }
+      ],
+      "median": {
+        "cdpReadyMs": 162,
+        "pipeReadyMs": 1739,
+        "rendererReadyMs": 2197,
+        "firstPtyDataMs": 2309,
+        "fcpMs": 1911.4
+      },
+      "medianRunCounts": {
+        "cdpReadyMs": 3,
+        "pipeReadyMs": 3,
+        "rendererReadyMs": 3,
+        "firstPtyDataMs": 3,
+        "fcpMs": 3
+      }
+    },
+    "ram": {
+      "idle1Pane": {
+        "workingSetBytes": 789835776,
+        "commitBytes": 486248448,
+        "processCount": 11,
+        "appMetricsRaw": 405872640
+      },
+      "panes8": {
+        "workingSetBytes": 1516699648,
+        "commitBytes": 852291584,
+        "processCount": 21,
+        "appMetricsRaw": 462241792
+      }
+    },
+    "inputLatency": {
+      "paneCount": 1,
+      "samples": 80,
+      "dropped": 0,
+      "throttled": false,
+      "echoMs": {
+        "count": 80,
+        "p50": 11.3,
+        "p95": 13.2,
+        "p99": 15.4,
+        "min": 2,
+        "max": 15.4,
+        "mean": 10.881
+      },
+      "frameMs": {
+        "count": 80,
+        "p50": 23.4,
+        "p95": 25.4,
+        "p99": 25.8,
+        "min": 5.5,
+        "max": 25.8,
+        "mean": 22.115
+      },
+      "rafCadenceMs": {
+        "p50": 15.6,
+        "p95": 15.7
+      }
+    },
+    "inputLatency8": {
+      "paneCount": 8,
+      "samples": 40,
+      "dropped": 0,
+      "throttled": false,
+      "echoMs": {
+        "count": 40,
+        "p50": 11.1,
+        "p95": 12,
+        "p99": 13.4,
+        "min": 2.2,
+        "max": 13.4,
+        "mean": 10.295
+      },
+      "frameMs": {
+        "count": 40,
+        "p50": 23.8,
+        "p95": 25.5,
+        "p99": 25.7,
+        "min": 7.4,
+        "max": 25.7,
+        "mean": 22.083
+      },
+      "rafCadenceMs": {
+        "p50": 15.6,
+        "p95": 15.7
+      }
+    }
+  }
+}
