@@ -95,7 +95,7 @@ export class PTYBridge {
           body: 'Terminal output stopped after active period',
         };
         sendNotification(win, ptyId, notification);
-        toastManager.show(notification.title, notification.body);
+        toastManager.show(notification.title, notification.body, { ptyId });
       } catch (err) {
         console.warn('[PTYBridge] onActiveToIdle callback error:', err);
       }
@@ -289,7 +289,7 @@ export class PTYBridge {
             body: parsed.body,
           };
           sendNotification(win, ptyId, notification);
-          toastManager.show(notification.title, notification.body);
+          toastManager.show(notification.title, notification.body, { ptyId });
           // X1 — sidebar "latest notification" line (schema-freeze §2),
           // parity with DaemonNotificationRouter's fold.
           broadcastMetadataUpdate(win, {
@@ -407,7 +407,7 @@ export class PTYBridge {
             ? 'Awaiting input'
             : status === 'waiting' ? 'Ready for input' : 'Task finished';
           sendNotification(win, ptyId, { type: 'agent', title, body });
-          toastManager.show(title, body);
+          toastManager.show(title, body, { ptyId });
 
           // Tee to EventBus for external observers (orchestrator clients).
           // 'waiting' and 'complete' collapse to kind:'agent.stop' — they
@@ -588,7 +588,7 @@ export class PTYBridge {
             body: `Exit code ${exitCode} after ${seconds}s`,
           };
           sendNotification(win, ptyId, notification);
-          toastManager.show(notification.title, notification.body);
+          toastManager.show(notification.title, notification.body, { ptyId });
         }
       }
       this.cleanupInstance(ptyId);
