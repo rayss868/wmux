@@ -47,6 +47,8 @@ export class AutoUpdater {
   private isChecking = false;
   private enabled = true;
   private pendingUpdate: UpdateInfo | null = null;
+  private downloadedPath: string | null = null;
+  private isDownloading = false;
 
   constructor(getWindow: () => BrowserWindow | null) {
     this.getWindow = getWindow;
@@ -100,12 +102,16 @@ export class AutoUpdater {
     try {
       const update = await this.fetchUpdate();
       if (update) {
+        const isNewVersion = this.pendingUpdate?.name !== update.name;
         this.pendingUpdate = update;
+        if (isNewVersion) this.downloadedPath = null; // a newer update supersedes any prior download
         this.sendToRenderer(IPC.UPDATE_AVAILABLE, {
           status: 'available',
           releaseName: update.name,
           releaseNotes: update.notes,
         });
+        // Two-step: auto-download + verify in the background, then emit 'downloaded'.
+        void this.downloadUpdate();
       } else {
         this.sendToRenderer(IPC.UPDATE_NOT_AVAILABLE, { status: 'not-available' });
       }
@@ -115,6 +121,52 @@ export class AutoUpdater {
       this.sendToRenderer(IPC.UPDATE_ERROR, { status: 'error', message });
     } finally {
       this.isChecking = false;
+    }
+  }
+
+  /**
+   * Two-step phase 2 — download the pending update's installer, SHA-256-verify
+   * it, and stash the local path. Streams progress over UPDATE_DOWNLOAD and
+   * emits UPDATE_AVAILABLE{downloaded} on success. Fail-closed: any error
+   * surfaces UPDATE_ERROR, cleans up the temp file, and leaves no downloadedPath.
+   */
+  private async downloadUpdate(): Promise<void> {
+    if (!isUpdaterSupported) return;
+    const pending = this.pendingUpdate;
+    if (!pending) return;
+    if (this.isDownloading) return;
+    if (this.downloadedPath) return; // already have a verified installer for this version
+    this.isDownloading = true;
+
+    let tempPath: string | null = null;
+    try {
+      const manifestRaw = await this.fetchManifest();
+      const validated = validateManifest(manifestRaw, pending.name);
+      if (!validated.ok) {
+        throw new Error(`update manifest rejected: ${validated.reason}`);
+      }
+      tempPath = await this.downloadAndVerify(validated.manifest, (percent) => {
+        this.sendToRenderer(IPC.UPDATE_DOWNLOAD, { status: 'downloading', percent });
+      });
+      this.downloadedPath = tempPath;
+      console.log('[AutoUpdater] Update downloaded + verified (sha256 match) — ready to install');
+      this.sendToRenderer(IPC.UPDATE_AVAILABLE, {
+        status: 'downloaded',
+        releaseName: pending.name,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[AutoUpdater] download aborted (fail-closed):', message);
+      if (tempPath) {
+        await unlink(tempPath).catch(() => { /* best-effort cleanup */ });
+      }
+      this.downloadedPath = null;
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        message: `Update could not be downloaded or verified: ${message}`,
+      });
+    } finally {
+      this.isDownloading = false;
     }
   }
 
@@ -179,7 +231,10 @@ export class AutoUpdater {
    * match; rejects on any transport error or digest mismatch (caller cleans up
    * and aborts — fail-closed).
    */
-  private downloadAndVerify(manifest: UpdateManifest): Promise<string> {
+  private downloadAndVerify(
+    manifest: UpdateManifest,
+    onProgress?: (percent: number | null) => void,
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       // Defense in depth: validateManifest already allowlist-checked the URL;
       // re-assert before opening the socket.
@@ -204,9 +259,24 @@ export class AutoUpdater {
           fail(new Error(`installer download returned ${response.statusCode}`));
           return;
         }
+        const totalRaw = (response as { headers?: Record<string, string | string[]> }).headers?.['content-length'];
+        const totalStr = Array.isArray(totalRaw) ? totalRaw[0] : totalRaw;
+        const total = totalStr ? parseInt(String(totalStr), 10) : NaN;
+        let received = 0;
+        let sentIndeterminate = false;
+
         response.on('data', (chunk: Buffer) => {
           hash.update(chunk);
           out.write(chunk);
+          received += chunk.length;
+          if (onProgress) {
+            if (Number.isFinite(total) && total > 0) {
+              onProgress(Math.round((received / total) * 100));
+            } else if (!sentIndeterminate) {
+              sentIndeterminate = true;
+              onProgress(null); // unknown size → renderer shows an indeterminate spinner
+            }
+          }
         });
         response.on('end', () => {
           out.end(() => {
@@ -250,8 +320,13 @@ export class AutoUpdater {
         console.log(`[AutoUpdater] UPDATE_INSTALL ignored on ${process.platform} — no in-app installer for this platform.`);
         return;
       }
-      const pending = this.pendingUpdate;
-      if (!pending) return;
+      const tempPath = this.downloadedPath;
+      if (!tempPath) {
+        // The UI only surfaces the install button after 'downloaded' fired, so
+        // this is a defensive no-op (e.g. a prior download failed).
+        console.log('[AutoUpdater] UPDATE_INSTALL ignored — no verified installer downloaded yet.');
+        return;
+      }
 
       const win = this.getWindow();
       if (win && !win.isDestroyed() && !win.webContents.isCrashed()) {
@@ -266,35 +341,14 @@ export class AutoUpdater {
         }
       }
 
-      // NN2-T4 — fail-closed download-verify-launch. Never hand the user an
-      // unverified binary (the old path was shell.openExternal on an unchecked
-      // URL). Fetch the CI-published SHA-256 manifest, download the Setup.exe
-      // ourselves, verify its digest, and only then launch the LOCAL file. Any
-      // failure aborts the install and surfaces an error — no openExternal
-      // fallback, so a tampered/unverifiable artifact can never run.
-      let tempPath: string | null = null;
-      try {
-        const manifestRaw = await this.fetchManifest();
-        const validated = validateManifest(manifestRaw, pending.name);
-        if (!validated.ok) {
-          throw new Error(`update manifest rejected: ${validated.reason}`);
-        }
-        tempPath = await this.downloadAndVerify(validated.manifest);
-        console.log('[AutoUpdater] Update verified (sha256 match) — launching installer');
-        const openErr = await shell.openPath(tempPath);
-        if (openErr) {
-          // openPath resolves to a non-empty error string on failure.
-          throw new Error(`failed to launch verified installer: ${openErr}`);
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('[AutoUpdater] install aborted (fail-closed):', message);
-        if (tempPath) {
-          await unlink(tempPath).catch(() => { /* best-effort cleanup */ });
-        }
+      // Launch the LOCAL, already-verified installer. Download + SHA-256 verify
+      // happened during detection (downloadUpdate); we never launch an
+      // unverified artifact.
+      const openErr = await shell.openPath(tempPath);
+      if (openErr) {
         this.sendToRenderer(IPC.UPDATE_ERROR, {
           status: 'error',
-          message: `Update could not be verified and was not installed: ${message}`,
+          message: `failed to launch verified installer: ${openErr}`,
         });
       }
     });
