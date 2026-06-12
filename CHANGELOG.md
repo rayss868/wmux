@@ -5,7 +5,9 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.1.1] — 2026-06-12 — browser pane wired into the workflow, IME input self-healing
+
+Headline: the embedded browser pane is now reachable from where you actually work — terminal URLs route smartly, sidebar port badges open localhost in one click, and browser panes restore on the page you last visited. And the field-reported "keyboard input dies until you toggle multiview" IME failure on Korean Windows now self-heals: the suspect textarea-clearing is off by default and a storm guard detects the dead-input signature and resyncs the IME automatically.
 
 ### Added
 - **The embedded browser pane is now wired into the terminal workflow (X3).** Clicking a URL printed in a terminal routes smartly: localhost / 127.0.0.1 URLs open in the workspace's embedded browser pane (reusing the existing pane and navigating it), external URLs open in the system browser, and Ctrl/Cmd+click inverts the choice. The sidebar's listening-port badges (X1) are now clickable — one click shows `http://localhost:<port>` in that workspace's browser pane, un-zooming any pane that would hide it. `target="_blank"` links inside the browser pane now work and open in the same pane (popup windows stay blocked). `Ctrl+Shift+L` and the palette's "Open Browser" keep their always-create-a-new-pane behavior.
