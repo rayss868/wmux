@@ -157,14 +157,17 @@ async function main() {
   console.log(`B1 awaiting_input present=${!!awaiting} sortedFirst=${awaitingFirst} (triggerWs=${triggerWsName})`);
 
   // ── A4: jump — click a card in a DIFFERENT workspace, expect ws switch + close ──
+  // Identify + click by workspaceId (unique), not workspaceName (which can
+  // collide across workspaces and make the jump assertion flaky).
   const activeBefore = await readActiveWsName(page);
-  const target = cards.find((c) => c.workspaceName && c.workspaceName !== activeBefore) || cards[0];
-  console.log(`A4 active=${activeBefore} → clicking card ws=${target?.workspaceName}`);
-  await page.evaluate((wsName) => {
+  const activeWsId = (cards.find((c) => c.workspaceName === activeBefore) || {}).workspaceId;
+  const target = cards.find((c) => c.workspaceId && c.workspaceId !== activeWsId) || cards[0];
+  console.log(`A4 active=${activeBefore} (${activeWsId}) → clicking card ws=${target?.workspaceName} (${target?.workspaceId})`);
+  await page.evaluate((wsId) => {
     const el = Array.from(document.querySelectorAll('[data-fleet-card]'))
-      .find((e) => e.getAttribute('data-workspace-name') === wsName);
+      .find((e) => e.getAttribute('data-workspace-id') === wsId);
     el?.click();
-  }, target?.workspaceName);
+  }, target?.workspaceId);
   await sleep(700);
   const closedAfterJump = !(await fleetOpen(page));
   const activeAfter = await readActiveWsName(page);

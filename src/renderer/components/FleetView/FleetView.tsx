@@ -46,10 +46,14 @@ export default function FleetView() {
   const needsCount = useMemo(() => countNeedsAttention(panes), [panes]);
 
   // Jump to a pane's workspace + pane + surface, then close the overlay.
-  // Terminal panes resolve by their active-surface ptyId (reusing the hardened
-  // notification jump, which also clears rings); browser/editor/unspawned
-  // surfaces have no ptyId, so they activate the workspace+pane+surface
-  // directly via the same core sequence.
+  // Terminal panes resolve by their active-surface ptyId via the full
+  // notification jump — which also marks that surface's notifications read and
+  // clears its attention ring. That side effect is intentional here: jumping to
+  // a pane from the cockpit acknowledges it, exactly like the toast-click and
+  // pane-click paths. It does NOT touch the agentStatus, so the card keeps
+  // showing awaiting_input until the agent actually resumes. Browser/editor/
+  // unspawned surfaces have no ptyId (and no ring), so they activate the
+  // workspace+pane+surface directly via the shared activation core.
   const jump = useCallback((card: FleetPane) => {
     const getState = () => useStore.getState();
     if (card.ptyId) {
@@ -99,6 +103,17 @@ export default function FleetView() {
         e.preventDefault();
         e.stopPropagation();
         setVisible(false);
+        return;
+      }
+      if (e.key === 'Tab') {
+        // Modal focus trap: keep Tab inside the overlay (route it to card
+        // navigation, wrapping) so focus can never escape to the background
+        // terminal/sidebar behind the backdrop.
+        e.preventDefault();
+        e.stopPropagation();
+        if (tab !== 'fleet' || panes.length === 0) return;
+        setFocusedIdx((i) =>
+          e.shiftKey ? (i - 1 + panes.length) % panes.length : (i + 1) % panes.length);
         return;
       }
       const isArrow =
