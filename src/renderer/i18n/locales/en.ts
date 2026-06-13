@@ -139,6 +139,11 @@ export const en = {
   'project.close': 'Close',
   'project.badgeTooltip': 'wmux.json — project commands & layout',
   'project.discoveredToast': 'wmux.json found — click the sidebar badge to review project commands',
+  // X8 — supervision disclosure on the trust/approval screen. The approval
+  // screen MUST surface autonomous behavior: a supervised pane runs its command
+  // as a process that wmux auto-restarts. {restart}=on-failure|always,
+  // {burst}=consecutive-failure cap before the runaway guard stops it.
+  'project.supervisionBadge': '↻ auto-restarts ({restart}, up to {burst} consecutive)',
   'palette.catWorkspace': 'Workspace',
   'palette.catSurface': 'Surface',
   'palette.catCommand': 'Command',

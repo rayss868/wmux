@@ -94,6 +94,7 @@ export const ko = {
   'project.close': '닫기',
   'project.badgeTooltip': 'wmux.json — 프로젝트 커맨드·레이아웃',
   'project.discoveredToast': 'wmux.json 발견 — 사이드바 배지를 클릭해 프로젝트 커맨드를 검토하세요',
+  'project.supervisionBadge': '↻ 자동 재시작 ({restart}, 연속 {burst}회까지)',
   'palette.catWorkspace': '워크스페이스',
   'palette.catSurface': '서피스',
   'palette.catCommand': '커맨드',

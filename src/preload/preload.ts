@@ -22,7 +22,11 @@ const electronAPI = {
   // 'win32' | 'darwin' | 'linux' | 'aix' | 'freebsd' | 'openbsd' | 'sunos' | 'cygwin' | 'netbsd'
   platform: process.platform as NodeJS.Platform,
   pty: {
-    create: (options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string }) =>
+    // `exec`/`supervision` (X8): set by the AppLayout funnel for a supervised
+    // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
+    // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
+    // local branch ignores them with a one-time warning toast).
+    create: (options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number } } }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
@@ -49,6 +53,25 @@ const electronAPI = {
       ipcRenderer.on(IPC.PTY_EXIT, listener);
       return () => { ipcRenderer.removeListener(IPC.PTY_EXIT, listener); };
     },
+    // X8 — a supervised session was re-created under the same id with a fresh
+    // PTY. The renderer prints an in-pane restart marker and re-attaches via
+    // its reconnect machinery (useTerminal). Distinct from onExit: a restart is
+    // NOT a death, so the died-path teardown must not run.
+    onRestarted: (callback: (payload: { ptyId: string; restartCount: number; exitCode: number | null }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId: string; restartCount: number; exitCode: number | null }) =>
+        callback(payload);
+      ipcRenderer.on(IPC.PTY_RESTARTED, listener);
+      return () => { ipcRenderer.removeListener(IPC.PTY_RESTARTED, listener); };
+    },
+    // X8 — sticky supervision status changed (guard trip → 'stopped', manual
+    // rearm/stop). Drives the pane/sidebar supervision badge. The guard-trip
+    // toast is raised main-side; this channel is for in-app badge sync.
+    onSupervisionChanged: (callback: (payload: { ptyId: string; status: 'armed' | 'stopped'; reason: 'guard-trip' | 'rearm' | 'manual-stop'; restartCount: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId: string; status: 'armed' | 'stopped'; reason: 'guard-trip' | 'rearm' | 'manual-stop'; restartCount: number }) =>
+        callback(payload);
+      ipcRenderer.on(IPC.SUPERVISION_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.SUPERVISION_CHANGED, listener); };
+    },
     // Fires once per attach when the daemon's SessionPipe ring-buffer
     // flush completes. recoveredBytes is the exact byte count replayed
     // from the daemon's scrollback before the FLUSH_DONE_MARKER. 0 means
@@ -61,6 +84,14 @@ const electronAPI = {
       ipcRenderer.on(IPC.PTY_FLUSH_COMPLETE, listener);
       return () => { ipcRenderer.removeListener(IPC.PTY_FLUSH_COMPLETE, listener); };
     },
+  },
+  // X8 supervision control (renderer-only, pane context menu). `rearm` resets a
+  // tripped runaway guard and restarts the pane once; `stop` disarms it. Both
+  // resolve `{ ok }` (false in local mode / for an unknown id). Only the user
+  // drives these — external MCP/CLI clients are gated out daemon-side.
+  supervise: {
+    rearm: (ptyId: string) => ipcRenderer.invoke(IPC.SUPERVISE_REARM, ptyId) as Promise<{ ok: boolean }>,
+    stop: (ptyId: string) => ipcRenderer.invoke(IPC.SUPERVISE_STOP, ptyId) as Promise<{ ok: boolean }>,
   },
   shell: {
     list: () => ipcRenderer.invoke(IPC.SHELL_LIST) as Promise<{ name: string; path: string; args?: string[] }[]>,

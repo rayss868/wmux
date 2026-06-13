@@ -35,6 +35,20 @@ export const PROJECT_CONFIG_URL_MAX = 2048;
 /** Raw wmux.json files larger than this are ignored outright (DoS guard). */
 export const PROJECT_CONFIG_MAX_FILE_BYTES = 256 * 1024;
 
+// ── X8 pane-supervision caps + defaults (SSOT) ───────────────────────────────
+// A supervised leaf runs its `command` as the pane's root process under the
+// daemon's PaneSupervisor (restart + runaway guard). These constants are the
+// single source of truth: the schema clamps wmux.json values to the caps, and
+// the funnel fills omitted restartLimit fields from the defaults before handing
+// the policy to the daemon. Mirror of the daemon-side runaway model (#54):
+// consecutive short-lived runs trip the guard; a healthy run resets the counter.
+export const PROJECT_SUPERVISION_DEFAULT_BURST = 5;
+export const PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC = 300;
+export const PROJECT_SUPERVISION_BURST_MIN = 1;
+export const PROJECT_SUPERVISION_BURST_MAX = 20;
+export const PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MIN = 30;
+export const PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MAX = 3600;
+
 export interface WmuxProjectCommand {
   id: string;
   title: string;
@@ -49,6 +63,19 @@ export interface WmuxProjectLayoutLeaf {
   cwd?: string;
   /** http/https URL — the leaf becomes a browser pane (X3) instead of a PTY. */
   url?: string;
+  /**
+   * X8 supervision. When set, `command` is run as the pane's ROOT process under
+   * the daemon's PaneSupervisor instead of being typed into an interactive
+   * shell (exec-style unit). Requires `command`, mutually exclusive with `url`.
+   *   - 'on-failure' — restart when the process exits non-zero / signalled / killed
+   *   - 'always'     — restart on any exit (systemd Restart=always semantics)
+   * The wmux.json author may also write 'never' (the unsupervised default) as a
+   * documented no-op; it normalizes to this field being OMITTED.
+   */
+  restart?: 'on-failure' | 'always';
+  /** X8 runaway-guard bounds. Partial by design: only author-written fields
+   * survive normalization; omitted ones default at the funnel (SSOT consts). */
+  restartLimit?: { burst?: number; healthyUptimeSec?: number };
 }
 
 export interface WmuxProjectLayoutBranch {
@@ -167,6 +194,94 @@ interface LayoutBudget {
   leaves: number;
 }
 
+/**
+ * Clamp + validate one runaway-guard bound (burst / healthyUptimeSec). STRICT
+ * (decision ⑪): a value present but non-finite / NaN → invalid (returns null,
+ * caller drops the whole layout) rather than silently snapping to a cap — a
+ * typo'd limit must never quietly weaken supervision. Math.floor first so a
+ * fractional value resolves to an integer, then range-check against the caps.
+ */
+function clampSupervisionBound(value: number, min: number, max: number): number | null {
+  if (!Number.isFinite(value)) return null;
+  const floored = Math.floor(value);
+  if (floored < min || floored > max) return null;
+  return floored;
+}
+
+/**
+ * Result of normalizing a leaf's X8 supervision fields:
+ *   - 'invalid' — the author wrote something that can't downgrade safely (bad
+ *     restart enum, out-of-range/NaN restartLimit, restart with no command, or
+ *     restart alongside url). The whole layout drops (all-or-nothing).
+ *   - { restart?, restartLimit? } — the validated, possibly-empty policy. An
+ *     omitted/`'never'` restart yields no `restart` field; a partial
+ *     restartLimit keeps only the present field(s) (defaulted later at the
+ *     funnel). A restartLimit with no effective restart is dropped silently
+ *     (cosmetic orphan, decision ⑪).
+ */
+type NormalizedSupervision =
+  | 'invalid'
+  | { restart?: 'on-failure' | 'always'; restartLimit?: { burst?: number; healthyUptimeSec?: number } };
+
+function normalizeSupervision(
+  rawRestart: unknown,
+  rawLimit: unknown,
+  command: string | undefined,
+  url: string | undefined,
+): NormalizedSupervision {
+  // restart enum. Accept exactly 'on-failure' | 'always' | 'never'; 'never'
+  // normalizes to "field omitted" (documented no-op alias). Any other defined
+  // value is a typo we refuse to silently downgrade → invalid.
+  let restart: 'on-failure' | 'always' | undefined;
+  if (rawRestart !== undefined) {
+    if (rawRestart === 'on-failure' || rawRestart === 'always') {
+      restart = rawRestart;
+    } else if (rawRestart === 'never') {
+      restart = undefined;
+    } else {
+      return 'invalid';
+    }
+  }
+
+  // An effective restart needs a command (the process IS the unit) and cannot
+  // coexist with a browser url.
+  if (restart !== undefined) {
+    if (command === undefined) return 'invalid';
+    if (url !== undefined) return 'invalid';
+  }
+
+  // restartLimit: present fields must validate; missing fields stay absent and
+  // are defaulted at the funnel. Accept a partial object (only one field).
+  let restartLimit: { burst?: number; healthyUptimeSec?: number } | undefined;
+  if (rawLimit !== undefined) {
+    if (rawLimit === null || typeof rawLimit !== 'object' || Array.isArray(rawLimit)) return 'invalid';
+    const lim = rawLimit as { burst?: unknown; healthyUptimeSec?: unknown };
+    const out: { burst?: number; healthyUptimeSec?: number } = {};
+    if (lim.burst !== undefined) {
+      if (typeof lim.burst !== 'number') return 'invalid';
+      const burst = clampSupervisionBound(lim.burst, PROJECT_SUPERVISION_BURST_MIN, PROJECT_SUPERVISION_BURST_MAX);
+      if (burst === null) return 'invalid';
+      out.burst = burst;
+    }
+    if (lim.healthyUptimeSec !== undefined) {
+      if (typeof lim.healthyUptimeSec !== 'number') return 'invalid';
+      const sec = clampSupervisionBound(
+        lim.healthyUptimeSec,
+        PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MIN,
+        PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MAX,
+      );
+      if (sec === null) return 'invalid';
+      out.healthyUptimeSec = sec;
+    }
+    if (out.burst !== undefined || out.healthyUptimeSec !== undefined) restartLimit = out;
+  }
+
+  // A restartLimit with no effective restart is a cosmetic orphan — drop it
+  // silently (it changes nothing) rather than reject the layout.
+  if (restart === undefined) return {};
+  return restartLimit !== undefined ? { restart, restartLimit } : { restart };
+}
+
 /** Returns the normalized node, or null when ANY part is invalid — layout is
  * all-or-nothing (see module header). */
 function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget): WmuxProjectLayoutNode | null {
@@ -179,6 +294,8 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
     command?: unknown;
     cwd?: unknown;
     url?: unknown;
+    restart?: unknown;
+    restartLimit?: unknown;
   };
 
   // Branch: presence of `panes` is the discriminator.
@@ -217,10 +334,17 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
   // contradiction the author must resolve, not something to guess at.
   if (url !== undefined && (command !== undefined || cwd !== undefined)) return null;
 
+  // X8 supervision (decision ⑪ — STRICT; a bad value drops the whole layout
+  // rather than silently downgrading to unsupervised).
+  const supervision = normalizeSupervision(src.restart, src.restartLimit, command, url);
+  if (supervision === 'invalid') return null;
+
   const leaf: WmuxProjectLayoutLeaf = { type: 'leaf' };
   if (command !== undefined) leaf.command = command;
   if (cwd !== undefined) leaf.cwd = cwd;
   if (url !== undefined) leaf.url = url;
+  if (supervision.restart !== undefined) leaf.restart = supervision.restart;
+  if (supervision.restartLimit !== undefined) leaf.restartLimit = supervision.restartLimit;
   return leaf;
 }
 

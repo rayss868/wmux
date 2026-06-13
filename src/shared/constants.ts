@@ -8,6 +8,22 @@ export const IPC = {
   PTY_EXIT: 'pty:exit',
   PTY_LIST: 'pty:list',
   PTY_RECONNECT: 'pty:reconnect',
+  // X8 pane supervision. PTY_RESTARTED fires when the daemon's PaneSupervisor
+  // re-created a session under the SAME id with a fresh PTY (a supervised
+  // restart). Distinct from PTY_EXIT — the renderer must re-attach the
+  // existing reconnect machinery, NOT run the died-path cleanup. Payload:
+  // { ptyId, restartCount, exitCode }.
+  PTY_RESTARTED: 'pty:restarted',
+  // X8 — sticky supervision status flip (runaway-guard trip → 'stopped',
+  // manual rearm/stop). Always forwarded for badge sync; main also raises an
+  // OS toast on guard trips only. Payload: { ptyId, status, reason, restartCount }.
+  SUPERVISION_CHANGED: 'supervision:changed',
+  // X8 — renderer → main invoke channels for the supervision control surface
+  // (pane context menu rearm / stop). Renderer-only by design: only the user
+  // re-arms a tripped guard, never an external MCP/CLI client. Forwarded to
+  // the daemon's renderer-only daemon.superviseRearm / daemon.superviseStop.
+  SUPERVISE_REARM: 'supervise:rearm',
+  SUPERVISE_STOP: 'supervise:stop',
   // Fires once per attach, after the daemon SessionPipe's ring-buffer
   // flush completes. Payload: (sessionId, recoveredBytes). The renderer
   // uses recoveredBytes>0 as the signal to wipe its .txt-cache replay

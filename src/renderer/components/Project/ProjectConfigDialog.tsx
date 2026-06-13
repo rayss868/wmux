@@ -13,18 +13,36 @@
 import { useEffect } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
-import { countLayoutLeaves } from '../../../shared/wmuxProjectConfig';
+import { countLayoutLeaves, PROJECT_SUPERVISION_DEFAULT_BURST } from '../../../shared/wmuxProjectConfig';
 import type { WmuxProjectLayoutNode } from '../../../shared/wmuxProjectConfig';
 import { applyProjectLayoutFresh, decideProjectTrust, probeProjectConfig } from '../../utils/projectConfigProbe';
 import { runProjectCommand } from '../../utils/projectCommands';
 
+interface LayoutRow {
+  label: string;
+  index: number;
+  /** X8 — effective supervision policy for this leaf, when supervised. The
+   * approval screen surfaces it so the user sees the autonomous behavior they
+   * are about to trust (auto-restart). */
+  supervision?: { restart: 'on-failure' | 'always'; burst: number };
+}
+
 /** Layout startup commands with their pane position, depth-first. */
-function layoutRows(node: WmuxProjectLayoutNode, acc: { label: string; index: number }[] = []): { label: string; index: number }[] {
+function layoutRows(node: WmuxProjectLayoutNode, acc: LayoutRow[] = []): LayoutRow[] {
   const walk = (n: WmuxProjectLayoutNode): void => {
     if (n.type === 'leaf') {
       const index = acc.length + 1;
-      if (n.url !== undefined) acc.push({ label: `→ ${n.url}`, index });
-      else acc.push({ label: n.command ?? '(shell)', index });
+      if (n.url !== undefined) {
+        acc.push({ label: `→ ${n.url}`, index });
+      } else {
+        const row: LayoutRow = { label: n.command ?? '(shell)', index };
+        if (n.restart !== undefined) {
+          // Effective burst = leaf override or the SSOT default (the funnel
+          // applies the same fallback).
+          row.supervision = { restart: n.restart, burst: n.restartLimit?.burst ?? PROJECT_SUPERVISION_DEFAULT_BURST };
+        }
+        acc.push(row);
+      }
       return;
     }
     n.children.forEach(walk);
@@ -153,7 +171,14 @@ export default function ProjectConfigDialog() {
             </div>
             <ul className="text-[11px] font-mono mt-1" style={{ color: 'var(--text-sub2)' }}>
               {layoutRows(layout).map((row) => (
-                <li key={row.index} className="break-all">· {t('project.pane')} {row.index}: {row.label}</li>
+                <li key={row.index} className="break-all">
+                  · {t('project.pane')} {row.index}: {row.label}
+                  {row.supervision && (
+                    <span className="ml-1" style={{ color: 'var(--accent-yellow)' }}>
+                      {t('project.supervisionBadge', { restart: row.supervision.restart, burst: row.supervision.burst })}
+                    </span>
+                  )}
+                </li>
               ))}
             </ul>
           </div>

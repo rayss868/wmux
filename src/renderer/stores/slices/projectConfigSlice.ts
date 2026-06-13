@@ -23,6 +23,11 @@ export interface ProjectPaneSeed {
   command?: string;
   cwd?: string;
   url?: string;
+  /** X8 supervision policy carried from the leaf (terminal leaves only). The
+   * AppLayout funnel turns a set `restart` into an exec-style supervised
+   * pty.create instead of an `initialCommand`. */
+  restart?: 'on-failure' | 'always';
+  restartLimit?: { burst?: number; healthyUptimeSec?: number };
 }
 
 export interface ApplyProjectLayoutResult {
@@ -100,6 +105,13 @@ function buildTree(
       // Terminal leaves always pin cwd to the project (or its sub-dir) — that
       // IS the feature: "open this repo, panes start in it".
       seed.cwd = joinProjectCwd(root, node.cwd);
+      // X8: carry supervision policy onto the seed (terminal leaves only — the
+      // schema rejects url+restart, so a url leaf never has these). The funnel
+      // reads `restart` to choose exec-style supervised create.
+      if (node.restart !== undefined) {
+        seed.restart = node.restart;
+        if (node.restartLimit !== undefined) seed.restartLimit = node.restartLimit;
+      }
     }
     seeds[leaf.id] = seed;
     return leaf;

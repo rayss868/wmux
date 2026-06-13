@@ -17,6 +17,21 @@ export interface PtyCreateOptions {
    * spawned as the executable — preserves shell-allowlist + quoting behavior).
    */
   initialCommand?: string;
+  /**
+   * X8 exec-style unit: run this command as the pane's ROOT process (daemon
+   * mode only). Set by the AppLayout funnel for a supervised wmux.json leaf —
+   * mutually exclusive with `initialCommand` in practice (the funnel picks one).
+   */
+  exec?: string;
+  /**
+   * X8 supervision policy. Present alongside `exec`; arms the daemon's
+   * PaneSupervisor. `limit` fields are pre-filled from the SSOT defaults at the
+   * funnel, so they arrive complete here.
+   */
+  supervision?: {
+    restart: 'on-failure' | 'always';
+    limit?: { burst?: number; healthyUptimeSec?: number };
+  };
 }
 
 import type { WorkspaceProfile } from '../../shared/types';
