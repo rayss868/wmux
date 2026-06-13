@@ -817,6 +817,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // own bracketed-paste markers if it pre-wrapped the payload.
     let inputBuffer = '';
     terminal.onData((data) => {
+      // X6 ②: the user is driving this shell themselves — retract any pending
+      // resume offer so the pill can't fire into a session they've moved on in.
+      useStore.getState().clearResumeHint(ptyId);
       void chunkOnDataIfNeeded(
         (d) => window.electronAPI.pty.write(ptyId, d),
         data,
@@ -875,6 +878,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         onFirstDataRef.current?.();
       }
     };
+    // X6 ②: the resume pill becomes clickable only on LIVE PTY data — NOT on
+    // restored scrollback (which also calls fireFirstData to hide overlays).
+    // Marking ready on a restore write would let the pill paste before the
+    // recovered pipe is confirmed writable (CodeRabbit #3 / eng review EI6).
+    const markPaneLive = () => useStore.getState().markPtyReady(ptyId);
 
     // Restore scrollback from previous session, then connect PTY data listener.
     // Scrollback must be written BEFORE PTY data listener is connected so new
@@ -885,6 +893,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           terminal.write(data);
           glyphRepaint.onData(data.length);
           fireFirstData();
+          markPaneLive();
         }
       });
 
@@ -912,6 +921,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         terminal.write(data);
         glyphRepaint.onData(data.length);
         fireFirstData();
+        markPaneLive();
       });
 
       removeExitListener = window.electronAPI.pty.onExit((id, exitCode) => {
@@ -997,7 +1007,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         for (const data of pendingData) {
           terminal.write(data);
         }
-        if (pendingData.length > 0) fireFirstData();
+        if (pendingData.length > 0) { fireFirstData(); markPaneLive(); }
         pendingData.length = 0;
         // Register with the scrollback autosave only after restore
         // completes. Setting it synchronously before the async load lets
@@ -1023,7 +1033,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         for (const data of pendingData) {
           terminal.write(data);
         }
-        if (pendingData.length > 0) fireFirstData();
+        if (pendingData.length > 0) { fireFirstData(); markPaneLive(); }
         pendingData.length = 0;
         registerTerminal(ptyId, terminal);
       });
