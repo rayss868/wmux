@@ -749,6 +749,40 @@ export default function AppLayout() {
     };
   }, []);
 
+  // X8 pane supervision — keep the renderer supervision slice in sync with the
+  // daemon's PaneSupervisor. Three inputs:
+  //   - pty.onSupervisionChanged: sticky status flip (guard-trip / rearm /
+  //     manual-stop) → setSupervision (carries the live restartCount).
+  //   - pty.onRestarted: a quiet auto-restart → bump the count, status stays
+  //     armed (the in-pane marker lives in useTerminal; this is badge state).
+  //   - pty.list() hydration on mount + every daemon:connected: replaces the
+  //     whole map from the authoritative session list so a reload / daemon
+  //     respawn re-derives badges without waiting for the next event.
+  useEffect(() => {
+    const hydrate = () => {
+      void window.electronAPI.pty.list().then((sessions) => {
+        const snapshot: Record<string, { status: 'armed' | 'stopped'; restartCount: number }> = {};
+        for (const s of sessions) {
+          if (s.supervision) snapshot[s.id] = s.supervision;
+        }
+        useStore.getState().hydrateSupervision(snapshot);
+      }).catch(() => { /* best-effort — a transient list failure self-heals on the next connect */ });
+    };
+    hydrate();
+    const offConnected = window.electronAPI.daemon.onConnected(hydrate);
+    const offChanged = window.electronAPI.pty.onSupervisionChanged((payload) => {
+      useStore.getState().setSupervision(payload.ptyId, payload.status, payload.restartCount);
+    });
+    const offRestarted = window.electronAPI.pty.onRestarted((payload) => {
+      useStore.getState().bumpSupervisionRestart(payload.ptyId);
+    });
+    return () => {
+      offConnected();
+      offChanged();
+      offRestarted();
+    };
+  }, []);
+
   // Save session on beforeunload (with scrollback dump — sync fire-and-forget)
   useEffect(() => {
     const saveSession = () => {

@@ -51,7 +51,15 @@ export type WmuxEventType =
   | 'process.started'
   | 'process.exited'
   | 'agent.lifecycle'
-  | 'notification.received';
+  | 'notification.received'
+  // X8 pane supervision. Tee'd from the daemon's session:restarted /
+  // supervision:changed events (DaemonNotificationRouter) so orchestrator
+  // clients can observe a supervised pane's restart/stop lifecycle without
+  // polling. Like the other daemon-sourced tees they are dropped when the
+  // owning workspace can't be resolved (scope-less events would leak across
+  // workspace isolation).
+  | 'pane.restarted'
+  | 'pane.supervision';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -63,6 +71,8 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'process.exited',
   'agent.lifecycle',
   'notification.received',
+  'pane.restarted',
+  'pane.supervision',
 ] as const;
 
 export interface WmuxEventBase {
@@ -232,6 +242,36 @@ export interface NotificationReceivedEvent extends WmuxEventBase {
   body: string;
 }
 
+/**
+ * X8 — a supervised pane's process died and the daemon's PaneSupervisor
+ * re-created it under the same id with a fresh PTY. Restarts are QUIET on the
+ * UI surfaces (in-pane marker + badge, never a toast); this bus event is the
+ * machine-readable equivalent for external observers. `restartCount` is the
+ * cumulative count for this daemon lifetime (resets on daemon restart, like
+ * the supervisor's volatile runtime). `exitCode` is the dead process's code,
+ * or `null` for an external kill / signal-only exit.
+ */
+export interface PaneRestartedEvent extends WmuxEventBase {
+  type: 'pane.restarted';
+  ptyId: string;
+  restartCount: number;
+  exitCode: number | null;
+}
+
+/**
+ * X8 — a supervised pane's sticky status flipped. `'stopped'` with
+ * `reason:'guard-trip'` is the runaway-guard firing (auto-restart disabled);
+ * `'armed'`/`'stopped'` with `reason:'rearm'`/`'manual-stop'` are the user's
+ * own pane-menu actions. The renderer-facing surface only ever raises a toast
+ * on `guard-trip`; this event is emitted for every flip for observability.
+ */
+export interface PaneSupervisionEvent extends WmuxEventBase {
+  type: 'pane.supervision';
+  ptyId: string;
+  status: 'armed' | 'stopped';
+  reason: 'guard-trip' | 'rearm' | 'manual-stop';
+}
+
 export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
@@ -241,7 +281,9 @@ export type WmuxEvent =
   | ProcessStartedEvent
   | ProcessExitedEvent
   | AgentLifecycleEvent
-  | NotificationReceivedEvent;
+  | NotificationReceivedEvent
+  | PaneRestartedEvent
+  | PaneSupervisionEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;

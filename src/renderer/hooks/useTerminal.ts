@@ -1187,7 +1187,29 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // would skip every generation after the first (a respawn would leave the
     // pane attached to a dead session). The event itself is the connect signal.
     const off = window.electronAPI.daemon.onConnected(() => reattach('daemon:connected'));
-    return () => { if (off) off(); };
+    // X8 — a supervised restart re-created THIS session under the same id with a
+    // fresh PTY. The daemon:connected reattach trigger above does NOT fire (the
+    // daemon never disconnected), so PTY_RESTARTED is the dedicated signal:
+    //   (1) print an in-pane marker, style-matched to the exit marker (leading
+    //       \r\n + bracketed line, no colour), so the user sees visual
+    //       continuity (exit line → restart line → fresh output) plus the
+    //       Ctrl+C escape-hatch hint (decision ⑨); and
+    //   (2) drive the SAME reconnect path the daemon:connected effect uses, so
+    //       attach + SessionPipe + pid-map re-anchor all happen.
+    // onExit only prints (no "dead" UI state to clear), so a restart needs no
+    // extra teardown reversal — just the marker + reattach.
+    const offRestarted = window.electronAPI.pty.onRestarted((payload) => {
+      if (payload.ptyId !== id) return;
+      const term = terminalRef.current;
+      if (term && ptyIdRef.current === id) {
+        const line = payload.exitCode !== null
+          ? t('terminal.supervisedRestartExit', { count: payload.restartCount, code: payload.exitCode })
+          : t('terminal.supervisedRestart', { count: payload.restartCount });
+        term.writeln(`\r\n${line}`);
+      }
+      reattach('pty:restarted');
+    });
+    return () => { if (off) off(); offRestarted(); };
   }, [ptyId]);
 
   // Apply font/theme changes at runtime without recreating the terminal instance.

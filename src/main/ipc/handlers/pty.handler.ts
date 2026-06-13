@@ -649,11 +649,34 @@ export function registerPTYHandlers(
   ipcMain.removeHandler(IPC.PTY_LIST);
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, async () => {
-      const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string }>;
-      // Map to same shape as local PTYManager.getActiveInstances()
+      const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{
+        id: string;
+        cmd: string;
+        state: string;
+        // X8 — supervised sessions carry the sticky policy/status on meta and an
+        // additive volatile runtime joined by the daemon's listSessions handler.
+        supervision?: { restart: string; limit: unknown; status: 'armed' | 'stopped' };
+        supervisionRuntime?: { status: 'armed' | 'stopped'; restartCount: number };
+      }>;
+      // Map to same shape as local PTYManager.getActiveInstances(), plus an
+      // additive `supervision` summary for the renderer's supervision slice
+      // hydration (X8). Status comes from the runtime when present (live
+      // armed/stopped after a guard trip) and falls back to the persisted meta
+      // status; restartCount is volatile (0 until the supervisor restarts once).
       const live = sessions
         .filter(s => s.state !== 'dead')
-        .map(s => ({ id: s.id, shell: s.cmd }));
+        .map(s => ({
+          id: s.id,
+          shell: s.cmd,
+          ...(s.supervision
+            ? {
+                supervision: {
+                  status: s.supervisionRuntime?.status ?? s.supervision.status,
+                  restartCount: s.supervisionRuntime?.restartCount ?? 0,
+                },
+              }
+            : {}),
+        }));
       // RCA A8 — log the count the renderer's reconcile will act on. An empty
       // or short list here, correlated with a renderer ptyId-clear, is the
       // signature of the session-replacement bug. Without this line the

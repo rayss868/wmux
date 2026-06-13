@@ -35,8 +35,11 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.PTY_RESIZE, id, cols, rows),
     dispose: (id: string) =>
       ipcRenderer.invoke(IPC.PTY_DISPOSE, id),
+    // `supervision` (X8) is additive and present only on supervised daemon-mode
+    // sessions — the renderer uses it to hydrate its supervision slice on boot
+    // and daemon-reconnect. Absent in local mode and for unsupervised panes.
     list: () =>
-      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string }[]>,
+      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number } }[]>,
     reconnect: (id: string) =>
       // RCA A1 — `transient` distinguishes a recoverable failure (pipe not
       // writable yet, RPC threw during a handler-swap window) from a permanent

@@ -103,6 +103,8 @@ export const ko = {
   // Terminal
   'terminal.exited': '프로세스가 코드 {code}로 종료됨',
   'terminal.exitedBracket': '[프로세스가 코드 {code}로 종료됨]',
+  'terminal.supervisedRestart': '[wmux] 감독 재시작 #{count} — 중지: 팬 메뉴',
+  'terminal.supervisedRestartExit': '[wmux] 감독 재시작 #{count} (종료 {code}) — 중지: 팬 메뉴',
   'terminal.copied': '복사됨!',
   'terminal.copyFailed': '복사 실패 — 선택 영역 유지됨',
   'terminal.openPathBlocked': '실행 파일 차단됨 — 부모 폴더만 열림',
@@ -115,6 +117,13 @@ export const ko = {
   'contextMenu.paste': '붙여넣기',
   'contextMenu.openLink': '링크 열기',
   'contextMenu.copyLink': '링크 복사',
+
+  // Supervision (X8)
+  'supervision.armedTooltip': '감독 중 — 자동 재시작 (재시작 {count}회)',
+  'supervision.stoppedTooltip': '감독 중지됨 — 폭주 가드',
+  'supervision.stop': '감독 중지',
+  'supervision.rearm': '감독 재개',
+  'supervision.actionFailed': '감독 작업 실패 — 데몬이 오프라인일 수 있습니다',
 
   // Browser
   'browser.urlPlaceholder': 'URL 입력...',

@@ -1,5 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
+import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import type { PaneMetadata } from '../../../shared/types';
 import { metadataStore, type MergeMode, type MetadataStore } from '../../metadata/MetadataStore';
@@ -31,6 +32,11 @@ export function registerPaneRpc(
   router: RpcRouter,
   getWindow: GetWindow,
   opts: PaneRpcOptions = {},
+  // X8 — optional daemon-client accessor (same pattern as registerInputRpc).
+  // When daemon mode is active, pane.list joins each pane's supervision state
+  // from a single daemon.listSessions RPC. Omitted/null ⇒ no supervision field
+  // (local mode), which is graceful — the CLI/text table is unaffected.
+  getDaemonClient?: () => DaemonClient | null,
 ): void {
   const store = opts.store ?? metadataStore;
   /**
@@ -94,6 +100,46 @@ export function registerPaneRpc(
       });
     }
 
+    // X8 — join supervision state. One daemon.listSessions RPC per pane.list
+    // call; build a ptyId → supervision summary map. Best-effort: a daemon
+    // hiccup or local mode just yields no supervision fields (the pane tree is
+    // already the authoritative response). `supervision` is additive — the CLI
+    // text table and metadata readers ignore it.
+    type SupervisionSummary = {
+      restart: string;
+      status: string;
+      restartCount: number;
+      consecutiveFailures: number;
+    };
+    const supervisionByPtyId = new Map<string, SupervisionSummary>();
+    const dc = getDaemonClient?.();
+    if (dc?.isConnected) {
+      try {
+        const sessions = (await dc.rpc('daemon.listSessions', {})) as Array<{
+          id: string;
+          supervision?: { restart?: string; status?: 'armed' | 'stopped' };
+          supervisionRuntime?: {
+            status?: 'armed' | 'stopped';
+            restartCount?: number;
+            consecutiveFailures?: number;
+          };
+        }>;
+        if (Array.isArray(sessions)) {
+          for (const s of sessions) {
+            if (!s.supervision) continue;
+            supervisionByPtyId.set(s.id, {
+              restart: s.supervision.restart ?? 'on-failure',
+              status: s.supervisionRuntime?.status ?? s.supervision.status ?? 'armed',
+              restartCount: s.supervisionRuntime?.restartCount ?? 0,
+              consecutiveFailures: s.supervisionRuntime?.consecutiveFailures ?? 0,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('[pane.rpc] supervision join skipped — daemon.listSessions failed:', err);
+      }
+    }
+
     const joined = panes.map((pane) => {
       const paneId = typeof pane.id === 'string' ? pane.id : '';
       const found = metadataByPaneId.get(paneId);
@@ -105,10 +151,22 @@ export function registerPaneRpc(
         pane.metadata && typeof pane.metadata === 'object' && !Array.isArray(pane.metadata)
           ? (pane.metadata as PaneMetadata)
           : undefined;
+      // X8 — match any of the pane's surface ptyIds to a supervised session
+      // (the renderer exposes surfacePtyIds on each entry). A pane has at most
+      // one supervised surface in practice; first match wins.
+      let supervision: SupervisionSummary | undefined;
+      const surfacePtyIds = Array.isArray(pane.surfacePtyIds)
+        ? (pane.surfacePtyIds as unknown[]).filter((p): p is string => typeof p === 'string')
+        : [];
+      for (const ptyId of surfacePtyIds) {
+        const match = supervisionByPtyId.get(ptyId);
+        if (match) { supervision = match; break; }
+      }
       return {
         ...pane,
         metadata: found?.metadata ?? rendererMetadata ?? {},
         version: found?.version ?? 0,
+        ...(supervision ? { supervision } : {}),
       };
     });
 

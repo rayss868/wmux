@@ -179,6 +179,14 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // "all my other panes vanished" — mirror tmux's status-line Z marker.
   const isZoomed = useStore((s) => s.zoomedPaneId === pane.id);
 
+  // X8 supervision badge. Resolve the pane's active-surface ptyId → supervision
+  // slice. `⟳` when armed (auto-restarting); `⟳!` in a warning colour when the
+  // runaway guard tripped and stopped it. Absent for unsupervised panes. As
+  // light as the ZOOM badge — no extra component.
+  const supervision = useStore((s) =>
+    activeSurfacePtyId ? s.supervisionByPtyId[activeSurfacePtyId] : undefined,
+  );
+
   const handleCloseSurface = useCallback((surfaceId: string) => {
     const surface = pane.surfaces.find((s) => s.id === surfaceId);
     if (surface?.ptyId) {
@@ -234,6 +242,42 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         >
           ZOOM
         </button>
+      )}
+      {supervision && (
+        <span
+          title={
+            supervision.status === 'stopped'
+              ? t('supervision.stoppedTooltip')
+              : t('supervision.armedTooltip', { count: supervision.restartCount })
+          }
+          aria-label={
+            supervision.status === 'stopped'
+              ? t('supervision.stoppedTooltip')
+              : t('supervision.armedTooltip', { count: supervision.restartCount })
+          }
+          style={{
+            position: 'absolute',
+            top: 4,
+            // Sit to the left of the ZOOM badge when both are present.
+            right: isZoomed ? 54 : 6,
+            zIndex: 20,
+            padding: '1px 6px',
+            fontSize: 10,
+            fontFamily: 'ui-monospace, monospace',
+            fontWeight: 700,
+            letterSpacing: '0.04em',
+            color: supervision.status === 'stopped' ? 'var(--bg-main)' : 'var(--text-muted)',
+            backgroundColor:
+              supervision.status === 'stopped' ? 'var(--accent-red)' : 'var(--bg-overlay)',
+            border: 'none',
+            borderRadius: 3,
+            opacity: 0.85,
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}
+        >
+          {supervision.status === 'stopped' ? '⟳!' : '⟳'}
+        </span>
       )}
       <SurfaceTabs
         surfaces={pane.surfaces}

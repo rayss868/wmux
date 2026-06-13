@@ -152,6 +152,11 @@ export const en = {
   // Terminal
   'terminal.exited': 'Process exited with code {code}',
   'terminal.exitedBracket': '[Process exited with code {code}]',
+  // X8 — in-pane supervised-restart marker. The trailing hint is the Ctrl+C
+  // escape hatch disclosure (decision ⑨): the user can stop auto-restart from
+  // the pane menu. Two variants: with/without the dead process's exit code.
+  'terminal.supervisedRestart': '[wmux] supervised restart #{count} — stop: pane menu',
+  'terminal.supervisedRestartExit': '[wmux] supervised restart #{count} (exit {code}) — stop: pane menu',
   'terminal.copied': 'Copied!',
   'terminal.copyFailed': 'Copy failed — selection kept',
   'terminal.openPathBlocked': 'Executable blocked — opened parent folder',
@@ -164,6 +169,13 @@ export const en = {
   'contextMenu.paste': 'Paste',
   'contextMenu.openLink': 'Open Link',
   'contextMenu.copyLink': 'Copy Link',
+
+  // Supervision (X8) — pane badge tooltips + pane-menu actions.
+  'supervision.armedTooltip': 'Supervised — auto-restart ({count} restarts)',
+  'supervision.stoppedTooltip': 'Supervision stopped — runaway guard',
+  'supervision.stop': 'Stop supervision',
+  'supervision.rearm': 'Rearm supervision',
+  'supervision.actionFailed': 'Supervision action failed — daemon may be offline',
 
   // Browser
   'browser.urlPlaceholder': 'Enter URL...',

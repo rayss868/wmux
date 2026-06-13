@@ -1304,3 +1304,123 @@ describe('pane.rpc — metadata', () => {
     });
   });
 });
+
+// === X8: pane.list supervision join ===
+describe('pane.rpc — pane.list supervision join (X8)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Build a router whose pane.list joins supervision from a fake daemon. */
+  function setupWithDaemon(sessions: unknown[] | (() => Promise<unknown>)) {
+    const router = new RpcRouter();
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'daemon.listSessions') {
+        return typeof sessions === 'function' ? sessions() : sessions;
+      }
+      return [];
+    });
+    const fakeDaemon = { isConnected: true, rpc } as unknown as import('../../../DaemonClient').DaemonClient;
+    registerPaneRpc(router, () => ({} as BrowserWindow), {}, () => fakeDaemon);
+    return { router, rpc };
+  }
+
+  it('attaches supervision to a pane whose surface ptyId matches a supervised session', async () => {
+    sendToRendererMock.mockResolvedValueOnce([
+      { id: 'pane-1', surfaceCount: 1, active: true, surfacePtyIds: ['daemon-aaa'] },
+      { id: 'pane-2', surfaceCount: 1, active: false, surfacePtyIds: ['daemon-bbb'] },
+    ]);
+    const { router } = setupWithDaemon([
+      {
+        id: 'daemon-aaa',
+        supervision: { restart: 'on-failure', status: 'armed' },
+        supervisionRuntime: { status: 'armed', restartCount: 2, consecutiveFailures: 0 },
+      },
+      // daemon-bbb is unsupervised — no `supervision` field.
+      { id: 'daemon-bbb' },
+    ]);
+
+    const res = await router.dispatch({ id: 'sv-1', method: 'pane.list', params: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const panes = (res.result as { panes: Array<Record<string, unknown>> }).panes;
+      expect(panes[0].supervision).toEqual({
+        restart: 'on-failure',
+        status: 'armed',
+        restartCount: 2,
+        consecutiveFailures: 0,
+      });
+      // Unsupervised pane carries no supervision field at all.
+      expect(panes[1].supervision).toBeUndefined();
+    }
+  });
+
+  it('prefers the volatile runtime status over the persisted meta status (guard trip)', async () => {
+    sendToRendererMock.mockResolvedValueOnce([
+      { id: 'pane-1', surfaceCount: 1, active: true, surfacePtyIds: ['daemon-aaa'] },
+    ]);
+    const { router } = setupWithDaemon([
+      {
+        id: 'daemon-aaa',
+        // meta persisted armed, but the live runtime says stopped (guard tripped
+        // this daemon lifetime before persistence caught up).
+        supervision: { restart: 'always', status: 'armed' },
+        supervisionRuntime: { status: 'stopped', restartCount: 5, consecutiveFailures: 5 },
+      },
+    ]);
+
+    const res = await router.dispatch({ id: 'sv-2', method: 'pane.list', params: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const panes = (res.result as { panes: Array<Record<string, unknown>> }).panes;
+      expect(panes[0].supervision).toMatchObject({ status: 'stopped', restartCount: 5 });
+    }
+  });
+
+  it('falls back to meta status when the runtime is absent (restartCount 0)', async () => {
+    sendToRendererMock.mockResolvedValueOnce([
+      { id: 'pane-1', surfaceCount: 1, active: true, surfacePtyIds: ['daemon-aaa'] },
+    ]);
+    const { router } = setupWithDaemon([
+      { id: 'daemon-aaa', supervision: { restart: 'on-failure', status: 'armed' } },
+    ]);
+
+    const res = await router.dispatch({ id: 'sv-3', method: 'pane.list', params: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const panes = (res.result as { panes: Array<Record<string, unknown>> }).panes;
+      expect(panes[0].supervision).toMatchObject({ status: 'armed', restartCount: 0 });
+    }
+  });
+
+  it('skips the join gracefully when daemon.listSessions throws', async () => {
+    sendToRendererMock.mockResolvedValueOnce([
+      { id: 'pane-1', surfaceCount: 1, active: true, surfacePtyIds: ['daemon-aaa'] },
+    ]);
+    const { router } = setupWithDaemon(() => Promise.reject(new Error('daemon offline')));
+
+    const res = await router.dispatch({ id: 'sv-4', method: 'pane.list', params: {} });
+    // pane.list still succeeds — the join is best-effort.
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const panes = (res.result as { panes: Array<Record<string, unknown>> }).panes;
+      expect(panes[0].supervision).toBeUndefined();
+      // metadata join still ran.
+      expect(panes[0].metadata).toEqual({});
+    }
+  });
+
+  it('emits no supervision field in local mode (no daemon client)', async () => {
+    sendToRendererMock.mockResolvedValueOnce([
+      { id: 'pane-1', surfaceCount: 1, active: true, surfacePtyIds: ['local-1'] },
+    ]);
+    // setupRouter() registers without a daemon-client accessor.
+    const router = setupRouter();
+    const res = await router.dispatch({ id: 'sv-5', method: 'pane.list', params: {} });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const panes = (res.result as { panes: Array<Record<string, unknown>> }).panes;
+      expect(panes[0].supervision).toBeUndefined();
+    }
+  });
+});

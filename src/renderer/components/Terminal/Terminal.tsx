@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { useTerminal, copySelectionWithFeedback, type ContextMenuEvent } from '../../hooks/useTerminal';
 import { useStore } from '../../stores';
+import { t } from '../../i18n';
 import { useIpc } from '../../hooks/useIpc';
 import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
@@ -56,6 +57,13 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   ipcInvokeRef.current = ipcInvoke;
 
   const [ctxMenu, setCtxMenu] = useState<ContextMenuEvent | null>(null);
+
+  // X8 — this surface's supervision status (armed → "Stop supervision" item;
+  // stopped → "Rearm supervision" item). Undefined for unsupervised panes,
+  // which omit both items entirely.
+  const supervisionStatus = useStore((s) =>
+    ptyId ? s.supervisionByPtyId[ptyId]?.status : undefined,
+  );
 
   // Hide restoring overlay when first data arrives
   const handleFirstData = useCallback(() => setRestoring(false), []);
@@ -252,6 +260,28 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     void window.clipboardAPI.writeText(url);
   }, []);
 
+  // X8 — pane-menu supervision controls. Both resolve { ok } (false in local
+  // mode or for an unknown id). On failure, surface the standard error toast;
+  // the live status flip arrives via pty.onSupervisionChanged (AppLayout
+  // subscription), so there's nothing to optimistically set here.
+  const handleSupervisionStop = useCallback(() => {
+    if (!ptyId) return;
+    void window.electronAPI.supervise.stop(ptyId).then((r) => {
+      if (!r.ok) useStore.getState().pushToast({ message: t('supervision.actionFailed'), level: 'error' });
+    }).catch(() => {
+      useStore.getState().pushToast({ message: t('supervision.actionFailed'), level: 'error' });
+    });
+  }, [ptyId]);
+
+  const handleSupervisionRearm = useCallback(() => {
+    if (!ptyId) return;
+    void window.electronAPI.supervise.rearm(ptyId).then((r) => {
+      if (!r.ok) useStore.getState().pushToast({ message: t('supervision.actionFailed'), level: 'error' });
+    }).catch(() => {
+      useStore.getState().pushToast({ message: t('supervision.actionFailed'), level: 'error' });
+    });
+  }, [ptyId]);
+
   return (
     <div
       style={{
@@ -309,6 +339,9 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
           onPaste={handlePaste}
           onOpenLink={handleOpenLink}
           onCopyLink={handleCopyLink}
+          supervisionStatus={supervisionStatus}
+          onSupervisionStop={handleSupervisionStop}
+          onSupervisionRearm={handleSupervisionRearm}
           onClose={() => setCtxMenu(null)}
         />
       )}

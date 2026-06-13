@@ -476,6 +476,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         cwd: firstSurface?.cwd || liveCwd,
         gitBranch: liveGitBranch,
         metadata: l.metadata,
+        // X8 — surface ptyIds so the main-side pane.list join (pane.rpc.ts) can
+        // match a daemon supervised session to its pane. Additive; the text
+        // CLI table and external readers that ignore unknown fields are
+        // unaffected.
+        surfacePtyIds: l.surfaces.map((s) => s.ptyId).filter((id): id is string => Boolean(id)),
       };
     });
   }

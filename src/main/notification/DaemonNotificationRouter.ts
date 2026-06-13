@@ -265,6 +265,61 @@ export class DaemonNotificationRouter {
     }
   }
 
+  /**
+   * X8 — tee a supervised-pane restart onto the EventBus as `pane.restarted`.
+   * Same workspace-resolution-or-drop contract as the lifecycle tees above:
+   * a scope-less event would route to the wrong `events.poll` subscriber.
+   * Best-effort — a tee failure must never disturb the renderer-facing
+   * PTY_RESTARTED relay or the badge sync (those run on pty.handler's own
+   * subscription, independent of this one).
+   */
+  private async emitPaneRestarted(
+    ptyId: string,
+    restartCount: number,
+    exitCode: number | null,
+  ): Promise<void> {
+    try {
+      const workspaceId = await this.resolveWorkspaceIdForPty(ptyId);
+      if (!workspaceId) return;
+      eventBus.emit({
+        type: 'pane.restarted',
+        workspaceId,
+        ptyId,
+        restartCount,
+        exitCode,
+      });
+    } catch (err) {
+      console.warn('[DaemonNotificationRouter] emitPaneRestarted error:', err);
+    }
+  }
+
+  /**
+   * X8 — tee a supervision sticky-status flip onto the EventBus as
+   * `pane.supervision`. Emitted for every flip (guard-trip / rearm /
+   * manual-stop) for observability; the toast surface (guard-trip only) is
+   * raised separately by pty.handler. Workspace-resolution-or-drop, like the
+   * tees above.
+   */
+  private async emitPaneSupervision(
+    ptyId: string,
+    status: 'armed' | 'stopped',
+    reason: 'guard-trip' | 'rearm' | 'manual-stop',
+  ): Promise<void> {
+    try {
+      const workspaceId = await this.resolveWorkspaceIdForPty(ptyId);
+      if (!workspaceId) return;
+      eventBus.emit({
+        type: 'pane.supervision',
+        workspaceId,
+        ptyId,
+        status,
+        reason,
+      });
+    } catch (err) {
+      console.warn('[DaemonNotificationRouter] emitPaneSupervision error:', err);
+    }
+  }
+
   start(): void {
     const onAgent = (payload: { sessionId: string; event: unknown }) => {
       try {
@@ -451,6 +506,30 @@ export class DaemonNotificationRouter {
       }
     };
 
+    // X8 — supervised-pane lifecycle tees. DaemonClient re-emits the daemon's
+    // session.restarted / supervision.changed broadcasts as these convenience
+    // events; we project them onto the EventBus (workspace-scoped) for
+    // `events.poll` consumers. The renderer-facing surfaces (PTY_RESTARTED
+    // relay, badge sync, guard-trip toast) live in pty.handler on its own
+    // subscriptions, so this tee is purely additive.
+    const onRestarted = (payload: {
+      sessionId: string;
+      restartCount: number;
+      consecutiveFailures: number;
+      exitCode: number | null;
+    }) => {
+      void this.emitPaneRestarted(payload.sessionId, payload.restartCount, payload.exitCode);
+    };
+    const onSupervisionChanged = (payload: {
+      sessionId: string;
+      status: 'armed' | 'stopped';
+      reason: 'guard-trip' | 'rearm' | 'manual-stop';
+      restartCount: number;
+      consecutiveFailures: number;
+    }) => {
+      void this.emitPaneSupervision(payload.sessionId, payload.status, payload.reason);
+    };
+
     this.daemonClient.on('session:agent', onAgent);
     this.daemonClient.on('session:active', onActive);
     this.daemonClient.on('session:idle', onIdle);
@@ -459,6 +538,8 @@ export class DaemonNotificationRouter {
     this.daemonClient.on('session:notification', onNotification);
     this.daemonClient.on('session:died', onSessionEnd);
     this.daemonClient.on('session:destroyed', onSessionEnd);
+    this.daemonClient.on('session:restarted', onRestarted);
+    this.daemonClient.on('supervision:changed', onSupervisionChanged);
 
     // Invalidate the workspace.list cache whenever a workspace's metadata
     // mutates. Workspace creation/deletion does not currently publish to
@@ -479,6 +560,8 @@ export class DaemonNotificationRouter {
       () => this.daemonClient.off('session:notification', onNotification),
       () => this.daemonClient.off('session:died', onSessionEnd),
       () => this.daemonClient.off('session:destroyed', onSessionEnd),
+      () => this.daemonClient.off('session:restarted', onRestarted),
+      () => this.daemonClient.off('supervision:changed', onSupervisionChanged),
       unsubscribeMeta,
     );
   }
