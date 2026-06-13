@@ -103,8 +103,8 @@ export const ko = {
   // Terminal
   'terminal.exited': '프로세스가 코드 {code}로 종료됨',
   'terminal.exitedBracket': '[프로세스가 코드 {code}로 종료됨]',
-  'terminal.supervisedRestart': '[wmux] 감독 재시작 #{count} — 중지: 팬 메뉴',
-  'terminal.supervisedRestartExit': '[wmux] 감독 재시작 #{count} (종료 {code}) — 중지: 팬 메뉴',
+  'terminal.supervisedRestart': '[wmux] 감독 재시작 #{count} — 중지: 창 메뉴',
+  'terminal.supervisedRestartExit': '[wmux] 감독 재시작 #{count} (종료 {code}) — 중지: 창 메뉴',
   'terminal.copied': '복사됨!',
   'terminal.copyFailed': '복사 실패 — 선택 영역 유지됨',
   'terminal.openPathBlocked': '실행 파일 차단됨 — 부모 폴더만 열림',
