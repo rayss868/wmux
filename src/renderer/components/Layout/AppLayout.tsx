@@ -8,6 +8,7 @@ import PaneContainer from '../Pane/PaneContainer';
 import StatusBar from '../StatusBar/StatusBar';
 import NotificationPanel from '../Notification/NotificationPanel';
 import CommandPalette from '../Palette/CommandPalette';
+import FleetView from '../FleetView/FleetView';
 import SettingsPanel from '../Settings/SettingsPanel';
 import InspectOverlay from '../Inspect/InspectOverlay';
 import FileTreePanel from '../FileTree/FileTreePanel';
@@ -257,6 +258,10 @@ export default function AppLayout() {
   // Gate the cross-pane SearchResultsPanel mount at the layout level so its
   // 6-field zustand subscription doesn't run when the panel is closed (I3).
   const searchPanelOpen = useStore((s) => s.searchPanelOpen);
+  // Mount-gate the Fleet View overlay so its store subscriptions + selector
+  // only run while the cockpit is open (the open toggle lives in the global
+  // keyboard handler, not inside FleetView, so gating the mount is safe).
+  const fleetViewVisible = useStore((s) => s.fleetViewVisible);
   const onboardingActive = useStore((s) => s.onboardingActive);
   const onboardingCompleted = useStore((s) => s.onboardingCompleted);
   const startOnboarding = useStore((s) => s.startOnboarding);
@@ -1153,6 +1158,13 @@ export default function AppLayout() {
         </ErrorBoundary>
       )}
       <CommandPalette />
+      {/* S-C1 Fleet View overlay (z-[55], Ctrl+Shift+A) — above the palette
+          (z-50), below inspect (z-65). Mount-gated on fleetViewVisible. */}
+      {fleetViewVisible && (
+        <ErrorBoundary name="FleetView">
+          <FleetView />
+        </ErrorBoundary>
+      )}
       <SettingsPanel />
       {/* Color inspect-mode overlay (S4). Sits at z-[65] (declared inside the
           component) — above SettingsPanel (z-50) so it captures clicks over the

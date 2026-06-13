@@ -1,0 +1,248 @@
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
+import {
+  selectFleetPanes,
+  sortFleetPanes,
+  countNeedsAttention,
+  type FleetPane,
+} from '../../stores/selectors/fleet';
+import {
+  focusPaneByPtyId,
+  activatePaneTarget,
+  focusNotificationTarget,
+} from '../../hooks/useNotificationListener';
+import FleetCard from './FleetCard';
+
+type FleetTab = 'fleet' | 'approvals';
+
+/**
+ * S-C1 Fleet View — the cockpit. A full-screen overlay (Ctrl+Shift+A) that
+ * shows every agent across every workspace on one screen, with the blocked
+ * ones floated to the top. Click a card → jump straight to that pane. The
+ * "Approvals" tab is a v2 stub (the unified A2A + MCP approval inbox).
+ *
+ * Mount-gated by AppLayout on `fleetViewVisible`, so this component (and its
+ * store subscriptions / selector) only exists while the cockpit is open.
+ */
+export default function FleetView() {
+  const t = useT();
+  const setVisible = useStore((s) => s.setFleetViewVisible);
+  const workspaces = useStore((s) => s.workspaces);
+  const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
+
+  const [tab, setTab] = useState<FleetTab>('fleet');
+  const [focusedIdx, setFocusedIdx] = useState(0);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  // Derive + sort outside the hot render path. Re-runs only when the workspace
+  // trees or the per-pty attention map change (the two inputs the selector
+  // reads), not on every unrelated store mutation.
+  const panes = useMemo(
+    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus })),
+    [workspaces, surfaceAgentStatus],
+  );
+  const needsCount = useMemo(() => countNeedsAttention(panes), [panes]);
+
+  // Jump to a pane's workspace + pane + surface, then close the overlay.
+  // Terminal panes resolve by their active-surface ptyId (reusing the hardened
+  // notification jump, which also clears rings); browser/editor/unspawned
+  // surfaces have no ptyId, so they activate the workspace+pane+surface
+  // directly via the same core sequence.
+  const jump = useCallback((card: FleetPane) => {
+    const getState = () => useStore.getState();
+    if (card.ptyId) {
+      focusPaneByPtyId(getState, card.ptyId);
+    } else if (card.surfaceId) {
+      activatePaneTarget(getState, {
+        workspaceId: card.workspaceId,
+        paneId: card.paneId,
+        surfaceId: card.surfaceId,
+      });
+    } else {
+      focusNotificationTarget(getState, { workspaceId: card.workspaceId });
+    }
+    setVisible(false);
+  }, [setVisible]);
+
+  // Keep focus index in range when the pane set shrinks / the tab changes.
+  useEffect(() => {
+    setFocusedIdx((i) => Math.min(i, Math.max(panes.length - 1, 0)));
+  }, [panes.length]);
+
+  // Pull DOM focus INTO the overlay (the focused card, else the panel) so no
+  // keystroke — arrows, Enter, or typed text — can leak to the background
+  // pane's xterm textarea underneath the backdrop, and so the keyboard
+  // selection is announced by assistive tech (roving focus on role=option).
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      if (tab === 'fleet' && panes.length > 0) {
+        const cards = gridRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card]');
+        (cards && cards[focusedIdx])?.focus();
+      } else {
+        panelRef.current?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [tab, focusedIdx, panes.length]);
+
+  // Keyboard: Esc closes; unmodified arrows move card focus and are ALWAYS
+  // swallowed (capture-phase) so they never reach the background xterm or
+  // scroll the page, even on the Approvals tab / empty fleet. Enter/Space are
+  // left to native <button> activation on the focused card (one code path, no
+  // double-fire). The global useKeyboard handler ignores unmodified
+  // Esc/Arrow, and Ctrl+Shift+A still toggles closed through it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setVisible(false);
+        return;
+      }
+      const isArrow =
+        e.key === 'ArrowDown' || e.key === 'ArrowUp' ||
+        e.key === 'ArrowLeft' || e.key === 'ArrowRight';
+      if (!isArrow || e.ctrlKey || e.metaKey || e.altKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (tab !== 'fleet' || panes.length === 0) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+        setFocusedIdx((i) => Math.min(i + 1, panes.length - 1));
+      } else {
+        setFocusedIdx((i) => Math.max(i - 1, 0));
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [tab, panes.length, setVisible]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[55] flex items-start justify-center pt-[8vh]"
+      style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) setVisible(false); }}
+    >
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('fleet.title')}
+        className="w-[min(960px,92vw)] max-h-[82vh] flex flex-col rounded-xl overflow-hidden shadow-2xl outline-none"
+        style={{
+          backgroundColor: 'var(--bg-base)',
+          border: '1px solid var(--bg-surface)',
+          boxShadow: '0 25px 60px rgba(0,0,0,0.7)',
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        {/* Header: title + "N need you" chip */}
+        <div
+          className="flex items-center gap-3 px-4 py-3"
+          style={{ borderBottom: '1px solid var(--bg-surface)' }}
+        >
+          <span className="text-sm font-semibold text-[var(--text-main)]">{t('fleet.title')}</span>
+          {needsCount > 0 && (
+            <span
+              className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+              style={{
+                backgroundColor: 'color-mix(in srgb, var(--accent-yellow) 22%, transparent)',
+                color: 'var(--accent-yellow)',
+              }}
+            >
+              {t('fleet.needsAttention', { count: needsCount })}
+            </span>
+          )}
+          <div className="flex-1" />
+          <kbd
+            className="text-xs text-[var(--text-muted)] px-1.5 py-0.5 rounded"
+            style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
+          >
+            ESC
+          </kbd>
+        </div>
+
+        {/* Tabs: Fleet (v1) + Approvals (v2 stub) */}
+        <div
+          className="flex items-center gap-1 px-3 pt-1.5"
+          role="tablist"
+          style={{ borderBottom: '1px solid var(--bg-surface)' }}
+        >
+          {(['fleet', 'approvals'] as FleetTab[]).map((id) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              onClick={() => setTab(id)}
+              className="px-3 py-1.5 text-xs rounded-t-md transition-colors"
+              style={{
+                color: tab === id ? 'var(--text-main)' : 'var(--text-muted)',
+                borderBottom: tab === id ? '2px solid var(--accent-blue)' : '2px solid transparent',
+              }}
+            >
+              {t(id === 'fleet' ? 'fleet.tab.fleet' : 'fleet.tab.approvals')}
+            </button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 p-4">
+          {tab === 'approvals' ? (
+            <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
+              {t('fleet.approvalsComingSoon')}
+            </div>
+          ) : panes.length === 0 ? (
+            <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
+              {t('fleet.empty')}
+            </div>
+          ) : (
+            <div
+              ref={gridRef}
+              role="listbox"
+              aria-label={t('fleet.title')}
+              className="grid gap-3"
+              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}
+            >
+              {panes.map((card, idx) => (
+                <FleetCard
+                  key={`${card.workspaceId}:${card.paneId}:${card.surfaceId}`}
+                  card={card}
+                  focused={idx === focusedIdx}
+                  onJump={() => jump(card)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Footer hint */}
+        <div
+          className="flex items-center gap-3 px-4 py-2"
+          style={{ borderTop: '1px solid var(--bg-surface)', backgroundColor: 'var(--bg-mantle)' }}
+        >
+          <span className="text-xs text-[var(--text-muted)]">
+            <kbd
+              className="px-1 py-0.5 rounded mr-0.5"
+              style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
+            >
+              ↑↓
+            </kbd>{' '}
+            {t('palette.navigate')}
+          </span>
+          <span className="text-xs text-[var(--text-muted)]">
+            <kbd
+              className="px-1 py-0.5 rounded mr-0.5"
+              style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
+            >
+              Enter
+            </kbd>{' '}
+            {t('fleet.jumpHint')}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}

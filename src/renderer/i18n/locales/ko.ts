@@ -69,11 +69,22 @@ export const ko = {
   'palette.cmd.showNotifications': '알림 보기',
   'palette.cmd.openSettings': '설정 열기',
   'palette.cmd.openBrowser': '브라우저 열기',
+  'palette.cmd.openFleetView': 'Fleet View 열기',
   'palette.cmd.saveLayout': '현재 레이아웃을 템플릿으로 저장',
   'palette.cmd.layoutPrefix': '레이아웃: ',
   'palette.cmd.projectPrefix': '프로젝트: ',
   'palette.cmd.projectReview': '프로젝트: wmux.json 검토…',
   'palette.cmd.projectApplyLayout': '프로젝트: 레이아웃 적용',
+
+  // Fleet View (S-C1 cockpit)
+  'fleet.title': 'Fleet',
+  'fleet.tab.fleet': 'Fleet',
+  'fleet.tab.approvals': '승인',
+  'fleet.approvalsComingSoon': '통합 승인 인박스 — 준비 중',
+  'fleet.empty': '실행 중인 에이전트 없음',
+  'fleet.needsAttention': '{count}개 대기 중',
+  'fleet.needsYourInput': '입력 대기 중',
+  'fleet.jumpHint': '에이전트로 이동',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': '프로젝트 설정 (wmux.json)',
