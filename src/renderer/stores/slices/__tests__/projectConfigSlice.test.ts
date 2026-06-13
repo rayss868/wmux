@@ -138,6 +138,58 @@ describe('projectConfigSlice', () => {
       expect(store.getState().zoomedPaneId).toBeNull();
     });
 
+    it('carries X8 restart/restartLimit onto supervised terminal seeds', () => {
+      store.getState().setProjectConfig(wsId, trustedState({
+        config: {
+          version: 1,
+          layout: {
+            type: 'branch',
+            direction: 'horizontal',
+            children: [
+              { type: 'leaf', command: 'claude /loop', restart: 'on-failure', restartLimit: { burst: 3, healthyUptimeSec: 600 } },
+              { type: 'leaf', command: 'always-loop', restart: 'always' },
+              { type: 'leaf', command: 'plain' },
+            ],
+          },
+        },
+      }));
+      store.getState().applyProjectLayout(wsId);
+      const leaves = collectLeaves(store.getState().workspaces[0].rootPane);
+      const seeds = store.getState().projectPaneSeed;
+      expect(seeds[leaves[0].id]).toMatchObject({
+        command: 'claude /loop',
+        restart: 'on-failure',
+        restartLimit: { burst: 3, healthyUptimeSec: 600 },
+      });
+      // restart with no explicit restartLimit → seed carries restart only.
+      expect(seeds[leaves[1].id]?.restart).toBe('always');
+      expect(seeds[leaves[1].id]?.restartLimit).toBeUndefined();
+      // Unsupervised leaf → no restart fields at all.
+      expect(seeds[leaves[2].id]?.restart).toBeUndefined();
+      expect(seeds[leaves[2].id]?.restartLimit).toBeUndefined();
+    });
+
+    it('never carries restart fields onto a url (browser) seed', () => {
+      store.getState().setProjectConfig(wsId, trustedState({
+        config: {
+          version: 1,
+          layout: {
+            type: 'branch',
+            direction: 'horizontal',
+            children: [
+              { type: 'leaf', url: 'http://localhost:3000' },
+              { type: 'leaf', command: 'x' },
+            ],
+          },
+        },
+      }));
+      store.getState().applyProjectLayout(wsId);
+      const leaves = collectLeaves(store.getState().workspaces[0].rootPane);
+      const seeds = store.getState().projectPaneSeed;
+      expect(seeds[leaves[0].id]).toEqual({ url: 'http://localhost:3000' });
+      expect(seeds[leaves[0].id]?.restart).toBeUndefined();
+    });
+
     it('relative cwd joins use the root separator style', () => {
       store.getState().setProjectConfig(wsId, trustedState({
         root: '/home/me/proj',

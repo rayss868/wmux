@@ -139,6 +139,8 @@ export type RpcMethod =
   | 'daemon.ping'
   | 'daemon.shutdown'
   | 'daemon.compact'
+  | 'daemon.superviseRearm'
+  | 'daemon.superviseStop'
   | 'a2a.resolve.identity'
   | 'a2a.whoami'
   | 'a2a.discover'
@@ -239,6 +241,8 @@ export const ALL_RPC_METHODS = [
   'daemon.ping',
   'daemon.shutdown',
   'daemon.compact',
+  'daemon.superviseRearm',
+  'daemon.superviseStop',
   'a2a.resolve.identity',
   'a2a.whoami',
   'a2a.discover',
@@ -294,6 +298,18 @@ export interface DaemonEvent {
     | 'session.created'
     | 'session.destroyed'
     | 'session.died'
+    // X8 pane supervision. 'session.restarted' fires after the supervisor
+    // re-created the SAME session id with a fresh PTY — main must forward it
+    // to the renderer so the existing PTY_RECONNECT machinery re-attaches
+    // (a restart is NOT covered by the daemon:connected reattach trigger).
+    //   session.restarted   → { restartCount, exitCode, consecutiveFailures }
+    // 'supervision.changed' fires on any sticky-status flip (runaway-guard
+    // trip → 'stopped', manual rearm/stop). Toast only on guard trips.
+    //   supervision.changed → { status: 'armed'|'stopped',
+    //                           reason: 'guard-trip'|'rearm'|'manual-stop',
+    //                           restartCount, consecutiveFailures }
+    | 'session.restarted'
+    | 'supervision.changed'
     | 'session.output'
     | 'agent.event'
     | 'agent.critical'
@@ -336,6 +352,44 @@ export interface DaemonCreateSessionParams {
   cols?: number;
   rows?: number;
   agent?: { role: string; teamId: string; displayName: string };
+  /**
+   * X8 exec-style unit: run `command` as the pane's ROOT process via a
+   * non-interactive wrapper shell (systemd ExecStart semantics) instead of
+   * typing it into an interactive shell. Process = unit: session.died then
+   * carries the command's own exit code, and a recovery replay re-launches
+   * the command itself. The wrapper binary is the daemon's choice; the
+   * trust-approved bytes are exactly `command`.
+   */
+  exec?: { command: string };
+  /** X8: arm the daemon-side PaneSupervisor for this session. */
+  supervision?: DaemonSupervisionPolicy;
+}
+
+/**
+ * X8 pane-supervision restart policy ('never' never reaches the daemon —
+ * an unsupervised pane simply carries no policy). Persisted on the session
+ * meta; restart counters stay volatile in the supervisor.
+ */
+export interface DaemonSupervisionPolicy {
+  restart: 'on-failure' | 'always';
+  limit: { burst: number; healthyUptimeSec: number };
+}
+
+/**
+ * X8: volatile per-session supervision state, exposed for surfaces
+ * (sidebar badge, `wmux list --json`, supervision.changed event data).
+ * Lives in the daemon's PaneSupervisor; resets on daemon restart except
+ * `status`, which is persisted on the session meta.
+ */
+export interface SupervisionRuntime {
+  status: 'armed' | 'stopped';
+  /** Restarts performed this daemon lifetime. */
+  restartCount: number;
+  /** Consecutive short-lived runs (died before healthyUptimeSec) — the runaway-guard counter. */
+  consecutiveFailures: number;
+  lastExit?: { exitCode: number | null; signal?: number; at: string };
+  /** Epoch ms of the pending backoff restart, when one is scheduled. */
+  nextRestartAt?: number;
 }
 
 export interface DaemonSessionIdParams {

@@ -471,7 +471,7 @@ hookSignalRouter = new HookSignalRouter({ latencyMeter: signalLatencyMeter });
 
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
-registerPaneRpc(rpcRouter, () => mainWindow);
+registerPaneRpc(rpcRouter, () => mainWindow, {}, () => daemonClient);
 registerInputRpc(rpcRouter, ptyManager, () => mainWindow, () => daemonClient);
 registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);

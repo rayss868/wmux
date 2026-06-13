@@ -14,6 +14,17 @@ import { scheduleInitialCommand } from './scheduleInitialCommand';
 import { updateCwd } from './metadata.handler';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
+import { toastManager } from '../../pipe/handlers/notify.rpc';
+import { sendNotification } from '../../notification/sendNotification';
+import {
+  PROJECT_SUPERVISION_DEFAULT_BURST,
+  PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
+  PROJECT_SUPERVISION_BURST_MIN,
+  PROJECT_SUPERVISION_BURST_MAX,
+  PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MIN,
+  PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MAX,
+} from '../../../shared/wmuxProjectConfig';
+import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -42,6 +53,67 @@ function isAllowedShell(shell: string): boolean {
   const basename = path.basename(shell).toLowerCase();
   return ALLOWED_SHELLS.has(basename);
 }
+
+/**
+ * X8 — the renderer's pty.create payload optionally carries an exec command and
+ * a supervision policy (set by the AppLayout funnel for a supervised wmux.json
+ * leaf). `exec` is the raw command string run as the pane's ROOT process; the
+ * supervision `limit` fields are optional and filled from the SSOT defaults
+ * here. Both are honored in daemon mode only — the local branch ignores them
+ * (decision ②) since the supervisor lives inside the daemon.
+ */
+interface PtyCreateSupervisionInput {
+  restart: 'on-failure' | 'always';
+  limit?: { burst?: number; healthyUptimeSec?: number };
+}
+
+type PtyCreateOptions = {
+  shell?: string;
+  cwd?: string;
+  cols?: number;
+  rows?: number;
+  workspaceId?: string;
+  surfaceId?: string;
+  env?: Record<string, string>;
+  initialCommand?: string;
+  exec?: string;
+  supervision?: PtyCreateSupervisionInput;
+};
+
+/** Clamp one runaway-guard bound to its cap; falls back to `def` when absent.
+ * Defense-in-depth — the schema already clamps wmux.json values, but the funnel
+ * payload is re-validated here so a non-schema caller can't exceed the caps. */
+function clampBound(value: number | undefined, def: number, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return def;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+/** Build the fully-defaulted, cap-clamped DaemonSupervisionPolicy from the
+ * renderer's (possibly partial) supervision input. */
+function resolveSupervisionPolicy(input: PtyCreateSupervisionInput): DaemonSupervisionPolicy {
+  return {
+    restart: input.restart,
+    limit: {
+      burst: clampBound(
+        input.limit?.burst,
+        PROJECT_SUPERVISION_DEFAULT_BURST,
+        PROJECT_SUPERVISION_BURST_MIN,
+        PROJECT_SUPERVISION_BURST_MAX,
+      ),
+      healthyUptimeSec: clampBound(
+        input.limit?.healthyUptimeSec,
+        PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
+        PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MIN,
+        PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MAX,
+      ),
+    },
+  };
+}
+
+/** One-time-per-app-run guard for the "supervision needs daemon mode" warning
+ * toast. A wmux.json with many supervised leaves would otherwise fire one toast
+ * per pane in local mode (decision ②: warn, don't spam). */
+let localSupervisionWarned = false;
 
 /**
  * Recovery PTY mute race retry (v2.9.0-rc.2 fix for the symptom reported
@@ -215,10 +287,21 @@ export function registerPTYHandlers(
   // pty:create
   ipcMain.removeHandler(IPC.PTY_CREATE);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string }) => {
+    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
+
+      // X8 exec-style unit: a supervised wmux.json leaf runs its command as the
+      // pane's root process under a daemon-chosen wrapper shell (the daemon
+      // synthesizes the wrapper args; we pass the trust-approved bytes). Present
+      // only when the funnel set a restart policy.
+      const execCommand =
+        typeof options?.exec === 'string' && options.exec.trim().length > 0 ? options.exec : undefined;
+      const supervisionPolicy =
+        execCommand !== undefined && options?.supervision
+          ? resolveSupervisionPolicy(options.supervision)
+          : undefined;
 
       const safeCwd = validateCwd(options?.cwd);
       const effectiveCwd = safeCwd ?? require('os').homedir();
@@ -263,6 +346,8 @@ export function registerPTYHandlers(
 
       // Create session via daemon RPC. `env` is the FULLY-RESOLVED child env;
       // the daemon replays it verbatim (see DaemonCreateSessionParams.env).
+      // `exec`/`supervision` are present only for an X8 supervised leaf — the
+      // daemon runs the command as the pane root and arms the PaneSupervisor.
       const result = await daemonClient.rpc('daemon.createSession', {
         id: sessionId,
         cmd: shell,
@@ -270,6 +355,8 @@ export function registerPTYHandlers(
         cols: options?.cols || 80,
         rows: options?.rows || 24,
         env: resolvedEnv,
+        ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
+        ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
       });
 
       // Attach to the session (makes daemon start the SessionPipe server)
@@ -284,7 +371,11 @@ export function registerPTYHandlers(
       // session's first output (see scheduleInitialCommand) and retried while
       // the pipe reports "not delivered", which fixes the intermittent
       // never-ran-the-command race the fixed-delay version had.
-      const initialCmd = scheduleInitialCommand(options?.initialCommand, {
+      //
+      // X8: for an exec-style unit the command IS the pane's root process, so
+      // there is nothing to type — pass `undefined` so scheduleInitialCommand
+      // is a no-op (its onFirstData stays a harmless call below).
+      const initialCmd = scheduleInitialCommand(execCommand !== undefined ? undefined : options?.initialCommand, {
         write: (cmd) => daemonClient.writeToSession(sessionId, sanitizePtyText(cmd) + '\r'),
         onExhausted: () => console.warn(
           `[pty:create] startup command for ${sessionId} not delivered after ` +
@@ -320,17 +411,37 @@ export function registerPTYHandlers(
       return { id: sessionId, shell, cwd: effectiveCwd };
     }));
   } else {
-    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string }) => {
+    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, (_event: Electron.IpcMainInvokeEvent, options?: PtyCreateOptions) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
+      }
+
+      // X8 — supervision lives inside the daemon (decision ②). In local mode it
+      // can't be honored, but a silent drop would be a trust violation: the user
+      // asked for auto-restart and got none. Warn + a single toast per app run.
+      if (options?.exec !== undefined || options?.supervision !== undefined) {
+        console.warn(
+          '[pty:create] supervision/exec requested but daemon mode is off — ' +
+          'running the pane without auto-restart (X8 supervision is daemon-only).',
+        );
+        if (!localSupervisionWarned) {
+          localSupervisionWarned = true;
+          const win = getWindow?.() ?? null;
+          const title = 'Supervision unavailable';
+          const body = 'Supervision requires daemon mode — running without auto-restart.';
+          sendNotification(win, null, { type: 'warning', title, body, workspaceId: options?.workspaceId });
+          toastManager.show(title, body, { workspaceId: options?.workspaceId ?? null });
+        }
       }
 
       const safeCwd = validateCwd(options?.cwd);
       const effectiveCwd = safeCwd ?? undefined;
       // Split off initialCommand — it's written into the shell post-create, not
-      // a spawn option. The rest (incl. the profile env overlay) goes to create.
-      const { initialCommand, ...createOpts } = options ?? {};
-      const instance = ptyManager.create({ ...createOpts, cwd: effectiveCwd });
+      // a spawn option. exec/supervision are daemon-only (handled above) and
+      // must not reach ptyManager.create, so build a clean spawn-options object
+      // from only the local-relevant fields instead of spreading the payload.
+      const { initialCommand, shell, cols, rows, workspaceId, surfaceId, env } = options ?? {};
+      const instance = ptyManager.create({ shell, cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd });
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);
@@ -538,11 +649,34 @@ export function registerPTYHandlers(
   ipcMain.removeHandler(IPC.PTY_LIST);
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, async () => {
-      const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string }>;
-      // Map to same shape as local PTYManager.getActiveInstances()
+      const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{
+        id: string;
+        cmd: string;
+        state: string;
+        // X8 — supervised sessions carry the sticky policy/status on meta and an
+        // additive volatile runtime joined by the daemon's listSessions handler.
+        supervision?: { restart: string; limit: unknown; status: 'armed' | 'stopped' };
+        supervisionRuntime?: { status: 'armed' | 'stopped'; restartCount: number };
+      }>;
+      // Map to same shape as local PTYManager.getActiveInstances(), plus an
+      // additive `supervision` summary for the renderer's supervision slice
+      // hydration (X8). Status comes from the runtime when present (live
+      // armed/stopped after a guard trip) and falls back to the persisted meta
+      // status; restartCount is volatile (0 until the supervisor restarts once).
       const live = sessions
         .filter(s => s.state !== 'dead')
-        .map(s => ({ id: s.id, shell: s.cmd }));
+        .map(s => ({
+          id: s.id,
+          shell: s.cmd,
+          ...(s.supervision
+            ? {
+                supervision: {
+                  status: s.supervisionRuntime?.status ?? s.supervision.status,
+                  restartCount: s.supervisionRuntime?.restartCount ?? 0,
+                },
+              }
+            : {}),
+        }));
       // RCA A8 — log the count the renderer's reconcile will act on. An empty
       // or short list here, correlated with a renderer ptyId-clear, is the
       // signature of the session-replacement bug. Without this line the
@@ -643,6 +777,28 @@ export function registerPTYHandlers(
     }));
   }
 
+  // X8 supervision control — rearm a tripped runaway guard / stop supervision.
+  // Renderer-only by design (decision ⑥): only the user re-arms a guard, never
+  // an external MCP/CLI client (the daemon RPCs are 'wmux.internal'-gated). Both
+  // are meaningful only in daemon mode; local mode resolves { ok: false }.
+  ipcMain.removeHandler(IPC.SUPERVISE_REARM);
+  ipcMain.handle(IPC.SUPERVISE_REARM, wrapHandler(IPC.SUPERVISE_REARM, async (_event: Electron.IpcMainInvokeEvent, ptyId: unknown) => {
+    if (typeof ptyId !== 'string' || ptyId.length === 0) {
+      throw new Error('SUPERVISE_REARM: ptyId must be a non-empty string');
+    }
+    if (!useDaemon || !daemonClient) return { ok: false };
+    return (await daemonClient.rpc('daemon.superviseRearm', { id: ptyId })) as { ok: boolean };
+  }));
+
+  ipcMain.removeHandler(IPC.SUPERVISE_STOP);
+  ipcMain.handle(IPC.SUPERVISE_STOP, wrapHandler(IPC.SUPERVISE_STOP, async (_event: Electron.IpcMainInvokeEvent, ptyId: unknown) => {
+    if (typeof ptyId !== 'string' || ptyId.length === 0) {
+      throw new Error('SUPERVISE_STOP: ptyId must be a non-empty string');
+    }
+    if (!useDaemon || !daemonClient) return { ok: false };
+    return (await daemonClient.rpc('daemon.superviseStop', { id: ptyId })) as { ok: boolean };
+  }));
+
   // Listen for daemon session:died events and forward to renderer
   let onDaemonSessionDied: ((payload: { sessionId: string; exitCode: number | null }) => void) | null = null;
   if (useDaemon && daemonClient) {
@@ -659,6 +815,73 @@ export function registerPTYHandlers(
     daemonClient.on('session:died', onDaemonSessionDied);
   }
 
+  // X8 — supervised restart forwarder. A SEPARATE listener from session:died on
+  // purpose: a restart re-created the SAME session id with a fresh PTY, so it
+  // must NOT run the died-path cleanup (pipe disconnect + pid-map prune). The
+  // renderer receives PTY_RESTARTED and re-attaches via the existing reconnect
+  // machinery (useTerminal's reattach effect) — the daemon:connected reattach
+  // trigger does not fire on a live restart because the daemon is already
+  // connected. The new shell PID is re-anchored by that reconnect path.
+  let onDaemonSessionRestarted:
+    | ((payload: {
+        sessionId: string;
+        restartCount: number;
+        consecutiveFailures: number;
+        exitCode: number | null;
+      }) => void)
+    | null = null;
+  // X8 — supervision status-change forwarder. Always relays the flip to the
+  // renderer for badge sync; raises an OS toast ONLY on a runaway-guard trip
+  // (decision ⑩: per-restart toasts are rejected as noise, manual rearm/stop
+  // are silent).
+  let onDaemonSupervisionChanged:
+    | ((payload: {
+        sessionId: string;
+        status: 'armed' | 'stopped';
+        reason: 'guard-trip' | 'rearm' | 'manual-stop';
+        restartCount: number;
+        consecutiveFailures: number;
+      }) => void)
+    | null = null;
+  if (useDaemon && daemonClient) {
+    onDaemonSessionRestarted = (payload) => {
+      const win = getWindow?.();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(IPC.PTY_RESTARTED, {
+          ptyId: payload.sessionId,
+          restartCount: payload.restartCount,
+          exitCode: payload.exitCode,
+        });
+      }
+    };
+    daemonClient.on('session:restarted', onDaemonSessionRestarted);
+
+    onDaemonSupervisionChanged = (payload) => {
+      const win = getWindow?.() ?? null;
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(IPC.SUPERVISION_CHANGED, {
+          ptyId: payload.sessionId,
+          status: payload.status,
+          reason: payload.reason,
+          restartCount: payload.restartCount,
+        });
+      }
+      // Toast only on a guard trip — the one supervision event the user MUST
+      // notice (auto-restart just got disabled). manual-stop/rearm are the
+      // user's own actions and get no toast.
+      if (payload.status === 'stopped' && payload.reason === 'guard-trip') {
+        const title = 'Supervision stopped';
+        const body = `Pane restarted ${payload.restartCount}× in a row — auto-restart disabled. Click to review.`;
+        // In-app notification (unread badge) + OS toast, mirroring the agent
+        // notification surface. Toast click jumps to the originating pane
+        // (ToastManager resolves ptyId → workspace/pane/surface).
+        sendNotification(win, payload.sessionId, { type: 'warning', title, body });
+        toastManager.show(title, body, { ptyId: payload.sessionId });
+      }
+    };
+    daemonClient.on('supervision:changed', onDaemonSupervisionChanged);
+  }
+
   // Cleanup function
   return () => {
     ipcMain.removeHandler(IPC.PTY_CREATE);
@@ -667,6 +890,8 @@ export function registerPTYHandlers(
     ipcMain.removeHandler(IPC.PTY_DISPOSE);
     ipcMain.removeHandler(IPC.PTY_LIST);
     ipcMain.removeHandler(IPC.PTY_RECONNECT);
+    ipcMain.removeHandler(IPC.SUPERVISE_REARM);
+    ipcMain.removeHandler(IPC.SUPERVISE_STOP);
 
     // Clean up daemon listeners
     if (daemonClient) {
@@ -676,6 +901,12 @@ export function registerPTYHandlers(
       daemonSessionListeners.clear();
       if (onDaemonSessionDied) {
         daemonClient.removeListener('session:died', onDaemonSessionDied);
+      }
+      if (onDaemonSessionRestarted) {
+        daemonClient.removeListener('session:restarted', onDaemonSessionRestarted);
+      }
+      if (onDaemonSupervisionChanged) {
+        daemonClient.removeListener('supervision:changed', onDaemonSupervisionChanged);
       }
       if (onDaemonFlushComplete) {
         daemonClient.removeListener('session:flushComplete', onDaemonFlushComplete);

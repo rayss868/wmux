@@ -188,6 +188,112 @@ describe('normalizeWmuxProjectConfig — layout (all-or-nothing)', () => {
   });
 });
 
+describe('normalizeWmuxProjectConfig — X8 supervision (strict, decision ⑪)', () => {
+  // Helper: a two-leaf horizontal branch whose FIRST leaf carries the override
+  // under test, so layout-drop vs. leaf-shape is unambiguous.
+  function layoutWith(leaf: Record<string, unknown>) {
+    return { direction: 'horizontal', panes: [{ command: 'claude /loop', ...leaf }, { command: 'echo sibling' }] };
+  }
+  function firstLeaf(input: Record<string, unknown>) {
+    const config = normalizeWmuxProjectConfig({ layout: layoutWith(input) });
+    const layout = config?.layout;
+    if (!layout || layout.type !== 'branch') return undefined;
+    return layout.children[0];
+  }
+
+  it('accepts restart: on-failure and always', () => {
+    expect(firstLeaf({ restart: 'on-failure' })).toEqual({ type: 'leaf', command: 'claude /loop', restart: 'on-failure' });
+    expect(firstLeaf({ restart: 'always' })).toEqual({ type: 'leaf', command: 'claude /loop', restart: 'always' });
+  });
+
+  it("normalizes restart: 'never' to an omitted field (documented no-op)", () => {
+    const leaf = firstLeaf({ restart: 'never' });
+    expect(leaf).toEqual({ type: 'leaf', command: 'claude /loop' });
+    expect(leaf && 'restart' in leaf).toBe(false);
+  });
+
+  it('drops the whole layout on an unknown restart value (no silent downgrade)', () => {
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 'on-fail' }) })).toBeUndefined();
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restart: true }) })).toBeUndefined();
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 1 }) })).toBeUndefined();
+  });
+
+  it('drops the layout when restart has no command', () => {
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { direction: 'horizontal', panes: [{ restart: 'always' }, { command: 'x' }] },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('drops the layout when restart accompanies a url', () => {
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { direction: 'horizontal', panes: [{ url: 'http://localhost:3000', restart: 'always' }, { command: 'x' }] },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('accepts a restartLimit within caps', () => {
+    expect(firstLeaf({ restart: 'on-failure', restartLimit: { burst: 3, healthyUptimeSec: 600 } })).toEqual({
+      type: 'leaf',
+      command: 'claude /loop',
+      restart: 'on-failure',
+      restartLimit: { burst: 3, healthyUptimeSec: 600 },
+    });
+  });
+
+  it('floors fractional restartLimit values', () => {
+    expect(firstLeaf({ restart: 'always', restartLimit: { burst: 4.9, healthyUptimeSec: 120.7 } })).toMatchObject({
+      restartLimit: { burst: 4, healthyUptimeSec: 120 },
+    });
+  });
+
+  it('drops the layout on out-of-range or NaN restartLimit', () => {
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 'on-failure', restartLimit: { burst: 0 } }) })).toBeUndefined();
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 'on-failure', restartLimit: { burst: 21 } }) })).toBeUndefined();
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 'on-failure', restartLimit: { healthyUptimeSec: 29 } }) })).toBeUndefined();
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 'on-failure', restartLimit: { healthyUptimeSec: 3601 } }) })).toBeUndefined();
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 'on-failure', restartLimit: { burst: Number.NaN } }) })).toBeUndefined();
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 'on-failure', restartLimit: { burst: 'five' } }) })).toBeUndefined();
+  });
+
+  it('accepts a partial restartLimit (missing field defaulted later at the funnel)', () => {
+    expect(firstLeaf({ restart: 'on-failure', restartLimit: { burst: 7 } })).toEqual({
+      type: 'leaf',
+      command: 'claude /loop',
+      restart: 'on-failure',
+      restartLimit: { burst: 7 },
+    });
+    expect(firstLeaf({ restart: 'always', restartLimit: { healthyUptimeSec: 90 } })).toEqual({
+      type: 'leaf',
+      command: 'claude /loop',
+      restart: 'always',
+      restartLimit: { healthyUptimeSec: 90 },
+    });
+  });
+
+  it('silently drops a restartLimit orphan with no effective restart (cosmetic)', () => {
+    // No restart → leaf stays valid, restartLimit is simply not carried.
+    expect(firstLeaf({ restartLimit: { burst: 3 } })).toEqual({ type: 'leaf', command: 'claude /loop' });
+    // restart:'never' also leaves no effective restart → orphan dropped.
+    expect(firstLeaf({ restart: 'never', restartLimit: { burst: 3 } })).toEqual({ type: 'leaf', command: 'claude /loop' });
+  });
+
+  it('still validates a restartLimit even when its restart resolves away (strictness)', () => {
+    // An orphan restartLimit is cosmetic, but a MALFORMED one is still a typo —
+    // an empty restartLimit object carries no present fields and is harmless,
+    // while a present-but-bad field is caught regardless of restart presence.
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restartLimit: { burst: 0 } }) })).toBeUndefined();
+  });
+
+  it('keeps supervised commands in the trust-dialog command list', () => {
+    const config = normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 'on-failure' }) });
+    expect(config).toBeDefined();
+    expect(collectConfigCommands(config!)).toEqual(['claude /loop', 'echo sibling']);
+  });
+});
+
 describe('isValidProjectRelativeCwd', () => {
   it('accepts plain relative segments', () => {
     expect(isValidProjectRelativeCwd('src')).toBe(true);

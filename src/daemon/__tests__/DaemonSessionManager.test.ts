@@ -10,15 +10,18 @@ class MockPty extends EventEmitter {
   private _rows: number;
   /** Captured spawn env, so tests can assert the resolved child environment. */
   readonly spawnEnv: Record<string, string> | undefined;
+  /** Captured spawn argv (X8 exec wrapper assertions). */
+  readonly spawnArgs: string[];
   private dataCallbacks: ((data: string) => void)[] = [];
   private exitCallbacks: ((e: { exitCode: number; signal?: number }) => void)[] = [];
   killed = false;
 
-  constructor(_cmd: string, _args: string[], opts: { cols: number; rows: number; env?: Record<string, string> }) {
+  constructor(_cmd: string, args: string[], opts: { cols: number; rows: number; env?: Record<string, string> }) {
     super();
     this._cols = opts.cols;
     this._rows = opts.rows;
     this.spawnEnv = opts.env;
+    this.spawnArgs = args;
   }
 
   onData(cb: (data: string) => void) {
@@ -75,6 +78,7 @@ vi.mock('node-pty', () => ({
 // Import after mock is set up
 import { DaemonSessionManager } from '../DaemonSessionManager';
 import { createDefaultConfig } from '../config';
+import { PWSH_EXIT_TAIL } from '../execWrapper';
 
 describe('DaemonSessionManager', () => {
   let manager: DaemonSessionManager;
@@ -653,6 +657,26 @@ describe('DaemonSessionManager', () => {
       expect(session.cmd).toBe(ALIAS_TARGET);
     });
 
+    // X8: an exec unit whose resolved shell has no known wrapper-argv shape
+    // must swap to the platform default (a PowerShell family on Windows)
+    // instead of guessing argv for an unknown binary.
+    it('falls back to the default shell for an unknown exec wrapper family', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === PWSH7 || p === PS5);
+      const session = manager.createSession({
+        id: 'exec-fallback',
+        cmd: 'nu', // unknown family — buildExecArgs returns null for it
+        cwd: '.',
+        exec: { command: 'claude /loop' },
+      });
+      expect(session.cmd).toBe(PWSH7);
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-Command',
+        `claude /loop${PWSH_EXIT_TAIL}`,
+      ]);
+    });
+
     it('resolves a bare "pwsh.exe" cmd through the Store alias when no traditional install exists', () => {
       existsSpy.mockImplementation((p: fs.PathLike) => p === ALIAS_TARGET || p === PS5);
       lstatSpy.mockImplementation((p: fs.PathLike) => {
@@ -665,6 +689,115 @@ describe('DaemonSessionManager', () => {
       });
       const session = manager.createSession({ id: 'bare-pwsh', cmd: 'pwsh.exe', cwd: '.' });
       expect(session.cmd).toBe(ALIAS_TARGET);
+    });
+  });
+
+  // === X8 pane supervision: exec-style units + supervision meta + tombstone removal ===
+  describe('X8 exec sessions and supervision', () => {
+    it('spawns an exec unit with wrapper argv instead of OSC 133 injection', () => {
+      // Bare 'pwsh.exe' deterministically resolves to itself when no
+      // well-known install is present (resolveShellPath PATH fallback), so
+      // this test is independent of the host machine's PowerShell layout.
+      const session = manager.createSession({
+        id: 'exec-1',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude /loop' },
+      });
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-Command',
+        `claude /loop${PWSH_EXIT_TAIL}`,
+      ]);
+      // No interactive-integration markers: -NoExit (pwsh injection) must
+      // not leak into a unit that has no prompt to keep alive.
+      expect(lastMockPty?.spawnArgs).not.toContain('-NoExit');
+      // The unit command is persisted on meta so recovery/restart replays
+      // the loop itself, not an empty shell.
+      expect(session.exec).toEqual({ command: 'claude /loop' });
+    });
+
+    it('stores supervision meta as an owned copy (no caller aliasing)', () => {
+      const limit = { burst: 5, healthyUptimeSec: 300 };
+      const session = manager.createSession({
+        id: 'sup-copy',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude /loop' },
+        supervision: { restart: 'on-failure', limit, status: 'armed' },
+      });
+      expect(session.supervision).toEqual({
+        restart: 'on-failure',
+        limit: { burst: 5, healthyUptimeSec: 300 },
+        status: 'armed',
+      });
+      // meta is persisted via buildState — a later caller-side mutation
+      // must not bleed into the persisted blob.
+      limit.burst = 99;
+      expect(manager.getSession('sup-copy')?.meta.supervision?.limit.burst).toBe(5);
+    });
+
+    it('recovery replay preserves a sticky stopped status', () => {
+      const session = manager.createSession({
+        id: 'sup-stopped',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude /loop' },
+        supervision: { restart: 'always', limit: { burst: 5, healthyUptimeSec: 300 }, status: 'stopped' },
+      });
+      // A runaway-guard 'stopped' must survive the persist→recover replay
+      // verbatim — silently re-arming across a reboot is a trust violation.
+      expect(session.supervision?.status).toBe('stopped');
+    });
+
+    describe('removeTombstone', () => {
+      it('removes a dead tombstone silently so the same id can be re-created', () => {
+        manager.createSession({ id: 'tomb', cmd: 'pwsh.exe', cwd: '.', exec: { command: 'claude /loop' } });
+        lastMockPty?.simulateExit(1);
+        expect(manager.getSession('tomb')?.meta.state).toBe('dead');
+
+        const destroyHandler = vi.fn();
+        manager.on('session:destroyed', destroyHandler);
+
+        expect(manager.removeTombstone('tomb')).toBe(true);
+        expect(manager.getSession('tomb')).toBeUndefined();
+        // The whole point: a restart must look like died → (silence) →
+        // created. 'session:destroyed' means "user closed the pane" to the
+        // supervisor and "pane teardown" to main — neither may fire here.
+        expect(destroyHandler).not.toHaveBeenCalled();
+
+        // The supervised-restart invariant: same id is creatable again.
+        expect(() =>
+          manager.createSession({ id: 'tomb', cmd: 'pwsh.exe', cwd: '.', exec: { command: 'claude /loop' } }),
+        ).not.toThrow();
+      });
+
+      it('throws on a live session and returns false for a missing id', () => {
+        manager.createSession({ id: 'alive', cmd: 'pwsh.exe', cwd: '.' });
+        expect(() => manager.removeTombstone('alive')).toThrow(/is 'detached', not 'dead'/);
+        expect(manager.removeTombstone('ghost')).toBe(false);
+      });
+
+      it('reinsertSession restores the tombstone after a failed restart spawn', () => {
+        manager.createSession({ id: 'undo', cmd: 'pwsh.exe', cwd: '.', exec: { command: 'claude /loop' } });
+        lastMockPty?.simulateExit(1);
+        const managed = manager.getSession('undo')!;
+        manager.removeTombstone('undo');
+        expect(manager.getSession('undo')).toBeUndefined();
+
+        // createSession failed (cap / transient ConPTY) → put the dead
+        // record back so sessions.json, the badge, and rearm keep a target.
+        manager.reinsertSession(managed);
+        expect(manager.getSession('undo')?.meta.state).toBe('dead');
+        expect(manager.getSession('undo')?.meta.exec).toEqual({ command: 'claude /loop' });
+
+        // Guards: only dead records, only into a free slot.
+        expect(() => manager.reinsertSession(managed)).toThrow(/id already present/);
+        manager.createSession({ id: 'live-guard', cmd: 'pwsh.exe', cwd: '.' });
+        const live = manager.getSession('live-guard')!;
+        expect(() => manager.reinsertSession(live)).toThrow(/not 'dead'/);
+      });
     });
   });
 });

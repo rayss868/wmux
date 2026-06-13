@@ -38,6 +38,10 @@ import { createLateReconcileOnConnect } from '../../hooks/lateReconcileOnConnect
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import ProjectConfigDialog from '../Project/ProjectConfigDialog';
 import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } from '../../utils/projectConfigProbe';
+import {
+  PROJECT_SUPERVISION_DEFAULT_BURST,
+  PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
+} from '../../../shared/wmuxProjectConfig';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
@@ -745,6 +749,40 @@ export default function AppLayout() {
     };
   }, []);
 
+  // X8 pane supervision — keep the renderer supervision slice in sync with the
+  // daemon's PaneSupervisor. Three inputs:
+  //   - pty.onSupervisionChanged: sticky status flip (guard-trip / rearm /
+  //     manual-stop) → setSupervision (carries the live restartCount).
+  //   - pty.onRestarted: a quiet auto-restart → bump the count, status stays
+  //     armed (the in-pane marker lives in useTerminal; this is badge state).
+  //   - pty.list() hydration on mount + every daemon:connected: replaces the
+  //     whole map from the authoritative session list so a reload / daemon
+  //     respawn re-derives badges without waiting for the next event.
+  useEffect(() => {
+    const hydrate = () => {
+      void window.electronAPI.pty.list().then((sessions) => {
+        const snapshot: Record<string, { status: 'armed' | 'stopped'; restartCount: number }> = {};
+        for (const s of sessions) {
+          if (s.supervision) snapshot[s.id] = s.supervision;
+        }
+        useStore.getState().hydrateSupervision(snapshot);
+      }).catch(() => { /* best-effort — a transient list failure self-heals on the next connect */ });
+    };
+    hydrate();
+    const offConnected = window.electronAPI.daemon.onConnected(hydrate);
+    const offChanged = window.electronAPI.pty.onSupervisionChanged((payload) => {
+      useStore.getState().setSupervision(payload.ptyId, payload.status, payload.restartCount);
+    });
+    const offRestarted = window.electronAPI.pty.onRestarted((payload) => {
+      useStore.getState().bumpSupervisionRestart(payload.ptyId);
+    });
+    return () => {
+      offConnected();
+      offChanged();
+      offRestarted();
+    };
+  }, []);
+
   // Save session on beforeunload (with scrollback dump — sync fire-and-forget)
   useEffect(() => {
     const saveSession = () => {
@@ -853,6 +891,28 @@ export default function AppLayout() {
       });
       if (storeState.splitCwdSeed[paneId]) storeState.clearSplitCwdSeed(paneId);
       ptyCreateInFlightRef.current.add(paneId);
+      // X8: a supervised seed (restart set, terminal leaf only) becomes an
+      // exec-style supervised create — the command runs as the pane's ROOT
+      // process under the daemon's PaneSupervisor, NOT typed in as an
+      // initialCommand. Omitted restartLimit fields fall back to the SSOT
+      // defaults here at the funnel. Unsupervised seeds keep the exact prior
+      // behavior (initialCommand pasted into the shell).
+      const seedRestart = projectSeed?.restart;
+      const seedCommand = projectSeed?.command;
+      const bootstrapOptions =
+        seedRestart !== undefined && seedCommand !== undefined
+          ? {
+              exec: seedCommand,
+              supervision: {
+                restart: seedRestart,
+                limit: {
+                  burst: projectSeed?.restartLimit?.burst ?? PROJECT_SUPERVISION_DEFAULT_BURST,
+                  healthyUptimeSec:
+                    projectSeed?.restartLimit?.healthyUptimeSec ?? PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
+                },
+              },
+            }
+          : (seedCommand !== undefined ? { initialCommand: seedCommand } : {});
       // Wrap through ipcInvoke so a rejected pty.create (e.g.
       // RESOURCE_EXHAUSTED when the daemon session cap is hit during a
       // Ctrl+D split) surfaces an actionable toast instead of leaving the
@@ -861,7 +921,7 @@ export default function AppLayout() {
         window.electronAPI.pty.create(
           withWorkspaceProfile(
             withDefaultShell(
-              { workspaceId: wsId, cwd: startupCwd, ...(projectSeed?.command ? { initialCommand: projectSeed.command } : {}) },
+              { workspaceId: wsId, cwd: startupCwd, ...bootstrapOptions },
               useStore.getState().defaultShell,
             ),
             activeWorkspace.profile,

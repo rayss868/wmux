@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { loadConfig, getWmuxDir } from './config';
 import { DaemonSessionManager } from './DaemonSessionManager';
+import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
 import { StateWriter } from './StateWriter';
@@ -398,6 +399,11 @@ async function recoverSessions(
               agent: session.agent,
               createdAt: session.createdAt,
               deadTtlHours: session.deadTtlHours,
+              // X8: replay the exec unit + supervision policy — for an exec
+              // session this relaunches the supervised command itself (the
+              // reboot-survival story), not an empty shell.
+              exec: session.exec,
+              supervision: session.supervision,
               scrollbackData,
               // v2.8.1: stay muted until the renderer's first resize so PTY
               // output produced at the saved geometry can't interleave with
@@ -475,6 +481,9 @@ async function recoverSessions(
             agent: session.agent,
             createdAt: session.createdAt,
             deadTtlHours: session.deadTtlHours,
+            // X8: replay exec unit + supervision (see suspended path above).
+            exec: session.exec,
+            supervision: session.supervision,
             scrollbackData,
             // v2.8.1: see deferOutput rationale above (Bug 2).
             deferOutput: true,
@@ -514,6 +523,9 @@ async function recoverSessions(
           agent: session.agent,
           createdAt: session.createdAt,
           deadTtlHours: session.deadTtlHours,
+          // X8: replay exec unit + supervision (see suspended path above).
+          exec: session.exec,
+          supervision: session.supervision,
           // v2.8.1: see deferOutput rationale above (Bug 2).
           deferOutput: true,
         });
@@ -562,6 +574,75 @@ async function recoverSessions(
   stateWriter.cleanOrphanedBuffers(preservedBufferIds);
 }
 
+// === X8 supervised restart ===
+
+/**
+ * Re-create the SAME session id with a fresh PTY — the PaneSupervisor's
+ * restart primitive. Mirrors the recovery path (createSession replay of the
+ * persisted meta incl. the exec unit + processMonitor re-watch + persist),
+ * with two deliberate differences:
+ *  - tombstone removal is SILENT (removeTombstone, never destroySession) so
+ *    the restart can't masquerade as a user close to main or the supervisor;
+ *  - no scrollbackData / deferOutput — the renderer's xterm survives the
+ *    death and keeps visual continuity itself; replaying the old buffer
+ *    through the fresh ring would duplicate it on the PTY_RECONNECT flush.
+ * The renderer is told via the 'session.restarted' broadcast (supervisor
+ * emits it after this returns) and re-attaches through the existing
+ * PTY_RECONNECT machinery.
+ *
+ * Throws on spawn failure — the supervisor counts that as a failed start
+ * and backs off. On failure the dead tombstone is re-inserted so the
+ * session keeps existing for sessions.json, the badge, and rearm.
+ */
+function restartSupervisedSession(
+  id: string,
+  sessionManager: DaemonSessionManager,
+  stateWriter: StateWriter,
+  processMonitor: ProcessMonitor,
+): void {
+  const managed = sessionManager.getSession(id);
+  if (!managed) throw new Error(`restart: session '${id}' not found`);
+  if (managed.meta.state !== 'dead') {
+    throw new Error(`restart: session '${id}' is '${managed.meta.state}', not dead`);
+  }
+
+  const meta = managed.meta;
+  const replay = {
+    id: meta.id,
+    cmd: meta.cmd,
+    cwd: fs.existsSync(meta.cwd) ? meta.cwd : os.homedir(),
+    env: meta.env,
+    cols: meta.cols,
+    rows: meta.rows,
+    agent: meta.agent,
+    createdAt: meta.createdAt,
+    deadTtlHours: meta.deadTtlHours,
+    exec: meta.exec,
+    supervision: meta.supervision,
+  };
+
+  sessionManager.removeTombstone(id);
+  let recovered;
+  try {
+    recovered = sessionManager.createSession(replay);
+  } catch (err) {
+    sessionManager.reinsertSession(managed);
+    throw err;
+  }
+
+  // Same external-death safety net as the create/recovery paths.
+  processMonitor.watch(recovered.id, recovered.pid, () => {
+    const current = sessionManager.getSession(recovered.id);
+    if (current && current.meta.state !== 'dead') {
+      current.meta.state = 'dead';
+      sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'process-monitor' });
+    }
+  });
+
+  stateWriter.saveImmediate(buildState(sessionManager));
+  log('info', `[supervisor] session ${id} re-created (pid ${recovered.pid})`);
+}
+
 // === RPC handler registration ===
 
 function registerRpcHandlers(
@@ -573,6 +654,7 @@ function registerRpcHandlers(
   startTime: number,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
   watchdog: Watchdog,
+  paneSupervisor: PaneSupervisor,
   triggerSnapshot: () => void,
 ): void {
   // daemon.createSession
@@ -592,7 +674,20 @@ function registerRpcHandlers(
       cols: p.cols,
       rows: p.rows,
       agent: p.agent,
+      // X8: exec unit + supervision. Fresh creates always start 'armed' —
+      // a persisted 'stopped' only ever enters through recovery replay.
+      exec: p.exec,
+      supervision: p.supervision
+        ? { restart: p.supervision.restart, limit: p.supervision.limit, status: 'armed' }
+        : undefined,
     });
+    if (session.supervision) {
+      paneSupervisor.arm(
+        session.id,
+        { restart: session.supervision.restart, limit: session.supervision.limit },
+        session.supervision.status,
+      );
+    }
 
     // Start process monitoring
     processMonitor.watch(session.id, session.pid, () => {
@@ -640,6 +735,11 @@ function registerRpcHandlers(
 
     // Stop process monitoring
     processMonitor.unwatch(p.id);
+
+    // X8 belt: the session:destroyed event below also disarms, but a
+    // destroy of an id the manager no longer holds (restart-failure edge)
+    // emits nothing — drop any pending supervised restart explicitly.
+    paneSupervisor.disarm(p.id);
 
     sessionManager.destroySession(p.id);
 
@@ -758,7 +858,25 @@ function registerRpcHandlers(
 
   // daemon.listSessions
   pipeServer.onRpc('daemon.listSessions', async () => {
-    return sessionManager.listSessions();
+    // X8: join the supervisor's volatile runtime (restart counts, pending
+    // backoff) onto supervised sessions — additive field consumed by
+    // `wmux list --json` and the sidebar badge.
+    return sessionManager.listSessions().map((s) =>
+      s.supervision ? { ...s, supervisionRuntime: paneSupervisor.getRuntime(s.id) } : s,
+    );
+  });
+
+  // X8 supervision control — renderer-only surface (main IPC → daemon).
+  // External pipe clients are blocked upstream by the 'wmux.internal'
+  // capability gate; nobody but the user re-arms a tripped runaway guard.
+  pipeServer.onRpc('daemon.superviseRearm', async (params) => {
+    const p = params as unknown as DaemonSessionIdParams;
+    return { ok: paneSupervisor.rearm(p.id) };
+  });
+
+  pipeServer.onRpc('daemon.superviseStop', async (params) => {
+    const p = params as unknown as DaemonSessionIdParams;
+    return { ok: paneSupervisor.stop(p.id) };
   });
 
   // daemon.getAgentName — daemon AgentDetector가 gate로 확정한 에이전트 표시명을
@@ -1181,6 +1299,9 @@ function wireContextWatchers(
 /** Set in main(); consumed by shutdown(). */
 let disposeContextWatchers: (() => void) | null = null;
 
+/** X8: set in main(); shutdown() cancels pending supervised restarts through it. */
+let paneSupervisorRef: PaneSupervisor | null = null;
+
 // === State builder ===
 
 /** Cached boot ID — populated at startup via initBootId() */
@@ -1256,6 +1377,13 @@ async function shutdown(
 
   // Stop watchdog
   watchdog.stop();
+
+  // X8: cancel pending supervised restarts FIRST — a backoff timer firing
+  // mid-shutdown would spawn a fresh PTY between the buffer dump and
+  // disposeAll. Policies stay persisted on the session meta; recovery
+  // re-arms them on the next boot.
+  try { paneSupervisorRef?.dispose(); } catch { /* best effort */ }
+  paneSupervisorRef = null;
 
   // Stop X1 context watchers (port poll timer + git fs.watch handles)
   try { disposeContextWatchers?.(); } catch { /* best effort */ }
@@ -1428,9 +1556,51 @@ async function main(): Promise<void> {
   // guarantees recovery never trips the createSession limit and dead-marks
   // the overflow — a freshly lowered maxSessions keeps the excess SUSPENDED
   // instead of destroying it (codex #4).
+  // X8 pane supervisor — the daemon-side init system for supervised exec
+  // panes. Created before recovery so recovered sessions can be re-armed.
+  const paneSupervisor = new PaneSupervisor({
+    restartSession: (id) => restartSupervisedSession(id, sessionManager, stateWriter, processMonitor),
+    isSessionDead: (id) => {
+      const m = sessionManager.getSession(id);
+      return !m || m.meta.state === 'dead';
+    },
+    broadcast: (event) => {
+      try {
+        pipeServer.broadcast(event);
+      } catch (err) {
+        log('warn', `supervision broadcast failed for ${event.sessionId}:`, err);
+      }
+    },
+    persistStatus: (id, status) => {
+      const m = sessionManager.getSession(id);
+      if (m?.meta.supervision) m.meta.supervision.status = status;
+      try {
+        stateWriter.saveImmediate(buildState(sessionManager));
+      } catch (err) {
+        log('warn', `supervision status persist failed for ${id}:`, err);
+      }
+    },
+    log: (level, msg) => log(level, msg),
+  });
+  paneSupervisorRef = paneSupervisor;
+
   const maxRecover = Math.min(config.session.maxSessions, MAX_RECOVER_SESSIONS);
   await recoverSessions(stateWriter, sessionManager, processMonitor, maxRecover);
   markDaemonBoot('recovery-done');
+
+  // X8: re-arm supervision for recovered sessions. The policy + sticky
+  // status live on the persisted meta, so this is a pure replay — a
+  // runaway-guard 'stopped' comes back stopped (badge + manual rearm only),
+  // an 'armed' loop resumes supervision exactly where the reboot cut it.
+  for (const s of sessionManager.listLiveSessions()) {
+    if (s.supervision) {
+      paneSupervisor.arm(
+        s.id,
+        { restart: s.supervision.restart, limit: s.supervision.limit },
+        s.supervision.status,
+      );
+    }
+  }
 
   // 5. Register RPC handlers
   registerRpcHandlers(
@@ -1442,6 +1612,7 @@ async function main(): Promise<void> {
     startTime,
     sessionDataListeners,
     watchdog,
+    paneSupervisor,
     () => {
       if (runSnapshotOnceRef) void runSnapshotOnceRef();
     },
@@ -1449,6 +1620,27 @@ async function main(): Promise<void> {
 
   // 6. Wire events
   wireEvents(sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, sessionDataListeners);
+
+  // 6b-X8. Supervisor lifecycle hooks. `session:died` = the PTY exited on
+  // its own → policy evaluation. `session:destroyed` = the USER closed the
+  // pane (destroySession disposes the exit listener before killing, so died
+  // never fires for it) → disarm, cancelling any backoff-pending restart.
+  // The supervisor's own restarts bypass destroySession (removeTombstone),
+  // so neither hook ever fires for a supervised restart itself.
+  sessionManager.on('session:died', (payload: { id: string; exitCode: number | null; signal?: number }) => {
+    try {
+      paneSupervisor.onSessionDied({ id: payload.id, exitCode: payload.exitCode, signal: payload.signal });
+    } catch (err) {
+      log('error', `supervisor onSessionDied failed for ${payload.id}:`, err);
+    }
+  });
+  sessionManager.on('session:destroyed', (payload: { id: string }) => {
+    try {
+      paneSupervisor.disarm(payload.id);
+    } catch (err) {
+      log('warn', `supervisor disarm failed for ${payload.id}:`, err);
+    }
+  });
 
   // 6b. X1 workspace-context watchers (git HEAD fs.watch + PID-tree ports)
   disposeContextWatchers = wireContextWatchers(sessionManager, pipeServer);

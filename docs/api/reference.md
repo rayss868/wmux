@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **97** methods (`ALL_RPC_METHODS` in
+Total: **99** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -206,6 +206,8 @@ Total: **97** methods (`ALL_RPC_METHODS` in
 | `daemon.ping` | `wmux.internal` |  |
 | `daemon.shutdown` | `wmux.internal` |  |
 | `daemon.compact` | `wmux.internal` |  |
+| `daemon.superviseRearm` | `wmux.internal` |  |
+| `daemon.superviseStop` | `wmux.internal` |  |
 
 ### `hooks`
 
@@ -223,7 +225,7 @@ Total: **97** methods (`ALL_RPC_METHODS` in
 
 ## Event types
 
-The EventBus exposes **9** event types
+The EventBus exposes **11** event types
 (`WMUX_EVENT_TYPES` in `src/shared/events.ts`), polled via `events.poll`.
 Wire shapes (the fields beyond the common `seq` / `ts` / `workspaceId` /
 `type`) are documented in [`inventory.md`](./inventory.md#event-types) and
@@ -240,6 +242,8 @@ typed in `src/shared/events.ts`.
 | `process.exited` |
 | `agent.lifecycle` |
 | `notification.received` |
+| `pane.restarted` |
+| `pane.supervision` |
 
 ---
 

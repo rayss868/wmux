@@ -11,10 +11,15 @@ interface ContextMenuProps {
   onPaste: () => void;
   onOpenLink: (url: string) => void;
   onCopyLink: (url: string) => void;
+  /** X8 — supervision status of this surface's pty. `undefined` for
+   *  unsupervised panes (both supervision items hidden). */
+  supervisionStatus?: 'armed' | 'stopped';
+  onSupervisionStop?: () => void;
+  onSupervisionRearm?: () => void;
   onClose: () => void;
 }
 
-export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl, onCopy, onPaste, onOpenLink, onCopyLink, onClose }: ContextMenuProps) {
+export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl, onCopy, onPaste, onOpenLink, onCopyLink, supervisionStatus, onSupervisionStop, onSupervisionRearm, onClose }: ContextMenuProps) {
   const t = useT();
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -106,6 +111,25 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
             label={t('contextMenu.openLink')}
             onClick={() => handleAction(() => onOpenLink(selectedText.trim()))}
           />
+        </>
+      )}
+
+      {/* X8 supervision controls — only for a supervised pane. Armed → stop;
+          guard-tripped (stopped) → rearm. */}
+      {supervisionStatus !== undefined && (
+        <>
+          <div className="my-1 mx-2 border-t" style={{ borderColor: 'var(--bg-overlay)' }} />
+          {supervisionStatus === 'armed' ? (
+            <MenuItem
+              label={t('supervision.stop')}
+              onClick={() => handleAction(() => onSupervisionStop?.())}
+            />
+          ) : (
+            <MenuItem
+              label={t('supervision.rearm')}
+              onClick={() => handleAction(() => onSupervisionRearm?.())}
+            />
+          )}
         </>
       )}
     </div>

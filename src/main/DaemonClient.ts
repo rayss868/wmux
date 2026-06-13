@@ -423,6 +423,44 @@ export class DaemonClient extends EventEmitter {
           // Notification router treats both the same: clear agentStatus.
           this.emit('session:destroyed', { sessionId: event.sessionId });
           break;
+        case 'session.restarted': {
+          // X8 — the PaneSupervisor re-created this session under the same id
+          // with a fresh PTY. pty.handler re-attaches via the existing
+          // PTY_RECONNECT machinery (the daemon:connected reattach trigger
+          // does NOT fire on a live restart). Distinct from session:died — a
+          // restart must not run the died-path cleanup.
+          const data = event.data as {
+            restartCount?: number;
+            consecutiveFailures?: number;
+            exitCode?: number | null;
+          } | null;
+          this.emit('session:restarted', {
+            sessionId: event.sessionId,
+            restartCount: data?.restartCount ?? 0,
+            consecutiveFailures: data?.consecutiveFailures ?? 0,
+            exitCode: data?.exitCode ?? null,
+          });
+          break;
+        }
+        case 'supervision.changed': {
+          // X8 — sticky supervision status flip (guard trip → 'stopped',
+          // manual rearm/stop). pty.handler forwards every flip to the
+          // renderer for badge sync and raises an OS toast on guard trips only.
+          const data = event.data as {
+            status?: 'armed' | 'stopped';
+            reason?: 'guard-trip' | 'rearm' | 'manual-stop';
+            restartCount?: number;
+            consecutiveFailures?: number;
+          } | null;
+          this.emit('supervision:changed', {
+            sessionId: event.sessionId,
+            status: data?.status ?? 'armed',
+            reason: data?.reason ?? 'rearm',
+            restartCount: data?.restartCount ?? 0,
+            consecutiveFailures: data?.consecutiveFailures ?? 0,
+          });
+          break;
+        }
         case 'activity.idle':
           this.emit('session:idle', { sessionId: event.sessionId });
           break;
