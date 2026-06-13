@@ -4,11 +4,12 @@ import type { IPty } from 'node-pty';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DaemonSession, DaemonSessionState, DaemonConfig } from './types';
+import type { DaemonSession, DaemonSessionState, DaemonSessionSupervision, DaemonConfig } from './types';
 import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection, classifyShell } from './shell-integration';
+import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
@@ -138,6 +139,20 @@ export class DaemonSessionManager extends EventEmitter {
      * directly, not on the muted PTY data path.
      */
     deferOutput?: boolean;
+    /**
+     * X8 exec-style unit: run `command` as the pane's root process via a
+     * non-interactive wrapper shell (params.cmd, when classifiable, else a
+     * known-good platform shell). Persisted on meta so recovery and the
+     * supervisor replay the command itself, not an empty shell. OSC 133
+     * shell integration is skipped (no prompt to mark).
+     */
+    exec?: { command: string };
+    /**
+     * X8 supervision policy + sticky status. Fresh creates pass
+     * status:'armed'; recovery replays the persisted value so a
+     * runaway-guard 'stopped' survives reboots.
+     */
+    supervision?: DaemonSessionSupervision;
   }): DaemonSession {
     // Validate session ID to prevent path traversal, injection, or oversized keys
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(params.id)) {
@@ -182,7 +197,7 @@ export class DaemonSessionManager extends EventEmitter {
     const cols = params.cols ?? DEFAULT_COLS;
     const rows = params.rows ?? DEFAULT_ROWS;
     const cwd = params.cwd || os.homedir();
-    const cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
+    let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
 
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
     // main already ran buildSafeChildEnv + the workspace-profile overlay +
@@ -213,29 +228,46 @@ export class DaemonSessionManager extends EventEmitter {
       ? stripReservedAuth(params.env)
       : stripReservedNamespace(buildSafeChildEnv(globalThis.process.env));
 
-    // Shell integration: dot-source our OSC 133 init script when the shell
-    // is a supported family (pwsh/bash). Unknown shells (cmd.exe, zsh, etc.)
-    // get a plain spawn with no args and silently skip integration.
     let spawnArgs: string[] = [];
-    try {
-      const injection = buildSpawnInjection(cmd);
-      if (injection) {
-        // zsh ZDOTDIR 가로채기: injection이 ZDOTDIR을 wmux 디렉토리로 덮어쓰기
-        // 전에, 사용자의 원래 ZDOTDIR(없으면 HOME)을 WMUX_USER_ZDOTDIR로 보존한다.
-        // stub .zshenv/.zshrc가 이 값으로 사용자 설정을 복원하므로, 보존을
-        // 빠뜨리면 사용자 .zshrc(PATH/alias 등)가 통째로 날아간다.
-        if (classifyShell(cmd) === 'zsh' && !env['WMUX_USER_ZDOTDIR']) {
-          env['WMUX_USER_ZDOTDIR'] = env['ZDOTDIR'] || env['HOME'] || os.homedir();
-        }
-        spawnArgs = injection.args;
-        for (const [k, v] of Object.entries(injection.env)) {
-          env[k] = v;
-        }
+    if (params.exec) {
+      // X8 exec unit: the command IS the pane process — no interactive
+      // shell session, so OSC 133 injection is skipped (no prompt to mark,
+      // and injection args would collide with the wrapper argv). When the
+      // resolved shell's family is unknown we swap to a known-good platform
+      // shell rather than guess argv for it.
+      let execArgs = buildExecArgs(cmd, params.exec.command);
+      if (!execArgs) {
+        cmd = this.resolveExecFallbackShell();
+        execArgs = buildExecArgs(cmd, params.exec.command);
       }
-    } catch (err) {
-      // Integration install failure must not break session creation.
-      // eslint-disable-next-line no-console
-      console.warn('[DaemonSessionManager] shell integration unavailable:', err);
+      if (!execArgs) {
+        throw new Error(`No usable wrapper shell for exec session (resolved: ${cmd})`);
+      }
+      spawnArgs = execArgs;
+    } else {
+      // Shell integration: dot-source our OSC 133 init script when the shell
+      // is a supported family (pwsh/bash). Unknown shells (cmd.exe, zsh, etc.)
+      // get a plain spawn with no args and silently skip integration.
+      try {
+        const injection = buildSpawnInjection(cmd);
+        if (injection) {
+          // zsh ZDOTDIR 가로채기: injection이 ZDOTDIR을 wmux 디렉토리로 덮어쓰기
+          // 전에, 사용자의 원래 ZDOTDIR(없으면 HOME)을 WMUX_USER_ZDOTDIR로 보존한다.
+          // stub .zshenv/.zshrc가 이 값으로 사용자 설정을 복원하므로, 보존을
+          // 빠뜨리면 사용자 .zshrc(PATH/alias 등)가 통째로 날아간다.
+          if (classifyShell(cmd) === 'zsh' && !env['WMUX_USER_ZDOTDIR']) {
+            env['WMUX_USER_ZDOTDIR'] = env['ZDOTDIR'] || env['HOME'] || os.homedir();
+          }
+          spawnArgs = injection.args;
+          for (const [k, v] of Object.entries(injection.env)) {
+            env[k] = v;
+          }
+        }
+      } catch (err) {
+        // Integration install failure must not break session creation.
+        // eslint-disable-next-line no-console
+        console.warn('[DaemonSessionManager] shell integration unavailable:', err);
+      }
     }
 
     // Spawn the PTY. node-pty throws synchronously on a missing/invalid shell
@@ -280,6 +312,18 @@ export class DaemonSessionManager extends EventEmitter {
     };
     if (params.agent) {
       meta.agent = params.agent;
+    }
+    if (params.exec) {
+      meta.exec = { command: params.exec.command };
+    }
+    if (params.supervision) {
+      // Own copy — meta is persisted via buildState and must not alias
+      // caller-held objects (recovery replays the persisted blob verbatim).
+      meta.supervision = {
+        restart: params.supervision.restart,
+        limit: { ...params.supervision.limit },
+        status: params.supervision.status,
+      };
     }
 
     // Ring buffer for scrollback — use config's bufferSizeMb if available
@@ -417,6 +461,44 @@ export class DaemonSessionManager extends EventEmitter {
     this.emit('session:destroyed', { id });
   }
 
+  /**
+   * X8 supervised restart: drop a DEAD tombstone from the map with no
+   * destroy side effects, so the supervisor can re-create the SAME session
+   * id (createSession throws on a duplicate id). The died handler already
+   * ran bridge.cleanup() and the PTY is gone — kill would be redundant, and
+   * emitting 'session:destroyed' here would be wrong twice over: the
+   * supervisor reads destroyed as "user closed the pane → disarm", and the
+   * daemon broadcasts it to main as pane teardown. A restart must look like
+   * died → (silence) → restarted, never like a destroy.
+   */
+  removeTombstone(id: string): boolean {
+    const managed = this.sessions.get(id);
+    if (!managed) return false;
+    if (managed.meta.state !== 'dead') {
+      throw new Error(`removeTombstone('${id}'): session is '${managed.meta.state}', not 'dead'`);
+    }
+    this.sessions.delete(id);
+    return true;
+  }
+
+  /**
+   * X8: undo removeTombstone when the restart's createSession failed (live
+   * cap, transient ConPTY error). Without re-insertion the session would
+   * vanish from the map — and therefore from sessions.json, the badge, and
+   * the rearm target — on a spawn hiccup. The managed record is the exact
+   * object removeTombstone unlinked: PTY already dead, bridge already
+   * cleaned, so holding it costs nothing.
+   */
+  reinsertSession(managed: ManagedSession): void {
+    if (managed.meta.state !== 'dead') {
+      throw new Error(`reinsertSession('${managed.meta.id}'): session is '${managed.meta.state}', not 'dead'`);
+    }
+    if (this.sessions.has(managed.meta.id)) {
+      throw new Error(`reinsertSession('${managed.meta.id}'): id already present`);
+    }
+    this.sessions.set(managed.meta.id, managed);
+  }
+
   attachSession(id: string): void {
     const managed = this.sessions.get(id);
     if (!managed) throw new Error(`Session '${id}' not found`);
@@ -511,6 +593,22 @@ export class DaemonSessionManager extends EventEmitter {
     const resolved = resolveBareShellName(cmd);
     if (resolved) return resolved;
     return cmd; // fallback to original (let pty.spawn try PATH)
+  }
+
+  /**
+   * Wrapper shell for an exec unit whose resolved shell has no known argv
+   * shape (e.g. nushell). Windows always resolves to a PowerShell family
+   * via getDefaultShell; POSIX prefers bash (login-shell PATH semantics)
+   * and falls back to the always-present /bin/sh.
+   */
+  private resolveExecFallbackShell(): string {
+    if (process.platform === 'win32') return this.getDefaultShell();
+    try {
+      if (fs.existsSync('/bin/bash')) return '/bin/bash';
+    } catch {
+      /* fall through */
+    }
+    return '/bin/sh';
   }
 
   private getDefaultShell(): string {

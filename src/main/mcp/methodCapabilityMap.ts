@@ -279,6 +279,11 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'daemon.ping':             { capability: 'wmux.internal' },
   'daemon.shutdown':         { capability: 'wmux.internal' },
   'daemon.compact':          { capability: 'wmux.internal' },
+  // X8 supervision control is renderer-only (main IPC → daemon). External
+  // clients must never re-arm a tripped runaway guard or stop supervision —
+  // same posture as project-trust ops.
+  'daemon.superviseRearm':   { capability: 'wmux.internal' },
+  'daemon.superviseStop':    { capability: 'wmux.internal' },
 
   // --- A2A (agent-to-agent) ---
   'a2a.resolve.identity': { capability: 'a2a.read',    riskClass: 'a2a' },

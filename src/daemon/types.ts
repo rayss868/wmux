@@ -1,7 +1,20 @@
 // === Daemon-specific type definitions ===
 
+import type { DaemonSupervisionPolicy } from '../shared/rpc';
+
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
+
+/**
+ * X8 pane supervision — what survives a daemon restart. Policy + the sticky
+ * status only: a runaway-guard 'stopped' must NOT silently re-arm across a
+ * reboot, while restart counters/backoff state are deliberately volatile
+ * (systemd resets start limits on boot; an immediately re-crashing loop
+ * trips the guard again within ~a minute).
+ */
+export interface DaemonSessionSupervision extends DaemonSupervisionPolicy {
+  status: 'armed' | 'stopped';
+}
 
 /** Per-session metadata persisted to sessions.json */
 export interface DaemonSession {
@@ -24,6 +37,14 @@ export interface DaemonSession {
   exitSignal?: string | null;
   deadTtlHours: number;
   bufferDumpPath?: string;
+  /**
+   * X8 exec-style unit: `command` runs as the pane's root process via a
+   * non-interactive wrapper shell (`cmd` above is that wrapper). Persisted
+   * so recovery re-launches the command itself, not an empty shell.
+   */
+  exec?: { command: string };
+  /** X8 supervision policy + sticky status (counters live in PaneSupervisor). */
+  supervision?: DaemonSessionSupervision;
 }
 
 /** Top-level schema for ~/.wmux/sessions.json */
