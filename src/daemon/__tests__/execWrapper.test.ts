@@ -1,13 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { buildExecArgs } from '../execWrapper';
+import { buildExecArgs, PWSH_EXIT_TAIL } from '../execWrapper';
 
 // X8 exec-style panes: argv synthesis per wrapper-shell family. The exit-code
 // propagation contract here is what makes `restart: on-failure` meaningful —
-// the wrapper's exit code must BE the command's exit code.
+// the wrapper's exit code must BE the command's exit code. The pwsh tail was
+// validated against live pwsh (2026-06-13): native exit N → N, missing
+// binary → 1 (a bare `exit $LASTEXITCODE` exits 0 there), pure-PS success → 0.
 describe('buildExecArgs', () => {
   const CMD = 'claude /loop --until done';
 
-  it('pwsh family gets an explicit $LASTEXITCODE propagation tail', () => {
+  it('pwsh family gets the snapshot-first exit propagation tail', () => {
     for (const shell of [
       'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
       'pwsh.exe',
@@ -18,9 +20,14 @@ describe('buildExecArgs', () => {
         '-NoLogo',
         '-NoProfile',
         '-Command',
-        `${CMD}; exit $LASTEXITCODE`,
+        `${CMD}${PWSH_EXIT_TAIL}`,
       ]);
     }
+    // The tail must snapshot $? / $LASTEXITCODE before any expression can
+    // reset them, and must classify all three outcome families.
+    expect(PWSH_EXIT_TAIL).toMatch(/^; \$__wmuxOk = \$\?; \$__wmuxLec = \$LASTEXITCODE;/);
+    expect(PWSH_EXIT_TAIL).toContain('exit $__wmuxLec');
+    expect(PWSH_EXIT_TAIL).toContain('exit 1');
   });
 
   it('cmd.exe gets /d /s /c (native child exit-code propagation, AutoRun skipped)', () => {

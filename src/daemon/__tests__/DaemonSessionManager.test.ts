@@ -78,6 +78,7 @@ vi.mock('node-pty', () => ({
 // Import after mock is set up
 import { DaemonSessionManager } from '../DaemonSessionManager';
 import { createDefaultConfig } from '../config';
+import { PWSH_EXIT_TAIL } from '../execWrapper';
 
 describe('DaemonSessionManager', () => {
   let manager: DaemonSessionManager;
@@ -672,7 +673,7 @@ describe('DaemonSessionManager', () => {
         '-NoLogo',
         '-NoProfile',
         '-Command',
-        'claude /loop; exit $LASTEXITCODE',
+        `claude /loop${PWSH_EXIT_TAIL}`,
       ]);
     });
 
@@ -707,7 +708,7 @@ describe('DaemonSessionManager', () => {
         '-NoLogo',
         '-NoProfile',
         '-Command',
-        'claude /loop; exit $LASTEXITCODE',
+        `claude /loop${PWSH_EXIT_TAIL}`,
       ]);
       // No interactive-integration markers: -NoExit (pwsh injection) must
       // not leak into a unit that has no prompt to keep alive.

@@ -13,13 +13,18 @@ import path from 'node:path';
  * NOT part of the trust surface — the trust-approved bytes are `command`.
  *
  * Exit-code propagation per family:
- *  - pwsh/powershell: `-Command "<cmd>; exit $LASTEXITCODE"`. pwsh's own
- *    exit code only reflects script success/failure, so propagate the last
- *    native command's code explicitly. When no native command ran,
- *    $LASTEXITCODE is $null and `exit $null` exits 0; a terminating script
- *    error makes pwsh exit 1 before the tail runs. `-NoProfile` keeps the
- *    unit start lean (PATH on Windows comes from the process env, not the
- *    profile, so command resolution is unaffected).
+ *  - pwsh/powershell: `-Command "<cmd>; <snapshot tail>"`. pwsh's own exit
+ *    code only reflects script success/failure, so propagate explicitly.
+ *    The tail snapshots `$?` and `$LASTEXITCODE` FIRST (any later expression
+ *    resets `$?` — same trap the OSC 133 prompt hook documents) and then:
+ *    native command ran → its code; pure-PS success → 0; pure-PS failure →
+ *    1. The third arm is load-bearing: a missing binary is a NON-terminating
+ *    CommandNotFound, so a bare `exit $LASTEXITCODE` would exit 0 and
+ *    `restart: on-failure` would misread a typo'd command as success
+ *    (measured 2026-06-13). A terminating script error still makes pwsh
+ *    exit 1 before the tail runs. `-NoProfile` keeps the unit start lean
+ *    (PATH on Windows comes from the process env, not the profile, so
+ *    command resolution is unaffected).
  *  - cmd: `/d /s /c <cmd>` propagates the child's exit code natively and
  *    `/d` skips AutoRun hooks.
  *  - POSIX shells (bash/zsh/sh/dash/ksh/fish): `-lc <cmd>` — the shell
@@ -29,6 +34,15 @@ import path from 'node:path';
  * Returns null for an unrecognized family — the caller must swap the
  * wrapper to a known-good platform shell and retry, never guess argv.
  */
+/**
+ * Snapshot-first exit propagation (see the family table above). Exported
+ * for tests; the wmux-prefixed variable names keep the tail from colliding
+ * with anything the user command defines.
+ */
+export const PWSH_EXIT_TAIL =
+  '; $__wmuxOk = $?; $__wmuxLec = $LASTEXITCODE;' +
+  ' if ($null -ne $__wmuxLec) { exit $__wmuxLec } elseif ($__wmuxOk) { exit 0 } else { exit 1 }';
+
 export function buildExecArgs(shellPath: string, command: string): string[] | null {
   const stem = path
     .basename(shellPath)
@@ -37,7 +51,7 @@ export function buildExecArgs(shellPath: string, command: string): string[] | nu
     .replace(/\.exe$/, '');
 
   if (stem === 'pwsh' || stem === 'powershell') {
-    return ['-NoLogo', '-NoProfile', '-Command', `${command}; exit $LASTEXITCODE`];
+    return ['-NoLogo', '-NoProfile', '-Command', `${command}${PWSH_EXIT_TAIL}`];
   }
   if (stem === 'cmd') {
     return ['/d', '/s', '/c', command];
