@@ -1,5 +1,3 @@
-import path from 'node:path';
-
 /**
  * X8 exec-style pane: build the wrapper-shell argv that runs `command` as
  * the pane's ROOT process (systemd ExecStart semantics) instead of typing
@@ -44,8 +42,11 @@ export const PWSH_EXIT_TAIL =
   ' if ($null -ne $__wmuxLec) { exit $__wmuxLec } elseif ($__wmuxOk) { exit 0 } else { exit 1 }';
 
 export function buildExecArgs(shellPath: string, command: string): string[] | null {
-  const stem = path
-    .basename(shellPath)
+  // Split on BOTH path separators so a Windows shell path (C:\…\pwsh.exe) is
+  // classified by its family even when this daemon runs on POSIX, where
+  // path.basename would keep the backslashes and miss the stem. The shell
+  // FAMILY is what selects the wrapper argv — never the host filesystem.
+  const stem = (shellPath.split(/[\\/]/).pop() ?? '')
     .toLowerCase()
     .replace(/^-/, '') // login shells show up as '-zsh'
     .replace(/\.exe$/, '');
