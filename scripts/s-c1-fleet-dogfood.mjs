@@ -151,6 +151,17 @@ async function main() {
   const metaOk = cards.length > 0 && cards.every((c) => c.status && c.workspaceId && c.workspaceName);
   pass('A3', metaOk, 'every card carries status + workspace metadata');
 
+  // ── A6: Tab is trapped inside the overlay (focus never escapes to the bg) ──
+  const focusBefore = await page.evaluate(() => !!document.activeElement?.closest?.('[role="dialog"]'));
+  await page.keyboard.press('Tab'); await sleep(150);
+  await page.keyboard.press('Tab'); await sleep(150);
+  const focusAfter = await page.evaluate(() => {
+    const ae = document.activeElement;
+    return { inDialog: !!ae?.closest?.('[role="dialog"]'), onCard: !!ae?.hasAttribute?.('data-fleet-card') };
+  });
+  pass('A6', focusBefore && focusAfter.inDialog,
+    `Tab keeps focus inside overlay (before=${focusBefore}, after inDialog=${focusAfter.inDialog} onCard=${focusAfter.onCard})`);
+
   // ── B1: awaiting_input witnessed + sorted first (best-effort) ──
   const awaiting = cards.find((c) => c.status === 'awaiting_input');
   const awaitingFirst = cards.length > 0 && cards[0].status === 'awaiting_input';
