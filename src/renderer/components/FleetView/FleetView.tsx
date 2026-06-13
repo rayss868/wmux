@@ -106,14 +106,26 @@ export default function FleetView() {
         return;
       }
       if (e.key === 'Tab') {
-        // Modal focus trap: keep Tab inside the overlay (route it to card
-        // navigation, wrapping) so focus can never escape to the background
-        // terminal/sidebar behind the backdrop.
+        // Modal focus trap: never let Tab escape the overlay. On the Fleet tab
+        // it drives roving card navigation (wrapping); otherwise it cycles the
+        // dialog's own controls (the tab buttons) so a keyboard user can still
+        // switch tabs instead of dead-ending on the empty / Approvals state.
         e.preventDefault();
         e.stopPropagation();
-        if (tab !== 'fleet' || panes.length === 0) return;
-        setFocusedIdx((i) =>
-          e.shiftKey ? (i - 1 + panes.length) % panes.length : (i + 1) % panes.length);
+        if (tab === 'fleet' && panes.length > 0) {
+          setFocusedIdx((i) =>
+            e.shiftKey ? (i - 1 + panes.length) % panes.length : (i + 1) % panes.length);
+          return;
+        }
+        const focusables = Array.from(
+          panelRef.current?.querySelectorAll<HTMLElement>('button:not([tabindex="-1"])') ?? [],
+        );
+        if (focusables.length === 0) { panelRef.current?.focus(); return; }
+        const cur = focusables.indexOf(document.activeElement as HTMLElement);
+        const next = e.shiftKey
+          ? (cur - 1 + focusables.length) % focusables.length
+          : (cur + 1) % focusables.length;
+        focusables[next]?.focus();
         return;
       }
       const isArrow =
