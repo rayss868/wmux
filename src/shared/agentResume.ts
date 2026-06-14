@@ -176,8 +176,17 @@ export function mergeResumeBinding(
   next: ResumeBinding,
 ): ResumeBinding {
   const merged: ResumeBinding = { ...next };
-  if (!merged.permissionMode && prev?.permissionMode) merged.permissionMode = prev.permissionMode;
-  if (!merged.transcriptPath && prev?.transcriptPath) merged.transcriptPath = prev.transcriptPath;
+  // Sticky fields are only valid for the SAME conversation. When next points at
+  // a different session/cwd/agent (e.g. a fresh SessionStart in a reused pane),
+  // carrying prev's permissionMode/transcriptPath forward would leak the old
+  // pane's bypassPermissions or run the D5 liveness probe against the wrong file
+  // (CodeRabbit). Gate the carry-forward on conversation identity.
+  const sameConversation =
+    prev?.agent === next.agent &&
+    prev?.sessionId === next.sessionId &&
+    prev?.cwd === next.cwd;
+  if (sameConversation && !merged.permissionMode && prev?.permissionMode) merged.permissionMode = prev.permissionMode;
+  if (sameConversation && !merged.transcriptPath && prev?.transcriptPath) merged.transcriptPath = prev.transcriptPath;
   return merged;
 }
 

@@ -226,6 +226,17 @@ describe('toResumeCommand (X6)', () => {
       const next = binding({ permissionMode: 'plan' });
       expect(mergeResumeBinding(undefined, next)).toEqual(next);
     });
+
+    it('does NOT carry sticky fields to a DIFFERENT conversation (CodeRabbit)', () => {
+      // A fresh SessionStart in a reused pane (new sessionId, no tail data yet)
+      // must not inherit the prior conversation's bypassPermissions / transcript.
+      const prev = binding({ sessionId: 'old', permissionMode: 'bypassPermissions', transcriptPath: 'C:\\t\\old.jsonl' });
+      const next = binding({ sessionId: 'new', permissionMode: undefined, transcriptPath: undefined, ts: 9 });
+      const m = mergeResumeBinding(prev, next);
+      expect(m.permissionMode).toBeUndefined();
+      expect(m.transcriptPath).toBeUndefined();
+      expect(m.sessionId).toBe('new');
+    });
   });
 
   describe('permissionFlagFor (pill helper) — the 4-mode mapping', () => {

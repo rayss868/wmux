@@ -158,7 +158,7 @@ describe('X6 ② reboot-survival durability', () => {
     const src = fs.readFileSync(daemonIndexPath, 'utf-8');
     const idx = src.indexOf("onRpc('daemon.setResumeBinding'");
     expect(idx).toBeGreaterThan(-1);
-    const body = src.slice(idx, idx + 1600);
+    const body = src.slice(idx, idx + 2400);
     expect(body).toMatch(/lastDetectedAgent\s*=\s*next\.agent/);
     expect(body).toMatch(/KNOWN_AGENT_SLUGS/);
   });
@@ -185,6 +185,10 @@ describe('X6 ② reboot-survival durability', () => {
     // And the pill markers are read off the LIVE recovered meta (which reflects
     // carry-forward + spool ingest + Rung-1 gate), not the stale persisted record.
     expect(recBody).toMatch(/for \(const recoveredId of recoveredIds\)/);
+    // CodeRabbit: a spool-only binding must reach the exec REPLAY launch (which
+    // runs before ingest), so resumeLaunchCommand consults the pre-read spool map.
+    expect(recBody).toMatch(/readResumeSpoolMap\(\)/);
+    expect(recBody).toMatch(/resumeLaunchCommand\(session, spoolBindings\.get\(session\.id\)\)/);
   });
 
   it('Rung 3: spool ingest guards — F7 cwd-match, D5 existence-probe, no stale clobber', () => {
@@ -195,9 +199,11 @@ describe('X6 ② reboot-survival durability', () => {
     // Attribute by EXACT pane id, not cwd guessing.
     expect(body).toMatch(/sessionManager\.getSession\(ptyId\)/);
     // F7: origin cwd must match the recovered pane cwd.
-    expect(body).toMatch(/cwd !== managed\.meta\.cwd/);
-    // Never let an older spooled capture overwrite a newer live one.
-    expect(body).toMatch(/prev\.ts >= recTs/);
+    expect(body).toMatch(/binding\.cwd !== managed\.meta\.cwd/);
+    // Never let an older spooled capture overwrite a newer live one, and skip a
+    // same-conversation spool (codex P2).
+    expect(body).toMatch(/prev\.ts >= binding\.ts/);
+    expect(body).toMatch(/prev\.sessionId === binding\.sessionId/);
     // D5: purged transcript → drop, never offer a dead --resume.
     expect(body).toMatch(/bindingTranscriptLives\(binding\)/);
   });

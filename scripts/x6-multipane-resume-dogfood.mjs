@@ -154,9 +154,23 @@ function writeSilentShim(shimDir) {
   return shimCmd;
 }
 
+// Wait for a child to actually exit; on timeout force-SIGKILL so we never proceed
+// with an orphan daemon still holding the pipe (which would make later cases
+// nondeterministic — CodeRabbit). A short grace after the kill guarantees we don't
+// hang if the 'exit' event is missed.
+async function waitForExitOrKill(proc, timeoutMs = 6000) {
+  if (proc.exitCode !== null) return;
+  await new Promise((resolve) => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; resolve(); } };
+    const hard = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already dead */ } setTimeout(done, 1500); }, timeoutMs);
+    proc.once('exit', () => { clearTimeout(hard); done(); });
+  });
+}
+
 async function killDaemon(d) {
   d.kill('SIGKILL');
-  await new Promise((r) => { d.on('exit', r); setTimeout(r, 6000); });
+  await waitForExitOrKill(d, 6000);
   await sleep(400);
 }
 
@@ -215,7 +229,7 @@ function findSession(list, id) {
 async function shutdown(sock, d, authToken) {
   await rpc(sock, 'daemon.shutdown', {}, authToken, 10_000).catch(() => {});
   sock.destroy();
-  await new Promise((r) => { d.on('exit', r); setTimeout(r, 5000); });
+  await waitForExitOrKill(d, 5000);
 }
 
 async function main() {

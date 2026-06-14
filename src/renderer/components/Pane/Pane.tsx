@@ -313,8 +313,15 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // pane's LIVE cwd. The daemon checks this at recovery, but the shell can
         // `cd` afterwards (OSC 7 updates surface.cwd) — re-validate here so a
         // post-recovery cd drops to the cwd-relative `--continue` (plan line 220).
-        const normCwd = (p: string | undefined) =>
-          (p ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        const normCwd = (p: string | undefined) => {
+          // Lowercase ONLY a leading Windows drive letter — drive letters are
+          // case-insensitive, but POSIX paths are fully case-sensitive, so a blanket
+          // toLowerCase() would treat `/Foo` and `/foo` as equal and wrongly allow
+          // `--resume` (CodeRabbit). Mirrors the daemon's normalizeCwd.
+          let out = (p ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+          if (/^[A-Za-z]:\//.test(out)) out = out[0].toLowerCase() + out.slice(1);
+          return out;
+        };
         const paneCwd = pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd;
         const cwdMatches = !!(resumeBinding && paneCwd && normCwd(resumeBinding.cwd) === normCwd(paneCwd));
         const sessionId = cwdMatches ? resumeBinding?.sessionId : undefined;

@@ -153,9 +153,23 @@ function writeShim(shimDir, marker) {
   return shimCmd;
 }
 
+// Wait for a child to actually exit; on timeout force-SIGKILL so we never proceed
+// with an orphan daemon still holding the pipe (which would make later cases
+// nondeterministic — CodeRabbit). A short grace after the kill avoids hanging if
+// the 'exit' event is missed.
+async function waitForExitOrKill(proc, timeoutMs = 6000) {
+  if (proc.exitCode !== null) return;
+  await new Promise((resolve) => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; resolve(); } };
+    const hard = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already dead */ } setTimeout(done, 1500); }, timeoutMs);
+    proc.once('exit', () => { clearTimeout(hard); done(); });
+  });
+}
+
 async function killDaemon(d) {
   d.kill('SIGKILL');
-  await new Promise((r) => { d.on('exit', r); setTimeout(r, 6000); });
+  await waitForExitOrKill(d, 6000);
   await sleep(400);
 }
 
@@ -253,7 +267,7 @@ async function main() {
       `disk-after-recover1.permissionMode=${onDisk2?.resumeBinding?.permissionMode ?? '<absent>'}, surfaced=${got3?.resumeBinding?.permissionMode ?? '<absent>'}`);
     await rpc(r3.sock, 'daemon.shutdown', {}, authToken, 10_000).catch(() => {});
     r3.sock.destroy();
-    await new Promise((r) => { r3.d.on('exit', r); setTimeout(r, 5000); });
+    await waitForExitOrKill(r3.d, 5000);
   }
 
   // ---- Case C: sticky permissionMode (codex #1) ----
@@ -292,7 +306,7 @@ async function main() {
       `resumeAgent=${got2?.resumeAgent}, resumeBinding=${got2?.resumeBinding ? 'PRESENT(bad)' : 'withheld'}`);
     await rpc(r2.sock, 'daemon.shutdown', {}, authToken, 10_000).catch(() => {});
     r2.sock.destroy();
-    await new Promise((r) => { r2.d.on('exit', r); setTimeout(r, 5000); });
+    await waitForExitOrKill(r2.d, 5000);
   }
 
   // ---- Case E: cwd-guard (F7) — binding.cwd ≠ session.cwd → not surfaced ----
@@ -310,7 +324,7 @@ async function main() {
       `resumeBinding=${got2?.resumeBinding ? 'PRESENT(bad)' : 'withheld'}`);
     await rpc(r2.sock, 'daemon.shutdown', {}, authToken, 10_000).catch(() => {});
     r2.sock.destroy();
-    await new Promise((r) => { r2.d.on('exit', r); setTimeout(r, 5000); });
+    await waitForExitOrKill(r2.d, 5000);
   }
 
   // cleanup

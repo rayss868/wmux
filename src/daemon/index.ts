@@ -209,11 +209,25 @@ function bindingTranscriptLives(binding: ResumeBinding | undefined): boolean {
   return fs.existsSync(binding.transcriptPath);
 }
 
-function resumeLaunchCommand(session: { id: string; exec?: { command: string }; cwd: string; resumeBinding?: ResumeBinding }): string | undefined {
+function resumeLaunchCommand(
+  session: { id: string; exec?: { command: string }; cwd: string; resumeBinding?: ResumeBinding },
+  spoolBinding?: ResumeBinding,
+): string | undefined {
   if (!session.exec) return undefined;
   if (!fs.existsSync(session.cwd)) return undefined; // cwd gone → fresh, not wrong-target resume
+  // Prefer the persisted binding; fall back to a spool-captured one (the live
+  // capture RPC failed, so the exact id only survived in the spool) so an exec
+  // agent pane replays as `--resume <id>` instead of an ambiguous `--continue`.
+  // The spool ingest runs AFTER this replay, so without consulting it here the
+  // exec pane would launch with --continue before the binding lands (CodeRabbit).
+  // Pick the fresher of the two by ts; toResumeCommand still applies the F7
+  // cwd-match guard, and bindingTranscriptLives is the D5 probe.
+  let binding = session.resumeBinding;
+  if (spoolBinding && (!binding || (spoolBinding.ts ?? 0) > (binding.ts ?? 0))) {
+    binding = spoolBinding;
+  }
   // D5: drop to `--continue` when the exact transcript is gone (pass no binding).
-  const usableBinding = bindingTranscriptLives(session.resumeBinding) ? session.resumeBinding : undefined;
+  const usableBinding = bindingTranscriptLives(binding) ? binding : undefined;
   const rewritten = toResumeCommand(session.exec.command, usableBinding, session.cwd);
   if (rewritten === session.exec.command) return undefined; // not a known agent launcher / already resuming
   log('info', `X6 resume: replaying session ${session.id} as resume form in ${session.cwd}`);
@@ -237,6 +251,57 @@ const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
   'bypassPermissions', 'acceptEdits', 'plan', 'default',
 ]);
 
+// Validate one spool record into a {ptyId, binding} pair, or null when it is
+// malformed or names an unknown agent (a hostile / stale spool file). Shared by
+// the recovery-replay pre-read (readResumeSpoolMap) and the durable ingest.
+function spoolRecordToBinding(rec: Record<string, unknown>): { ptyId: string; binding: ResumeBinding } | null {
+  const ptyId = typeof rec.ptyId === 'string' ? rec.ptyId : null;
+  const sessionId = typeof rec.sessionId === 'string' ? rec.sessionId : null;
+  const cwd = typeof rec.cwd === 'string' ? rec.cwd : null;
+  const agent = typeof rec.agent === 'string' ? rec.agent : 'claude';
+  if (!ptyId || !sessionId || !cwd || !KNOWN_AGENT_SLUGS.has(agent)) return null;
+  const permissionMode = typeof rec.permissionMode === 'string' && KNOWN_PERMISSION_MODES.has(rec.permissionMode)
+    ? (rec.permissionMode as ResumeBinding['permissionMode'])
+    : undefined;
+  return {
+    ptyId,
+    binding: {
+      agent,
+      sessionId,
+      cwd,
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(typeof rec.transcriptPath === 'string' ? { transcriptPath: rec.transcriptPath } : {}),
+      ts: typeof rec.ts === 'number' && Number.isFinite(rec.ts) ? rec.ts : 0,
+    },
+  };
+}
+
+// Read the spool into a ptyId→binding map WITHOUT consuming it (the post-recovery
+// ingestResumeSpool does the durable apply + delete). Used to feed an exec /
+// supervised pane's replay launch (resumeLaunchCommand) BEFORE ingest runs, so a
+// spool-only binding still produces `--resume <id>` instead of an ambiguous
+// `--continue` (CodeRabbit). cwd-match + D5 are applied by resumeLaunchCommand.
+function readResumeSpoolMap(): Map<string, ResumeBinding> {
+  const out = new Map<string, ResumeBinding>();
+  const dir = path.join(wmuxDir, 'resume-spool');
+  let names: string[];
+  try {
+    if (!fs.existsSync(dir)) return out;
+    names = fs.readdirSync(dir);
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue; // skips *.json.tmp (ends with .tmp)
+    try {
+      const rec = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf-8')) as Record<string, unknown>;
+      const parsed = spoolRecordToBinding(rec);
+      if (parsed) out.set(parsed.ptyId, parsed.binding);
+    } catch { /* skip corrupt — ingestResumeSpool drops it on its pass */ }
+  }
+  return out;
+}
+
 function ingestResumeSpool(
   sessionManager: DaemonSessionManager,
   stateWriter: StateWriter,
@@ -251,6 +316,17 @@ function ingestResumeSpool(
   }
   let applied = 0;
   for (const name of names) {
+    // Prune an abandoned temp from a crashed bridge write. The bridge now uses a
+    // UNIQUE temp name (pid+uuid) so a crash leaks one orphan that nothing
+    // overwrites; spool writes are atomic and instant, so anything older than a
+    // minute is dead (CodeRabbit).
+    if (name.endsWith('.json.tmp')) {
+      try {
+        const tmpPath = path.join(dir, name);
+        if (Date.now() - fs.statSync(tmpPath).mtimeMs > 60_000) fs.unlinkSync(tmpPath);
+      } catch { /* ignore */ }
+      continue;
+    }
     if (!name.endsWith('.json')) continue;
     const file = path.join(dir, name);
     const drop = (): void => { try { fs.unlinkSync(file); } catch { /* ignore */ } };
@@ -263,15 +339,11 @@ function ingestResumeSpool(
       drop(); // corrupt / partial write — never let it wedge the drain
       continue;
     }
-    const ptyId = typeof rec.ptyId === 'string' ? rec.ptyId : null;
-    const sessionId = typeof rec.sessionId === 'string' ? rec.sessionId : null;
-    const cwd = typeof rec.cwd === 'string' ? rec.cwd : null;
-    const agent = typeof rec.agent === 'string' ? rec.agent : 'claude';
-    if (!ptyId || !sessionId || !cwd) { drop(); continue; }
-    // Never persist a binding for an unknown agent (a malformed/hostile spool
-    // file). The pill gate is already bounded to KNOWN_AGENT_SLUGS; bound the
-    // durable binding the same way so downstream never sees a bogus slug (codex P2).
-    if (!KNOWN_AGENT_SLUGS.has(agent)) { drop(); continue; }
+    // Validate + bound unknown agents (codex P2): a malformed / hostile record
+    // never becomes a durable binding.
+    const parsed = spoolRecordToBinding(rec);
+    if (!parsed) { drop(); continue; }
+    const { ptyId, binding } = parsed;
 
     const managed = sessionManager.getSession(ptyId);
     if (!managed) {
@@ -282,8 +354,7 @@ function ingestResumeSpool(
     }
     // F7: `--resume` is cwd-scoped, so the capture's origin cwd must match the
     // recovered pane's cwd; a mismatch would dead-end (offer --continue instead).
-    if (cwd !== managed.meta.cwd) { drop(); continue; }
-    const recTs = typeof rec.ts === 'number' && Number.isFinite(rec.ts) ? rec.ts : 0;
+    if (binding.cwd !== managed.meta.cwd) { drop(); continue; }
     const prev = managed.meta.resumeBinding;
     // Never clobber: for a DIFFERENT conversation, only a strictly-newer spool
     // wins (ts tiebreak). For the SAME conversation the spool is redundant — its
@@ -291,33 +362,22 @@ function ingestResumeSpool(
     // keeps permissionMode sticky), and setResumeBinding's durable-change check
     // omits ts, so the persisted ts can lag a same-session live update; skipping
     // by sessionId avoids an older spool overwriting it (codex P2).
-    if (prev && (prev.sessionId === sessionId || prev.ts >= recTs)) { drop(); continue; }
+    if (prev && (prev.sessionId === binding.sessionId || prev.ts >= binding.ts)) { drop(); continue; }
 
-    const permissionMode = typeof rec.permissionMode === 'string'
-      && KNOWN_PERMISSION_MODES.has(rec.permissionMode)
-      ? (rec.permissionMode as ResumeBinding['permissionMode'])
-      : undefined;
-    const binding: ResumeBinding = {
-      agent,
-      sessionId,
-      cwd,
-      ...(permissionMode ? { permissionMode } : {}),
-      ...(typeof rec.transcriptPath === 'string' ? { transcriptPath: rec.transcriptPath } : {}),
-      ts: recTs,
-    };
     // D5: a purged origin transcript makes `--resume` a silent "No conversation
     // found." — drop the record (the pill can still degrade to --continue).
     if (!bindingTranscriptLives(binding)) { drop(); continue; }
 
     managed.meta.resumeBinding = mergeResumeBinding(prev, binding);
     // Rung 1 parity: a spooled capture also proves the pane ran claude, so it
-    // arms the pill gate even if no live banner was ever detected.
-    if (!managed.meta.lastDetectedAgent && KNOWN_AGENT_SLUGS.has(agent)) {
-      managed.meta.lastDetectedAgent = agent as AgentSlug;
+    // arms the pill gate even if no live banner was ever detected. (binding.agent
+    // is already a KNOWN_AGENT_SLUG — validated in spoolRecordToBinding.)
+    if (!managed.meta.lastDetectedAgent) {
+      managed.meta.lastDetectedAgent = binding.agent as AgentSlug;
     }
     drop();
     applied++;
-    log('info', `X6 resume-spool: ingested binding for ${ptyId} (session ${sessionId.slice(0, 8)})`);
+    log('info', `X6 resume-spool: ingested binding for ${ptyId} (session ${binding.sessionId.slice(0, 8)})`);
   }
   if (applied > 0) stateWriter.saveImmediate(buildState(sessionManager));
   return applied;
@@ -491,6 +551,11 @@ async function recoverSessions(
   const state = stateWriter.load();
   let changed = false;
   const recoveredIds = new Set<string>();
+  // X6 ③ (CodeRabbit): pre-read the spool (no consume) so an exec/supervised agent
+  // pane whose exact binding only exists in the spool replays as `--resume <id>`,
+  // not `--continue`. The post-recovery ingestResumeSpool still does the durable
+  // apply + cleanup; this just makes the binding available at replay-launch time.
+  const spoolBindings = readResumeSpoolMap();
 
   // Detect reboot: if bootId changed, all old PIDs are stale — skip kill attempts
   const currentBootId = await getBootId();
@@ -580,7 +645,7 @@ async function recoverSessions(
               exec: session.exec,
               // X6: if the exec unit is an agent, resume its conversation
               // (non-persisted launch command; meta.exec.command stays original).
-              execLaunchCommand: resumeLaunchCommand(session),
+              execLaunchCommand: resumeLaunchCommand(session, spoolBindings.get(session.id)),
               supervision: session.supervision,
               scrollbackData,
               // v2.8.1: stay muted until the renderer's first resize so PTY
@@ -662,7 +727,7 @@ async function recoverSessions(
             // X8: replay exec unit + supervision (see suspended path above).
             exec: session.exec,
             // X6: resume the agent conversation on replay (see suspended path).
-            execLaunchCommand: resumeLaunchCommand(session),
+            execLaunchCommand: resumeLaunchCommand(session, spoolBindings.get(session.id)),
             supervision: session.supervision,
             scrollbackData,
             // v2.8.1: see deferOutput rationale above (Bug 2).
@@ -706,7 +771,7 @@ async function recoverSessions(
           // X8: replay exec unit + supervision (see suspended path above).
           exec: session.exec,
           // X6: resume the agent conversation on replay (see suspended path).
-          execLaunchCommand: resumeLaunchCommand(session),
+          execLaunchCommand: resumeLaunchCommand(session, spoolBindings.get(session.id)),
           supervision: session.supervision,
           // v2.8.1: see deferOutput rationale above (Bug 2).
           deferOutput: true,
@@ -1150,8 +1215,15 @@ function registerRpcHandlers(
     const next = mergeResumeBinding(prev, p.resumeBinding);
     let durableChange = !prev
       || prev.sessionId !== next.sessionId
+      || prev.agent !== next.agent
       || prev.permissionMode !== next.permissionMode
-      || prev.cwd !== next.cwd;
+      || prev.cwd !== next.cwd
+      // transcriptPath is the D5 liveness-probe input. A SessionStart persists a
+      // binding without it (the .jsonl doesn't exist yet, F9); the first Stop
+      // fills it in with the same sessionId/cwd — without this the fill is not
+      // saveImmediate'd and a reboot loses the probe path (CodeRabbit). It only
+      // transitions once (absent → present), so no per-turn write amplification.
+      || prev.transcriptPath !== next.transcriptPath;
     managed.meta.resumeBinding = next;
     // X6 ③ (Rung 1): a captured binding PROVES claude ran in this pane, so the
     // hook is a SECOND, independent writer of the pill gate (lastDetectedAgent) —
@@ -1331,6 +1403,7 @@ function wireEvents(
     // `destroySession` log just before ⇒ wmux killed it.
     log('info', `[lifecycle] session:died id=${payload.id} reason=${payload.reason ?? 'pty-exit'} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} idleMsBeforeExit=${payload.lastActivityMsAgo ?? '?'} liveTotal=${sessionManager.listSessions().length}`);
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop a stale resume hint
+    recoveredResumeBindings.delete(payload.id); // X6 ③: ...and its exact binding (id reuse, CodeRabbit)
     try {
       const event: DaemonEvent = {
         type: 'session.died',
@@ -1530,6 +1603,7 @@ function wireEvents(
   // doesn't lie about a closed terminal (Codex P2).
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop hint on explicit close too (CodeRabbit #2)
+    recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
     const event: DaemonEvent = {
       type: 'session.destroyed',
       sessionId: payload.id,

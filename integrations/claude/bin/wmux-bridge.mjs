@@ -19,7 +19,7 @@
 // Codex review 2026-05-22 P0 #2: bridges must be JS-only.
 // Codex review 2026-05-22 P0 #4: token is read from disk, not env.
 
-import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, openSync, readSync, closeSync, writeFileSync, renameSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, openSync, readSync, closeSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
@@ -119,15 +119,26 @@ function spoolResumeBinding(record) {
     if (!safe) return;
     const dir = getResumeSpoolDir();
     const file = join(dir, `${safe}.json`);
-    // Deliberately a SHARED per-pane temp (not a unique name): a crashed bridge
-    // leaves at most ONE orphan `<pane>.json.tmp` that the next write overwrites,
-    // whereas unique temps would accumulate unboundedly. Two concurrent same-pane
-    // hooks (e.g. Stop + SubagentStop) can race here — last rename wins and the
-    // loser may log ENOENT — but the daemon ingest is the real ordering authority
-    // (it skips a spool whose session already matches or whose ts is older), so a
-    // racy spool is reconciled correctly, never mis-applied (codex P2).
-    const tmp = join(dir, `${safe}.json.tmp`);
+    // UNIQUE temp per write (pid + uuid): two concurrent same-pane hook exits must
+    // not overwrite each other's in-flight temp and publish a stale payload — with
+    // a shared temp, a newer Stop's rename could end up publishing an older
+    // SessionStart's bytes (codex + CodeRabbit). The daemon prunes abandoned
+    // `*.json.tmp` on ingest so a crashed write can't accumulate.
+    const tmp = join(dir, `${safe}.${process.pid}.${randomUUID()}.json.tmp`);
     writeFileSync(tmp, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
+    // Don't replace a spool file that already holds a NEWER capture — last-write
+    // by ts, not by rename order. (The daemon ingest re-applies the same ordering
+    // as a backstop; this just avoids publishing a known-stale record.) A corrupt
+    // existing file falls through and is replaced.
+    try {
+      if (existsSync(file)) {
+        const existing = JSON.parse(readFileSync(file, 'utf8'));
+        if (typeof existing?.ts === 'number' && existing.ts > record.ts) {
+          try { unlinkSync(tmp); } catch { /* ignore */ }
+          return;
+        }
+      }
+    } catch { /* replace a corrupt/unreadable existing spool */ }
     renameSync(tmp, file);
     logEvent('resume-spooled', { ptyId: record.ptyId, sessionId: record.sessionId });
   } catch (err) {
