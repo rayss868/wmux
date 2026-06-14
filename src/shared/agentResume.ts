@@ -33,6 +33,59 @@ const RESUME_FLAG_BY_LAUNCHER: Readonly<Record<string, string>> = {
 };
 
 /**
+ * X6 ③: Claude Code's per-invocation permission mode, as stamped on every user
+ * turn in the `.jsonl` transcript (`"permissionMode":"bypassPermissions"`, etc.).
+ * Permission mode is NOT restored state — it must be RE-APPLIED as a launch flag
+ * on resume, or a `--dangerously-skip-permissions` workflow drops back to prompts
+ * after a reboot.
+ */
+export type PermissionMode = 'bypassPermissions' | 'acceptEdits' | 'plan' | 'default';
+
+/**
+ * permissionMode → the launch flag that re-enables it. `default` maps to no flag
+ * (Claude's normal prompting). Verified 2026-06-14 (live): `--resume <id>` and
+ * `--dangerously-skip-permissions` coexist (F6).
+ */
+export const PERMISSION_FLAG: Readonly<Record<PermissionMode, string>> = {
+  bypassPermissions: '--dangerously-skip-permissions',
+  acceptEdits: '--permission-mode acceptEdits',
+  plan: '--permission-mode plan',
+  default: '',
+};
+
+/**
+ * The launch flag(s) that re-apply `mode`, or '' when none is needed (default
+ * mode, unknown mode, or no mode captured). Exported for the resume pill, which
+ * assembles its command progressively rather than via {@link toResumeCommand}.
+ */
+export function permissionFlagFor(mode: PermissionMode | undefined): string {
+  if (!mode) return '';
+  return PERMISSION_FLAG[mode] ?? '';
+}
+
+/**
+ * X6 ③: a per-session resume binding, captured live from the claude hook and
+ * persisted on the daemon session record so it survives a SIGKILL/reboot.
+ *
+ * `sessionId` is the ORIGIN conversation id — derived from the transcript
+ * filename, NOT the hook's `payload.session_id` (which mints a NEW uuid on
+ * resume, upstream #12235; the transcript file is appended in place so its
+ * basename always points at the origin).
+ */
+export interface ResumeBinding {
+  /** Agent launcher slug. 'claude' in v1. */
+  agent: string;
+  /** `--resume` argument: the origin session id (basename of the transcript). */
+  sessionId: string;
+  /** Origin cwd — hard cwd-match guard, since `--resume` is cwd-scoped (F7). */
+  cwd: string;
+  /** Last-observed permission mode (F5). Restored only on explicit user intent. */
+  permissionMode?: PermissionMode;
+  /** Capture time (ms). Staleness is decided by existence-probe, not a TTL. */
+  ts: number;
+}
+
+/**
  * Unquoted tokens that mean "already resuming" or "not a resumable run" →
  * leave the command unchanged. `--continue`/`--resume`/`-c`/`-r` already
  * resume; `-p`/`--print` is a non-interactive one-shot (rewriting it to
@@ -102,14 +155,62 @@ function launcherStem(firstToken: string): string {
 }
 
 /**
+ * Decide what to insert after the launcher token: an id-aware
+ * `--resume <id> [permFlag]` when a valid binding exists for THIS launcher and
+ * its origin cwd still matches the pane (F7: `--resume` is cwd-scoped), or the
+ * launcher's plain `--continue` fallback otherwise.
+ *
+ * The permission flag is OPT-IN (`options.restorePermissionMode`) and OFF by
+ * default. The only auto-run consumer is the supervised replay path, which must
+ * be fail-safe per D6 — never silently re-grant `--dangerously-skip-permissions`
+ * with no human in the loop. The resume pill (explicit user Enter) opts in via
+ * {@link permissionFlagFor} instead of this builder.
+ */
+function resumeInsertion(
+  stem: string,
+  resumeFlag: string,
+  binding: ResumeBinding | undefined,
+  paneCwd: string | undefined,
+  options: { restorePermissionMode?: boolean } | undefined,
+): string {
+  if (
+    binding &&
+    binding.agent === stem &&
+    binding.sessionId &&
+    binding.cwd &&
+    paneCwd &&
+    binding.cwd === paneCwd
+  ) {
+    const parts = ['--resume', binding.sessionId];
+    if (options?.restorePermissionMode) {
+      const permFlag = permissionFlagFor(binding.permissionMode);
+      if (permFlag) parts.push(permFlag);
+    }
+    return parts.join(' ');
+  }
+  return resumeFlag;
+}
+
+/**
  * Return `command` rewritten to resume the agent's previous session, or the
  * command UNCHANGED when it is not a known single-agent launcher, when it is
  * already a resume/one-shot, or when it uses syntax we won't touch (env
  * assignment, pipeline — anything whose first token is not a bare launcher).
  *
- * Idempotent: re-applying never double-adds the flag.
+ * With a valid `binding` whose cwd matches `paneCwd`, resumes the EXACT session
+ * (`--resume <id>`); otherwise falls back to `--continue` (latest-in-cwd, still
+ * correct for the single-session case). Permission-mode restore is opt-in via
+ * `options.restorePermissionMode` (default OFF — D6 fail-safe).
+ *
+ * Idempotent: re-applying never double-adds the flag (`--resume`/`--continue`
+ * are both skip tokens).
  */
-export function toResumeCommand(command: string): string {
+export function toResumeCommand(
+  command: string,
+  binding?: ResumeBinding,
+  paneCwd?: string,
+  options?: { restorePermissionMode?: boolean },
+): string {
   const tokens = tokenize(command);
   if (tokens.length === 0) return command;
 
@@ -128,10 +229,11 @@ export function toResumeCommand(command: string): string {
     if (/^-[a-z]*[crp][a-z]*$/.test(t.value)) return command;
   }
 
-  // Insert the resume flag immediately after the launcher token, preserving the
-  // rest of the command (and its spacing/quoting) verbatim.
+  // Insert the resume tokens immediately after the launcher token, preserving
+  // the rest of the command (and its spacing/quoting) verbatim.
+  const insert = resumeInsertion(stem, resumeFlag, binding, paneCwd, options);
   const at = tokens[0].end;
-  return `${command.slice(0, at)} ${resumeFlag}${command.slice(at)}`;
+  return `${command.slice(0, at)} ${insert}${command.slice(at)}`;
 }
 
 /** Whether a launch command would be rewritten by {@link toResumeCommand}. */
