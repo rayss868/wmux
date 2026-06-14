@@ -208,6 +208,19 @@ if (process.env.WMUX_DATA_SUFFIX) {
   }
 }
 
+// Windows taskbar identity: bind the running window to the Squirrel-installed
+// shortcut's AppUserModelID so the taskbar button groups/pins against it (and
+// Windows resolves the shortcut's icon for the button) instead of spawning a
+// second, ungrouped button under a process-derived ID. Squirrel sets the
+// shortcut AUMID to `com.squirrel.<package>.<exe>` = `com.squirrel.wmux.wmux`
+// (MakerSquirrel name 'wmux' + wmux.exe). Must run before any BrowserWindow.
+// Packaged-only: in dev there is no Squirrel-created shortcut whose AUMID
+// matches this id, so setting it unpackaged can muddle taskbar grouping. Gate
+// on app.isPackaged, mirroring the WMUX_DATA_SUFFIX dev/packaged split above.
+if (process.platform === 'win32' && app.isPackaged) {
+  app.setAppUserModelId('com.squirrel.wmux.wmux');
+}
+
 let isQuitting = false;
 // tmux-style persistence: a normal Quit (window-close intercept / tray
 // "Quit (keep sessions running)") only DETACHES from the daemon — live PTY
