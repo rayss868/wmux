@@ -979,11 +979,21 @@ function registerRpcHandlers(
       // recovery) — NOT read off the live meta, which is a fresh shell here.
       const resumeAgent = recoveredAgentShellIds.get(s.id);
       // X6 ③: the captured binding for the EXACT-session resume, also recovery-
-      // only (same transient-map reasoning as resumeAgent).
+      // only (same transient-map reasoning as resumeAgent) and guarded by the
+      // cwd-match + transcript existence-probe at recovery time.
       const resumeBinding = recoveredResumeBindings.get(s.id);
-      const withRuntime = s.supervision
-        ? { ...s, supervisionRuntime: paneSupervisor.getRuntime(s.id) }
-        : s;
+      // meta.resumeBinding is an INTERNAL durability field — it is persisted
+      // (and carried forward across consecutive recoveries) so the EXACT-session
+      // resume survives multiple reboots, but it must NOT leak to clients raw:
+      // the pill only ever gets the recovery-SURFACED binding (which passed the
+      // cwd + existence guards). Strip the meta field, then re-attach the
+      // guarded transient one. Without this strip, the carry-forward would
+      // bypass the D5/F7 guards (caught by x6-resume-binding-dogfood D/E).
+      const base = { ...s };
+      delete base.resumeBinding;
+      const withRuntime = base.supervision
+        ? { ...base, supervisionRuntime: paneSupervisor.getRuntime(s.id) }
+        : base;
       const withAgent = resumeAgent ? { ...withRuntime, resumeAgent } : withRuntime;
       return resumeBinding ? { ...withAgent, resumeBinding } : withAgent;
     });
