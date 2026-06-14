@@ -5,8 +5,17 @@ import { useStore } from '../../index';
 describe('resumeSlice', () => {
   beforeEach(() => {
     useStore.getState().hydrateResume({});
+    useStore.getState().hydrateResumeBindings({});
     // clear readiness by re-hydrating is not enough (separate map) — mark fresh
     // ptys ready explicitly per test.
+  });
+
+  const binding = (sessionId: string, cwd = 'D:\\wmux') => ({
+    agent: 'claude' as const,
+    sessionId,
+    cwd,
+    permissionMode: 'bypassPermissions' as const,
+    ts: 1,
   });
 
   it('starts empty', () => {
@@ -43,6 +52,30 @@ describe('resumeSlice', () => {
       useStore.getState().setResumeHint('pty-a', 'claude');
       useStore.getState().hydrateResume({});
       expect(useStore.getState().resumeHintByPtyId).toEqual({});
+    });
+  });
+
+  describe('X6 ③ — resume binding (id + permission mode)', () => {
+    it('starts empty', () => {
+      expect(useStore.getState().resumeBindingByPtyId).toEqual({});
+    });
+
+    it('hydrateResumeBindings replaces the whole map', () => {
+      useStore.getState().hydrateResumeBindings({ 'pty-a': binding('s-1') });
+      expect(useStore.getState().resumeBindingByPtyId['pty-a']?.sessionId).toBe('s-1');
+      useStore.getState().hydrateResumeBindings({ 'pty-b': binding('s-2') });
+      expect(useStore.getState().resumeBindingByPtyId['pty-a']).toBeUndefined();
+      expect(useStore.getState().resumeBindingByPtyId['pty-b']?.sessionId).toBe('s-2');
+    });
+
+    it('clearResumeHint clears the binding together with the hint (pill is one unit)', () => {
+      useStore.getState().setResumeHint('pty-a', 'claude');
+      useStore.getState().hydrateResumeBindings({ 'pty-a': binding('s-1'), 'pty-b': binding('s-2') });
+      useStore.getState().clearResumeHint('pty-a');
+      expect(useStore.getState().resumeHintByPtyId['pty-a']).toBeUndefined();
+      expect(useStore.getState().resumeBindingByPtyId['pty-a']).toBeUndefined();
+      // untouched sibling
+      expect(useStore.getState().resumeBindingByPtyId['pty-b']?.sessionId).toBe('s-2');
     });
   });
 

@@ -16,14 +16,13 @@ import { GitContextWatcher } from '../main/pty/gitContextWatch';
 import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink } from './util/logSink';
 import type { DaemonState } from './types';
-import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
+import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import type { AgentSlug } from '../shared/events';
-import type { DaemonSetResumeBindingParams } from '../shared/rpc';
 
 // X6 Feature ②: sessions RECOVERED this daemon boot that were running an
 // INTERACTIVE agent (non-exec, non-supervised) → ptyId → the agent slug to
@@ -630,8 +629,13 @@ async function recoverSessions(
     if (recoveredIds.has(s.id) && offer) {
       recoveredAgentShellIds.set(s.id, offer as AgentSlug);
       // X6 ③: carry the persisted binding alongside the slug so the pill can
-      // resume the EXACT session (and the cwd-match guard can run renderer-side).
-      if (s.resumeBinding) recoveredResumeBindings.set(s.id, s.resumeBinding);
+      // resume the EXACT session. Surface it ONLY when its captured cwd still
+      // matches the recovered session's cwd — `--resume` is cwd-scoped (F7), so
+      // a mismatch must not offer an id-resume; the pill then falls back to the
+      // cwd-relative `--continue`.
+      if (s.resumeBinding && s.resumeBinding.cwd === s.cwd) {
+        recoveredResumeBindings.set(s.id, s.resumeBinding);
+      }
     }
   }
 

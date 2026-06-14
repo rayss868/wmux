@@ -180,6 +180,11 @@ export const en = {
   'resume.label': 'Resume {agent}',
   'resume.tooltip': 'Resume the previous agent conversation in this pane',
   'resume.dismiss': 'Dismiss',
+  // X6 ③ — progressive assembly: the first click restores the permission mode
+  // (types the command, no Enter); this second click appends the exact-session
+  // resume. The user presses Enter to run.
+  'resume.addSession': 'resume this session',
+  'resume.addSessionTooltip': 'Also resume the exact previous conversation (--resume <id>); press Enter to run',
 
   // Browser
   'browser.urlPlaceholder': 'Enter URL...',

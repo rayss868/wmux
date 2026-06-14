@@ -25,6 +25,7 @@ import {
   PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MAX,
 } from '../../../shared/wmuxProjectConfig';
 import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
+import type { ResumeBinding } from '../../../shared/agentResume';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -659,6 +660,9 @@ export function registerPTYHandlers(
         supervisionRuntime?: { status: 'armed' | 'stopped'; restartCount: number };
         // X6 ② — present only for an interactive agent pane recovered this boot.
         resumeAgent?: string;
+        // X6 ③ — the captured resume binding (origin id + cwd + permission mode),
+        // surfaced alongside resumeAgent (recovery-only, cwd-matched) for the pill.
+        resumeBinding?: ResumeBinding;
       }>;
       // Map to same shape as local PTYManager.getActiveInstances(), plus an
       // additive `supervision` summary for the renderer's supervision slice
@@ -680,6 +684,8 @@ export function registerPTYHandlers(
             : {}),
           // X6 ② — carry the resume hint (agent slug) for the renderer pill.
           ...(s.resumeAgent ? { resumeAgent: s.resumeAgent } : {}),
+          // X6 ③ — carry the binding so the pill can build `--resume <id>`.
+          ...(s.resumeBinding ? { resumeBinding: s.resumeBinding } : {}),
         }));
       // RCA A8 — log the count the renderer's reconcile will act on. An empty
       // or short list here, correlated with a renderer ptyId-clear, is the

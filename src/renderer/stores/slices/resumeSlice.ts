@@ -12,10 +12,20 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { AgentSlug } from '../../../shared/events';
+import type { ResumeBinding } from '../../../shared/agentResume';
 
 export interface ResumeSlice {
   /** Per-ptyId resume hint (agent slug). Absent key = no pill for this pane. */
   resumeHintByPtyId: Record<string, AgentSlug>;
+
+  /**
+   * X6 ③: per-ptyId resume binding (origin session id + cwd + permission mode),
+   * surfaced alongside the slug for panes recovered-this-boot whose captured cwd
+   * still matches (the daemon enforces that guard). Present → the pill can build
+   * `--resume <id>` for the EXACT conversation; absent → the pill falls back to
+   * cwd-relative `--continue`.
+   */
+  resumeBindingByPtyId: Record<string, ResumeBinding>;
 
   /** Ptys that have emitted their first data (shell prompt drawn) since mount.
    *  The resume pill is only clickable once its pane is here — guards against
@@ -41,6 +51,9 @@ export interface ResumeSlice {
    * then detected live.
    */
   hydrateResume: (snapshot: Record<string, AgentSlug>) => void;
+
+  /** Replace the binding map from a `pty.list` snapshot (parallel to hydrateResume). */
+  hydrateResumeBindings: (snapshot: Record<string, ResumeBinding>) => void;
 }
 
 export const createResumeSlice: StateCreator<
@@ -50,6 +63,7 @@ export const createResumeSlice: StateCreator<
   ResumeSlice
 > = (set) => ({
   resumeHintByPtyId: {},
+  resumeBindingByPtyId: {},
   ptyReadyByPtyId: {},
 
   markPtyReady: (ptyId) => set((draft: StoreState) => {
@@ -61,10 +75,17 @@ export const createResumeSlice: StateCreator<
   }),
 
   clearResumeHint: (ptyId) => set((draft: StoreState) => {
+    // Clear the binding together with the hint — the pill goes away as a unit
+    // (clicked, dismissed, typed-into, or agent relaunched).
     if (draft.resumeHintByPtyId[ptyId]) delete draft.resumeHintByPtyId[ptyId];
+    if (draft.resumeBindingByPtyId[ptyId]) delete draft.resumeBindingByPtyId[ptyId];
   }),
 
   hydrateResume: (snapshot) => set((draft: StoreState) => {
     draft.resumeHintByPtyId = { ...snapshot };
+  }),
+
+  hydrateResumeBindings: (snapshot) => set((draft: StoreState) => {
+    draft.resumeBindingByPtyId = { ...snapshot };
   }),
 });
