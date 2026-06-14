@@ -485,8 +485,16 @@ export function resolvePtyIdForSignal(
   // target a session). This resolves the split-workspace / shared-cwd collapse
   // where every pane's hook would otherwise land on the workspace's ACTIVE
   // surface — the dominant cross-pane resume-binding clobber.
-  if (signal.ptyId && findWorkspaceIdForPty(signal.ptyId, workspaces)) {
-    return signal.ptyId;
+  if (signal.ptyId) {
+    const ptyWorkspaceId = findWorkspaceIdForPty(signal.ptyId, workspaces);
+    // Trust the exact ptyId only when it maps to a LIVE pane AND — when the hook
+    // also carries a workspaceId — that pane belongs to the CLAIMED workspace.
+    // WMUX_PTY_ID is pane-env-controlled, so without the workspace cross-check an
+    // authenticated hook could target another live pane by id (codex P2). A hook
+    // with no workspaceId (older bridge / standalone) still trusts a live ptyId.
+    if (ptyWorkspaceId && (!signal.workspaceId || ptyWorkspaceId === signal.workspaceId)) {
+      return signal.ptyId;
+    }
   }
   if (signal.workspaceId) {
     const match = workspaces.find((w) => w.id === signal.workspaceId);

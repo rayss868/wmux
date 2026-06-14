@@ -119,6 +119,13 @@ function spoolResumeBinding(record) {
     if (!safe) return;
     const dir = getResumeSpoolDir();
     const file = join(dir, `${safe}.json`);
+    // Deliberately a SHARED per-pane temp (not a unique name): a crashed bridge
+    // leaves at most ONE orphan `<pane>.json.tmp` that the next write overwrites,
+    // whereas unique temps would accumulate unboundedly. Two concurrent same-pane
+    // hooks (e.g. Stop + SubagentStop) can race here — last rename wins and the
+    // loser may log ENOENT — but the daemon ingest is the real ordering authority
+    // (it skips a spool whose session already matches or whose ts is older), so a
+    // racy spool is reconciled correctly, never mis-applied (codex P2).
     const tmp = join(dir, `${safe}.json.tmp`);
     writeFileSync(tmp, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
     renameSync(tmp, file);

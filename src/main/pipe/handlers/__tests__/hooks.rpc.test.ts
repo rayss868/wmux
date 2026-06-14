@@ -222,6 +222,18 @@ describe('resolvePtyIdForSignal — X6 ③ per-pane WMUX_PTY_ID routing', () => 
     );
     expect(got).toBe('p-active'); // cwd exact match → workspace's activePtyId
   });
+
+  it('a live ptyId is NOT trusted when it belongs to a DIFFERENT claimed workspace (anti-spoof)', () => {
+    // p-bg is a real live pane in ws-1, but the hook claims ws-evil. A pane-env
+    // -controlled WMUX_PTY_ID must not let an authenticated hook hijack another
+    // workspace's pane — the workspace cross-check rejects it and routing falls
+    // back to the (unknown) workspaceId → cwd.
+    const got = resolvePtyIdForSignal(
+      signal({ ptyId: 'p-bg', workspaceId: 'ws-evil', cwd: '/repo' }),
+      workspaces,
+    );
+    expect(got).toBe('p-active'); // NOT p-bg — the spoofed cross-workspace target
+  });
 });
 
 describe('isAgentSignal (re-export check)', () => {

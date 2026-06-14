@@ -268,6 +268,10 @@ function ingestResumeSpool(
     const cwd = typeof rec.cwd === 'string' ? rec.cwd : null;
     const agent = typeof rec.agent === 'string' ? rec.agent : 'claude';
     if (!ptyId || !sessionId || !cwd) { drop(); continue; }
+    // Never persist a binding for an unknown agent (a malformed/hostile spool
+    // file). The pill gate is already bounded to KNOWN_AGENT_SLUGS; bound the
+    // durable binding the same way so downstream never sees a bogus slug (codex P2).
+    if (!KNOWN_AGENT_SLUGS.has(agent)) { drop(); continue; }
 
     const managed = sessionManager.getSession(ptyId);
     if (!managed) {
@@ -281,7 +285,13 @@ function ingestResumeSpool(
     if (cwd !== managed.meta.cwd) { drop(); continue; }
     const recTs = typeof rec.ts === 'number' && Number.isFinite(rec.ts) ? rec.ts : 0;
     const prev = managed.meta.resumeBinding;
-    if (prev && prev.ts >= recTs) { drop(); continue; } // never clobber a newer capture
+    // Never clobber: for a DIFFERENT conversation, only a strictly-newer spool
+    // wins (ts tiebreak). For the SAME conversation the spool is redundant — its
+    // durable fields can only be staler than the live one (mergeResumeBinding
+    // keeps permissionMode sticky), and setResumeBinding's durable-change check
+    // omits ts, so the persisted ts can lag a same-session live update; skipping
+    // by sessionId avoids an older spool overwriting it (codex P2).
+    if (prev && (prev.sessionId === sessionId || prev.ts >= recTs)) { drop(); continue; }
 
     const permissionMode = typeof rec.permissionMode === 'string'
       && KNOWN_PERMISSION_MODES.has(rec.permissionMode)
