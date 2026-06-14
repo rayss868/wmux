@@ -477,6 +477,17 @@ export function resolvePtyIdForSignal(
   signal: AgentSignal,
   workspaces: WorkspaceListEntry[],
 ): string | null {
+  // X6 ③: EXACT per-pane routing. The daemon stamps WMUX_PTY_ID (its own session
+  // id) into every pane's env, so a hook carries the precise ptyId it fired from.
+  // Trust it ONLY when it still maps to a live workspace pane — that bounds a
+  // stale/spoofed id to a currently-open pane (the auth-gated hooks path is
+  // lower-trust than the MCP terminal-IO resolver, so an unverified id must never
+  // target a session). This resolves the split-workspace / shared-cwd collapse
+  // where every pane's hook would otherwise land on the workspace's ACTIVE
+  // surface — the dominant cross-pane resume-binding clobber.
+  if (signal.ptyId && findWorkspaceIdForPty(signal.ptyId, workspaces)) {
+    return signal.ptyId;
+  }
   if (signal.workspaceId) {
     const match = workspaces.find((w) => w.id === signal.workspaceId);
     if (match) {

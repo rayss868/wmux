@@ -42,6 +42,14 @@ const recoveredAgentShellIds = new Map<string, AgentSlug>();
 // agent relaunches (live again → no pill).
 const recoveredResumeBindings = new Map<string, ResumeBinding>();
 
+// X6 ③: closed set of resumable agent slugs, used to validate a hook-supplied
+// binding agent before it is written to `lastDetectedAgent` (an AgentSlug). Keep
+// in sync with AgentSlug in src/shared/events.ts and ALLOWED_AGENT_SLUGS in
+// integrations/shared/signal-types.ts.
+const KNOWN_AGENT_SLUGS: ReadonlySet<string> = new Set([
+  'claude', 'codex', 'gemini', 'aider', 'opencode', 'copilot',
+]);
+
 // === Constants ===
 const wmuxDir = getWmuxDir();
 
@@ -210,6 +218,99 @@ function resumeLaunchCommand(session: { id: string; exec?: { command: string }; 
   if (rewritten === session.exec.command) return undefined; // not a known agent launcher / already resuming
   log('info', `X6 resume: replaying session ${session.id} as resume form in ${session.cwd}`);
   return rewritten;
+}
+
+// === X6 ③ resume-binding spool ingest (Rung 3) ===
+// Drain the durable spool the Claude hook bridge writes (~/.wmux/resume-spool/)
+// when its capture RPC to wmux fails (main pipe absent during boot/restart,
+// no-workspace-match, timeout). Each record is self-describing and keyed by the
+// EXACT pane — WMUX_PTY_ID, the daemon session id — so we attribute it to a live
+// session by id with NO cwd guessing (the per-pane correctness the live hook
+// path also relies on). Applied through the same merge + F7 cwd guard + D5
+// existence probe as the live capture, and ONLY when at least as fresh as any
+// binding already on the session, so a stale spool can never clobber a newer
+// live capture. Consumed / dead / aged records are deleted. Best-effort: never
+// throws (a corrupt spool file must not fail the recovery path). Returns the
+// number of bindings applied so the caller can skip the save when nothing changed.
+const RESUME_SPOOL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // prune orphans after 7d
+const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
+  'bypassPermissions', 'acceptEdits', 'plan', 'default',
+]);
+
+function ingestResumeSpool(
+  sessionManager: DaemonSessionManager,
+  stateWriter: StateWriter,
+): number {
+  const dir = path.join(wmuxDir, 'resume-spool');
+  let names: string[];
+  try {
+    if (!fs.existsSync(dir)) return 0;
+    names = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  let applied = 0;
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    const file = path.join(dir, name);
+    const drop = (): void => { try { fs.unlinkSync(file); } catch { /* ignore */ } };
+    let rec: Record<string, unknown>;
+    let mtimeMs = 0;
+    try {
+      rec = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
+      try { mtimeMs = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
+    } catch {
+      drop(); // corrupt / partial write — never let it wedge the drain
+      continue;
+    }
+    const ptyId = typeof rec.ptyId === 'string' ? rec.ptyId : null;
+    const sessionId = typeof rec.sessionId === 'string' ? rec.sessionId : null;
+    const cwd = typeof rec.cwd === 'string' ? rec.cwd : null;
+    const agent = typeof rec.agent === 'string' ? rec.agent : 'claude';
+    if (!ptyId || !sessionId || !cwd) { drop(); continue; }
+
+    const managed = sessionManager.getSession(ptyId);
+    if (!managed) {
+      // No live session owns this ptyId yet — a cap-skipped / not-yet-recovered
+      // pane. Keep the record until it ages out so a later launch can use it.
+      if (Date.now() - mtimeMs > RESUME_SPOOL_MAX_AGE_MS) drop();
+      continue;
+    }
+    // F7: `--resume` is cwd-scoped, so the capture's origin cwd must match the
+    // recovered pane's cwd; a mismatch would dead-end (offer --continue instead).
+    if (cwd !== managed.meta.cwd) { drop(); continue; }
+    const recTs = typeof rec.ts === 'number' && Number.isFinite(rec.ts) ? rec.ts : 0;
+    const prev = managed.meta.resumeBinding;
+    if (prev && prev.ts >= recTs) { drop(); continue; } // never clobber a newer capture
+
+    const permissionMode = typeof rec.permissionMode === 'string'
+      && KNOWN_PERMISSION_MODES.has(rec.permissionMode)
+      ? (rec.permissionMode as ResumeBinding['permissionMode'])
+      : undefined;
+    const binding: ResumeBinding = {
+      agent,
+      sessionId,
+      cwd,
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(typeof rec.transcriptPath === 'string' ? { transcriptPath: rec.transcriptPath } : {}),
+      ts: recTs,
+    };
+    // D5: a purged origin transcript makes `--resume` a silent "No conversation
+    // found." — drop the record (the pill can still degrade to --continue).
+    if (!bindingTranscriptLives(binding)) { drop(); continue; }
+
+    managed.meta.resumeBinding = mergeResumeBinding(prev, binding);
+    // Rung 1 parity: a spooled capture also proves the pane ran claude, so it
+    // arms the pill gate even if no live banner was ever detected.
+    if (!managed.meta.lastDetectedAgent && KNOWN_AGENT_SLUGS.has(agent)) {
+      managed.meta.lastDetectedAgent = agent as AgentSlug;
+    }
+    drop();
+    applied++;
+    log('info', `X6 resume-spool: ingested binding for ${ptyId} (session ${sessionId.slice(0, 8)})`);
+  }
+  if (applied > 0) stateWriter.saveImmediate(buildState(sessionManager));
+  return applied;
 }
 
 // === PID / Lock helpers ===
@@ -650,23 +751,33 @@ async function recoverSessions(
     stateWriter.saveImmediate(liveState);
   }
 
-  // X6 Feature ②: flag recovered INTERACTIVE agent panes for the resume pill.
-  // Read lastDetectedAgent from the PERSISTED session (the live recovered meta
-  // is a fresh shell with no agent yet — correct: the pill is a one-time "this
-  // pane WAS an agent, resume?" offer). Exec/supervised panes are excluded —
-  // they already auto-resume via execLaunchCommand (Feature ①).
-  for (const s of state.sessions) {
-    const offer = resumeOfferForRecovered(s);
-    if (recoveredIds.has(s.id) && offer) {
-      recoveredAgentShellIds.set(s.id, offer as AgentSlug);
-      // X6 ③: carry the persisted binding alongside the slug so the pill can
-      // resume the EXACT session. Surface it ONLY when its captured cwd still
-      // matches the recovered session's cwd (F7 — `--resume` is cwd-scoped) AND
-      // its origin transcript still exists (D5 — a purged id is a dead-end).
-      // Either miss drops the pill to the cwd-relative `--continue`.
-      if (s.resumeBinding && s.resumeBinding.cwd === s.cwd && bindingTranscriptLives(s.resumeBinding)) {
-        recoveredResumeBindings.set(s.id, s.resumeBinding);
-      }
+  // X6 ③ (Rung 3): reconcile the durable hook spool onto the recovered sessions
+  // BEFORE surfacing the pill, so a binding lost to a failed live RPC (main pipe
+  // down at capture time — the dominant ENOENT case in the bug report) still
+  // drives an EXACT-session resume. Keyed by WMUX_PTY_ID, so attribution is
+  // per-pane with no cwd guessing. Writes the binding + (Rung 1) lastDetectedAgent
+  // onto the live meta and persists, so the loop below surfaces it like any other.
+  ingestResumeSpool(sessionManager, stateWriter);
+
+  // X6 Feature ②/③: flag recovered INTERACTIVE agent panes for the resume pill.
+  // Read off the LIVE recovered meta (not the persisted record): the carry-forward
+  // above, the spool ingest, and the Rung-1 hook-sourced gate ALL write their
+  // markers onto managed.meta, so the live meta is the single source that reflects
+  // every capture path. Exec/supervised panes are excluded — they already
+  // auto-resume via execLaunchCommand (Feature ①).
+  for (const recoveredId of recoveredIds) {
+    const managed = sessionManager.getSession(recoveredId);
+    if (!managed) continue;
+    const m = managed.meta;
+    const offer = resumeOfferForRecovered(m);
+    if (!offer) continue;
+    recoveredAgentShellIds.set(recoveredId, offer as AgentSlug);
+    // Surface the EXACT-session binding ONLY when its captured cwd still matches
+    // the recovered session's cwd (F7 — `--resume` is cwd-scoped) AND its origin
+    // transcript still exists (D5 — a purged id is a dead-end). Either miss drops
+    // the pill to the cwd-relative `--continue`.
+    if (m.resumeBinding && m.resumeBinding.cwd === m.cwd && bindingTranscriptLives(m.resumeBinding)) {
+      recoveredResumeBindings.set(recoveredId, m.resumeBinding);
     }
   }
 
@@ -1027,11 +1138,22 @@ function registerRpcHandlers(
     // Sticky-merge: a capture that couldn't read permissionMode (transcript tail
     // miss) must not wipe a previously-captured mode (codex review 2026-06-14).
     const next = mergeResumeBinding(prev, p.resumeBinding);
-    const durableChange = !prev
+    let durableChange = !prev
       || prev.sessionId !== next.sessionId
       || prev.permissionMode !== next.permissionMode
       || prev.cwd !== next.cwd;
     managed.meta.resumeBinding = next;
+    // X6 ③ (Rung 1): a captured binding PROVES claude ran in this pane, so the
+    // hook is a SECOND, independent writer of the pill gate (lastDetectedAgent) —
+    // the live AgentDetector banner is once-per-session and is never re-armed from
+    // restored scrollback, so a pane whose banner was missed but whose hook landed
+    // would otherwise hold the exact uuid yet show NO pill after a reboot. Bounded
+    // to a known slug and a one-time set (the !lastDetectedAgent guard) so it costs
+    // at most one extra sync write per pane, exactly like the banner path.
+    if (!managed.meta.lastDetectedAgent && KNOWN_AGENT_SLUGS.has(next.agent)) {
+      managed.meta.lastDetectedAgent = next.agent as AgentSlug;
+      durableChange = true;
+    }
     if (durableChange) {
       stateWriter.saveImmediate(buildState(sessionManager));
     }
@@ -1778,6 +1900,23 @@ async function main(): Promise<void> {
   const maxRecover = Math.min(config.session.maxSessions, MAX_RECOVER_SESSIONS);
   await recoverSessions(stateWriter, sessionManager, processMonitor, maxRecover);
   markDaemonBoot('recovery-done');
+
+  // X6 ③ (Rung 3): recoverSessions drains the hook spool once at boot (the reboot
+  // headline). Also drain on a low-frequency timer so a capture spooled while the
+  // MAIN process was restarting — but the daemon stayed alive (dev HMR, a main
+  // crash) — is reconciled within the interval instead of waiting for the next
+  // reboot. ingestResumeSpool is a no-op (single readdir, no write) when the spool
+  // dir is empty, so the steady-state cost is negligible. Unref'd: never holds the
+  // process open.
+  const RESUME_SPOOL_DRAIN_INTERVAL_MS = 60_000;
+  const resumeSpoolTimer = setInterval(() => {
+    try {
+      ingestResumeSpool(sessionManager, stateWriter);
+    } catch (err) {
+      log('warn', 'resume-spool drain failed:', err);
+    }
+  }, RESUME_SPOOL_DRAIN_INTERVAL_MS);
+  resumeSpoolTimer.unref?.();
 
   // X8: re-arm supervision for recovered sessions. The policy + sticky
   // status live on the persisted meta, so this is a pure replay — a

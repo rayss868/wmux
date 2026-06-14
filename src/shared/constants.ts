@@ -189,6 +189,14 @@ export function getPipeName(): string {
 export const ENV_KEYS = {
   WORKSPACE_ID: 'WMUX_WORKSPACE_ID',
   SURFACE_ID: 'WMUX_SURFACE_ID',
+  // X6 ③: the daemon session id of the pane, injected by the daemon at spawn
+  // (DaemonSessionManager.createSession). Unlike SURFACE_ID — which the renderer
+  // never supplies at pty.create time because a surface is minted AFTER the pty
+  // exists — the daemon always knows its own session id, so this is the one
+  // per-pane identifier that reliably reaches the child shell (and the Claude
+  // hook bridge). Lets a hook attribute its capture to the EXACT pane instead of
+  // collapsing to the workspace's active surface (split-pane / shared-cwd fix).
+  PTY_ID: 'WMUX_PTY_ID',
   SOCKET_PATH: 'WMUX_SOCKET_PATH',
   AUTH_TOKEN: 'WMUX_AUTH_TOKEN',
   SHELL_HOOK: 'WMUX_SHELL_HOOK',

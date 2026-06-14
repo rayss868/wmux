@@ -19,7 +19,7 @@
 // Codex review 2026-05-22 P0 #2: bridges must be JS-only.
 // Codex review 2026-05-22 P0 #4: token is read from disk, not env.
 
-import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, openSync, readSync, closeSync, writeFileSync, renameSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
@@ -83,6 +83,49 @@ function getBridgeLogPath() {
     // upward from this script.
   }
   return join(dir, 'bridge.log');
+}
+
+// X6 ③ — durable resume-binding spool dir. When the hooks.signal RPC fails
+// (main pipe ENOENT because wmux is mid-boot / restarting, no-workspace-match,
+// timeout, …), the binding is otherwise lost forever. We instead drop a
+// self-describing capture record here; the DAEMON drains it on its next boot
+// (recovery) and reconnect, attributing each record to the EXACT pane by its
+// WMUX_PTY_ID. Pipe-free local file write, so it never depends on wmux being up.
+//
+// Path matches the bridge.log convention (~/.wmux, NO data-suffix): the bridge
+// cannot see WMUX_DATA_SUFFIX (a reserved WMUX_* var, stripped from the pane
+// env), so dev/prod-concurrent isolation falls back to cwd routing — same
+// pre-existing limitation as bridge.log. In production (no suffix) and in the
+// USERPROFILE-isolated dogfood, bridge and daemon resolve the same dir.
+function getResumeSpoolDir() {
+  const home = process.env.USERPROFILE || process.env.HOME || homedir();
+  const dir = join(home, '.wmux', 'resume-spool');
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    // Fall through; the writeFileSync below will throw and be swallowed.
+  }
+  return dir;
+}
+
+// Persist one capture record, keyed by ptyId (last-write-wins per pane — a
+// later Stop, whose agentSessionId is the #12235-safe transcript basename,
+// overwrites an earlier SessionStart whose id was the payload.session_id
+// fallback). Atomic via temp-then-rename. Never throws.
+function spoolResumeBinding(record) {
+  try {
+    if (!record || !record.ptyId || !record.sessionId) return;
+    const safe = String(record.ptyId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+    if (!safe) return;
+    const dir = getResumeSpoolDir();
+    const file = join(dir, `${safe}.json`);
+    const tmp = join(dir, `${safe}.json.tmp`);
+    writeFileSync(tmp, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
+    renameSync(tmp, file);
+    logEvent('resume-spooled', { ptyId: record.ptyId, sessionId: record.sessionId });
+  } catch (err) {
+    logEvent('resume-spool-error', { error: String(err) });
+  }
 }
 
 // ----- Logging (best-effort, never throws) --------------------------------
@@ -463,6 +506,14 @@ async function main() {
     typeof process.env.WMUX_SURFACE_ID === 'string' && process.env.WMUX_SURFACE_ID.length > 0
       ? process.env.WMUX_SURFACE_ID
       : undefined;
+  // X6 ③: the EXACT pane this hook fired from. The daemon stamps WMUX_PTY_ID
+  // (its own session id) into every pane's env at spawn, so this is the
+  // strongest routing key — it pins the resume-binding capture to one pane even
+  // when several panes share a workspaceId/cwd. Also the spool's attribution key.
+  const envPtyId =
+    typeof process.env.WMUX_PTY_ID === 'string' && process.env.WMUX_PTY_ID.length > 0
+      ? process.env.WMUX_PTY_ID
+      : undefined;
 
   // Build the AgentSignal envelope. Schema mirrors
   // integrations/shared/signal-types.ts (kept in sync manually because
@@ -477,6 +528,7 @@ async function main() {
     ),
     workspaceId: envWorkspaceId,
     surfaceId: envSurfaceId,
+    ptyId: envPtyId,
     cwd: payloadCwd ?? process.cwd(),
     payload: {
       ...(payload ?? {}),
@@ -530,6 +582,28 @@ async function main() {
       hook: hookName,
       error: rpcResult?.error ?? 'unknown',
       detail: rpcResult?.detail, // connect-error code (ENOENT/EPERM/…) for diagnosis
+    });
+  }
+
+  // X6 ③: a session-lifecycle capture that did NOT durably reach wmux (anything
+  // but innerOk — ENOENT, no-workspace-match, timeout, internal-error) would be
+  // lost forever. Spool it so the daemon reconciles it on its next boot/connect
+  // and attributes it to the EXACT pane by ptyId. Gated on a real per-pane key
+  // (ptyId) + a resumable id. A SessionStart whose transcript doesn't exist yet
+  // still spools; a later Stop's spool overwrites it with the #12235-safe id.
+  const isLifecycle = envelope.kind === 'agent.session_start'
+    || envelope.kind === 'agent.stop'
+    || envelope.kind === 'agent.subagent_stop';
+  if (!innerOk && isLifecycle && envPtyId && envelope.agentSessionId) {
+    spoolResumeBinding({
+      ptyId: envPtyId,
+      agent: 'claude',
+      sessionId: envelope.agentSessionId,
+      cwd: envelope.cwd,
+      transcriptPath: transcriptPath ?? undefined,
+      permissionMode: permissionMode ?? undefined,
+      workspaceId: envWorkspaceId,
+      ts: envelope.ts,
     });
   }
 }
