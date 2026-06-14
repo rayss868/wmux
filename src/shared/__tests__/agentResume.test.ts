@@ -4,6 +4,7 @@ import {
   isResumableLaunchCommand,
   resumeOfferForRecovered,
   permissionFlagFor,
+  mergeResumeBinding,
   PERMISSION_FLAG,
   type ResumeBinding,
   type PermissionMode,
@@ -192,6 +193,38 @@ describe('toResumeCommand (X6)', () => {
       expect(toResumeCommand('claude', binding({ permissionMode: 'bypassPermissions' }), CWD)).toBe(
         'claude --resume abc-123',
       );
+    });
+  });
+
+  describe('mergeResumeBinding — sticky permissionMode / transcriptPath (codex P2)', () => {
+    it('keeps a prior permissionMode when the new capture lacks one (tail miss)', () => {
+      const prev = binding({ permissionMode: 'bypassPermissions' });
+      const next = binding({ permissionMode: undefined, ts: 2 });
+      expect(mergeResumeBinding(prev, next).permissionMode).toBe('bypassPermissions');
+    });
+
+    it('a real mode change still overrides the prior (not blindly sticky)', () => {
+      const prev = binding({ permissionMode: 'bypassPermissions' });
+      const next = binding({ permissionMode: 'acceptEdits', ts: 2 });
+      expect(mergeResumeBinding(prev, next).permissionMode).toBe('acceptEdits');
+    });
+
+    it('keeps a prior transcriptPath when the new capture omits it', () => {
+      const prev = binding({ transcriptPath: 'C:\\t\\abc.jsonl' });
+      const next = binding({ transcriptPath: undefined, ts: 2 });
+      expect(mergeResumeBinding(prev, next).transcriptPath).toBe('C:\\t\\abc.jsonl');
+    });
+
+    it('takes the latest sessionId/cwd/ts (stable fields are not sticky)', () => {
+      const prev = binding({ sessionId: 'old', cwd: 'C:\\a', ts: 1 });
+      const next = binding({ sessionId: 'new', cwd: 'C:\\b', ts: 9 });
+      const m = mergeResumeBinding(prev, next);
+      expect([m.sessionId, m.cwd, m.ts]).toEqual(['new', 'C:\\b', 9]);
+    });
+
+    it('no prior → returns the new binding unchanged', () => {
+      const next = binding({ permissionMode: 'plan' });
+      expect(mergeResumeBinding(undefined, next)).toEqual(next);
     });
   });
 

@@ -308,8 +308,17 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         const ptyId = activeSurfacePtyId;
         const launcher = resumeHint; // slug doubles as the launcher stem ('claude')
         const agentName = launcher.charAt(0).toUpperCase() + launcher.slice(1);
-        const sessionId = resumeBinding?.sessionId;
-        const permFlag = permissionFlagFor(resumeBinding?.permissionMode);
+        // cwd-match guard (F7): `--resume <id>` is cwd-scoped, so only offer the
+        // exact-session resume when the binding's origin cwd still matches the
+        // pane's LIVE cwd. The daemon checks this at recovery, but the shell can
+        // `cd` afterwards (OSC 7 updates surface.cwd) — re-validate here so a
+        // post-recovery cd drops to the cwd-relative `--continue` (plan line 220).
+        const normCwd = (p: string | undefined) =>
+          (p ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        const paneCwd = pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd;
+        const cwdMatches = !!(resumeBinding && paneCwd && normCwd(resumeBinding.cwd) === normCwd(paneCwd));
+        const sessionId = cwdMatches ? resumeBinding?.sessionId : undefined;
+        const permFlag = cwdMatches ? permissionFlagFor(resumeBinding?.permissionMode) : '';
 
         // Paste WITHOUT a trailing \r. The user presses Enter to run — so bypass
         // is re-granted only by an explicit keystroke, never automatically (D6).

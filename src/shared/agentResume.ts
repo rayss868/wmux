@@ -163,6 +163,25 @@ function launcherStem(firstToken: string): string {
 }
 
 /**
+ * X6 ③: merge a freshly-captured binding over the previously-persisted one,
+ * keeping `permissionMode` and `transcriptPath` STICKY. The bridge reads
+ * permissionMode from the transcript's last 64KB; a turn that writes >64KB after
+ * the last user line makes that read miss and return undefined (codex review
+ * 2026-06-14). A capture that couldn't observe the mode must NOT wipe a mode we
+ * already captured — so undefined fields fall back to the prior binding's value.
+ * `sessionId`/`cwd` always take the latest (they come from stable fields).
+ */
+export function mergeResumeBinding(
+  prev: ResumeBinding | undefined,
+  next: ResumeBinding,
+): ResumeBinding {
+  const merged: ResumeBinding = { ...next };
+  if (!merged.permissionMode && prev?.permissionMode) merged.permissionMode = prev.permissionMode;
+  if (!merged.transcriptPath && prev?.transcriptPath) merged.transcriptPath = prev.transcriptPath;
+  return merged;
+}
+
+/**
  * Decide what to insert after the launcher token: an id-aware
  * `--resume <id> [permFlag]` when a valid binding exists for THIS launcher and
  * its origin cwd still matches the pane (F7: `--resume` is cwd-scoped), or the

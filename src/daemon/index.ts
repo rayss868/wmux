@@ -19,7 +19,7 @@ import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING } from '../shared/constants';
-import { toResumeCommand, resumeOfferForRecovered } from '../shared/agentResume';
+import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import type { AgentSlug } from '../shared/events';
@@ -622,6 +622,23 @@ async function recoverSessions(
   }
 
   if (changed) {
+    // X6 ②/③ (codex review 2026-06-14): createSession does NOT replay the
+    // persisted resume markers (lastDetectedAgent / resumeBinding) into the
+    // fresh recovered meta — so the recovery save below would DROP them, and a
+    // SECOND reboot before the agent re-runs (and re-emits them) would lose the
+    // resume offer / exact-session binding. Carry them forward onto the live
+    // meta first so buildState persists them durably across consecutive reboots.
+    for (const persisted of state.sessions) {
+      if (!recoveredIds.has(persisted.id)) continue;
+      const managed = sessionManager.getSession(persisted.id);
+      if (!managed) continue;
+      if (persisted.lastDetectedAgent && !managed.meta.lastDetectedAgent) {
+        managed.meta.lastDetectedAgent = persisted.lastDetectedAgent;
+      }
+      if (persisted.resumeBinding && !managed.meta.resumeBinding) {
+        managed.meta.resumeBinding = persisted.resumeBinding;
+      }
+    }
     // Build combined state: recovered (live) sessions + everything we
     // intentionally left untouched (originally-dead within TTL, plus
     // any session the recovery cap excluded — which stays suspended).
@@ -997,7 +1014,9 @@ function registerRpcHandlers(
     const managed = sessionManager.getSession(p.id);
     if (!managed || !p.resumeBinding || !p.resumeBinding.sessionId) return { ok: false };
     const prev = managed.meta.resumeBinding;
-    const next = p.resumeBinding;
+    // Sticky-merge: a capture that couldn't read permissionMode (transcript tail
+    // miss) must not wipe a previously-captured mode (codex review 2026-06-14).
+    const next = mergeResumeBinding(prev, p.resumeBinding);
     const durableChange = !prev
       || prev.sessionId !== next.sessionId
       || prev.permissionMode !== next.permissionMode
