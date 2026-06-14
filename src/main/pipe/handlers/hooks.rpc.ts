@@ -198,11 +198,15 @@ export function registerHooksRpc(
       const client = getDaemonClient?.();
       if (client) {
         const permissionMode = readPermissionMode(signal.payload);
+        const transcriptPath = typeof signal.payload?.transcript_path === 'string'
+          ? signal.payload.transcript_path
+          : undefined;
         const resumeBinding: ResumeBinding = {
           agent: signal.agent,
           sessionId: signal.agentSessionId,
           cwd: signal.cwd,
           ...(permissionMode ? { permissionMode } : {}),
+          ...(transcriptPath ? { transcriptPath } : {}),
           ts: signal.ts,
         };
         client

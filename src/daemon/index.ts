@@ -189,10 +189,24 @@ function log(level: string, msg: string, ...args: unknown[]): void {
 // `--dangerously-skip-permissions` silently every reboot is unsafe (D6
 // fail-safe). Permission restore happens ONLY on the pill path (explicit user
 // Enter); the trust-gated supervised auto-restore is a deferred follow-up.
+// X6 ③ (D5): a binding is usable for an EXACT-session resume only when its
+// origin transcript still exists. A purged id turns `--resume` into a silent
+// "No conversation found." (F8 — exit 0, so no exit-code fallback). We probe the
+// exact stored path (slug-rule-free). Bindings with no transcriptPath (older
+// captures) are treated as usable — we can't prove them dead, and `--resume`
+// degrades gracefully if so.
+function bindingTranscriptLives(binding: ResumeBinding | undefined): boolean {
+  if (!binding) return false;
+  if (!binding.transcriptPath) return true;
+  return fs.existsSync(binding.transcriptPath);
+}
+
 function resumeLaunchCommand(session: { id: string; exec?: { command: string }; cwd: string; resumeBinding?: ResumeBinding }): string | undefined {
   if (!session.exec) return undefined;
   if (!fs.existsSync(session.cwd)) return undefined; // cwd gone → fresh, not wrong-target resume
-  const rewritten = toResumeCommand(session.exec.command, session.resumeBinding, session.cwd);
+  // D5: drop to `--continue` when the exact transcript is gone (pass no binding).
+  const usableBinding = bindingTranscriptLives(session.resumeBinding) ? session.resumeBinding : undefined;
+  const rewritten = toResumeCommand(session.exec.command, usableBinding, session.cwd);
   if (rewritten === session.exec.command) return undefined; // not a known agent launcher / already resuming
   log('info', `X6 resume: replaying session ${session.id} as resume form in ${session.cwd}`);
   return rewritten;
@@ -630,10 +644,10 @@ async function recoverSessions(
       recoveredAgentShellIds.set(s.id, offer as AgentSlug);
       // X6 ③: carry the persisted binding alongside the slug so the pill can
       // resume the EXACT session. Surface it ONLY when its captured cwd still
-      // matches the recovered session's cwd — `--resume` is cwd-scoped (F7), so
-      // a mismatch must not offer an id-resume; the pill then falls back to the
-      // cwd-relative `--continue`.
-      if (s.resumeBinding && s.resumeBinding.cwd === s.cwd) {
+      // matches the recovered session's cwd (F7 — `--resume` is cwd-scoped) AND
+      // its origin transcript still exists (D5 — a purged id is a dead-end).
+      // Either miss drops the pill to the cwd-relative `--continue`.
+      if (s.resumeBinding && s.resumeBinding.cwd === s.cwd && bindingTranscriptLives(s.resumeBinding)) {
         recoveredResumeBindings.set(s.id, s.resumeBinding);
       }
     }

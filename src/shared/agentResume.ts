@@ -81,6 +81,14 @@ export interface ResumeBinding {
   cwd: string;
   /** Last-observed permission mode (F5). Restored only on explicit user intent. */
   permissionMode?: PermissionMode;
+  /**
+   * Absolute path to the origin transcript `.jsonl`. Stored so staleness can be
+   * decided by an `fs.existsSync` probe (D5) — a purged id makes `--resume` a
+   * "No conversation found." dead-end (F8 — it exits 0, so no exit-code signal).
+   * Storing the exact path keeps the probe slug-rule-free (claude's cwd→slug
+   * mapping is version-drift-prone; capture deliberately avoided depending on it).
+   */
+  transcriptPath?: string;
   /** Capture time (ms). Staleness is decided by existence-probe, not a TTL. */
   ts: number;
 }

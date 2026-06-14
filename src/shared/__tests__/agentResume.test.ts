@@ -143,6 +143,12 @@ describe('toResumeCommand (X6)', () => {
       const once = toResumeCommand('claude --model opus', binding(), CWD);
       expect(toResumeCommand(once, binding(), CWD)).toBe(once);
     });
+
+    it('transcriptPath is carried metadata (D5 probe) — never enters the command', () => {
+      expect(
+        toResumeCommand('claude', binding({ transcriptPath: 'C:\\u\\.claude\\projects\\x\\abc-123.jsonl' }), CWD),
+      ).toBe('claude --resume abc-123');
+    });
   });
 
   describe('X6 ③ — opt-in permission-mode restore (restorePermissionMode)', () => {
