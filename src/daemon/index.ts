@@ -20,8 +20,10 @@ import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, Dae
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered } from '../shared/agentResume';
+import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import type { AgentSlug } from '../shared/events';
+import type { DaemonSetResumeBindingParams } from '../shared/rpc';
 
 // X6 Feature ②: sessions RECOVERED this daemon boot that were running an
 // INTERACTIVE agent (non-exec, non-supervised) → ptyId → the agent slug to
@@ -33,6 +35,13 @@ import type { AgentSlug } from '../shared/events';
 // A LIVE reconnect never enters this map, so the pill can't paste
 // `claude --continue` into a still-running agent (Codex eng review EC4).
 const recoveredAgentShellIds = new Map<string, AgentSlug>();
+
+// X6 ③: parallel to recoveredAgentShellIds — the captured resume binding for a
+// pane recovered this boot, read FROM THE PERSISTED session at recovery (the
+// live recovered meta has none yet). Surfaced on listSessions so the resume
+// pill can build `--resume <id>` for the EXACT conversation; cleared when the
+// agent relaunches (live again → no pill).
+const recoveredResumeBindings = new Map<string, ResumeBinding>();
 
 // === Constants ===
 const wmuxDir = getWmuxDir();
@@ -165,7 +174,7 @@ function log(level: string, msg: string, ...args: unknown[]): void {
 // === X6 resume on replay ===
 // Compute the NON-persisted launch command for a supervised exec session being
 // REPLAYED (recovery or supervisor restart). Returns the resume-rewritten
-// command (e.g. `claude --continue`) only when:
+// command only when:
 //   - the session is an exec unit (has `exec`), AND
 //   - its ORIGINAL cwd still exists — resume is cwd-scoped, so a homedir
 //     fallback would resume an unrelated/empty session (run fresh instead), AND
@@ -173,10 +182,18 @@ function log(level: string, msg: string, ...args: unknown[]): void {
 // Otherwise returns undefined → createSession spawns the original command.
 // The persisted meta.exec.command is never affected; first launch is never
 // touched (brand-new createSession callers don't call this).
-function resumeLaunchCommand(session: { id: string; exec?: { command: string }; cwd: string }): string | undefined {
+//
+// X6 ③: with a captured resumeBinding whose cwd still matches, the rewrite
+// targets the EXACT session (`claude --resume <id>`); otherwise it falls back to
+// `--continue` (latest-in-cwd). The permission mode is deliberately NOT restored
+// here — supervised auto-run has no human in the loop, so re-granting
+// `--dangerously-skip-permissions` silently every reboot is unsafe (D6
+// fail-safe). Permission restore happens ONLY on the pill path (explicit user
+// Enter); the trust-gated supervised auto-restore is a deferred follow-up.
+function resumeLaunchCommand(session: { id: string; exec?: { command: string }; cwd: string; resumeBinding?: ResumeBinding }): string | undefined {
   if (!session.exec) return undefined;
   if (!fs.existsSync(session.cwd)) return undefined; // cwd gone → fresh, not wrong-target resume
-  const rewritten = toResumeCommand(session.exec.command);
+  const rewritten = toResumeCommand(session.exec.command, session.resumeBinding, session.cwd);
   if (rewritten === session.exec.command) return undefined; // not a known agent launcher / already resuming
   log('info', `X6 resume: replaying session ${session.id} as resume form in ${session.cwd}`);
   return rewritten;
@@ -612,6 +629,9 @@ async function recoverSessions(
     const offer = resumeOfferForRecovered(s);
     if (recoveredIds.has(s.id) && offer) {
       recoveredAgentShellIds.set(s.id, offer as AgentSlug);
+      // X6 ③: carry the persisted binding alongside the slug so the pill can
+      // resume the EXACT session (and the cwd-match guard can run renderer-side).
+      if (s.resumeBinding) recoveredResumeBindings.set(s.id, s.resumeBinding);
     }
   }
 
@@ -923,10 +943,14 @@ function registerRpcHandlers(
       // The slug is held in the map (captured from the persisted session at
       // recovery) — NOT read off the live meta, which is a fresh shell here.
       const resumeAgent = recoveredAgentShellIds.get(s.id);
+      // X6 ③: the captured binding for the EXACT-session resume, also recovery-
+      // only (same transient-map reasoning as resumeAgent).
+      const resumeBinding = recoveredResumeBindings.get(s.id);
       const withRuntime = s.supervision
         ? { ...s, supervisionRuntime: paneSupervisor.getRuntime(s.id) }
         : s;
-      return resumeAgent ? { ...withRuntime, resumeAgent } : withRuntime;
+      const withAgent = resumeAgent ? { ...withRuntime, resumeAgent } : withRuntime;
+      return resumeBinding ? { ...withAgent, resumeBinding } : withAgent;
     });
   });
 
@@ -941,6 +965,30 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.superviseStop', async (params) => {
     const p = params as unknown as DaemonSessionIdParams;
     return { ok: paneSupervisor.stop(p.id) };
+  });
+
+  // X6 ③: persist the resume binding captured live from the claude hook (main
+  // forwards it after env-first ptyId resolution). Always refresh the in-memory
+  // meta (ts freshness), but only saveImmediate when a DURABLE field changes
+  // (sessionId / permissionMode / cwd) — bounding sync writes to ~once per
+  // permission-mode transition, exactly like lastDetectedAgent (X6 ②). The
+  // SIGKILL-survival rule is the whole point: the binding must be on disk before
+  // a reboot, and a reboot fires no exit hook.
+  pipeServer.onRpc('daemon.setResumeBinding', async (params) => {
+    const p = params as unknown as DaemonSetResumeBindingParams;
+    const managed = sessionManager.getSession(p.id);
+    if (!managed || !p.resumeBinding || !p.resumeBinding.sessionId) return { ok: false };
+    const prev = managed.meta.resumeBinding;
+    const next = p.resumeBinding;
+    const durableChange = !prev
+      || prev.sessionId !== next.sessionId
+      || prev.permissionMode !== next.permissionMode
+      || prev.cwd !== next.cwd;
+    managed.meta.resumeBinding = next;
+    if (durableChange) {
+      stateWriter.saveImmediate(buildState(sessionManager));
+    }
+    return { ok: true };
   });
 
   // daemon.getAgentName — daemon AgentDetector가 gate로 확정한 에이전트 표시명을
@@ -1219,6 +1267,7 @@ function wireEvents(
       }
       // The agent is live again → this pane is no longer a "resume me" shell.
       recoveredAgentShellIds.delete(payload.sessionId);
+      recoveredResumeBindings.delete(payload.sessionId);
     }
     const event: DaemonEvent = {
       type: 'agent.event',

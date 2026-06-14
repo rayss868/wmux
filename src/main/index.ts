@@ -492,7 +492,7 @@ registerPluginHostHandlers(rpcRouter, () => pluginHostLoader, () => approvalQueu
 registerProjectConfigHandlers();
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
-const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter);
+const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient);
 
 // ─── Phase 2 — Anthropic 5h/7d usage meter ──────────────────────────────────
 // Opt-in. Stays idle until the renderer sends IPC.USAGE_TOGGLE with `true`.

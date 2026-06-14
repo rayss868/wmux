@@ -47,6 +47,8 @@ import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
 import { eventBus } from '../../events/EventBus';
 import { IPC } from '../../../shared/constants';
+import type { DaemonClient } from '../../DaemonClient';
+import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
 import {
   isAgentSignal,
   type AgentSignal,
@@ -54,6 +56,19 @@ import {
 } from '../../../../integrations/shared/signal-types';
 
 type GetWindow = () => BrowserWindow | null;
+
+/** X6 ③: known permission modes, for validating the bridge's payload field. */
+const VALID_PERMISSION_MODES: ReadonlySet<string> = new Set([
+  'bypassPermissions',
+  'acceptEdits',
+  'plan',
+  'default',
+]);
+
+function readPermissionMode(payload: Record<string, unknown>): PermissionMode | undefined {
+  const m = payload?.permissionMode;
+  return typeof m === 'string' && VALID_PERMISSION_MODES.has(m) ? (m as PermissionMode) : undefined;
+}
 
 interface WorkspaceListEntry {
   id: string;
@@ -105,6 +120,7 @@ export function registerHooksRpc(
   router: RpcRouter,
   getWindow: GetWindow,
   hookRouter: HookSignalRouter,
+  getDaemonClient?: () => DaemonClient | null,
 ): () => void {
   const meter = hookRouter.getLatencyMeter();
   // Short-TTL, coalescing cache so a burst of hooks in one turn collapses to
@@ -164,6 +180,35 @@ export function registerHooksRpc(
       // This is expected when Claude is used standalone; we just drop
       // the per-pane notification. Signal health (above) still records.
       return { ok: false, reason: 'no-workspace-match' };
+    }
+
+    // X6 ③: persist the resume binding for session-LIFECYCLE kinds. This runs
+    // BEFORE the isEmitKind gate below, which drops SessionStart for the
+    // notification path — but SessionStart is a key live-capture point (the
+    // earliest the origin id is known). Fire-and-forget: the daemon does the
+    // durable saveImmediate, and the hook's 2s budget must never block on it.
+    // agentSessionId is the #12235-safe origin id (transcript basename) the
+    // bridge derived; cwd + permissionMode complete the binding (F5/F7).
+    if (
+      (signal.kind === 'agent.session_start'
+        || signal.kind === 'agent.stop'
+        || signal.kind === 'agent.subagent_stop')
+      && signal.agentSessionId
+    ) {
+      const client = getDaemonClient?.();
+      if (client) {
+        const permissionMode = readPermissionMode(signal.payload);
+        const resumeBinding: ResumeBinding = {
+          agent: signal.agent,
+          sessionId: signal.agentSessionId,
+          cwd: signal.cwd,
+          ...(permissionMode ? { permissionMode } : {}),
+          ts: signal.ts,
+        };
+        client
+          .rpc('daemon.setResumeBinding', { id: ptyId, resumeBinding }, { timeoutMs: WORKSPACE_LIST_FETCH_TIMEOUT_MS })
+          .catch((err) => console.warn(`[hooks.signal] setResumeBinding failed: ${String(err)}`));
+      }
     }
 
     // (Per-pane token usage forwarding was removed in B6: the StatusBar token
