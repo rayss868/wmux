@@ -601,6 +601,15 @@ export function useKeyboard() {
         return;
       }
 
+      // Ctrl+Shift+A: Toggle Fleet View (S-C1 cockpit — every agent, one
+      // screen). `code` fallback keeps it firing under IME composition where
+      // e.key can arrive as the 229 dead-key (the #189/#153 lesson).
+      if (cmdOrCtrl && shift && !alt && (key === 'A' || code === 'KeyA')) {
+        e.preventDefault();
+        store.getState().toggleFleetView();
+        return;
+      }
+
       // Ctrl+,: Toggle settings panel
       if (cmdOrCtrl && !shift && !alt && key === ',') {
         e.preventDefault();

@@ -245,6 +245,10 @@ export default function CommandPalette() {
         action: () => { useStore.getState().setNotificationPanelVisible(true); setVisible(false); },
       },
       {
+        label: t('palette.cmd.openFleetView'),
+        action: () => { useStore.getState().setFleetViewVisible(true); setVisible(false); },
+      },
+      {
         label: t('palette.cmd.openBrowser'),
         action: () => {
           // forceNew: the explicit "Open Browser" command always creates a

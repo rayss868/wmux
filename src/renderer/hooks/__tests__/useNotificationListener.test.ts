@@ -19,6 +19,8 @@ import {
   createNotificationHandler,
   resolveNotificationTarget,
   focusNotificationTarget,
+  focusPaneByPtyId,
+  activatePaneTarget,
   type NotificationHandlerDeps,
   type FocusTargetState,
 } from '../useNotificationListener';
@@ -604,5 +606,85 @@ describe('focusNotificationTarget', () => {
     });
     focusNotificationTarget(h.getState, { ptyId: 'pty-a', workspaceId: null });
     expect(h.spies.togglePaneZoom).not.toHaveBeenCalled();
+  });
+});
+
+// ─── S-C1 — focusPaneByPtyId (Fleet card click → pane jump) ─────────────────
+
+describe('focusPaneByPtyId (Fleet View jump)', () => {
+  function makeState(opts: { workspaces: Workspace[]; activeWorkspaceId: string }) {
+    const spies = {
+      setActiveWorkspace: vi.fn(),
+      setActivePane: vi.fn(),
+      setActiveSurface: vi.fn(),
+      togglePaneZoom: vi.fn(),
+      markRead: vi.fn(),
+      setPaneNotificationRing: vi.fn(),
+    };
+    const state: FocusTargetState = {
+      workspaces: opts.workspaces,
+      activeWorkspaceId: opts.activeWorkspaceId,
+      zoomedPaneId: null,
+      notifications: [],
+      ...spies,
+    };
+    spies.setActiveWorkspace.mockImplementation((id: string) => { state.activeWorkspaceId = id; });
+    return { state, spies, getState: () => state };
+  }
+
+  const ws = (id: string, paneId: string, sfId: string, ptyId: string) =>
+    makeWorkspace({ id, panes: [{ id: paneId, surfaces: [{ id: sfId, ptyId }] }] });
+
+  it('F1: delegates to the hardened jump — switches workspace + activates pane/surface by ptyId', () => {
+    const h = makeState({
+      workspaces: [ws('ws-a', 'pane-a', 'sf-a', 'pty-a'), ws('ws-b', 'pane-b', 'sf-b', 'pty-b')],
+      activeWorkspaceId: 'ws-a',
+    });
+    const handled = focusPaneByPtyId(h.getState, 'pty-b');
+    expect(handled).toBe(true);
+    expect(h.spies.setActiveWorkspace).toHaveBeenCalledWith('ws-b');
+    expect(h.spies.setActivePane).toHaveBeenCalledWith('pane-b');
+    expect(h.spies.setActiveSurface).toHaveBeenCalledWith('pane-b', 'sf-b', 'ws-b');
+  });
+
+  it('F2: empty ptyId (unspawned surface) → silent no-op, returns false, zero mutations', () => {
+    const h = makeState({ workspaces: [ws('ws-a', 'pane-a', 'sf-a', 'pty-a')], activeWorkspaceId: 'ws-a' });
+    expect(focusPaneByPtyId(h.getState, '')).toBe(false);
+    expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
+    expect(h.spies.setActivePane).not.toHaveBeenCalled();
+    expect(h.spies.setActiveSurface).not.toHaveBeenCalled();
+  });
+
+  it('F3: ptyId not found (PTY closed between render and click) → no-op, returns false', () => {
+    const h = makeState({ workspaces: [ws('ws-a', 'pane-a', 'sf-a', 'pty-a')], activeWorkspaceId: 'ws-a' });
+    expect(focusPaneByPtyId(h.getState, 'pty-gone')).toBe(false);
+    expect(h.spies.setActivePane).not.toHaveBeenCalled();
+  });
+
+  // activatePaneTarget is the shared core (used by both focusNotificationTarget
+  // and the Fleet View jump for surfaceless browser/editor/unspawned cards).
+  it('AT1: activates workspace + pane + surface directly (surfaceless jump)', () => {
+    const h = makeState({
+      workspaces: [ws('ws-a', 'pane-a', 'sf-a', 'pty-a'), ws('ws-b', 'pane-b', 'sf-b', 'pty-b')],
+      activeWorkspaceId: 'ws-a',
+    });
+    activatePaneTarget(h.getState, { workspaceId: 'ws-b', paneId: 'pane-b', surfaceId: 'sf-b' });
+    expect(h.spies.setActiveWorkspace).toHaveBeenCalledWith('ws-b');
+    expect(h.spies.setActivePane).toHaveBeenCalledWith('pane-b');
+    expect(h.spies.setActiveSurface).toHaveBeenCalledWith('pane-b', 'sf-b', 'ws-b');
+  });
+
+  it('AT2: no workspace switch when the target is already the active workspace', () => {
+    const h = makeState({ workspaces: [ws('ws-a', 'pane-a', 'sf-a', 'pty-a')], activeWorkspaceId: 'ws-a' });
+    activatePaneTarget(h.getState, { workspaceId: 'ws-a', paneId: 'pane-a', surfaceId: 'sf-a' });
+    expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
+    expect(h.spies.setActiveSurface).toHaveBeenCalledWith('pane-a', 'sf-a', 'ws-a');
+  });
+
+  it('AT3: clears a conflicting zoom (#182 coherence)', () => {
+    const h = makeState({ workspaces: [ws('ws-a', 'pane-a', 'sf-a', 'pty-a')], activeWorkspaceId: 'ws-a' });
+    h.state.zoomedPaneId = 'pane-zoomed-sibling';
+    activatePaneTarget(h.getState, { workspaceId: 'ws-a', paneId: 'pane-a', surfaceId: 'sf-a' });
+    expect(h.spies.togglePaneZoom).toHaveBeenCalledWith('pane-zoomed-sibling');
   });
 });

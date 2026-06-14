@@ -435,3 +435,74 @@ describe('UISlice — terminal text-drop trust boundary', () => {
     expect(store.getState().terminalTextDropDragActive).toBe(false);
   });
 });
+
+// S-C1 Fleet View overlay flag. Mirrors the command-palette / settings overlay
+// exclusivity: opening Fleet View tears down the other top-level overlays (and
+// inspect), and opening any of them tears Fleet View down — exactly one
+// top-level overlay can be visible at a time.
+describe('UISlice — Fleet View overlay (S-C1)', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+  });
+
+  it('fleetViewVisible defaults to false', () => {
+    expect(store.getState().fleetViewVisible).toBe(false);
+  });
+
+  it('toggleFleetView flips the flag both ways', () => {
+    store.getState().toggleFleetView();
+    expect(store.getState().fleetViewVisible).toBe(true);
+    store.getState().toggleFleetView();
+    expect(store.getState().fleetViewVisible).toBe(false);
+  });
+
+  it('opening Fleet View closes the competing overlays', () => {
+    store.setState({
+      commandPaletteVisible: true,
+      notificationPanelVisible: true,
+      settingsPanelVisible: true,
+    });
+    store.getState().toggleFleetView();
+    expect(store.getState().fleetViewVisible).toBe(true);
+    expect(store.getState().commandPaletteVisible).toBe(false);
+    expect(store.getState().notificationPanelVisible).toBe(false);
+    expect(store.getState().settingsPanelVisible).toBe(false);
+  });
+
+  it('setFleetViewVisible(true) closes competitors; closing it leaves them alone', () => {
+    store.setState({ commandPaletteVisible: true });
+    store.getState().setFleetViewVisible(true);
+    expect(store.getState().fleetViewVisible).toBe(true);
+    expect(store.getState().commandPaletteVisible).toBe(false);
+
+    store.setState({ commandPaletteVisible: true });
+    store.getState().setFleetViewVisible(false);
+    expect(store.getState().fleetViewVisible).toBe(false);
+    expect(store.getState().commandPaletteVisible).toBe(true);
+  });
+
+  it('opening a competing overlay closes Fleet View (mutual exclusivity)', () => {
+    store.getState().setFleetViewVisible(true);
+    store.getState().toggleCommandPalette();
+    expect(store.getState().commandPaletteVisible).toBe(true);
+    expect(store.getState().fleetViewVisible).toBe(false);
+
+    store.getState().setFleetViewVisible(true);
+    store.getState().toggleSettingsPanel();
+    expect(store.getState().settingsPanelVisible).toBe(true);
+    expect(store.getState().fleetViewVisible).toBe(false);
+
+    store.getState().setFleetViewVisible(true);
+    store.getState().toggleNotificationPanel();
+    expect(store.getState().notificationPanelVisible).toBe(true);
+    expect(store.getState().fleetViewVisible).toBe(false);
+  });
+
+  it('opening Fleet View tears down inspect mode', () => {
+    store.setState({ inspectModeActive: true });
+    store.getState().toggleFleetView();
+    expect(store.getState().inspectModeActive).toBe(false);
+  });
+});

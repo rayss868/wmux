@@ -81,6 +81,31 @@ export interface FocusTargetState {
 }
 
 /**
+ * Core jump sequence shared by the notification-toast jump and the Fleet View
+ * jump: activate workspace → re-read → pane → surface, with zoom coherence
+ * (#182). Returns the post-mutation state so callers can layer extra behavior
+ * (the toast path clears notification rings; Fleet View does not). Each step
+ * re-reads via getState() because setActivePane/setActiveSurface only operate
+ * on the ACTIVE workspace — a snapshot from before setActiveWorkspace no-ops.
+ */
+export function activatePaneTarget(
+  getState: () => FocusTargetState,
+  target: { workspaceId: string; paneId: string; surfaceId: string },
+): FocusTargetState {
+  const state = getState();
+  if (target.workspaceId !== state.activeWorkspaceId) {
+    state.setActiveWorkspace(target.workspaceId);
+  }
+  const fresh = getState();
+  fresh.setActivePane(target.paneId);
+  fresh.setActiveSurface(target.paneId, target.surfaceId, target.workspaceId);
+  if (fresh.zoomedPaneId !== null && fresh.zoomedPaneId !== target.paneId) {
+    fresh.togglePaneZoom(fresh.zoomedPaneId);
+  }
+  return fresh;
+}
+
+/**
  * Jump to the pane that originated an OS toast. Resolution mirrors
  * `resolveNotificationTarget`: ptyId is the strongest signal (activates
  * workspace + pane + surface); workspaceId is the fallback for app-level
@@ -111,19 +136,13 @@ export function focusNotificationTarget(
     for (const ws of state.workspaces) {
       const found = findSurfaceByPtyId(ws.rootPane, payload.ptyId);
       if (!found) continue;
-      if (ws.id !== state.activeWorkspaceId) {
-        state.setActiveWorkspace(ws.id);
-      }
-      // Re-read after the workspace switch — setActivePane resolves the
-      // pane inside the CURRENT active workspace (see FocusTargetState).
-      const fresh = getState();
-      fresh.setActivePane(found.paneId);
-      fresh.setActiveSurface(found.paneId, found.surfaceId, ws.id);
-      if (fresh.zoomedPaneId !== null && fresh.zoomedPaneId !== found.paneId) {
-        // Toggle on the currently-zoomed id == clear (togglePaneZoom is the
-        // only zoom mutator the store exposes).
-        fresh.togglePaneZoom(fresh.zoomedPaneId);
-      }
+      // Workspace switch + pane/surface activation + zoom coherence, shared
+      // verbatim with the Fleet View jump (activatePaneTarget).
+      const fresh = activatePaneTarget(getState, {
+        workspaceId: ws.id,
+        paneId: found.paneId,
+        surfaceId: found.surfaceId,
+      });
       let markedAny = false;
       for (const n of fresh.notifications) {
         if (!n.read && n.surfaceId !== undefined && n.surfaceId === found.surfaceId) {
@@ -149,6 +168,20 @@ export function focusNotificationTarget(
     }
   }
   return false;
+}
+
+/**
+ * S-C1 Fleet View jump: focus a pane by its active surface's ptyId, reusing the
+ * hardened `focusNotificationTarget` sequence verbatim (workspace switch +
+ * getState re-read + pane/surface activation + zoom coherence — the #182
+ * lesson). A Fleet card already carries the active surface ptyId, so ptyId
+ * resolution is the one signal needed; an empty/closed ptyId is a silent no-op.
+ * A thin, well-named wrapper rather than refactoring the race-tested
+ * notification path during the S-C1 kickoff.
+ */
+export function focusPaneByPtyId(getState: () => FocusTargetState, ptyId: string): boolean {
+  if (!ptyId) return false;
+  return focusNotificationTarget(getState, { ptyId });
 }
 
 // ─── Throttle windows ──────────────────────────────────────────────────────

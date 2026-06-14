@@ -114,11 +114,22 @@ export const en = {
   'palette.cmd.showNotifications': 'Show Notifications',
   'palette.cmd.openSettings': 'Open Settings',
   'palette.cmd.openBrowser': 'Open Browser',
+  'palette.cmd.openFleetView': 'Open Fleet View',
   'palette.cmd.saveLayout': 'Save Current Layout as Template',
   'palette.cmd.layoutPrefix': 'Layout: ',
   'palette.cmd.projectPrefix': 'Project: ',
   'palette.cmd.projectReview': 'Project: Review wmux.json…',
   'palette.cmd.projectApplyLayout': 'Project: Apply Layout',
+
+  // Fleet View (S-C1 cockpit — all agents, all workspaces, one screen)
+  'fleet.title': 'Fleet',
+  'fleet.tab.fleet': 'Fleet',
+  'fleet.tab.approvals': 'Approvals',
+  'fleet.approvalsComingSoon': 'Unified approval inbox — coming soon',
+  'fleet.empty': 'No agents running',
+  'fleet.needsAttention': '{count} need you',
+  'fleet.needsYourInput': 'Needs your input',
+  'fleet.jumpHint': 'jump to agent',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': 'Project configuration (wmux.json)',

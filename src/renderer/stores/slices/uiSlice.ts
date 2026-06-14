@@ -57,6 +57,13 @@ export interface UISlice {
   toggleCommandPalette: () => void;
   setCommandPaletteVisible: (visible: boolean) => void;
 
+  // S-C1 Fleet View — full-screen cockpit overlay (Ctrl+Shift+A). Transient
+  // UI state; never persisted (buildSessionData allowlist excludes it, like the
+  // command palette / settings panel flags).
+  fleetViewVisible: boolean;
+  toggleFleetView: () => void;
+  setFleetViewVisible: (visible: boolean) => void;
+
   settingsPanelVisible: boolean;
   toggleSettingsPanel: () => void;
   setSettingsPanelVisible: (visible: boolean) => void;
@@ -514,6 +521,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.notificationPanelVisible) {
       state.commandPaletteVisible = false;
       state.settingsPanelVisible = false;
+      state.fleetViewVisible = false;
       // D-exclusive: opening a competing surface tears inspect down so the
       // top-level state machine can't coexist with another modal.
       if (state.inspectModeActive) resetInspectState(state);
@@ -533,6 +541,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.commandPaletteVisible) {
       state.notificationPanelVisible = false;
       state.settingsPanelVisible = false;
+      state.fleetViewVisible = false;
       // D-exclusive: opening the palette tears inspect down (no coexistence).
       if (state.inspectModeActive) resetInspectState(state);
     }
@@ -543,6 +552,31 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (visible && state.inspectModeActive) resetInspectState(state);
   }),
 
+  // ─── Fleet View (S-C1 cockpit) ───────────────────────────────────────────
+  fleetViewVisible: false,
+
+  toggleFleetView: () => set((state) => {
+    state.fleetViewVisible = !state.fleetViewVisible;
+    if (state.fleetViewVisible) {
+      // Mutually exclusive with the other top-level overlays (same teardown the
+      // command palette / settings paths use), and inspect can't coexist.
+      state.commandPaletteVisible = false;
+      state.notificationPanelVisible = false;
+      state.settingsPanelVisible = false;
+      if (state.inspectModeActive) resetInspectState(state);
+    }
+  }),
+
+  setFleetViewVisible: (visible) => set((state) => {
+    state.fleetViewVisible = visible;
+    if (visible) {
+      state.commandPaletteVisible = false;
+      state.notificationPanelVisible = false;
+      state.settingsPanelVisible = false;
+      if (state.inspectModeActive) resetInspectState(state);
+    }
+  }),
+
   // ─── Settings panel ──────────────────────────────────────────────────────
   settingsPanelVisible: false,
 
@@ -551,6 +585,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (state.settingsPanelVisible) {
       state.commandPaletteVisible = false;
       state.notificationPanelVisible = false;
+      state.fleetViewVisible = false;
     } else if (state.inspectModeActive) {
       // D-exclusive invariant: inspect can only exist while Settings is open
       // (inspectModeActive ⇒ settingsPanelVisible). Toggling Settings shut

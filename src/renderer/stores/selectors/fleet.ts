@@ -1,0 +1,121 @@
+import type { AgentStatus } from '../../../shared/types';
+import { getLeafPanes } from '../../../shared/paneUtils';
+import type { StoreState } from '../index';
+
+// ─── S-C1 Fleet View — derived "all agents, all workspaces" model ────────────
+//
+// Pure derivation over `state.workspaces`. Every workspace is eagerly loaded
+// with its full pane tree (workspaceSlice.loadSession sets
+// `state.workspaces = data.workspaces`), so background workspaces are complete
+// data structures — just unrendered. There is therefore no daemon round-trip
+// and no dedicated `fleetSlice`: duplicating the tree into a second store would
+// only invite staleness. Fleet View adds a UI flag (uiSlice) and this selector.
+
+export interface FleetPane {
+  workspaceId: string;
+  workspaceName: string;
+  paneId: string;
+  surfaceId: string;
+  /** Active surface's PTY id. '' when the surface has not spawned a PTY yet. */
+  ptyId: string;
+  agentStatus: AgentStatus;
+  /** Only populated for the workspace's ACTIVE pane — see status fidelity note. */
+  agentName?: string;
+  cwd?: string;
+  title: string;
+  surfaceType: 'terminal' | 'browser' | 'editor';
+  /** True when this leaf is its workspace's active pane (badge fidelity hint). */
+  isActivePane: boolean;
+}
+
+/** Minimal store surface the selector reads — keeps the fixture trivial and the
+ *  subscription narrow (the FleetView memoizes on exactly these two fields). */
+export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentStatus'>;
+
+// Priority of each status for "which one wants the user most". Lower = more
+// urgent. Drives both the per-leaf attention scan (a background tab can be
+// awaiting_input while the active tab is idle) and the grid sort.
+const STATUS_RANK: Record<AgentStatus, number> = {
+  awaiting_input: 0,
+  waiting: 1,
+  error: 2,
+  complete: 3,
+  running: 4,
+  idle: 5,
+};
+
+/**
+ * Status fidelity (S-C1 v1, confirmed scope):
+ * `surfaceAgentStatus` only retains the ATTENTION statuses
+ * (complete / waiting / awaiting_input) keyed per-ptyId — see paneSlice
+ * ATTENTION_STATUSES. `running` / `idle` / `error` are *deleted* from that map,
+ * so they are not available per background pane. Resolution order:
+ *   1. surfaceAgentStatus[ptyId]  — accurate for attention states everywhere
+ *   2. ws.metadata.agentStatus    — workspace-level, only valid for the ACTIVE pane
+ *   3. 'idle'                      — default
+ * `agentName` is likewise workspace-level (active-pane-derived), so it is
+ * exposed only for the active pane to avoid mislabeling background panes.
+ */
+export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
+  const result: FleetPane[] = [];
+  for (const ws of state.workspaces) {
+    const wsMeta = ws.metadata;
+    for (const leaf of getLeafPanes(ws.rootPane)) {
+      const surf = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
+      const ptyId = surf?.ptyId ?? '';
+      const isActivePane = ws.activePaneId === leaf.id;
+      // Surface the most-urgent attention status across ANY of the leaf's
+      // surfaces (a background TAB can be awaiting_input while the active tab
+      // is idle), so a multi-tab pane that needs the user is never silently
+      // shown as idle. The card otherwise stays keyed on the active surface.
+      let attention: AgentStatus | undefined;
+      for (const s of leaf.surfaces) {
+        const st = s.ptyId ? state.surfaceAgentStatus[s.ptyId] : undefined;
+        if (st && (attention === undefined || STATUS_RANK[st] < STATUS_RANK[attention])) {
+          attention = st;
+        }
+      }
+      const status: AgentStatus =
+        attention
+        ?? (isActivePane ? wsMeta?.agentStatus : undefined)
+        ?? 'idle';
+      result.push({
+        workspaceId: ws.id,
+        workspaceName: ws.name,
+        paneId: leaf.id,
+        surfaceId: surf?.id ?? '',
+        ptyId,
+        agentStatus: status,
+        agentName: isActivePane ? wsMeta?.agentName : undefined,
+        cwd: surf?.cwd,
+        title: surf?.title ?? '',
+        surfaceType: surf?.surfaceType ?? 'terminal',
+        isActivePane,
+      });
+    }
+  }
+  return result;
+}
+
+// Sort order for the cockpit grid: the agents that want the user float to the
+// top (awaiting_input first — the unattended-loop money state, via STATUS_RANK
+// above), idle terminals sink. Ties break by workspace name then title for
+// stable, scannable rows.
+export function sortFleetPanes(panes: FleetPane[]): FleetPane[] {
+  return [...panes].sort((a, b) => {
+    const r = STATUS_RANK[a.agentStatus] - STATUS_RANK[b.agentStatus];
+    if (r !== 0) return r;
+    const w = a.workspaceName.localeCompare(b.workspaceName);
+    if (w !== 0) return w;
+    return a.title.localeCompare(b.title);
+  });
+}
+
+// Statuses that count toward the "N need you" header chip: awaiting_input is the
+// precise blocked-mid-turn state; waiting means the turn ended and a fresh
+// instruction is wanted. Both are "the agent is idle on you".
+export function countNeedsAttention(panes: FleetPane[]): number {
+  return panes.filter(
+    (p) => p.agentStatus === 'awaiting_input' || p.agentStatus === 'waiting',
+  ).length;
+}
