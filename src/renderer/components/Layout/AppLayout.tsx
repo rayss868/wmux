@@ -47,6 +47,7 @@ import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
+import AgentToolbar from '../AgentToolbar/AgentToolbar';
 
 /**
  * Fix 0 — startup reconcile timeout.
@@ -229,6 +230,9 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     // field convention (omit when empty).
     layoutTemplates: state.layoutTemplates.filter((t) => !t.builtin),
     recentCommands: state.recentCommands.length > 0 ? state.recentCommands : undefined,
+    agentToolbarEnabled: state.agentToolbarEnabled,
+    agentToolbarSnippets: state.toolbarSnippets.length > 0 ? state.toolbarSnippets : undefined,
+    agentToolbarNewCommand: state.newConversationCommand,
   };
 }
 
@@ -254,6 +258,7 @@ export default function AppLayout() {
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
 
   const prefixMode = useStore((s) => s.prefixMode);
+  const agentToolbarEnabled = useStore((s) => s.agentToolbarEnabled);
   // Gate the cross-pane SearchResultsPanel mount at the layout level so its
   // 6-field zustand subscription doesn't run when the panel is closed (I3).
   const searchPanelOpen = useStore((s) => s.searchPanelOpen);
@@ -1134,6 +1139,11 @@ export default function AppLayout() {
               </div>
             ))}
           </div>
+        )}
+        {agentToolbarEnabled && (
+          <ErrorBoundary name="AgentToolbar">
+            <AgentToolbar />
+          </ErrorBoundary>
         )}
       </div>
       </ErrorBoundary>
