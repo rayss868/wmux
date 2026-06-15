@@ -1,6 +1,12 @@
 import type { RpcRouter } from '../RpcRouter';
 import { eventBus } from '../../events/EventBus';
-import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../../shared/events';
+import {
+  WMUX_EVENT_TYPES,
+  RING_CAPACITY,
+  POLL_DEFAULT_MAX,
+  type WmuxEventType,
+  type A2aTaskEvent,
+} from '../../../shared/events';
 import type { PluginIdentityRecord } from '../../../shared/rpc';
 
 const TYPE_SET = new Set<WmuxEventType>(WMUX_EVENT_TYPES);
@@ -61,7 +67,53 @@ export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup):
       : undefined;
     const types = parseTypes(params['types']);
 
-    const result = eventBus.poll(cursor, { types, workspaceId, max });
+    // Workspace scoping is applied as a POST-filter here (placement B), NOT via
+    // the EventBus wsFilter, for ONE load-bearing reason: an a2a.task's base
+    // `workspaceId === from`, but the *receiver* (`caller === to`) must also
+    // see it. EventBus.poll's wsFilter (`ev.workspaceId !== wsFilter → drop`)
+    // would pre-drop the `created`/`updated` event before the `to`-receiver
+    // could ever match it. So we poll WITHOUT the strict wsFilter and re-impose
+    // scoping below: strict (`workspaceId === caller`) for every non-a2a type —
+    // identical to the old EventBus gate — and dual-party (`from`/`to`) for
+    // a2a.task only.
+    //
+    // `max` is ALSO deferred to after the scope filter (placement B): handing it
+    // to EventBus would let unrelated workspaces' events fill the page and then
+    // get post-filtered away, starving a small-`max` scoped subscriber (its own
+    // matching event sits just past the foreign ones, so it takes one extra poll
+    // per foreign event). Instead we over-fetch the whole ring window, scope,
+    // THEN truncate to the caller's page size and rewind nextCursor to the last
+    // delivered event — so the next poll resumes exactly after it and no
+    // matching event is ever skipped.
+    const result = eventBus.poll(cursor, { types, max: RING_CAPACITY });
+
+    // Dual-party + strict scoping post-filter. `caller` is the verified
+    // wsFilter (server-pinned for MCP via requireWorkspaceId), or undefined for
+    // an unscoped poll (e.g. the plugin-host forwarding poll).
+    const caller = workspaceId;
+    result.events = result.events.filter((e) =>
+      e.type !== 'a2a.task'
+        ? // every other type: strict scope, UNCHANGED from the old EventBus gate
+          (caller ? e.workspaceId === caller : true)
+        : // a2a.task: dual-party AND drop when unscoped. The `!!caller &&` clause
+          // is LOAD-BEARING — an unscoped poll (no workspaceId) must receive
+          // ZERO a2a.task events, else a bare `events.subscribe` plugin reads
+          // every pair's task.
+          (!!caller &&
+            ((e as A2aTaskEvent).from === caller || (e as A2aTaskEvent).to === caller)),
+    );
+
+    // Re-impose the caller's page size AFTER scoping (see the over-fetch note
+    // above). EventBus drained the ring for us, so if the scoped page still
+    // exceeds `max` we truncate here and rewind nextCursor to the last delivered
+    // event's seq — the next poll resumes right after it. seq is monotonic, so
+    // this never skips a withheld matching event (it only defers it one page).
+    const pageMax = max ?? POLL_DEFAULT_MAX;
+    if (result.events.length > pageMax) {
+      const page = result.events.slice(0, pageMax);
+      result.nextCursor = page[page.length - 1].seq;
+      result.events = page;
+    }
 
     // notifications.read opt-in gate (see allowsNotifications). Applied as
     // a post-poll filter — NOT by rewriting `types` — because EventBus

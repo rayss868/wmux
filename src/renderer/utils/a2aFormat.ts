@@ -21,10 +21,20 @@ function stripEscapes(input: string): string {
   return input.replace(ESC_CSI_RE, '').replace(ESC_OTHER_RE, '');
 }
 
-function safeName(name: string): string {
+/**
+ * Sanitize a sender/receiver name for embedding into PTY-bound text: strip
+ * escapes, collapse CR/LF/TAB to spaces (so it can never break out of a single
+ * line), and cap length. Exported so the single-line A2A nudge path
+ * (buildA2aNudge) enforces the same one-line invariant as the full envelope.
+ */
+export function sanitizeA2aName(name: string): string {
   return stripEscapes(sanitizePtyText(name))
     .replace(/[\r\n\t]/g, ' ')
     .slice(0, 100);
+}
+
+function safeName(name: string): string {
+  return sanitizeA2aName(name);
 }
 
 function safeBody(message: string): string {

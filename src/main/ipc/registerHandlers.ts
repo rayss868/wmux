@@ -26,8 +26,74 @@ import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { eventBus } from '../events/EventBus';
 import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
+import { VALID_TRANSITIONS, type TaskState } from '../../shared/types';
 
 const EVENT_TYPE_SET = new Set<WmuxEventType>(WMUX_EVENT_TYPES);
+
+// --- a2a.task publish trust boundary ---
+// `from`/`to` become the dual-party scoping key in the events.poll filter
+// (events.rpc.ts), so they MUST be well-formed before they reach the ring.
+// The allowed-value sets are derived from the canonical TaskState enum
+// (VALID_TRANSITIONS' keys) and A2aTaskEvent.kind so they can't drift from
+// the shared schema.
+const A2A_TASK_STATE_SET = new Set<TaskState>(Object.keys(VALID_TRANSITIONS) as TaskState[]);
+const A2A_TASK_KIND_SET = new Set<string>(['created', 'updated', 'cancelled']);
+/** Upper bound on the sanitized messagePreview length (chars). */
+const A2A_PREVIEW_MAX = 200;
+
+/**
+ * Build an ALLOW-LISTED a2a.task EmitInput from a renderer-supplied object.
+ * Returns null (→ caller drops the publish, no ring entry) when any required
+ * field is missing/malformed. Critically:
+ *   - `from`/`to`/`taskId` must be non-empty strings (the matcher never
+ *     compares undefined; a scope-less entry can never be created).
+ *   - `workspaceId` is stamped server-side === `from` — a renderer-supplied
+ *     workspaceId is ignored entirely for a2a.task (fail-safe: a consumer that
+ *     ignores the type still scopes to the sender, never a third party).
+ *   - `state`/`kind` are validated against their enums; an invalid value is a
+ *     reject (not a silent coercion) so a forged shape can't smuggle state.
+ *   - `messagePreview`, if present, is coerced to a string and truncated.
+ * The renderer object is NEVER spread — only these fields cross the boundary.
+ *
+ * Exported so the dual-party scoping suite (events.rpc.test.ts) can assert the
+ * reject path (missing/empty from/to → null → no ring entry) without standing
+ * up the Electron IPC handler. This is the exact predicate `onEventsPublish`
+ * uses for `type === 'a2a.task'`.
+ */
+export function buildA2aTaskEmitInput(
+  obj: Record<string, unknown>,
+): { type: 'a2a.task'; workspaceId: string; [k: string]: unknown } | null {
+  const from = obj['from'];
+  const to = obj['to'];
+  const taskId = obj['taskId'];
+  if (typeof from !== 'string' || from.length === 0) return null;
+  if (typeof to !== 'string' || to.length === 0) return null;
+  if (typeof taskId !== 'string' || taskId.length === 0) return null;
+
+  const state = obj['state'];
+  if (typeof state !== 'string' || !A2A_TASK_STATE_SET.has(state as TaskState)) return null;
+  const kind = obj['kind'];
+  if (typeof kind !== 'string' || !A2A_TASK_KIND_SET.has(kind)) return null;
+
+  const emit: { type: 'a2a.task'; workspaceId: string; [k: string]: unknown } = {
+    type: 'a2a.task',
+    // Base workspaceId is stamped server-side === from. Any renderer-supplied
+    // workspaceId is ignored.
+    workspaceId: from,
+    from,
+    to,
+    taskId,
+    state: state as TaskState,
+    kind,
+  };
+
+  const preview = obj['messagePreview'];
+  if (preview !== undefined && preview !== null) {
+    emit['messagePreview'] = String(preview).slice(0, A2A_PREVIEW_MAX);
+  }
+
+  return emit;
+}
 
 export interface RegisterHandlersOptions {
   /** McpRegistrar instance shared with main/index — exposes Settings MCP IPC. */
@@ -104,8 +170,28 @@ export function registerAllHandlers(
     if (!input || typeof input !== 'object') return;
     const obj = input as Record<string, unknown>;
     const type = obj['type'];
-    const workspaceId = obj['workspaceId'];
     if (typeof type !== 'string' || !EVENT_TYPE_SET.has(type as WmuxEventType)) return;
+
+    // a2a.task is the access-control anchor: `from`/`to` are the dual-party
+    // scoping key (events.rpc.ts), so this type gets a dedicated, ALLOW-LISTED
+    // construction BEFORE emit — we never spread the renderer object and never
+    // trust a renderer-supplied workspaceId (it is stamped === from). A
+    // missing/malformed from/to/taskId/state/kind drops the publish with no
+    // ring entry. This runs before the generic non-empty-workspaceId gate
+    // below because a2a.task derives its workspaceId from `from`, not the
+    // renderer field.
+    if (type === 'a2a.task') {
+      const emit = buildA2aTaskEmitInput(obj);
+      if (!emit) return;
+      try {
+        eventBus.emit(emit);
+      } catch {
+        // Telemetry must not crash the IPC channel — swallow and move on.
+      }
+      return;
+    }
+
+    const workspaceId = obj['workspaceId'];
     if (typeof workspaceId !== 'string' || workspaceId.length === 0) return;
     try {
       eventBus.emit({ ...obj, type: type as WmuxEventType, workspaceId });
