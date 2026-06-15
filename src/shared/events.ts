@@ -295,7 +295,16 @@ export interface A2aTaskEvent extends WmuxEventBase {
   to: string;
   kind: 'created' | 'updated' | 'cancelled';
   state: TaskState;
-  /** Optional sanitized preview (≤200 chars). Omitted by default (pointer-only). */
+  /**
+   * Optional preview (≤200 chars). Omitted by default (pointer-only).
+   *
+   * SANITIZATION CAVEAT: this field is LENGTH-bounded only — it is NOT
+   * content-sanitized for control/escape sequences. It is safe on the bus
+   * today because it reaches ONLY the two scoped parties (the dual-party
+   * `from`/`to` filter in events.rpc.ts) and is omitted by default. But any UI
+   * that ever surfaces it (a toast, a Fleet View row, etc.) MUST sanitize it
+   * first — do NOT render it raw.
+   */
   messagePreview?: string;
 }
 
