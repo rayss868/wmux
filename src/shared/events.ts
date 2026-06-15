@@ -25,7 +25,7 @@
 // can land in the bus in either order. Clients must not assume seq order
 // implies causal order across producer boundaries.
 
-import type { PaneMetadata, WorkspaceMetadata } from './types';
+import type { PaneMetadata, WorkspaceMetadata, TaskState } from './types';
 
 /**
  * Canonical agent slug for the `agent.lifecycle` event payload.
@@ -59,7 +59,10 @@ export type WmuxEventType =
   // owning workspace can't be resolved (scope-less events would leak across
   // workspace isolation).
   | 'pane.restarted'
-  | 'pane.supervision';
+  | 'pane.supervision'
+  // A2A (agent-to-agent) task lifecycle tee. See A2aTaskEvent below — a
+  // dual-party event (from/to) where the base workspaceId always equals `from`.
+  | 'a2a.task';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -73,6 +76,7 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'notification.received',
   'pane.restarted',
   'pane.supervision',
+  'a2a.task',
 ] as const;
 
 export interface WmuxEventBase {
@@ -272,6 +276,29 @@ export interface PaneSupervisionEvent extends WmuxEventBase {
   reason: 'guard-trip' | 'rearm' | 'manual-stop';
 }
 
+/**
+ * A2A (agent-to-agent) task lifecycle, tee'd from the renderer task store onto
+ * the bus so receivers can be notified WITHOUT a terminal paste and senders get
+ * a delivery/status receipt. Involves TWO workspaces — `from` (sender) and `to`
+ * (receiver). SCOPING INVARIANT: the base `workspaceId` is ALWAYS set === `from`,
+ * so any consumer that ignores a2a.task still scopes to the sender and NEVER a
+ * third party. `events.poll` adds `to` as a second matchable key for a2a.task
+ * ONLY (see events.rpc.ts dual-party filter). `messagePreview` is omitted by
+ * default — the event is a pointer; the party fetches the body via a2a_task_query.
+ */
+export interface A2aTaskEvent extends WmuxEventBase {
+  type: 'a2a.task';
+  taskId: string;
+  /** Sender workspaceId. REQUIRED non-empty. ALSO equals the base workspaceId. */
+  from: string;
+  /** Receiver workspaceId. REQUIRED non-empty. */
+  to: string;
+  kind: 'created' | 'updated' | 'cancelled';
+  state: TaskState;
+  /** Optional sanitized preview (≤200 chars). Omitted by default (pointer-only). */
+  messagePreview?: string;
+}
+
 export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
@@ -283,7 +310,8 @@ export type WmuxEvent =
   | AgentLifecycleEvent
   | NotificationReceivedEvent
   | PaneRestartedEvent
-  | PaneSupervisionEvent;
+  | PaneSupervisionEvent
+  | A2aTaskEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;
