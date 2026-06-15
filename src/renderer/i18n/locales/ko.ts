@@ -139,6 +139,10 @@ export const ko = {
   'resume.label': '{agent} 이어가기',
   'resume.tooltip': '이 pane의 이전 에이전트 대화를 이어갑니다',
   'resume.dismiss': '닫기',
+  // X6 ③ — 점진 조립: 첫 클릭은 권한 모드를 복원(명령만 입력, Enter 없음),
+  // 이 두 번째 클릭은 정확한 세션 복원을 덧붙입니다. 실행은 사용자가 Enter.
+  'resume.addSession': '이 세션 복원',
+  'resume.addSessionTooltip': '이전 대화를 정확히 이어가기 (--resume <id>); 실행하려면 Enter',
 
   // Browser
   'browser.urlPlaceholder': 'URL 입력...',

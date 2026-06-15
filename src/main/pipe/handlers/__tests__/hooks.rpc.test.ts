@@ -177,6 +177,65 @@ describe('resolvePtyIdForSignal — env-first routing (Codex P1 #7 fix)', () => 
   });
 });
 
+describe('resolvePtyIdForSignal — X6 ③ per-pane WMUX_PTY_ID routing', () => {
+  // One workspace, TWO panes (split). cwd is shared. activePtyId is p-active.
+  // Pre-fix, every hook collapsed to p-active; the non-active pane's binding
+  // was clobbered. With ptyId routing each pane keeps its own attribution.
+  const workspaces = [
+    {
+      id: 'ws-1',
+      name: 'Split',
+      metadata: { cwd: '/repo' },
+      activePtyId: 'p-active',
+      ptyIds: ['p-active', 'p-bg'],
+    },
+  ];
+
+  it('exact ptyId wins over workspace activePtyId for a non-active split pane', () => {
+    const got = resolvePtyIdForSignal(
+      signal({ ptyId: 'p-bg', workspaceId: 'ws-1', cwd: '/repo' }),
+      workspaces,
+    );
+    expect(got).toBe('p-bg'); // NOT p-active — the collapse is fixed
+  });
+
+  it('exact ptyId also pins the active pane (no regression)', () => {
+    const got = resolvePtyIdForSignal(
+      signal({ ptyId: 'p-active', workspaceId: 'ws-1', cwd: '/repo' }),
+      workspaces,
+    );
+    expect(got).toBe('p-active');
+  });
+
+  it('a stale/unknown ptyId is NOT trusted — falls back to workspaceId routing', () => {
+    const got = resolvePtyIdForSignal(
+      signal({ ptyId: 'p-closed', workspaceId: 'ws-1', cwd: '/repo' }),
+      workspaces,
+    );
+    expect(got).toBe('p-active'); // unknown id ignored, workspace fallback wins
+  });
+
+  it('a stale ptyId with no other signal falls through to cwd', () => {
+    const got = resolvePtyIdForSignal(
+      signal({ ptyId: 'p-gone', cwd: '/repo' }),
+      workspaces,
+    );
+    expect(got).toBe('p-active'); // cwd exact match → workspace's activePtyId
+  });
+
+  it('a live ptyId is NOT trusted when it belongs to a DIFFERENT claimed workspace (anti-spoof)', () => {
+    // p-bg is a real live pane in ws-1, but the hook claims ws-evil. A pane-env
+    // -controlled WMUX_PTY_ID must not let an authenticated hook hijack another
+    // workspace's pane — the workspace cross-check rejects it and routing falls
+    // back to the (unknown) workspaceId → cwd.
+    const got = resolvePtyIdForSignal(
+      signal({ ptyId: 'p-bg', workspaceId: 'ws-evil', cwd: '/repo' }),
+      workspaces,
+    );
+    expect(got).toBe('p-active'); // NOT p-bg — the spoofed cross-workspace target
+  });
+});
+
 describe('isAgentSignal (re-export check)', () => {
   // Smoke-imported separately to keep this file focused; full validation
   // tests live next to signal-types.ts spec if needed. Here we just make

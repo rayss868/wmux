@@ -46,7 +46,12 @@ import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
 import { eventBus } from '../../events/EventBus';
-import { IPC } from '../../../shared/constants';
+import { IPC, dataSuffix } from '../../../shared/constants';
+import type { DaemonClient } from '../../DaemonClient';
+import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
+import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   isAgentSignal,
   type AgentSignal,
@@ -54,6 +59,61 @@ import {
 } from '../../../../integrations/shared/signal-types';
 
 type GetWindow = () => BrowserWindow | null;
+
+/** X6 ③: known permission modes, for validating the bridge's payload field. */
+const VALID_PERMISSION_MODES: ReadonlySet<string> = new Set([
+  'bypassPermissions',
+  'acceptEdits',
+  'plan',
+  'default',
+]);
+
+function readPermissionMode(payload: Record<string, unknown>): PermissionMode | undefined {
+  const m = payload?.permissionMode;
+  return typeof m === 'string' && VALID_PERMISSION_MODES.has(m) ? (m as PermissionMode) : undefined;
+}
+
+/**
+ * X6 ③ (codex P2): durable spool written by MAIN when the daemon.setResumeBinding
+ * relay can't land (daemon down / restarting). The bridge already spools when the
+ * MAIN pipe is down; this closes the symmetric hole where main is up and resolved
+ * the pane but the daemon isn't reachable. Same record shape + ptyId key + atomic
+ * temp→rename + don't-replace-newer rule the daemon's ingest expects. Writes under
+ * the suffix-aware ~/.wmux dir the daemon actually reads (main owns WMUX_DATA_SUFFIX,
+ * unlike the bridge). Best-effort: never throws into the hook path.
+ */
+function writeMainResumeSpool(ptyId: string, binding: ResumeBinding): void {
+  try {
+    const dir = path.join(os.homedir(), `.wmux${dataSuffix()}`, 'resume-spool');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const safe = String(ptyId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+    if (!safe) return;
+    const file = path.join(dir, `${safe}.json`);
+    const tmp = path.join(dir, `${safe}.${process.pid}.${Date.now()}.json.tmp`);
+    const record = {
+      ptyId,
+      agent: binding.agent,
+      sessionId: binding.sessionId,
+      cwd: binding.cwd,
+      ts: binding.ts,
+      ...(binding.permissionMode ? { permissionMode: binding.permissionMode } : {}),
+      ...(binding.transcriptPath ? { transcriptPath: binding.transcriptPath } : {}),
+    };
+    fs.writeFileSync(tmp, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
+    try {
+      if (fs.existsSync(file)) {
+        const existing = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (typeof existing?.ts === 'number' && existing.ts > record.ts) {
+          try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+          return;
+        }
+      }
+    } catch { /* replace a corrupt existing spool */ }
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    console.warn(`[hooks.signal] main resume-spool write failed: ${String(err)}`);
+  }
+}
 
 interface WorkspaceListEntry {
   id: string;
@@ -105,6 +165,7 @@ export function registerHooksRpc(
   router: RpcRouter,
   getWindow: GetWindow,
   hookRouter: HookSignalRouter,
+  getDaemonClient?: () => DaemonClient | null,
 ): () => void {
   const meter = hookRouter.getLatencyMeter();
   // Short-TTL, coalescing cache so a burst of hooks in one turn collapses to
@@ -164,6 +225,48 @@ export function registerHooksRpc(
       // This is expected when Claude is used standalone; we just drop
       // the per-pane notification. Signal health (above) still records.
       return { ok: false, reason: 'no-workspace-match' };
+    }
+
+    // X6 ③: persist the resume binding for session-LIFECYCLE kinds. This runs
+    // BEFORE the isEmitKind gate below, which drops SessionStart for the
+    // notification path — but SessionStart is a key live-capture point (the
+    // earliest the origin id is known). Fire-and-forget: the daemon does the
+    // durable saveImmediate, and the hook's 2s budget must never block on it.
+    // agentSessionId is the #12235-safe origin id (transcript basename) the
+    // bridge derived; cwd + permissionMode complete the binding (F5/F7).
+    if (
+      (signal.kind === 'agent.session_start'
+        || signal.kind === 'agent.stop'
+        || signal.kind === 'agent.subagent_stop')
+      && signal.agentSessionId
+    ) {
+      const permissionMode = readPermissionMode(signal.payload);
+      const transcriptPath = typeof signal.payload?.transcript_path === 'string'
+        ? signal.payload.transcript_path
+        : undefined;
+      const resumeBinding: ResumeBinding = {
+        agent: signal.agent,
+        sessionId: signal.agentSessionId,
+        cwd: signal.cwd,
+        ...(permissionMode ? { permissionMode } : {}),
+        ...(transcriptPath ? { transcriptPath } : {}),
+        ts: signal.ts,
+      };
+      const client = getDaemonClient?.();
+      if (client) {
+        client
+          .rpc('daemon.setResumeBinding', { id: ptyId, resumeBinding }, { timeoutMs: WORKSPACE_LIST_FETCH_TIMEOUT_MS })
+          // codex P2: the relay is fire-and-forget, so a daemon down/restarting
+          // here would lose the capture entirely (the bridge already saw ok). Spool
+          // it from main so the daemon reconciles it on its next boot/connect.
+          .catch((err) => {
+            console.warn(`[hooks.signal] setResumeBinding failed, spooling: ${String(err)}`);
+            writeMainResumeSpool(ptyId, resumeBinding);
+          });
+      } else {
+        // No daemon client (daemon down / not yet connected) — spool directly.
+        writeMainResumeSpool(ptyId, resumeBinding);
+      }
     }
 
     // (Per-pane token usage forwarding was removed in B6: the StatusBar token
@@ -428,6 +531,25 @@ export function resolvePtyIdForSignal(
   signal: AgentSignal,
   workspaces: WorkspaceListEntry[],
 ): string | null {
+  // X6 ③: EXACT per-pane routing. The daemon stamps WMUX_PTY_ID (its own session
+  // id) into every pane's env, so a hook carries the precise ptyId it fired from.
+  // Trust it ONLY when it still maps to a live workspace pane — that bounds a
+  // stale/spoofed id to a currently-open pane (the auth-gated hooks path is
+  // lower-trust than the MCP terminal-IO resolver, so an unverified id must never
+  // target a session). This resolves the split-workspace / shared-cwd collapse
+  // where every pane's hook would otherwise land on the workspace's ACTIVE
+  // surface — the dominant cross-pane resume-binding clobber.
+  if (signal.ptyId) {
+    const ptyWorkspaceId = findWorkspaceIdForPty(signal.ptyId, workspaces);
+    // Trust the exact ptyId only when it maps to a LIVE pane AND — when the hook
+    // also carries a workspaceId — that pane belongs to the CLAIMED workspace.
+    // WMUX_PTY_ID is pane-env-controlled, so without the workspace cross-check an
+    // authenticated hook could target another live pane by id (codex P2). A hook
+    // with no workspaceId (older bridge / standalone) still trusts a live ptyId.
+    if (ptyWorkspaceId && (!signal.workspaceId || ptyWorkspaceId === signal.workspaceId)) {
+      return signal.ptyId;
+    }
+  }
   if (signal.workspaceId) {
     const match = workspaces.find((w) => w.id === signal.workspaceId);
     if (match) {

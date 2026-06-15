@@ -13,6 +13,7 @@ import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
+import { ENV_KEYS } from '../shared/constants';
 import { createDefaultConfig } from './config';
 
 const DEFAULT_COLS = 80;
@@ -237,6 +238,16 @@ export class DaemonSessionManager extends EventEmitter {
     const env = params.env
       ? stripReservedAuth(params.env)
       : stripReservedNamespace(buildSafeChildEnv(globalThis.process.env));
+
+    // X6 ③: stamp the pane's own daemon session id into its env so the Claude
+    // hook bridge can attribute its resume-binding capture to the EXACT pane
+    // (per-pane routing). The daemon is the only layer that knows this id at
+    // spawn time — the renderer cannot supply a surfaceId at pty.create because
+    // a surface is minted only AFTER the pty exists, so WMUX_SURFACE_ID never
+    // reaches the shell. Set AFTER the reserved-namespace strip so it survives;
+    // recovery replays meta.env (and re-stamps the same id), keeping it stable
+    // across reboot. This is the join key the spool ingest matches on.
+    env[ENV_KEYS.PTY_ID] = params.id;
 
     let spawnArgs: string[] = [];
     if (params.exec) {

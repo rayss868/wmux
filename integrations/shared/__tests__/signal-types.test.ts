@@ -86,4 +86,19 @@ describe('isAgentSignal', () => {
     expect(isAgentSignal({ ...valid, workspaceId: 42 })).toBe(false);
     expect(isAgentSignal({ ...valid, surfaceId: { id: 'x' } })).toBe(false);
   });
+
+  // X6 ③: per-pane routing key (WMUX_PTY_ID env).
+  it('accepts a valid ptyId', () => {
+    expect(isAgentSignal({ ...valid, ptyId: 'daemon-978b497a' })).toBe(true);
+  });
+
+  it('rejects empty / non-string ptyId', () => {
+    expect(isAgentSignal({ ...valid, ptyId: '' })).toBe(false);
+    expect(isAgentSignal({ ...valid, ptyId: 42 })).toBe(false);
+    expect(isAgentSignal({ ...valid, ptyId: { id: 'x' } })).toBe(false);
+  });
+
+  it('a hook with no ptyId is still valid (older bridges / standalone claude)', () => {
+    expect(isAgentSignal(valid)).toBe(true);
+  });
 });

@@ -1,5 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { toResumeCommand, isResumableLaunchCommand, resumeOfferForRecovered } from '../agentResume';
+import {
+  toResumeCommand,
+  isResumableLaunchCommand,
+  resumeOfferForRecovered,
+  permissionFlagFor,
+  mergeResumeBinding,
+  normalizeResumeCwd,
+  PERMISSION_FLAG,
+  type ResumeBinding,
+  type PermissionMode,
+} from '../agentResume';
+
+const CWD = 'D:\\wmux';
+const binding = (over: Partial<ResumeBinding> = {}): ResumeBinding => ({
+  agent: 'claude',
+  sessionId: 'abc-123',
+  cwd: CWD,
+  ts: 1,
+  ...over,
+});
 
 describe('toResumeCommand (X6)', () => {
   describe('rewrites known agent launchers', () => {
@@ -83,6 +102,170 @@ describe('toResumeCommand (X6)', () => {
     it('empty / whitespace → unchanged', () => {
       expect(toResumeCommand('')).toBe('');
       expect(toResumeCommand('   ')).toBe('   ');
+    });
+  });
+
+  describe('X6 ③ — id-aware resume with a binding', () => {
+    it('binding + cwd match → --resume <id> (no permFlag by default, D6 fail-safe)', () => {
+      expect(toResumeCommand('claude', binding(), CWD)).toBe('claude --resume abc-123');
+    });
+
+    it('preserves trailing args after the inserted --resume', () => {
+      expect(toResumeCommand('claude --model opus', binding(), CWD)).toBe(
+        'claude --resume abc-123 --model opus',
+      );
+    });
+
+    it('cwd MISMATCH → falls back to --continue (F7: --resume is cwd-scoped)', () => {
+      expect(toResumeCommand('claude', binding({ cwd: 'C:\\other' }), CWD)).toBe('claude --continue');
+    });
+
+    it('no paneCwd provided → cannot prove cwd match → --continue', () => {
+      expect(toResumeCommand('claude', binding())).toBe('claude --continue');
+    });
+
+    it('binding for a DIFFERENT agent slug → --continue', () => {
+      expect(toResumeCommand('claude', binding({ agent: 'codex' }), CWD)).toBe('claude --continue');
+    });
+
+    it('binding with an empty sessionId → --continue', () => {
+      expect(toResumeCommand('claude', binding({ sessionId: '' }), CWD)).toBe('claude --continue');
+    });
+
+    it('undefined binding → --continue (today’s behavior, unchanged)', () => {
+      expect(toResumeCommand('claude', undefined, CWD)).toBe('claude --continue');
+    });
+
+    it('already --resume <id> → unchanged even with a binding (no double-resume)', () => {
+      const c = 'claude --resume zzz-999';
+      expect(toResumeCommand(c, binding(), CWD)).toBe(c);
+    });
+
+    it('idempotent: re-applying the id-aware build is a fixpoint', () => {
+      const once = toResumeCommand('claude --model opus', binding(), CWD);
+      expect(toResumeCommand(once, binding(), CWD)).toBe(once);
+    });
+
+    it('transcriptPath is carried metadata (D5 probe) — never enters the command', () => {
+      expect(
+        toResumeCommand('claude', binding({ transcriptPath: 'C:\\u\\.claude\\projects\\x\\abc-123.jsonl' }), CWD),
+      ).toBe('claude --resume abc-123');
+    });
+  });
+
+  describe('X6 ③ — opt-in permission-mode restore (restorePermissionMode)', () => {
+    const opt = { restorePermissionMode: true };
+
+    it('bypassPermissions → --resume <id> --dangerously-skip-permissions', () => {
+      expect(toResumeCommand('claude', binding({ permissionMode: 'bypassPermissions' }), CWD, opt)).toBe(
+        'claude --resume abc-123 --dangerously-skip-permissions',
+      );
+    });
+
+    it('acceptEdits → --resume <id> --permission-mode acceptEdits', () => {
+      expect(toResumeCommand('claude', binding({ permissionMode: 'acceptEdits' }), CWD, opt)).toBe(
+        'claude --resume abc-123 --permission-mode acceptEdits',
+      );
+    });
+
+    it('plan → --resume <id> --permission-mode plan', () => {
+      expect(toResumeCommand('claude', binding({ permissionMode: 'plan' }), CWD, opt)).toBe(
+        'claude --resume abc-123 --permission-mode plan',
+      );
+    });
+
+    it('default → --resume <id> (no flag, even when opted in)', () => {
+      expect(toResumeCommand('claude', binding({ permissionMode: 'default' }), CWD, opt)).toBe(
+        'claude --resume abc-123',
+      );
+    });
+
+    it('no permissionMode captured → --resume <id> only', () => {
+      expect(toResumeCommand('claude', binding(), CWD, opt)).toBe('claude --resume abc-123');
+    });
+
+    it('opt-in has NO effect on the --continue fallback (cwd mismatch)', () => {
+      expect(
+        toResumeCommand('claude', binding({ cwd: 'C:\\other', permissionMode: 'bypassPermissions' }), CWD, opt),
+      ).toBe('claude --continue');
+    });
+
+    it('default OFF: bypass binding does NOT auto-add the flag (D6 fail-safe)', () => {
+      expect(toResumeCommand('claude', binding({ permissionMode: 'bypassPermissions' }), CWD)).toBe(
+        'claude --resume abc-123',
+      );
+    });
+  });
+
+  describe('mergeResumeBinding — sticky permissionMode / transcriptPath (codex P2)', () => {
+    it('keeps a prior permissionMode when the new capture lacks one (tail miss)', () => {
+      const prev = binding({ permissionMode: 'bypassPermissions' });
+      const next = binding({ permissionMode: undefined, ts: 2 });
+      expect(mergeResumeBinding(prev, next).permissionMode).toBe('bypassPermissions');
+    });
+
+    it('a real mode change still overrides the prior (not blindly sticky)', () => {
+      const prev = binding({ permissionMode: 'bypassPermissions' });
+      const next = binding({ permissionMode: 'acceptEdits', ts: 2 });
+      expect(mergeResumeBinding(prev, next).permissionMode).toBe('acceptEdits');
+    });
+
+    it('keeps a prior transcriptPath when the new capture omits it', () => {
+      const prev = binding({ transcriptPath: 'C:\\t\\abc.jsonl' });
+      const next = binding({ transcriptPath: undefined, ts: 2 });
+      expect(mergeResumeBinding(prev, next).transcriptPath).toBe('C:\\t\\abc.jsonl');
+    });
+
+    it('takes the latest sessionId/cwd/ts (stable fields are not sticky)', () => {
+      const prev = binding({ sessionId: 'old', cwd: 'C:\\a', ts: 1 });
+      const next = binding({ sessionId: 'new', cwd: 'C:\\b', ts: 9 });
+      const m = mergeResumeBinding(prev, next);
+      expect([m.sessionId, m.cwd, m.ts]).toEqual(['new', 'C:\\b', 9]);
+    });
+
+    it('no prior → returns the new binding unchanged', () => {
+      const next = binding({ permissionMode: 'plan' });
+      expect(mergeResumeBinding(undefined, next)).toEqual(next);
+    });
+
+    it('normalizeResumeCwd: drive-case + trailing slash compare equal; POSIX stays case-sensitive (codex P2)', () => {
+      expect(normalizeResumeCwd('D:\\repo')).toBe(normalizeResumeCwd('d:/repo/'));
+      expect(normalizeResumeCwd('C:\\Users\\rizz\\')).toBe(normalizeResumeCwd('c:/Users/rizz'));
+      expect(normalizeResumeCwd('/Foo')).not.toBe(normalizeResumeCwd('/foo'));
+    });
+
+    it('toResumeCommand resumes the EXACT id when the binding cwd differs only by format (codex P2)', () => {
+      const b = binding({ sessionId: 'sess-xyz', cwd: 'D:\\repo' });
+      // paneCwd reported as forward-slash / trailing-slash — same dir, must still --resume.
+      expect(toResumeCommand('claude', b, 'd:/repo/')).toContain('--resume sess-xyz');
+    });
+
+    it('does NOT carry sticky fields to a DIFFERENT conversation (CodeRabbit)', () => {
+      // A fresh SessionStart in a reused pane (new sessionId, no tail data yet)
+      // must not inherit the prior conversation's bypassPermissions / transcript.
+      const prev = binding({ sessionId: 'old', permissionMode: 'bypassPermissions', transcriptPath: 'C:\\t\\old.jsonl' });
+      const next = binding({ sessionId: 'new', permissionMode: undefined, transcriptPath: undefined, ts: 9 });
+      const m = mergeResumeBinding(prev, next);
+      expect(m.permissionMode).toBeUndefined();
+      expect(m.transcriptPath).toBeUndefined();
+      expect(m.sessionId).toBe('new');
+    });
+  });
+
+  describe('permissionFlagFor (pill helper) — the 4-mode mapping', () => {
+    it('maps every mode', () => {
+      expect(permissionFlagFor('bypassPermissions')).toBe('--dangerously-skip-permissions');
+      expect(permissionFlagFor('acceptEdits')).toBe('--permission-mode acceptEdits');
+      expect(permissionFlagFor('plan')).toBe('--permission-mode plan');
+      expect(permissionFlagFor('default')).toBe('');
+    });
+    it('undefined → empty string', () => {
+      expect(permissionFlagFor(undefined)).toBe('');
+    });
+    it('PERMISSION_FLAG table covers exactly the 4 modes', () => {
+      expect(Object.keys(PERMISSION_FLAG).sort()).toEqual(
+        (['acceptEdits', 'bypassPermissions', 'default', 'plan'] as PermissionMode[]).sort(),
+      );
     });
   });
 

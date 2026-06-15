@@ -48,18 +48,24 @@ export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | '
 /**
  * Canonical envelope. All fields are required UNLESS marked optional.
  *
- * Routing priority (daemon-side, `resolvePtyIdForSignal`):
- *   1. `workspaceId` (from WMUX_WORKSPACE_ID env, set by wmux PTYManager)
- *      — strongest signal. When the user runs Claude inside a wmux pane,
+ * Routing priority (main-side, `resolvePtyIdForSignal`):
+ *   1. `ptyId` (from WMUX_PTY_ID env, injected by the daemon at spawn) —
+ *      EXACT per-pane key. Trusted only when it still maps to a live
+ *      workspace pane. Resolves the multi-pane-in-one-workspace and
+ *      shared-cwd cases that workspaceId+cwd alone collapse (every pane's
+ *      hook would otherwise route to the workspace's active surface).
+ *   2. `workspaceId` (from WMUX_WORKSPACE_ID env, set by wmux PTYManager)
+ *      — strong signal. When the user runs Claude inside a wmux pane,
  *      the env propagates through Claude Code's subprocess spawn and
- *      lands here. Routing is deterministic regardless of cwd overlap
- *      between workspaces.
- *   2. `surfaceId` (from WMUX_SURFACE_ID env) — refines workspaceId when
- *      a workspace has multiple surfaces. Optional even when workspaceId
- *      is present.
+ *      lands here. Deterministic regardless of cwd overlap between
+ *      workspaces, but resolves only to the workspace's active surface.
  *   3. `cwd` — fallback for sessions started outside a wmux pane, OR
  *      for older bridges that don't fill the env fields. Resolved via
  *      exact + longest-prefix match against `workspace.metadata.cwd`.
+ *
+ * `surfaceId` is carried for forensic continuity but is NOT a routing key:
+ * the renderer mints a surface only AFTER pty.create returns, so WMUX_SURFACE_ID
+ * is never actually injected into the pane env. WMUX_PTY_ID supersedes it.
  *
  * Bridges MUST set `cwd` (workflow user expects), MAY set `workspaceId` /
  * `surfaceId` when the env is available. Codex round 1 P1 #7 + user
@@ -83,6 +89,15 @@ export interface AgentSignal {
   workspaceId?: string;
   /** WMUX_SURFACE_ID env value. Refines workspaceId for multi-surface workspaces. */
   surfaceId?: string;
+  /**
+   * X6 ③: WMUX_PTY_ID env value — the EXACT daemon session id of the pane the
+   * hook fired from, injected by the daemon at spawn. The strongest routing key:
+   * when present and still live, it pins the capture to the exact pane, fixing
+   * the split-workspace / shared-cwd collapse where workspaceId+cwd alone route
+   * every pane's hook to the workspace's active surface. (surfaceId is never set
+   * in practice — the renderer mints a surface only AFTER pty.create returns.)
+   */
+  ptyId?: string;
   cwd: string;
   payload: Record<string, unknown>;
   ts: number;
@@ -140,5 +155,6 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
   // by sending an obviously-bad workspaceId.
   if (v['workspaceId'] !== undefined && (typeof v['workspaceId'] !== 'string' || v['workspaceId'].length === 0)) return false;
   if (v['surfaceId'] !== undefined && (typeof v['surfaceId'] !== 'string' || v['surfaceId'].length === 0)) return false;
+  if (v['ptyId'] !== undefined && (typeof v['ptyId'] !== 'string' || v['ptyId'].length === 0)) return false;
   return true;
 }

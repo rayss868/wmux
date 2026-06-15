@@ -6,6 +6,7 @@ import type {
   SampleTaskStartPayload,
 } from '../shared/firstRun';
 import { isFileDrag } from '../shared/dragDrop';
+import type { ResumeBinding } from '../shared/agentResume';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 interface McpStatusPayload {
@@ -39,7 +40,7 @@ const electronAPI = {
     // sessions — the renderer uses it to hydrate its supervision slice on boot
     // and daemon-reconnect. Absent in local mode and for unsupervised panes.
     list: () =>
-      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string }[]>,
+      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding }[]>,
     reconnect: (id: string) =>
       // RCA A1 — `transient` distinguishes a recoverable failure (pipe not
       // writable yet, RPC threw during a handler-swap window) from a permanent

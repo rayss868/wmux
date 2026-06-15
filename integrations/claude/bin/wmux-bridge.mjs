@@ -19,7 +19,7 @@
 // Codex review 2026-05-22 P0 #2: bridges must be JS-only.
 // Codex review 2026-05-22 P0 #4: token is read from disk, not env.
 
-import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, openSync, readSync, closeSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
@@ -83,6 +83,67 @@ function getBridgeLogPath() {
     // upward from this script.
   }
   return join(dir, 'bridge.log');
+}
+
+// X6 ③ — durable resume-binding spool dir. When the hooks.signal RPC fails
+// (main pipe ENOENT because wmux is mid-boot / restarting, no-workspace-match,
+// timeout, …), the binding is otherwise lost forever. We instead drop a
+// self-describing capture record here; the DAEMON drains it on its next boot
+// (recovery) and reconnect, attributing each record to the EXACT pane by its
+// WMUX_PTY_ID. Pipe-free local file write, so it never depends on wmux being up.
+//
+// Path matches the bridge.log convention (~/.wmux, NO data-suffix): the bridge
+// cannot see WMUX_DATA_SUFFIX (a reserved WMUX_* var, stripped from the pane
+// env), so dev/prod-concurrent isolation falls back to cwd routing — same
+// pre-existing limitation as bridge.log. In production (no suffix) and in the
+// USERPROFILE-isolated dogfood, bridge and daemon resolve the same dir.
+function getResumeSpoolDir() {
+  const home = process.env.USERPROFILE || process.env.HOME || homedir();
+  const dir = join(home, '.wmux', 'resume-spool');
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    // Fall through; the writeFileSync below will throw and be swallowed.
+  }
+  return dir;
+}
+
+// Persist one capture record, keyed by ptyId (last-write-wins per pane — a
+// later Stop, whose agentSessionId is the #12235-safe transcript basename,
+// overwrites an earlier SessionStart whose id was the payload.session_id
+// fallback). Atomic via temp-then-rename. Never throws.
+function spoolResumeBinding(record) {
+  try {
+    if (!record || !record.ptyId || !record.sessionId) return;
+    const safe = String(record.ptyId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+    if (!safe) return;
+    const dir = getResumeSpoolDir();
+    const file = join(dir, `${safe}.json`);
+    // UNIQUE temp per write (pid + uuid): two concurrent same-pane hook exits must
+    // not overwrite each other's in-flight temp and publish a stale payload — with
+    // a shared temp, a newer Stop's rename could end up publishing an older
+    // SessionStart's bytes (codex + CodeRabbit). The daemon prunes abandoned
+    // `*.json.tmp` on ingest so a crashed write can't accumulate.
+    const tmp = join(dir, `${safe}.${process.pid}.${randomUUID()}.json.tmp`);
+    writeFileSync(tmp, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
+    // Don't replace a spool file that already holds a NEWER capture — last-write
+    // by ts, not by rename order. (The daemon ingest re-applies the same ordering
+    // as a backstop; this just avoids publishing a known-stale record.) A corrupt
+    // existing file falls through and is replaced.
+    try {
+      if (existsSync(file)) {
+        const existing = JSON.parse(readFileSync(file, 'utf8'));
+        if (typeof existing?.ts === 'number' && existing.ts > record.ts) {
+          try { unlinkSync(tmp); } catch { /* ignore */ }
+          return;
+        }
+      }
+    } catch { /* replace a corrupt/unreadable existing spool */ }
+    renameSync(tmp, file);
+    logEvent('resume-spooled', { ptyId: record.ptyId, sessionId: record.sessionId });
+  } catch (err) {
+    logEvent('resume-spool-error', { error: String(err) });
+  }
 }
 
 // ----- Logging (best-effort, never throws) --------------------------------
@@ -162,6 +223,65 @@ function extractUsageFromTranscript(transcriptPath) {
     logEvent('transcript-read-error', { error: String(err) });
     return null;
   }
+}
+
+// X6 ③: the permission mode the session is CURRENTLY in, read from the
+// transcript. Claude Code stamps `"permissionMode"` on every USER turn
+// (F5, verified live 2026-06-14). Walk lines from the END for the most
+// recent user turn — that's the live mode. Mirrors extractUsageFromTranscript's
+// parse-tolerant tail read (last 64KB). Returns one of the four known modes,
+// or null (file absent, no user turn yet, or an unrecognized value).
+const VALID_PERMISSION_MODES = new Set(['bypassPermissions', 'acceptEdits', 'plan', 'default']);
+function extractPermissionModeFromTranscript(transcriptPath) {
+  try {
+    if (!existsSync(transcriptPath)) return null;
+    const stat = statSync(transcriptPath);
+    const TAIL_BYTES = 64 * 1024;
+    const readBytes = Math.min(TAIL_BYTES, stat.size);
+    const offset = stat.size - readBytes;
+    const buf = Buffer.alloc(readBytes);
+    const fd = openSync(transcriptPath, 'r');
+    try {
+      readSync(fd, buf, 0, readBytes, offset);
+    } finally {
+      closeSync(fd);
+    }
+    const tail = buf.toString('utf8');
+    // Trim leading partial line if we landed mid-line (offset > 0).
+    const start = offset > 0 ? tail.indexOf('\n') + 1 : 0;
+    const lines = tail.slice(start).split('\n').filter((l) => l.trim().length > 0);
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let entry;
+      try {
+        entry = JSON.parse(lines[i]);
+      } catch {
+        continue;
+      }
+      if (entry && entry.type === 'user' && typeof entry.permissionMode === 'string'
+          && VALID_PERMISSION_MODES.has(entry.permissionMode)) {
+        return entry.permissionMode;
+      }
+    }
+    return null;
+  } catch (err) {
+    logEvent('transcript-permission-read-error', { error: String(err) });
+    return null;
+  }
+}
+
+// X6 ③ (#12235-safe): the origin session id is the transcript FILENAME without
+// its .jsonl extension. `claude --resume <id>` mints a NEW session_id on the
+// hook payload but APPENDS to the SAME transcript file (F3), so the filename is
+// the only stable handle on the origin conversation. Falls back to the passed
+// session_id when no transcript path is available.
+function sessionIdFromTranscript(transcriptPath, fallback) {
+  if (typeof transcriptPath === 'string' && transcriptPath.length > 0) {
+    const base = transcriptPath.split(/[\\/]/).pop() ?? '';
+    const id = base.replace(/\.jsonl$/i, '');
+    if (id) return id;
+  }
+  return fallback;
 }
 
 // ----- stdin reader -------------------------------------------------------
@@ -366,10 +486,27 @@ async function main() {
   // We only do this for stop-class kinds. PostToolUse / SessionStart
   // do not carry final usage and the cost of the read isn't justified
   // per tool call.
+  const transcriptPath = (payload && typeof payload.transcript_path === 'string' && payload.transcript_path.length > 0)
+    ? payload.transcript_path
+    : null;
+
   let usage = null;
   const isStopClass = hookName === 'Stop' || hookName === 'SubagentStop';
-  if (isStopClass && payload && typeof payload.transcript_path === 'string') {
-    usage = extractUsageFromTranscript(payload.transcript_path);
+  if (isStopClass && transcriptPath) {
+    usage = extractUsageFromTranscript(transcriptPath);
+  }
+
+  // X6 ③: capture the permission mode LIVE — on SessionStart and on every
+  // Stop/SubagentStop while the session is still alive. This is deliberately
+  // NOT a teardown/exit hook: a real reboot is SIGKILL, so no exit hook fires;
+  // the resume binding must already be persisted from the last live hook (the
+  // X6 ② SIGKILL-survival lesson). On SessionStart the transcript may not exist
+  // yet (F9 — it appears on the first turn), so this is null until the first
+  // turn lands; the next Stop fills it in.
+  let permissionMode;
+  const isSessionStart = hookName === 'SessionStart';
+  if ((isSessionStart || isStopClass) && transcriptPath) {
+    permissionMode = extractPermissionModeFromTranscript(transcriptPath) ?? undefined;
   }
 
   // Env-first routing identifiers. When Claude Code runs inside a wmux
@@ -387,6 +524,14 @@ async function main() {
     typeof process.env.WMUX_SURFACE_ID === 'string' && process.env.WMUX_SURFACE_ID.length > 0
       ? process.env.WMUX_SURFACE_ID
       : undefined;
+  // X6 ③: the EXACT pane this hook fired from. The daemon stamps WMUX_PTY_ID
+  // (its own session id) into every pane's env at spawn, so this is the
+  // strongest routing key — it pins the resume-binding capture to one pane even
+  // when several panes share a workspaceId/cwd. Also the spool's attribution key.
+  const envPtyId =
+    typeof process.env.WMUX_PTY_ID === 'string' && process.env.WMUX_PTY_ID.length > 0
+      ? process.env.WMUX_PTY_ID
+      : undefined;
 
   // Build the AgentSignal envelope. Schema mirrors
   // integrations/shared/signal-types.ts (kept in sync manually because
@@ -394,11 +539,20 @@ async function main() {
   const envelope = {
     kind: HOOK_TO_KIND[hookName],
     agent: 'claude',
-    agentSessionId: (payload && typeof payload.session_id === 'string') ? payload.session_id : undefined,
+    // #12235-safe: derive from the transcript filename, NOT payload.session_id.
+    agentSessionId: sessionIdFromTranscript(
+      transcriptPath,
+      (payload && typeof payload.session_id === 'string') ? payload.session_id : undefined,
+    ),
     workspaceId: envWorkspaceId,
     surfaceId: envSurfaceId,
+    ptyId: envPtyId,
     cwd: payloadCwd ?? process.cwd(),
-    payload: { ...(payload ?? {}), ...(usage ? { usage } : {}) },
+    payload: {
+      ...(payload ?? {}),
+      ...(usage ? { usage } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+    },
     ts: Date.now(),
   };
 
@@ -409,8 +563,11 @@ async function main() {
   if (process.env.WMUX_BRIDGE_DEBUG === '1') {
     const { payload: envelopePayload, ...envelopeMeta } = envelope;
     const usageOnly = envelopePayload && envelopePayload.usage ? { usage: envelopePayload.usage } : {};
+    const permOnly = envelopePayload && envelopePayload.permissionMode
+      ? { permissionMode: envelopePayload.permissionMode }
+      : {};
     process.stderr.write(
-      `WMUX_BRIDGE_DEBUG_ENVELOPE=${JSON.stringify({ ...envelopeMeta, payloadKeys: Object.keys(envelopePayload ?? {}), ...usageOnly })}\n`,
+      `WMUX_BRIDGE_DEBUG_ENVELOPE=${JSON.stringify({ ...envelopeMeta, payloadKeys: Object.keys(envelopePayload ?? {}), ...usageOnly, ...permOnly })}\n`,
     );
   }
 
@@ -443,6 +600,28 @@ async function main() {
       hook: hookName,
       error: rpcResult?.error ?? 'unknown',
       detail: rpcResult?.detail, // connect-error code (ENOENT/EPERM/…) for diagnosis
+    });
+  }
+
+  // X6 ③: a session-lifecycle capture that did NOT durably reach wmux (anything
+  // but innerOk — ENOENT, no-workspace-match, timeout, internal-error) would be
+  // lost forever. Spool it so the daemon reconciles it on its next boot/connect
+  // and attributes it to the EXACT pane by ptyId. Gated on a real per-pane key
+  // (ptyId) + a resumable id. A SessionStart whose transcript doesn't exist yet
+  // still spools; a later Stop's spool overwrites it with the #12235-safe id.
+  const isLifecycle = envelope.kind === 'agent.session_start'
+    || envelope.kind === 'agent.stop'
+    || envelope.kind === 'agent.subagent_stop';
+  if (!innerOk && isLifecycle && envPtyId && envelope.agentSessionId) {
+    spoolResumeBinding({
+      ptyId: envPtyId,
+      agent: 'claude',
+      sessionId: envelope.agentSessionId,
+      cwd: envelope.cwd,
+      transcriptPath: transcriptPath ?? undefined,
+      permissionMode: permissionMode ?? undefined,
+      workspaceId: envWorkspaceId,
+      ts: envelope.ts,
     });
   }
 }

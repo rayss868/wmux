@@ -284,6 +284,10 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // same posture as project-trust ops.
   'daemon.superviseRearm':   { capability: 'wmux.internal' },
   'daemon.superviseStop':    { capability: 'wmux.internal' },
+  // X6 ③: resume-binding persistence is forwarded ONLY by main (the hooks.signal
+  // handler) after env-first ptyId resolution. External clients must never set a
+  // pane's resume binding — same internal-only posture as supervision control.
+  'daemon.setResumeBinding': { capability: 'wmux.internal' },
 
   // --- A2A (agent-to-agent) ---
   'a2a.resolve.identity': { capability: 'a2a.read',    riskClass: 'a2a' },

@@ -147,4 +147,64 @@ describe('X6 ② reboot-survival durability', () => {
     // Same cwd must early-return before mutating meta / emitting / persisting.
     expect(body).toMatch(/if \(meta\.cwd === payload\.cwd\) return;/);
   });
+
+  // --- X6 ③ all-pane reliability guards (Rung 0/1/3) ------------------------
+
+  it('Rung 1: setResumeBinding ALSO arms lastDetectedAgent (pill 2nd writer)', () => {
+    // The pill must not be hostage to the once-per-session live banner. A
+    // captured hook binding proves the pane ran claude, so it sets the pill gate
+    // too — otherwise a banner-missed-but-hook-landed pane holds the exact uuid
+    // yet shows NO pill after reboot. Lock the write into the handler.
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const idx = src.indexOf("onRpc('daemon.setResumeBinding'");
+    expect(idx).toBeGreaterThan(-1);
+    const body = src.slice(idx, idx + 3400);
+    expect(body).toMatch(/lastDetectedAgent\s*=\s*next\.agent/);
+    expect(body).toMatch(/KNOWN_AGENT_SLUGS/);
+  });
+
+  it('Rung 0: the daemon stamps WMUX_PTY_ID into each pane env (per-pane routing key)', () => {
+    // surfaceId is never injected (the renderer mints a surface after pty.create),
+    // so the daemon's own session id is the one reliable per-pane key the hook
+    // bridge can echo back. Without it, every split-pane hook collapses to the
+    // workspace's active surface and bindings clobber each other.
+    const mgrPath = path.join(__dirname, '..', 'DaemonSessionManager.ts');
+    const src = fs.readFileSync(mgrPath, 'utf-8');
+    expect(src).toMatch(/env\[ENV_KEYS\.PTY_ID\]\s*=\s*params\.id/);
+  });
+
+  it('Rung 3: recoverSessions drains the resume-binding spool before surfacing the pill', () => {
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    // The ingest must run inside recovery so a binding lost to a failed live RPC
+    // (main pipe down at capture) is reconciled and drives an EXACT-session pill.
+    const recIdx = src.indexOf('async function recoverSessions');
+    expect(recIdx).toBeGreaterThan(-1);
+    const recEnd = src.indexOf('\n}', src.indexOf('cleanOrphanedBuffers', recIdx));
+    const recBody = src.slice(recIdx, recEnd);
+    expect(recBody).toMatch(/ingestResumeSpool\(sessionManager, stateWriter\)/);
+    // And the pill markers are read off the LIVE recovered meta (which reflects
+    // carry-forward + spool ingest + Rung-1 gate), not the stale persisted record.
+    expect(recBody).toMatch(/for \(const recoveredId of recoveredIds\)/);
+    // CodeRabbit: a spool-only binding must reach the exec REPLAY launch (which
+    // runs before ingest), so resumeLaunchCommand consults the pre-read spool map.
+    expect(recBody).toMatch(/readResumeSpoolMap\(\)/);
+    expect(recBody).toMatch(/resumeLaunchCommand\(session, spoolBindings\.get\(session\.id\)\)/);
+  });
+
+  it('Rung 3: spool ingest guards — F7 cwd-match, D5 existence-probe, no stale clobber', () => {
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const idx = src.indexOf('function ingestResumeSpool');
+    expect(idx).toBeGreaterThan(-1);
+    const body = src.slice(idx, idx + 4200);
+    // Attribute by EXACT pane id, not cwd guessing.
+    expect(body).toMatch(/sessionManager\.getSession\(ptyId\)/);
+    // F7: origin cwd must match the recovered pane cwd (normalized — codex P2).
+    expect(body).toMatch(/normalizeResumeCwd\(binding\.cwd\) !== normalizeResumeCwd\(managed\.meta\.cwd\)/);
+    // Never let an older spooled capture overwrite a newer live one, and skip a
+    // same-conversation spool (codex P2).
+    expect(body).toMatch(/prev\.ts >= binding\.ts/);
+    expect(body).toMatch(/prev\.sessionId === binding\.sessionId/);
+    // D5: purged transcript → drop, never offer a dead --resume.
+    expect(body).toMatch(/bindingTranscriptLives\(binding\)/);
+  });
 });

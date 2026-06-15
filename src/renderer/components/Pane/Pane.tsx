@@ -10,6 +10,7 @@ import EditorPanel from '../Editor/EditorPanel';
 import SurfaceTabs from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
+import { permissionFlagFor } from '../../../shared/agentResume';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
 
@@ -187,16 +188,29 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     activeSurfacePtyId ? s.supervisionByPtyId[activeSurfacePtyId] : undefined,
   );
 
-  // X6 ② resume pill. A pane recovered-this-boot that was running an agent gets
-  // a one-click "Resume <Agent>" offer. Clickable only once the pane is
-  // interactive (first PTY data — EI6) so the paste can't land before the
-  // recovered pipe is writable. Click pastes `<agent> --continue` and retracts.
+  // X6 ②/③ resume pill. A pane recovered-this-boot that was running an agent
+  // gets a resume offer. Clickable only once the pane is interactive (first PTY
+  // data — EI6) so the paste can't land before the recovered pipe is writable.
+  // X6 ③: the pill TYPES the command (no Enter) and assembles progressively —
+  // click 1 restores the permission mode, an optional click 2 appends
+  // `--resume <id>` for the EXACT session; the user presses Enter to run. With
+  // no binding it falls back to cwd-relative `--continue`.
   const resumeHint = useStore((s) =>
     activeSurfacePtyId ? s.resumeHintByPtyId[activeSurfacePtyId] : undefined,
+  );
+  const resumeBinding = useStore((s) =>
+    activeSurfacePtyId ? s.resumeBindingByPtyId[activeSurfacePtyId] : undefined,
   );
   const resumePtyReady = useStore((s) =>
     activeSurfacePtyId ? !!s.ptyReadyByPtyId[activeSurfacePtyId] : false,
   );
+  // Progressive-assembly stage: 0 = nothing typed; 1 = base command (permission
+  // flag) typed, awaiting an optional second click to append the session resume.
+  const [resumeStage, setResumeStage] = useState(0);
+  // Never carry a stale stage across panes or a re-offer.
+  useEffect(() => {
+    setResumeStage(0);
+  }, [activeSurfacePtyId, resumeHint]);
 
   const handleCloseSurface = useCallback((surfaceId: string) => {
     const surface = pane.surfaces.find((s) => s.id === surfaceId);
@@ -290,67 +304,134 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           {supervision.status === 'stopped' ? '⟳!' : '⟳'}
         </span>
       )}
-      {resumeHint && resumePtyReady && !supervision && activeSurfacePtyId && (
-        <span
-          style={{
-            position: 'absolute',
-            top: 4,
-            left: 6,
-            zIndex: 20,
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            fontSize: 10,
-            fontFamily: 'ui-monospace, monospace',
-            fontWeight: 700,
-            letterSpacing: '0.04em',
-            color: 'var(--bg-main)',
-            backgroundColor: 'var(--accent-cursor)',
-            borderRadius: 3,
-            opacity: 0.9,
-            overflow: 'hidden',
-          }}
-        >
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              window.electronAPI.pty.write(activeSurfacePtyId, `${resumeHint} --continue\r`);
-              useStore.getState().clearResumeHint(activeSurfacePtyId);
-            }}
-            title={t('resume.tooltip')}
-            aria-label={t('resume.tooltip')}
+      {resumeHint && resumePtyReady && !supervision && activeSurfacePtyId && (() => {
+        const ptyId = activeSurfacePtyId;
+        const launcher = resumeHint; // slug doubles as the launcher stem ('claude')
+        const agentName = launcher.charAt(0).toUpperCase() + launcher.slice(1);
+        // cwd-match guard (F7): `--resume <id>` is cwd-scoped, so only offer the
+        // exact-session resume when the binding's origin cwd still matches the
+        // pane's LIVE cwd. The daemon checks this at recovery, but the shell can
+        // `cd` afterwards (OSC 7 updates surface.cwd) — re-validate here so a
+        // post-recovery cd drops to the cwd-relative `--continue` (plan line 220).
+        const normCwd = (p: string | undefined) => {
+          // Lowercase ONLY a leading Windows drive letter — drive letters are
+          // case-insensitive, but POSIX paths are fully case-sensitive, so a blanket
+          // toLowerCase() would treat `/Foo` and `/foo` as equal and wrongly allow
+          // `--resume` (CodeRabbit). Mirrors the daemon's normalizeCwd.
+          let out = (p ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+          if (/^[A-Za-z]:\//.test(out)) out = out[0].toLowerCase() + out.slice(1);
+          return out;
+        };
+        const paneCwd = pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd;
+        const cwdMatches = !!(resumeBinding && paneCwd && normCwd(resumeBinding.cwd) === normCwd(paneCwd));
+        // The binding must be for THIS launcher's agent. The pill's slug
+        // (resumeHint) and the binding are surfaced independently, and the daemon
+        // only fills lastDetectedAgent when empty — so a stale hint for one agent
+        // could pair with a binding for another, typing `codex --resume <claude-id>`
+        // (codex P2). Gate the exact-session path on an agent match too.
+        const agentMatches = resumeBinding?.agent === launcher;
+        const exactOk = cwdMatches && agentMatches;
+        const sessionId = exactOk ? resumeBinding?.sessionId : undefined;
+        const permFlag = exactOk ? permissionFlagFor(resumeBinding?.permissionMode) : '';
+
+        // Paste WITHOUT a trailing \r. The user presses Enter to run — so bypass
+        // is re-granted only by an explicit keystroke, never automatically (D6).
+        const type = (text: string) => window.electronAPI.pty.write(ptyId, text);
+        const typeAndClear = (text: string) => {
+          type(text);
+          useStore.getState().clearResumeHint(ptyId);
+        };
+
+        const onPrimary = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          if (!sessionId) {
+            // No binding (hook absent / purged / cwd mismatch) → cwd-relative
+            // --continue (today's behavior, minus the auto-submit).
+            typeAndClear(`${launcher} --continue`);
+            return;
+          }
+          if (resumeStage === 0 && permFlag) {
+            // Click 1: permission-restore only. Stop + Enter = a fresh session in
+            // the restored mode; click again to also resume the exact session.
+            // The two flags MUST land on ONE line (F6) — that's why we don't
+            // submit between clicks.
+            type(`${launcher} ${permFlag}`);
+            setResumeStage(1);
+            return;
+          }
+          if (resumeStage === 0) {
+            // Default mode (no permission flag) → one click types the full
+            // id-resume; no pointless permission-only stop.
+            typeAndClear(`${launcher} --resume ${sessionId}`);
+          } else {
+            // Click 2: append the session resume to the already-typed base.
+            typeAndClear(` --resume ${sessionId}`);
+          }
+        };
+
+        const primaryLabel = resumeStage === 1
+          ? `+ ${t('resume.addSession')}`
+          : `▶ ${t('resume.label', { agent: agentName })}`;
+        const primaryTooltip = resumeStage === 1 ? t('resume.addSessionTooltip') : t('resume.tooltip');
+
+        return (
+          <span
             style={{
-              padding: '1px 6px',
-              font: 'inherit',
-              color: 'inherit',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
+              position: 'absolute',
+              top: 4,
+              left: 6,
+              zIndex: 20,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 10,
+              fontFamily: 'ui-monospace, monospace',
+              fontWeight: 700,
+              letterSpacing: '0.04em',
+              color: 'var(--bg-main)',
+              backgroundColor: 'var(--accent-cursor)',
+              borderRadius: 3,
+              opacity: 0.9,
+              overflow: 'hidden',
             }}
           >
-            {`▶ ${t('resume.label', { agent: resumeHint.charAt(0).toUpperCase() + resumeHint.slice(1) })}`}
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              useStore.getState().clearResumeHint(activeSurfacePtyId);
-            }}
-            title={t('resume.dismiss')}
-            aria-label={t('resume.dismiss')}
-            style={{
-              padding: '1px 5px 1px 0',
-              font: 'inherit',
-              color: 'inherit',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              opacity: 0.8,
-            }}
-          >
-            ×
-          </button>
-        </span>
-      )}
+            <button
+              onClick={onPrimary}
+              title={primaryTooltip}
+              aria-label={primaryTooltip}
+              style={{
+                padding: '1px 6px',
+                font: 'inherit',
+                color: 'inherit',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              {primaryLabel}
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                useStore.getState().clearResumeHint(ptyId);
+              }}
+              title={t('resume.dismiss')}
+              aria-label={t('resume.dismiss')}
+              style={{
+                padding: '1px 5px 1px 0',
+                font: 'inherit',
+                color: 'inherit',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                opacity: 0.8,
+              }}
+            >
+              ×
+            </button>
+          </span>
+        );
+      })()}
       <SurfaceTabs
         surfaces={pane.surfaces}
         activeSurfaceId={pane.activeSurfaceId}

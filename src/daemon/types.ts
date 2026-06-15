@@ -2,6 +2,7 @@
 
 import type { DaemonSupervisionPolicy } from '../shared/rpc';
 import type { AgentSlug } from '../shared/events';
+import type { ResumeBinding } from '../shared/agentResume';
 
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
@@ -54,6 +55,14 @@ export interface DaemonSession {
    * RECOVERED this boot (see recoveredAgentShellIds) — never live reconnects.
    */
   lastDetectedAgent?: AgentSlug;
+  /**
+   * X6 ③ resume-by-id: the captured handle on this pane's agent conversation
+   * (origin session id + cwd + last permission mode), set live from the claude
+   * hook via daemon.setResumeBinding and persisted IMMEDIATELY (saveImmediate —
+   * same SIGKILL-survival rule as lastDetectedAgent). Drives the EXACT-session
+   * resume (`--resume <id>`) on both the recovery pill and the supervised replay.
+   */
+  resumeBinding?: ResumeBinding;
 }
 
 /** Top-level schema for ~/.wmux/sessions.json */

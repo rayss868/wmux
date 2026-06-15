@@ -1,5 +1,7 @@
 // === JSON-RPC Protocol Types ===
 
+import type { ResumeBinding } from './agentResume';
+
 export interface RpcRequest {
   id: string;
   method: RpcMethod;
@@ -141,6 +143,7 @@ export type RpcMethod =
   | 'daemon.compact'
   | 'daemon.superviseRearm'
   | 'daemon.superviseStop'
+  | 'daemon.setResumeBinding'
   | 'a2a.resolve.identity'
   | 'a2a.whoami'
   | 'a2a.discover'
@@ -243,6 +246,7 @@ export const ALL_RPC_METHODS = [
   'daemon.compact',
   'daemon.superviseRearm',
   'daemon.superviseStop',
+  'daemon.setResumeBinding',
   'a2a.resolve.identity',
   'a2a.whoami',
   'a2a.discover',
@@ -394,6 +398,16 @@ export interface SupervisionRuntime {
 
 export interface DaemonSessionIdParams {
   id: string;
+}
+
+/**
+ * X6 ③: persist a resume binding on a session (daemon-side, saveImmediate).
+ * `id` is the daemon session id (== ptyId); `resumeBinding.sessionId` is the
+ * claude conversation id captured from the hook (transcript basename).
+ */
+export interface DaemonSetResumeBindingParams {
+  id: string;
+  resumeBinding: ResumeBinding;
 }
 
 export interface DaemonResizeParams {
