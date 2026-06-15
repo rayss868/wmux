@@ -1,6 +1,10 @@
 import type { RpcRouter } from '../RpcRouter';
 import { eventBus } from '../../events/EventBus';
-import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../../shared/events';
+import {
+  WMUX_EVENT_TYPES,
+  type WmuxEventType,
+  type A2aTaskEvent,
+} from '../../../shared/events';
 import type { PluginIdentityRecord } from '../../../shared/rpc';
 
 const TYPE_SET = new Set<WmuxEventType>(WMUX_EVENT_TYPES);
@@ -61,7 +65,34 @@ export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup):
       : undefined;
     const types = parseTypes(params['types']);
 
-    const result = eventBus.poll(cursor, { types, workspaceId, max });
+    // Workspace scoping is applied as a POST-filter here (placement B), NOT via
+    // the EventBus wsFilter, for ONE load-bearing reason: an a2a.task's base
+    // `workspaceId === from`, but the *receiver* (`caller === to`) must also
+    // see it. EventBus.poll's wsFilter (`ev.workspaceId !== wsFilter → drop`)
+    // would pre-drop the `created`/`updated` event before the `to`-receiver
+    // could ever match it. So we poll WITHOUT the strict wsFilter and re-impose
+    // scoping below: strict (`workspaceId === caller`) for every non-a2a type —
+    // identical to the old EventBus gate — and dual-party (`from`/`to`) for
+    // a2a.task only. Cursor math is unaffected (filtering the result array
+    // never rewinds nextCursor — the same property notifications.read relies
+    // on).
+    const result = eventBus.poll(cursor, { types, max });
+
+    // Dual-party + strict scoping post-filter. `caller` is the verified
+    // wsFilter (server-pinned for MCP via requireWorkspaceId), or undefined for
+    // an unscoped poll (e.g. the plugin-host forwarding poll).
+    const caller = workspaceId;
+    result.events = result.events.filter((e) =>
+      e.type !== 'a2a.task'
+        ? // every other type: strict scope, UNCHANGED from the old EventBus gate
+          (caller ? e.workspaceId === caller : true)
+        : // a2a.task: dual-party AND drop when unscoped. The `!!caller &&` clause
+          // is LOAD-BEARING — an unscoped poll (no workspaceId) must receive
+          // ZERO a2a.task events, else a bare `events.subscribe` plugin reads
+          // every pair's task.
+          (!!caller &&
+            ((e as A2aTaskEvent).from === caller || (e as A2aTaskEvent).to === caller)),
+    );
 
     // notifications.read opt-in gate (see allowsNotifications). Applied as
     // a post-poll filter — NOT by rewriting `types` — because EventBus
