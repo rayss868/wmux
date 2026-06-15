@@ -5,6 +5,7 @@ import {
   resumeOfferForRecovered,
   permissionFlagFor,
   mergeResumeBinding,
+  normalizeResumeCwd,
   PERMISSION_FLAG,
   type ResumeBinding,
   type PermissionMode,
@@ -225,6 +226,18 @@ describe('toResumeCommand (X6)', () => {
     it('no prior → returns the new binding unchanged', () => {
       const next = binding({ permissionMode: 'plan' });
       expect(mergeResumeBinding(undefined, next)).toEqual(next);
+    });
+
+    it('normalizeResumeCwd: drive-case + trailing slash compare equal; POSIX stays case-sensitive (codex P2)', () => {
+      expect(normalizeResumeCwd('D:\\repo')).toBe(normalizeResumeCwd('d:/repo/'));
+      expect(normalizeResumeCwd('C:\\Users\\rizz\\')).toBe(normalizeResumeCwd('c:/Users/rizz'));
+      expect(normalizeResumeCwd('/Foo')).not.toBe(normalizeResumeCwd('/foo'));
+    });
+
+    it('toResumeCommand resumes the EXACT id when the binding cwd differs only by format (codex P2)', () => {
+      const b = binding({ sessionId: 'sess-xyz', cwd: 'D:\\repo' });
+      // paneCwd reported as forward-slash / trailing-slash — same dir, must still --resume.
+      expect(toResumeCommand('claude', b, 'd:/repo/')).toContain('--resume sess-xyz');
     });
 
     it('does NOT carry sticky fields to a DIFFERENT conversation (CodeRabbit)', () => {

@@ -46,9 +46,12 @@ import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
 import { eventBus } from '../../events/EventBus';
-import { IPC } from '../../../shared/constants';
+import { IPC, dataSuffix } from '../../../shared/constants';
 import type { DaemonClient } from '../../DaemonClient';
 import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
+import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   isAgentSignal,
   type AgentSignal,
@@ -68,6 +71,48 @@ const VALID_PERMISSION_MODES: ReadonlySet<string> = new Set([
 function readPermissionMode(payload: Record<string, unknown>): PermissionMode | undefined {
   const m = payload?.permissionMode;
   return typeof m === 'string' && VALID_PERMISSION_MODES.has(m) ? (m as PermissionMode) : undefined;
+}
+
+/**
+ * X6 ③ (codex P2): durable spool written by MAIN when the daemon.setResumeBinding
+ * relay can't land (daemon down / restarting). The bridge already spools when the
+ * MAIN pipe is down; this closes the symmetric hole where main is up and resolved
+ * the pane but the daemon isn't reachable. Same record shape + ptyId key + atomic
+ * temp→rename + don't-replace-newer rule the daemon's ingest expects. Writes under
+ * the suffix-aware ~/.wmux dir the daemon actually reads (main owns WMUX_DATA_SUFFIX,
+ * unlike the bridge). Best-effort: never throws into the hook path.
+ */
+function writeMainResumeSpool(ptyId: string, binding: ResumeBinding): void {
+  try {
+    const dir = path.join(os.homedir(), `.wmux${dataSuffix()}`, 'resume-spool');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const safe = String(ptyId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+    if (!safe) return;
+    const file = path.join(dir, `${safe}.json`);
+    const tmp = path.join(dir, `${safe}.${process.pid}.${Date.now()}.json.tmp`);
+    const record = {
+      ptyId,
+      agent: binding.agent,
+      sessionId: binding.sessionId,
+      cwd: binding.cwd,
+      ts: binding.ts,
+      ...(binding.permissionMode ? { permissionMode: binding.permissionMode } : {}),
+      ...(binding.transcriptPath ? { transcriptPath: binding.transcriptPath } : {}),
+    };
+    fs.writeFileSync(tmp, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
+    try {
+      if (fs.existsSync(file)) {
+        const existing = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (typeof existing?.ts === 'number' && existing.ts > record.ts) {
+          try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+          return;
+        }
+      }
+    } catch { /* replace a corrupt existing spool */ }
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    console.warn(`[hooks.signal] main resume-spool write failed: ${String(err)}`);
+  }
 }
 
 interface WorkspaceListEntry {
@@ -195,23 +240,32 @@ export function registerHooksRpc(
         || signal.kind === 'agent.subagent_stop')
       && signal.agentSessionId
     ) {
+      const permissionMode = readPermissionMode(signal.payload);
+      const transcriptPath = typeof signal.payload?.transcript_path === 'string'
+        ? signal.payload.transcript_path
+        : undefined;
+      const resumeBinding: ResumeBinding = {
+        agent: signal.agent,
+        sessionId: signal.agentSessionId,
+        cwd: signal.cwd,
+        ...(permissionMode ? { permissionMode } : {}),
+        ...(transcriptPath ? { transcriptPath } : {}),
+        ts: signal.ts,
+      };
       const client = getDaemonClient?.();
       if (client) {
-        const permissionMode = readPermissionMode(signal.payload);
-        const transcriptPath = typeof signal.payload?.transcript_path === 'string'
-          ? signal.payload.transcript_path
-          : undefined;
-        const resumeBinding: ResumeBinding = {
-          agent: signal.agent,
-          sessionId: signal.agentSessionId,
-          cwd: signal.cwd,
-          ...(permissionMode ? { permissionMode } : {}),
-          ...(transcriptPath ? { transcriptPath } : {}),
-          ts: signal.ts,
-        };
         client
           .rpc('daemon.setResumeBinding', { id: ptyId, resumeBinding }, { timeoutMs: WORKSPACE_LIST_FETCH_TIMEOUT_MS })
-          .catch((err) => console.warn(`[hooks.signal] setResumeBinding failed: ${String(err)}`));
+          // codex P2: the relay is fire-and-forget, so a daemon down/restarting
+          // here would lose the capture entirely (the bridge already saw ok). Spool
+          // it from main so the daemon reconciles it on its next boot/connect.
+          .catch((err) => {
+            console.warn(`[hooks.signal] setResumeBinding failed, spooling: ${String(err)}`);
+            writeMainResumeSpool(ptyId, resumeBinding);
+          });
+      } else {
+        // No daemon client (daemon down / not yet connected) — spool directly.
+        writeMainResumeSpool(ptyId, resumeBinding);
       }
     }
 

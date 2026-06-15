@@ -64,6 +64,22 @@ export function permissionFlagFor(mode: PermissionMode | undefined): string {
 }
 
 /**
+ * Normalize a cwd for resume-binding equality: backslashes → forward slashes,
+ * lowercase a leading Windows drive letter, strip a trailing separator. POSIX
+ * paths stay case-sensitive. So `D:\repo` and `d:/repo/` compare equal but
+ * `/Foo` and `/foo` do not. Shared by the resume builder, the daemon recovery /
+ * spool guards, and the renderer pill so all agree on "same directory" — a raw
+ * `===` rejected harmless formatting diffs and dropped a valid exact resume to
+ * `--continue` (codex P2).
+ */
+export function normalizeResumeCwd(p: string): string {
+  let out = p.replace(/\\/g, '/');
+  if (/^[A-Za-z]:\//.test(out)) out = out[0].toLowerCase() + out.slice(1);
+  if (out.length > 1 && out.endsWith('/')) out = out.slice(0, -1);
+  return out;
+}
+
+/**
  * X6 ③: a per-session resume binding, captured live from the claude hook and
  * persisted on the daemon session record so it survives a SIGKILL/reboot.
  *
@@ -215,7 +231,7 @@ function resumeInsertion(
     binding.sessionId &&
     binding.cwd &&
     paneCwd &&
-    binding.cwd === paneCwd
+    normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(paneCwd)
   ) {
     const parts = ['--resume', binding.sessionId];
     if (options?.restorePermissionMode) {

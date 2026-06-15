@@ -324,8 +324,15 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         };
         const paneCwd = pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd;
         const cwdMatches = !!(resumeBinding && paneCwd && normCwd(resumeBinding.cwd) === normCwd(paneCwd));
-        const sessionId = cwdMatches ? resumeBinding?.sessionId : undefined;
-        const permFlag = cwdMatches ? permissionFlagFor(resumeBinding?.permissionMode) : '';
+        // The binding must be for THIS launcher's agent. The pill's slug
+        // (resumeHint) and the binding are surfaced independently, and the daemon
+        // only fills lastDetectedAgent when empty — so a stale hint for one agent
+        // could pair with a binding for another, typing `codex --resume <claude-id>`
+        // (codex P2). Gate the exact-session path on an agent match too.
+        const agentMatches = resumeBinding?.agent === launcher;
+        const exactOk = cwdMatches && agentMatches;
+        const sessionId = exactOk ? resumeBinding?.sessionId : undefined;
+        const permFlag = exactOk ? permissionFlagFor(resumeBinding?.permissionMode) : '';
 
         // Paste WITHOUT a trailing \r. The user presses Enter to run — so bypass
         // is re-granted only by an explicit keystroke, never automatically (D6).

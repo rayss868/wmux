@@ -19,7 +19,7 @@ import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING } from '../shared/constants';
-import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding } from '../shared/agentResume';
+import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import type { AgentSlug } from '../shared/events';
@@ -354,7 +354,8 @@ function ingestResumeSpool(
     }
     // F7: `--resume` is cwd-scoped, so the capture's origin cwd must match the
     // recovered pane's cwd; a mismatch would dead-end (offer --continue instead).
-    if (binding.cwd !== managed.meta.cwd) { drop(); continue; }
+    // Normalized compare so a drive-case / trailing-slash diff isn't a false miss.
+    if (normalizeResumeCwd(binding.cwd) !== normalizeResumeCwd(managed.meta.cwd)) { drop(); continue; }
     const prev = managed.meta.resumeBinding;
     // Never clobber: for a DIFFERENT conversation, only a strictly-newer spool
     // wins (ts tiebreak). For the SAME conversation the spool is redundant — its
@@ -362,7 +363,11 @@ function ingestResumeSpool(
     // keeps permissionMode sticky), and setResumeBinding's durable-change check
     // omits ts, so the persisted ts can lag a same-session live update; skipping
     // by sessionId avoids an older spool overwriting it (codex P2).
-    if (prev && (prev.sessionId === binding.sessionId || prev.ts >= binding.ts)) { drop(); continue; }
+    // ...and never let a provisional (no-transcript) spool replace an existing
+    // transcript-derived binding for a different session (codex P2, mirrors the
+    // live setResumeBinding guard).
+    if (prev && (prev.sessionId === binding.sessionId || prev.ts >= binding.ts
+        || (prev.transcriptPath && !binding.transcriptPath))) { drop(); continue; }
 
     // D5: a purged origin transcript makes `--resume` a silent "No conversation
     // found." — drop the record (the pill can still degrade to --continue).
@@ -851,7 +856,7 @@ async function recoverSessions(
     // the recovered session's cwd (F7 — `--resume` is cwd-scoped) AND its origin
     // transcript still exists (D5 — a purged id is a dead-end). Either miss drops
     // the pill to the cwd-relative `--continue`.
-    if (m.resumeBinding && m.resumeBinding.cwd === m.cwd && bindingTranscriptLives(m.resumeBinding)) {
+    if (m.resumeBinding && normalizeResumeCwd(m.resumeBinding.cwd) === normalizeResumeCwd(m.cwd) && bindingTranscriptLives(m.resumeBinding)) {
       recoveredResumeBindings.set(recoveredId, m.resumeBinding);
     }
   }
@@ -925,6 +930,16 @@ function restartSupervisedSession(
   } catch (err) {
     sessionManager.reinsertSession(managed);
     throw err;
+  }
+
+  // Carry the resume markers onto the recreated session meta. createSession builds
+  // FRESH metadata, so without this the saveImmediate below drops the exact binding
+  // (and the pill gate), and a second crash/reboot before another hook lands falls
+  // back to ambiguous --continue (codex P2). Mirrors the recovery carry-forward.
+  const fresh = sessionManager.getSession(recovered.id);
+  if (fresh) {
+    if (meta.resumeBinding && !fresh.meta.resumeBinding) fresh.meta.resumeBinding = meta.resumeBinding;
+    if (meta.lastDetectedAgent && !fresh.meta.lastDetectedAgent) fresh.meta.lastDetectedAgent = meta.lastDetectedAgent;
   }
 
   // Same external-death safety net as the create/recovery paths.
@@ -1210,6 +1225,22 @@ function registerRpcHandlers(
     const managed = sessionManager.getSession(p.id);
     if (!managed || !p.resumeBinding || !p.resumeBinding.sessionId) return { ok: false };
     const prev = managed.meta.resumeBinding;
+    // codex P2: ignore a STALE capture — an older hook RPC (a delayed Stop /
+    // SessionStart from a prior turn) reaching the daemon after a newer one must
+    // not replace the durable exact id. The spool ingest already does this; mirror
+    // it on the live path so a reboot can't resume the wrong conversation.
+    if (prev && typeof p.resumeBinding.ts === 'number' && p.resumeBinding.ts < prev.ts) {
+      return { ok: true };
+    }
+    // codex P2: a SessionStart fired before its transcript exists (F9) sends the
+    // #12235-UNSAFE payload.session_id as the id and carries NO transcriptPath.
+    // Don't let that provisional capture overwrite an existing transcript-derived
+    // (authoritative) binding for a DIFFERENT session — a reboot in between would
+    // then `--resume <wrong id>`.
+    if (prev && prev.transcriptPath && !p.resumeBinding.transcriptPath
+        && prev.sessionId !== p.resumeBinding.sessionId) {
+      return { ok: true };
+    }
     // Sticky-merge: a capture that couldn't read permissionMode (transcript tail
     // miss) must not wipe a previously-captured mode (codex review 2026-06-14).
     const next = mergeResumeBinding(prev, p.resumeBinding);

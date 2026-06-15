@@ -158,7 +158,7 @@ describe('X6 ② reboot-survival durability', () => {
     const src = fs.readFileSync(daemonIndexPath, 'utf-8');
     const idx = src.indexOf("onRpc('daemon.setResumeBinding'");
     expect(idx).toBeGreaterThan(-1);
-    const body = src.slice(idx, idx + 2400);
+    const body = src.slice(idx, idx + 3400);
     expect(body).toMatch(/lastDetectedAgent\s*=\s*next\.agent/);
     expect(body).toMatch(/KNOWN_AGENT_SLUGS/);
   });
@@ -198,8 +198,8 @@ describe('X6 ② reboot-survival durability', () => {
     const body = src.slice(idx, idx + 4200);
     // Attribute by EXACT pane id, not cwd guessing.
     expect(body).toMatch(/sessionManager\.getSession\(ptyId\)/);
-    // F7: origin cwd must match the recovered pane cwd.
-    expect(body).toMatch(/binding\.cwd !== managed\.meta\.cwd/);
+    // F7: origin cwd must match the recovered pane cwd (normalized — codex P2).
+    expect(body).toMatch(/normalizeResumeCwd\(binding\.cwd\) !== normalizeResumeCwd\(managed\.meta\.cwd\)/);
     // Never let an older spooled capture overwrite a newer live one, and skip a
     // same-conversation spool (codex P2).
     expect(body).toMatch(/prev\.ts >= binding\.ts/);
