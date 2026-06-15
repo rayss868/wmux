@@ -1,356 +1,182 @@
-# wmux — Windows Terminal Multiplexer for AI Agents (cmux alternative)
+<div align="center">
 
-<img width="924" height="217" alt="wmux-banner" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
+# wmux
 
-> **wmux is LSP-for-terminals** — a neutral substrate that lets external tools build workflow intelligence on top of any terminal session.
-> Native Windows terminal multiplexer with split panes, MCP bridge, and browser automation — purpose-built for running Claude Code, Codex CLI, and Gemini CLI side by side. No WSL required.
+### The Windows terminal built for AI agents.
+
+Run **Claude Code**, **Codex CLI**, and **Gemini CLI** side by side — split panes, a browser your agents can actually drive, and zero-config MCP. **No WSL.**
+
+<img width="924" alt="wmux" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
 
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
-[![Electron 41](https://img.shields.io/badge/Electron-41-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Latest release](https://img.shields.io/github/v/release/openwong2kim/wmux?color=2ea44f&label=release)](https://github.com/openwong2kim/wmux/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/openwong2kim/wmux/total?color=blue&label=downloads)](https://github.com/openwong2kim/wmux/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/openwong2kim/wmux?style=social)](https://github.com/openwong2kim/wmux)
+[![Stars](https://img.shields.io/github/stars/openwong2kim/wmux?style=social)](https://github.com/openwong2kim/wmux)
 
-**Keywords:** Windows tmux, tmux for Windows, terminal multiplexer Windows, AI agent terminal, Claude Code Windows, Codex CLI, Gemini CLI, MCP server, Chrome DevTools Protocol, split terminal, multi-agent terminal, browser automation, ConPTY, xterm.js, Electron terminal.
+</div>
 
----
+<img width="1578" alt="wmux in action" src="https://github.com/user-attachments/assets/3a75969a-d383-418e-96aa-d3f108c87e9a" />
 
-<img width="1578" height="782" alt="1" src="https://github.com/user-attachments/assets/3a75969a-d383-418e-96aa-d3f108c87e9a" />
-
-
-## Still running one terminal for your AI coding agents on Windows?
-
-**Windows has no native tmux.** Without WSL, there was no clean way to run multiple AI coding agents side by side.
-
-**wmux fixes this.** A native Windows terminal multiplexer + browser automation + MCP server, purpose-built for AI coding agents like Claude Code, Codex CLI, and Gemini CLI. Your AI agent reads the terminal, controls the browser, and works autonomously — all in one window.
-
-```
-Claude Code writes the backend on the left
-Codex builds the frontend on the right
-Gemini CLI runs tests at the bottom
-— all on one screen, simultaneously.
-```
+> **Windows has no native tmux.** Without WSL there was no clean way to run several AI coding agents at once. wmux is a native Windows multiplexer + browser automation + MCP server, purpose-built so your agents **read the terminal, drive a real browser, and run in parallel — all in one window.**
 
 ---
 
-## Star History
+## ⚡ Install in 30 seconds
 
-[![Star History Chart](https://api.star-history.com/svg?repos=openwong2kim/wmux&type=Date)](https://star-history.com/#openwong2kim/wmux&Date)
-
-## Install in 30 seconds
-
-**Winget (recommended — no security warning):**
 ```powershell
 winget install openwong2kim.wmux
 ```
 
-**Chocolatey:**
-```powershell
-choco install wmux
+<sub>or `choco install wmux` &nbsp;·&nbsp; or [**download Setup.exe**](https://github.com/openwong2kim/wmux/releases/latest) &nbsp;·&nbsp; winget/choco avoid the SmartScreen prompt ([why?](#install-help))</sub>
+
+---
+
+## 🤔 Why wmux?
+
+|   |   |
+|---|---|
+| 🪟 **Many agents, one window** | Split panes + workspaces. Claude on the left, Codex on the right, Gemini running tests below — simultaneously. |
+| 🌐 **Agents drive a *real* browser** | Built-in Chrome over CDP. Say *"search Google for this"* and your agent actually clicks, types, and screenshots. Works with React inputs and CJK text. |
+| 🧭 **Fleet View** | `Ctrl+Shift+A` — every agent across every workspace on one screen, the ones blocked on input floated to the top. Click to jump straight there. |
+| 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` before they run. |
+| 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** Claude panes even offer to resume the exact conversation after a reboot. |
+| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — browser + terminal tools register automatically. |
+
+---
+
+## ✨ Highlights
+
+- 🖥️ **ConPTY + xterm.js WebGL** rendering · 999K-line scrollback · Unicode 11 (correct CJK / emoji)
+- ⌨️ **Tmux-style prefix** (`Ctrl+B` + key, 13 actions) · **floating pane** (`` Ctrl+` ``) · scroll bookmarks
+- 🔀 **Multiview** — several workspaces side by side · layout templates · drag-to-reorder sidebar
+- 🛡️ **Token-authed IPC**, SSRF guard, PTY input sanitization, randomized CDP port, Electron Fuses
+- 🎨 Catppuccin Mocha · Monochrome · Sandstone &nbsp;·&nbsp; 🌏 English · 한국어 · 日本語 · 中文
+
+> 💡 **Tip:** point Claude Code at the MCP tools (`browser_open`, `terminal_read`, `pane_list`, `a2a_task_send`) or script the `wmux` CLI (`wmux send` / `read-screen` / `list-panes --json`) to orchestrate panes programmatically.
+
+---
+
+<details>
+<summary><b>⌨️ &nbsp;Keyboard shortcuts</b></summary>
+
+<br>
+
+| Key | Action | Key | Action |
+|-----|--------|-----|--------|
+| `Ctrl+D` | Split right | `Ctrl+Shift+D` | Split down |
+| `Ctrl+T` / `Ctrl+W` | New / close tab | `Ctrl+N` | New workspace |
+| `Ctrl+1~9` | Switch workspace | `Ctrl+click` | Add to multiview |
+| `Ctrl+Shift+A` | Fleet View | `Ctrl+Shift+L` | Open browser |
+| `Ctrl+B` → key | Prefix mode (13 actions) | `` Ctrl+` `` | Floating pane |
+| `Ctrl+K` | Command palette | `Ctrl+I` | Notifications |
+| `Ctrl+F` | Search (regex) | `Ctrl+M` | Scroll bookmark |
+| `Ctrl+Shift+X` | Vi copy mode | `Ctrl+,` | Settings |
+| Right-click | Smart copy / paste / link menu | `F12` | Browser DevTools |
+
+</details>
+
+<details>
+<summary><b>📦 &nbsp;Full feature list</b></summary>
+
+<br>
+
+**Terminal** — xterm.js + WebGL, ConPTY native PTY, Unicode 11 width tables, split panes, tabs, floating pane, smart right-click (selection→copy / empty→paste / link menu), scroll bookmarks, Vi copy mode, regex search, 999K scrollback with disk persistence, shell integration (OSC 133) for semantic command boundaries (Constrained Language Mode safe).
+
+**Keybindings** — Tmux-style prefix mode (`Ctrl+B`, 13 default actions), fully customizable, reset-to-defaults.
+
+**Workspaces** — drag-and-drop sidebar, `Ctrl+1~9` quick switch, multiview, layout templates, full session persistence (layout / tabs / cwd / scrollback), Fleet View cockpit.
+
+**Browser + CDP** — built-in panel (`Ctrl+Shift+L`), nav bar / DevTools / back-forward, element Inspector (hover-highlight, click-to-copy LLM context), full automation: click / fill / type / screenshot / JS eval / key press.
+
+**Notifications** — output-throughput activity detection (not pattern matching, works with any agent), taskbar flash + Windows toasts, process-exit alerts, notification panel (`Ctrl+I`), Web Audio cues.
+
+**Agent detection** — Claude Code, Cursor, Aider, Codex CLI, Gemini CLI, OpenCode, GitHub Copilot CLI. Detects start → activates monitoring, warns on critical actions.
+
+**Daemon** — background session management (survives app restart), scrollback dump + auto-recovery, Windows startup registration (survives reboot), dead-session TTL reaping.
+
+**MCP tools** — `browser_*` (open / navigate / screenshot / snapshot / click / fill / type / evaluate / press_key), `terminal_read` / `terminal_read_events` (OSC 133) / `terminal_send`, `workspace_list` / `surface_list` / `pane_list`, `a2a_*` agent-to-agent + task delegation, `company_a2a_*` coordination. Every browser tool takes a `surfaceId` so each session drives its own browser.
+
+</details>
+
+<details>
+<summary><b>🏗️ &nbsp;Architecture</b></summary>
+
+<br>
+
+```
+Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
+├── PTYManager         ├── PaneContainer (split tree)     ├── DaemonSessionManager
+├── PTYBridge          ├── Terminal (xterm + WebGL)       ├── RingBuffer (scrollback)
+├── AgentDetector      ├── BrowserPanel (CDP + Inspector) ├── StateWriter (suspend/resume)
+├── SessionManager     ├── NotificationPanel              ├── ProcessMonitor
+├── PipeServer (RPC)   ├── SettingsPanel                  ├── Watchdog (memory pressure)
+├── McpRegistrar       └── Multiview / Fleet View grid    └── DaemonPipeServer (RPC)
+├── DaemonClient
+├── AutoUpdater                MCP Server (stdio)
+└── ToastManager       ├── PlaywrightEngine (CDP, fast-fail)
+                       ├── CDP RPC fallback
+                       └── Claude Code ⇄ wmux pipe bridge
 ```
 
-**Installer:** [Download wmux Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
+</details>
 
-> **Seeing a "Windows protected your PC" warning?** The installer is not yet Authenticode-signed (free code signing via SignPath is being set up — see **Code signing** below), so Windows SmartScreen flags it as from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. Installing via **winget** or **Chocolatey** above avoids this prompt entirely, since those package managers run in a trusted context.
+<a id="install-help"></a>
 
-> **Installer blocked with no "Run anyway" option?** If **Smart App Control (SAC)** is enabled on your Windows 11 device, the unsigned installer may be blocked outright — no SmartScreen dialog, no override. SAC enforcement is separate from SmartScreen and relies on Microsoft's cloud reputation, so a block can be transient: the same binary may install successfully hours later once the hash gains reputation, with no local changes ([#200](https://github.com/openwong2kim/wmux/issues/200)). Check whether SAC is the cause:
->
-> ```powershell
-> Get-MpComputerStatus | Select-Object SmartAppControlState
-> ```
->
-> If it reports `On`, your options are: install via **winget** or **Chocolatey** above, retry the installer later, or build from source (see below). Blocked attempts also log Code Integrity **Event ID 3077** in Event Viewer.
+<details>
+<summary><b>❓ &nbsp;FAQ + install troubleshooting</b></summary>
 
-**One-liner (PowerShell):** downloads the prebuilt Setup.exe from the latest release and verifies its SHA-256 before launching it (no Node/Python/build tools needed).
+<br>
+
+**Is wmux a tmux port?** No — it's a native Windows multiplexer on ConPTY + Electron with tmux-*style* split panes, prefix keys, and session persistence. No WSL / Cygwin / MSYS2.
+
+**Works with Claude Code / Codex / Gemini?** Yes. wmux auto-detects them and registers an MCP server so they can drive the browser and read terminal output.
+
+**Multiple agents at once?** Yes — each pane is an independent PTY, and agents can talk via the A2A MCP tools.
+
+**"Windows protected your PC" warning?** The installer isn't Authenticode-signed yet (free signing via [SignPath.io](https://signpath.io/) / [SignPath Foundation](https://signpath.org/) is being set up), so SmartScreen flags an unknown publisher. It's safe — click **More info → Run anyway**, or install via **winget** / **Chocolatey** to skip the prompt.
+
+**Installer blocked with no "Run anyway"?** **Smart App Control (SAC)** on Windows 11 can block unsigned binaries outright. Check with `Get-MpComputerStatus | Select-Object SmartAppControlState`. SAC uses cloud reputation, so blocks are often transient — retry later, use winget/choco, or build from source ([#200](https://github.com/openwong2kim/wmux/issues/200)).
+
+**PowerShell one-liner** (downloads the prebuilt Setup.exe, verifies SHA-256, no build tools):
 ```powershell
 irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 ```
 
-Want to build from source instead (needs Node 18+, Python 3, and VS C++ Build Tools — auto-installed)?
+</details>
+
+---
+
+## 🛠️ Build from source
+
 ```powershell
-$env:WMUX_FROM_SOURCE=1; irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
-```
-
-**Code signing** — Free Authenticode code signing for Windows builds is provided by [SignPath.io](https://signpath.io/), certificate by the [SignPath Foundation](https://signpath.org/).
-
----
-
-## Why wmux?
-
-### 1. Your AI agent controls the browser — for real
-
-Tell Claude Code "search Google for this" and it actually does it. wmux's built-in browser connects via Chrome DevTools Protocol (CDP). Click, type, screenshot, execute JS — all done by the AI directly. Works perfectly with React controlled inputs and CJK text (Korean, Japanese, Chinese).
-
-```
-You: "Search for wmux on Google"
-Claude: browser_open → browser_snapshot → browser_fill(ref=13, "wmux") → browser_press_key("Enter")
-→ Actually searches Google. Done.
-```
-
-### 2. Multiple terminals in one window
-
-`Ctrl+D` to split, `Ctrl+N` for new workspace. Place multiple terminals and browsers in each workspace. `Ctrl+click` for multiview — see multiple workspaces at once.
-
-ConPTY-based native Windows pseudo-terminal. xterm.js + WebGL hardware-accelerated rendering. 999K lines of scrollback. Terminal content persists even after app restart.
-
-**Tmux-style prefix mode** — `Ctrl+B` then a single action key (split, focus, new workspace…) for muscle-memory terminal navigation. 13 actions, fully rebindable.
-
-**Floating pane** — `` Ctrl+` `` for a Quake-style dropdown terminal that lives outside your main layout. Stays alive across toggles.
-
-**Scroll bookmarks** — `Ctrl+M` marks the current scroll position. Markers render on the gutter so you can see where you've been.
-
-**Smart right-click** — Windows Terminal style. Selection → instant copy. Empty area → instant paste. Link → small Open / Copy Link menu. Zero modal interrupts.
-
-### 3. No more asking "is it done yet?"
-
-wmux tells you when your AI agent finishes.
-
-- Task complete → desktop notification + taskbar flash
-- Abnormal exit → immediate warning
-- `git push --force`, `rm -rf`, `DROP TABLE` → dangerous action detection
-
-Not pattern matching — output throughput-based detection. Works with any agent.
-
-### 4. Automatic Claude Code (MCP) integration
-
-Launch wmux and the MCP server registers automatically. Claude Code just works:
-
-| What Claude can do | MCP Tool |
-|---|---|
-| Open browser | `browser_open` |
-| Navigate to URL | `browser_navigate` |
-| Take screenshot | `browser_screenshot` |
-| Read page structure | `browser_snapshot` |
-| Click element | `browser_click` |
-| Fill form | `browser_fill` / `browser_type` |
-| Execute JS | `browser_evaluate` |
-| Press key | `browser_press_key` |
-| Read terminal | `terminal_read` |
-| Read commands semantically (OSC 133) | `terminal_read_events` |
-| Send command | `terminal_send` |
-| Manage workspaces | `workspace_list` / `surface_list` / `pane_list` |
-| Agent-to-agent messaging | `a2a_send` / `a2a_broadcast` / `a2a_whoami` |
-| Delegate tasks across agents | `a2a_task_send` / `a2a_task_query` / `a2a_task_cancel` |
-| Company mode coordination | `company_a2a_send` / `company_a2a_inbox` / `company_a2a_status` |
-
-**Multi-agent:** Every browser tool accepts `surfaceId` — each Claude Code session controls its own browser independently. A2A (agent-to-agent) tools route messages between sibling agents in the same wmux instance.
-
-**Programmatic orchestration:** To drive multiple wmux panes from your own script or agent, call the MCP tools (`terminal_send`, `terminal_read`, `pane_list`, `wmux_events_poll`) or the `wmux` CLI (`wmux send` / `read-screen` / `list-panes`, scriptable via `--json`) directly. The substrate is the orchestration surface — atomic pane claim is `pane_set_metadata` with an `expectedVersion` guard (server-enforced optimistic concurrency).
-
-### 5. Session persistence — tmux-style, survives Quit, crash, and reboot
-
-wmux never kills your work when you close the window. Like a tmux server, the background daemon owns every PTY and keeps it running; the UI only attaches and detaches. Quit wmux and reopen — your sessions are **still running, processes and all** (a build mid-flight, a `vim` buffer, an `ssh` shell), not just scrollback text.
-
-- **Quit / app restart:** Closing wmux detaches from the daemon, which keeps every PTY process alive. The next launch reattaches each pane to its live session instantly.
-- **Crash:** Same path — the daemon outlives the UI, so a renderer or main-process crash never takes your terminals with it.
-- **Reboot:** PTYs can't survive a power cycle, so sessions are restored from saved scrollback + working directory instead. wmux auto-starts on login.
-- **Full teardown:** When you want everything to actually stop, use the tray's **"Shut down wmux (close all sessions)"**. Closing every pane also lets the daemon idle-shut-down on its own after a few minutes.
-- **Auto-update:** Checks for updates via GitHub Releases. Toggle on/off in Settings.
-
-### 6. Security that actually matters
-
-- Token authentication on all IPC pipes
-- SSRF protection — blocks private IPs, `file://`, `javascript:` schemes
-- PTY input sanitization — prevents command injection
-- Randomized CDP port — no fixed debug port
-- Memory pressure watchdog — reaps dead sessions at 750MB, blocks new ones at 1GB
-- Electron Fuses — cookie encryption on; Node CLI inspect args and `NODE_OPTIONS` env disabled; app loads only from asar. (`RunAsNode` stays **enabled** — the background daemon is spawned as a detached Node process from `wmux.exe` via `ELECTRON_RUN_AS_NODE=1`.)
-
----
-
-## All Features
-
-### Terminal
-- xterm.js + WebGL GPU-accelerated rendering
-- ConPTY native Windows pseudo-terminal
-- Unicode 11 width tables — correct CJK / emoji rendering for cursor-positioning TUIs (Claude Code, vim)
-- Split panes — `Ctrl+D` horizontal, `Ctrl+Shift+D` vertical
-- Tabs — multiple surfaces per pane
-- **Floating pane** — Quake-style dropdown terminal, dedicated PTY, `` Ctrl+` ``
-- **Smart right-click** — selection → instant copy, empty area → instant paste, link → Open / Copy Link menu
-- **Scroll bookmarks** — `Ctrl+M` mark, gutter indicators
-- Vi copy mode — `Ctrl+Shift+X`
-- Search with regex toggle — `Ctrl+F`
-- 999K line scrollback with disk persistence
-- **Shell integration (OSC 133)** — semantic prompt / command boundaries for `terminal_read_events`. Auto-injected for pwsh / bash. Constrained Language Mode safe (v2.7.1).
-
-### Keybindings
-- **Tmux-style prefix mode** — `Ctrl+B` then action key, 13 default actions (splits, focus, workspaces, palette, floating pane, …)
-- Customizable bindings + custom keymaps in Settings
-- Reset-to-defaults available
-
-### Workspaces
-- Sidebar with drag-and-drop reordering
-- `Ctrl+1~9` quick switch
-- Multiview — `Ctrl+click` to view multiple workspaces side by side
-- **Layout templates** — save current pane layout, restore via Command Palette ("recent" category)
-- Full session persistence — layout, tabs, cwd, scrollback all restored
-- One-click reset in Settings
-
-### Browser + CDP Automation
-- Built-in browser panel — `Ctrl+Shift+L`
-- Navigation bar, DevTools, back/forward
-- Element Inspector — hover to highlight, click to copy LLM-friendly context
-- Full CDP automation: click, fill, type, screenshot, JS eval, key press
-
-### Notifications
-- Output throughput-based activity detection
-- Taskbar flash + Windows toast notifications
-- Process exit alerts
-- Notification panel — `Ctrl+I`
-- Web Audio sound effects
-
-### Agent Detection
-Claude Code, Cursor, Aider, Codex CLI, Gemini CLI, OpenCode, GitHub Copilot CLI
-- Detects agent start → activates monitoring
-- Critical action warnings
-
-### Daemon Process
-- Background session management (survives app restart)
-- Scrollback buffer dump and auto-recovery
-- Windows startup registration (survives reboot)
-- Dead session TTL reaping (24h default)
-
-### Auto-Update
-- Automatic update checks via GitHub Releases
-- Toggle on/off in Settings > General
-- Manual check available in Settings
-
-### Themes
-Catppuccin Mocha, Monochrome, Sandstone
-
-### i18n
-English, Korean, Japanese, Chinese
-
----
-
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+D` | Split right |
-| `Ctrl+Shift+D` | Split down |
-| `Ctrl+T` | New tab |
-| `Ctrl+W` | Close tab |
-| `Ctrl+N` | New workspace |
-| `Ctrl+1~9` | Switch workspace |
-| `Ctrl+click` | Add to multiview |
-| `Ctrl+Shift+G` | Exit multiview |
-| `Ctrl+Shift+L` | Open browser |
-| `Ctrl+B` then `<key>` | Tmux-style prefix mode (13 actions) |
-| `Ctrl+Shift+B` | Toggle sidebar |
-| `` Ctrl+` `` | Toggle floating pane (Quake-style) |
-| `Ctrl+K` | Command palette |
-| `Ctrl+I` | Notifications |
-| `Ctrl+,` | Settings |
-| `Ctrl+F` | Search terminal (with regex toggle) |
-| `Ctrl+M` | Add scrollback bookmark |
-| `Ctrl+Up` / `Ctrl+Down` | Jump prev / next bookmark |
-| `Ctrl+Shift+X` | Vi copy mode |
-| Right-click | Smart copy (selection) / paste (empty) / link menu |
-| `F12` | Browser DevTools |
-
----
-
-## Development
-
-```bash
 git clone https://github.com/openwong2kim/wmux.git
 cd wmux
 npm install
-npm start          # Dev mode
-npm run make       # Build installer
+npm start          # dev mode
+npm run make       # build installer
 ```
 
-### Requirements (dev only)
-- Node.js 18+
-- Python 3.x (for node-gyp)
-- Visual Studio Build Tools with C++ workload
-
-The `install.ps1` script auto-installs Python and VS Build Tools if missing **only when building from source** (`-FromSource` / `WMUX_FROM_SOURCE=1`). The default one-liner downloads the prebuilt Setup.exe and needs none of these.
+Requires Node 18+, Python 3.x, and VS Build Tools (C++ workload). `WMUX_FROM_SOURCE=1 irm …/install.ps1 | iex` auto-installs them.
 
 ---
 
-## Architecture
-
-```
-Electron Main Process
-├── PTYManager (node-pty / ConPTY)
-├── PTYBridge (data forwarding + ActivityMonitor)
-├── AgentDetector (gate-based agent status)
-├── SessionManager (atomic save with .bak recovery)
-├── ScrollbackPersistence (terminal buffer dump/load)
-├── PipeServer (Named Pipe JSON-RPC + token auth)
-├── McpRegistrar (auto-registers MCP in ~/.claude.json)
-├── WebviewCdpManager (CDP proxy to <webview>)
-├── DaemonClient (daemon mode connector)
-├── AutoUpdater (GitHub Releases feed)
-└── ToastManager (OS notifications + taskbar flash)
-
-Renderer Process (React 19 + Zustand)
-├── PaneContainer (recursive split layout)
-├── Terminal (xterm.js + WebGL + scrollback restore)
-├── BrowserPanel (webview + Inspector + CDP)
-├── NotificationPanel
-├── SettingsPanel (auto-update toggle, workspace reset)
-└── Multiview grid
-
-Daemon Process (standalone)
-├── DaemonSessionManager (ConPTY lifecycle)
-├── RingBuffer (circular scrollback buffer)
-├── StateWriter (session suspend/resume)
-├── ProcessMonitor (external process watchdog)
-├── Watchdog (memory pressure escalation)
-└── DaemonPipeServer (Named Pipe RPC + token auth)
-
-MCP Server (stdio)
-├── PlaywrightEngine (CDP connection, fast-fail)
-├── CDP RPC fallback (screenshot, evaluate, type, click)
-└── Claude Code <-> wmux Named Pipe RPC bridge
-```
-
----
-
-## FAQ
-
-**Is wmux a tmux port for Windows?**
-No. wmux is a native Windows terminal multiplexer built on ConPTY and Electron, offering tmux-style split panes, prefix keys, and session persistence — without requiring WSL or Cygwin.
-
-**Does wmux work with Claude Code, Codex CLI, and Gemini CLI?**
-Yes. wmux automatically detects these AI coding agents and registers an MCP server so Claude Code can drive the built-in browser and read terminal output.
-
-**Can I run multiple AI agents at the same time?**
-Yes. Each pane runs an independent PTY. Agents can communicate via the A2A (agent-to-agent) MCP tools for multi-agent workflows.
-
-**Does it require WSL?**
-No. wmux is fully native Windows (ConPTY + Electron). No WSL, Cygwin, or MSYS2 needed.
-
-**Why does Windows show a "Windows protected your PC" warning when I run the installer?**
-The installer isn't code-signed yet, so Windows SmartScreen flags it as coming from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. To avoid the prompt entirely, install via `winget install openwong2kim.wmux` or `choco install wmux`; those package managers run in a trusted context, so SmartScreen never appears.
-
-**The installer is blocked and there's no "Run anyway" button. What's going on?**
-Your device likely has **Smart App Control (SAC)** enabled — a Windows 11 feature separate from SmartScreen that blocks unsigned binaries with no user override. Check with `Get-MpComputerStatus | Select-Object SmartAppControlState` in PowerShell. SAC decisions come from Microsoft's cloud reputation service, so blocks can be transient — the same installer may succeed hours later without any local changes ([#200](https://github.com/openwong2kim/wmux/issues/200)). Workarounds: install via winget or Chocolatey, retry later, or build from source.
-
----
-
-## Acknowledgments
-
-- [xterm.js](https://xtermjs.org/) — Terminal rendering
-- [node-pty](https://github.com/microsoft/node-pty) — Pseudo-terminal
-- [Electron](https://www.electronjs.org/) — Desktop framework
-- [Playwright](https://playwright.dev/) — Browser automation engine
-
----
-
-## Note on AI Agents
-
-wmux detects AI coding agents for status display purposes only. It does not call any AI APIs, capture agent outputs, or automate agent interactions. Users are responsible for complying with their AI provider's Terms of Service.
-
-## Contributors
-
-Thanks to everyone who has contributed to wmux! 🙌
+## 🙌 Contributors
 
 [![Contributors](https://contrib.rocks/image?repo=openwong2kim/wmux)](https://github.com/openwong2kim/wmux/graphs/contributors)
 
+Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microsoft/node-pty), [Electron](https://www.electronjs.org/), and [Playwright](https://playwright.dev/).
+
+> wmux detects AI coding agents for status display only. It does not call AI APIs, capture agent output, or automate agent interactions. You are responsible for complying with your AI provider's Terms of Service.
+
 ## License
 
-MIT
+[MIT](LICENSE)
+
+<sub>**Keywords:** Windows tmux · tmux for Windows · terminal multiplexer · AI agent terminal · cmux alternative · Claude Code Windows · Codex CLI · Gemini CLI · MCP server · Chrome DevTools Protocol · split terminal · multi-agent · browser automation · ConPTY · xterm.js · Electron terminal</sub>
+
+<div align="center"><sub>⭐ Star history</sub><br>
+
+[![Star History](https://api.star-history.com/svg?repos=openwong2kim/wmux&type=Date)](https://star-history.com/#openwong2kim/wmux&Date)
+
+</div>
