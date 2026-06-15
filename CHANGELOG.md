@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A2A task inbox on the EventBus — pollable cross-agent delivery that no longer corrupts a live terminal (S-C2 ②).** When one workspace's agent hands a task to another, the task is now teed onto the shared event ring, so the receiving agent can discover it by polling `wmux_events_poll` instead of having the message force-pasted into its terminal (which used to corrupt a running TUI's input box). The sender gets the status receipt — created → updated → cancelled — the same way. Delivery is strictly dual-party: only the two workspaces involved in a task ever see its events; a third workspace, and any workspace-less poll, see nothing. A receiver that is already running a live agent now gets a one-line nudge (a pointer to run `a2a_task_query`) instead of the full message body, so its prompt is never flooded — a receiver with no live agent still gets the full paste, so nothing regresses for peers that don't poll.
+- **`a2a_discover` liveness hint (③).** Peers returned by `a2a_discover` now carry an advisory live/idle signal so an orchestrator can prefer an agent that is actually running. Advisory only — it never gates delivery.
+
 ## [3.4.0] — 2026-06-15 — Fleet View, and Claude conversations that survive a reboot
 
 Headline: two ways to lose less time on a multi-agent day. **Fleet View** is the cockpit — every agent across every workspace on one screen, the blocked ones floated to the top, one click to jump to where you are needed. And **X6 resume** closes the loop on reboot survival: a Claude pane no longer just comes back as a shell, it comes back offering to resume the *exact* conversation it was running — on every pane, not just the one you were watching, with the permission mode you had set. Plus an agent toolbar, and fixes for the Windows taskbar icon and the PowerShell 5.1 prompt hook. Thanks to [@matdac6](https://github.com/matdac6) (#228, #229) and [@snowyukitty](https://github.com/snowyukitty) (#227).
