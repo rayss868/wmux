@@ -14,7 +14,7 @@
 // subscribers. If you need to react to metadata changes, poll the EventBus
 // or rely on `pane.list` reconciliation.
 
-import type { WorkspaceMetadata } from '../../shared/types';
+import type { WorkspaceMetadata, TaskState } from '../../shared/types';
 import type { WmuxEventType } from '../../shared/events';
 
 interface ElectronEventsAPI {
@@ -54,4 +54,41 @@ export function publishWorkspaceMetadataChanged(
   patch: Partial<WorkspaceMetadata>,
 ): void {
   publish({ type: 'workspace.metadata.changed', workspaceId, metadata, patch });
+}
+
+/**
+ * A2A (agent-to-agent) task lifecycle tee. A dual-party event: it carries
+ * explicit `from` (sender) + `to` (receiver) workspaceIds, and the base
+ * `workspaceId` is ALWAYS stamped === `from` (fail-safe scoping — see the
+ * A2aTaskEvent doc in shared/events.ts and the dual-party post-filter in
+ * events.rpc.ts). The event is a POINTER: by default it carries no
+ * `messagePreview` (the party fetches the body via a2a_task_query). The
+ * preview param is accepted but only attached when explicitly provided.
+ *
+ * The publish trust boundary (registerHandlers.ts) re-stamps workspaceId=from
+ * and allow-lists the shape server-side, so a renderer-supplied workspaceId
+ * that disagrees with `from` can never broaden scope. Emitting `from` as the
+ * base here keeps the two in agreement on the happy path.
+ */
+export function publishA2aTask(
+  from: string,
+  to: string,
+  taskId: string,
+  state: TaskState,
+  kind: 'created' | 'updated' | 'cancelled',
+  messagePreview?: string,
+): void {
+  publish({
+    type: 'a2a.task',
+    workspaceId: from, // base scope === sender (fail-safe invariant)
+    from,
+    to,
+    taskId,
+    state,
+    kind,
+    // Pointer-only by default: only include the preview when a caller
+    // explicitly opts in. Omitted otherwise so the body never rides a bare
+    // events.subscribe poll.
+    ...(messagePreview !== undefined ? { messagePreview } : {}),
+  });
 }
