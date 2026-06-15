@@ -85,13 +85,16 @@ const env = {
   ...process.env,
   USERPROFILE: home,
   HOME: home,
-  HOMEDRIVE: undefined,
-  HOMEPATH: undefined,
   APPDATA: path.join(home, 'AppData', 'Roaming'),
   LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
   WMUX_DATA_SUFFIX: suffix,
   WMUX_NO_DIALOG: '1',
 };
+// Delete (don't assign undefined) so the keys are actually absent from the
+// child env — `spawn` coerces an `undefined` value to the string "undefined",
+// which would corrupt Windows %HOMEDRIVE%/%HOMEPATH% path resolution.
+delete env.HOMEDRIVE;
+delete env.HOMEPATH;
 delete env.WMUX_DISABLE_CDP;
 fs.mkdirSync(env.APPDATA, { recursive: true });
 fs.mkdirSync(env.LOCALAPPDATA, { recursive: true });
@@ -275,12 +278,12 @@ async function main() {
 
     // ---- ensure 3 distinct workspaces: A(sender) B(receiver) C(third party) ----
     console.log('\n=== setup: 3 workspaces (A=sender, B=receiver, C=third-party) ===');
-    while ((await rpcCall(mainPipe, TOKEN, 'workspace.list', {})).length < 3) {
-      const n = (await rpcCall(mainPipe, TOKEN, 'workspace.list', {})).length;
-      await rpcCall(mainPipe, TOKEN, 'workspace.new', { name: `a2a-dog-${n + 1}` });
+    let wsList = await rpcCall(mainPipe, TOKEN, 'workspace.list', {});
+    while (wsList.length < 3) {
+      await rpcCall(mainPipe, TOKEN, 'workspace.new', { name: `a2a-dog-${wsList.length + 1}` });
       await sleep(150);
+      wsList = await rpcCall(mainPipe, TOKEN, 'workspace.list', {});
     }
-    const wsList = await rpcCall(mainPipe, TOKEN, 'workspace.list', {});
     const idOf = (w) => (typeof w?.id === 'string' ? w.id : w?.workspaceId);
     const [A, B, C] = wsList.map(idOf);
     const allDistinct = A && B && C && new Set([A, B, C]).size === 3;

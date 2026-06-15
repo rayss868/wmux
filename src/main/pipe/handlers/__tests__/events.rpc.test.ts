@@ -411,6 +411,75 @@ describe('events.rpc — a2a.task dual-party scoping', () => {
     expect(iterations).toBeLessThan(maxIterations);
   });
 
+  // Test B2 — the EFFICIENCY lock for the post-filter `max` placement (Codex
+  // PR #232 review). Foreign events ahead of the addressed one must NOT consume
+  // a scoped subscriber's page budget: a `max:1` poll has to return the
+  // addressed event in a SINGLE round trip, not after one empty poll per
+  // foreign event. (Before the fix, `max` was handed to EventBus pre-scope, so
+  // each foreign event filled and emptied the page — costing one extra poll
+  // apiece. case B tolerated that; this case forbids it.)
+  it('case B2: foreign a2a.task events do not consume a scoped subscriber max budget (one poll, not N+1)', async () => {
+    const Y = 'ws-y';
+    const X = 'ws-x';
+    const N = 5;
+    for (let i = 0; i < N; i++) {
+      expect(
+        publishA2aTask({ type: 'a2a.task', from: 'ws-d', to: 'ws-e', taskId: `f${i}`, state: 'submitted', kind: 'created' }),
+      ).toBe(true);
+    }
+    expect(
+      publishA2aTask({ type: 'a2a.task', from: Y, to: X, taskId: 'addressed', state: 'submitted', kind: 'created' }),
+    ).toBe(true);
+
+    const router = setupRouter();
+    const res = await router.dispatch({
+      id: 'B2', method: 'events.poll', params: { workspaceId: X, max: 1, cursor: 0 },
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const result = res.result as { events: A2aTaskEvent[] };
+    // ONE poll yields exactly the addressed event — the 5 foreign events ahead
+    // of it did not each cost an empty page.
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0].taskId).toBe('addressed');
+    expect(result.events[0].to).toBe(X);
+  });
+
+  // Test B3 — the CORRECTNESS lock for the same change: when the SCOPED page
+  // itself exceeds `max`, truncation rewinds nextCursor to the last delivered
+  // event so the overflow is DEFERRED to the next page, never dropped. Two
+  // events addressed to X (interleaved with foreign pairs) must both arrive
+  // across two max:1 polls, in order, exactly once, with no foreign leak.
+  it('case B3: scoped overflow past max is deferred to the next page, never skipped or duplicated', async () => {
+    const Y = 'ws-y';
+    const X = 'ws-x';
+    expect(publishA2aTask({ type: 'a2a.task', from: 'ws-d', to: 'ws-e', taskId: 'f0', state: 'submitted', kind: 'created' })).toBe(true);
+    expect(publishA2aTask({ type: 'a2a.task', from: Y, to: X, taskId: 'a1', state: 'submitted', kind: 'created' })).toBe(true);
+    expect(publishA2aTask({ type: 'a2a.task', from: 'ws-d', to: 'ws-e', taskId: 'f1', state: 'submitted', kind: 'created' })).toBe(true);
+    expect(publishA2aTask({ type: 'a2a.task', from: Y, to: X, taskId: 'a2', state: 'submitted', kind: 'created' })).toBe(true);
+
+    const router = setupRouter();
+    const seen: string[] = [];
+    let cursor = 0;
+    for (let i = 0; i < 5; i++) {
+      const res = await router.dispatch({
+        id: `B3-${i}`, method: 'events.poll', params: { workspaceId: X, max: 1, cursor },
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) break;
+      const result = res.result as { events: A2aTaskEvent[]; nextCursor: number };
+      for (const e of result.events) {
+        expect(e.to).toBe(X); // never a foreign leak
+        seen.push(e.taskId as string);
+      }
+      if (result.events.length === 0 && result.nextCursor === cursor) break; // drained
+      cursor = result.nextCursor;
+      if (seen.length >= 2) break;
+    }
+    // Both addressed events arrived, in publish order, exactly once.
+    expect(seen).toEqual(['a1', 'a2']);
+  });
+
   // Test C — receiver delivery rides the dual-party `to` key, NOT an accidental
   // strict `workspaceId === to` match. The event's BASE workspaceId is stamped
   // === from, so a strict `workspaceId === caller` arm (the non-a2a path) would

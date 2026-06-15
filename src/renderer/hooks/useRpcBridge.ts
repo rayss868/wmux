@@ -7,7 +7,7 @@ import type { Message, Part, TaskState, Artifact, AgentSkill, Task } from '../..
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
-import { formatA2aMessage, formatA2aBroadcast } from '../utils/a2aFormat';
+import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
 import { setExecuteApprovalResolver } from '../utils/executeApproval';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
@@ -219,7 +219,10 @@ function isLiveTuiAgent(meta: { agentName?: string; agentStatus?: string } | und
  */
 function buildA2aNudge(taskId: string, senderName: string): string {
   const id8 = taskId.replace(/^task[-_]?/, '').slice(0, 8);
-  return `[wmux] new A2A task ${id8} from ${senderName} — a2a_task_query`;
+  // Sanitize the user-editable workspace name: a CR/LF in it would otherwise
+  // split this "single line" into a multi-line bracketed paste (submitted with
+  // `\r\r`) and inject text into the very live-agent prompt this path protects.
+  return `[wmux] new A2A task ${id8} from ${sanitizeA2aName(senderName)} — a2a_task_query`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,6 +1120,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         // []    → registered, but explicitly empty
         // Distinguish the two instead of collapsing both to [] so a sender can
         // tell "this agent hasn't advertised yet" from "it has no skills".
+        // null → never registered skills (getAgentSkills returns null); a
+        // non-null array → registered (possibly empty). The AgentCard contract
+        // (src/shared/types.ts) declares `skills: AgentSkill[]`, so `skills`
+        // below is ALWAYS an array — the never-registered vs registered-empty
+        // distinction rides the separate `skillsRegistered` boolean instead of
+        // a contract-breaking null that crashes clients iterating agent.skills.
         const skills = store.getAgentSkills(w.id);
         const skillsRegistered = skills !== null;
         // Advisory liveness hint (③). Derived from store metadata — a live TUI
@@ -1132,9 +1141,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           capabilities: { stateTransitionHistory: true },
           skills: skills
             ? skills.map((s) => (typeof s === 'string' ? { id: s, name: s } : s))
-            : skillsRegistered
-              ? []     // registered empty
-              : null,  // never registered
+            : [], // never registered OR registered-empty — skillsRegistered disambiguates
           skillsRegistered,
           // Advisory only — see comment above. `liveSource` records what the
           // hint is derived from (store metadata in v1); a future
@@ -1176,7 +1183,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // agent keeps today's loud full-body paste (don't regress a non-poller).
     // An explicit silent (true OR false) is honored verbatim — explicit true
     // = full suppression, explicit false = loud full paste.
-    const silentExplicit = params.silent !== undefined;
+    //
+    // Only a real BOOLEAN counts as explicit. A direct main-pipe RPC client
+    // (which bypasses the MCP zod schema) may serialize an omitted optional as
+    // `null` — `!== undefined` would mis-read that as an explicit override and
+    // loud-paste into a live agent's prompt, defeating the silent-default. Any
+    // non-boolean (null, string, missing) falls through to the live-aware
+    // default.
+    const silentExplicit = typeof params.silent === 'boolean';
 
     // Build parts (A2A standard: kind discriminant)
     const parts: Part[] = [{ kind: 'text', text: message }];
@@ -1300,7 +1314,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!taskId) return { error: 'a2a.task.update: missing "taskId"' };
     if (!workspaceId) return { error: 'a2a.task.update: missing "workspaceId". Ensure WMUX_WORKSPACE_ID is set.' };
 
-    // Update status if provided
+    // ── Validate ALL inputs up front, BEFORE any store mutation ──
+    // Validating the message before applying the status keeps a status+message
+    // update atomic: a bad message rejects the whole call instead of leaving a
+    // committed status transition behind (which would also have emitted a
+    // pointer for a half-applied task).
+    let nextState: TaskState | undefined;
     if (typeof params.status === 'string') {
       // Block 'canceled' — must use a2a.task.cancel instead
       if (params.status === 'canceled') {
@@ -1311,25 +1330,26 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       if (!validStatuses.includes(params.status)) {
         return { error: `a2a.task.update: invalid status "${params.status}"` };
       }
-      const result = store.updateTaskStatus(taskId, params.status as TaskState, workspaceId);
-      if (!result.ok) return { error: `a2a.task.update: ${result.error}` };
-
-      // Tee the status transition onto the bus (updated). STATE TRANSITION
-      // ONLY — this fires from the status branch, never from the message
-      // branch below (addTaskMessage is not a transition; emitting per message
-      // would flood the 1024-event ring). Read the task BACK so the emit lands
-      // strictly AFTER updateTaskStatus's set(); pass the new state explicitly.
-      const updatedTask = store.getTask(taskId);
-      if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated', params.status as TaskState);
+      nextState = params.status as TaskState;
     }
 
-    // Add message if provided
+    let message: string | undefined;
     if (typeof params.message === 'string') {
-      let message: string;
       try { message = validateMessage(params.message); } catch (e) {
         return { error: `a2a.task.update: ${e instanceof Error ? e.message : 'invalid'}` };
       }
+    }
 
+    // ── Apply the status transition ──
+    let transitioned = false;
+    if (nextState) {
+      const result = store.updateTaskStatus(taskId, nextState, workspaceId);
+      if (!result.ok) return { error: `a2a.task.update: ${result.error}` };
+      transitioned = true;
+    }
+
+    // ── Append message + deliver to the other party ──
+    if (message !== undefined) {
       // Verify caller is sender or receiver of this task
       const task = store.getTask(taskId);
       if (!task) return { error: 'a2a.task.update: task not found' };
@@ -1342,22 +1362,43 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
       store.addTaskMessage(taskId, msg);
 
-      // Deliver update to the other party's terminal
+      // Deliver update to the other party's terminal. silent-default (S-C2 ②):
+      // a live TUI receiver gets a one-line nudge instead of a full-body paste
+      // (its prompt is not corrupted); a receiver with no live agent keeps the
+      // loud paste. Mirrors the a2a.task.send reply branch so EVERY delivery
+      // path honors the live-agent protection, not just the initial send.
       const targetWsId = role === 'user' ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
       const targetWs = store.workspaces.find((w) => w.id === targetWsId);
       if (targetWs) {
         const callerWs = store.workspaces.find((w) => w.id === workspaceId);
         const callerName = callerWs?.name ?? 'unknown';
-        deliverPtyNotification(targetWs, callerName, message);
+        if (isLiveTuiAgent(targetWs.metadata)) {
+          deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName));
+        } else {
+          deliverPtyNotification(targetWs, callerName, message);
+        }
       }
     }
 
-    // Add artifact if provided
+    // ── Append artifact ──
     if (params.artifact && typeof params.artifact === 'object') {
       const artifact = params.artifact as { name?: string; parts?: Part[] };
       if (artifact.parts) {
         store.addTaskArtifact(taskId, { name: artifact.name, parts: artifact.parts });
       }
+    }
+
+    // Tee the status transition onto the bus (updated) — STATE TRANSITION ONLY,
+    // and STRICTLY AFTER every store mutation above (status + message +
+    // artifact). A poller that follows this pointer and calls a2a_task_query
+    // then sees the FULLY-updated task, never a half-applied one missing the
+    // message/artifact that landed in the same call. addTaskMessage/
+    // addTaskArtifact never emit on their own (that would flood the 1024-event
+    // ring), so this single status emit is the only update pointer — it MUST
+    // fire last.
+    if (transitioned && nextState) {
+      const updatedTask = store.getTask(taskId);
+      if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated', nextState);
     }
 
     return { ok: true, taskId };

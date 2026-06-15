@@ -211,6 +211,7 @@ async function main() {
 
   const LIVE_BODY = 'ZZNUDGEBODYZZ_must_not_paste';
   const PASTE_BODY = 'ZZPASTEBODYZZ_must_paste';
+  const UPDATE_BODY = 'ZZUPDATEBODYZZ_must_not_paste';
 
   app = spawnApp();
   try {
@@ -272,6 +273,32 @@ async function main() {
     const sawBodyD = screenD.includes(PASTE_BODY);
     check('★ NO-AGENT receiver D got the LOUD full-body paste', sawBodyD,
       sawBodyD ? 'body delivered' : `body absent. tail=${JSON.stringify(screenD.replace(/\s+/g, ' ').slice(-180))}`);
+
+    // ---- a2a.task.update (message) to the LIVE receiver B → expect NUDGE ----
+    // Regression lock for PR #232 review (CodeRabbit): the update delivery path
+    // must honor the SAME live-agent silent-default as send — not always paste
+    // the full body. A (sender) appends a message to the existing task; it
+    // delivers to B (live), which must get the one-line nudge, not the body.
+    console.log('\n=== update A → B (live): expect NUDGE on update path too (not body) ===');
+    const updTaskId = sendB?.taskId;
+    if (typeof updTaskId === 'string') {
+      const updRes = await rpcCall(mainPipe, TOKEN, 'a2a.task.update', {
+        workspaceId: A, taskId: updTaskId, message: UPDATE_BODY,
+      });
+      check('update→B returned ok', updRes?.ok === true, `ok=${JSON.stringify(updRes?.ok)}`);
+      await sleep(1500);
+      const screenB2 = await readScreen(ptyB);
+      // Core invariant: the update body must NOT be pasted into the live prompt.
+      // (Nudge presence isn't asserted here — the prior send already left an
+      // 'a2a_task_query' nudge on B's screen, so it can't distinguish this
+      // delivery. The body marker is unique to the update, so its ABSENCE is the
+      // honest signal that update honored silent-default instead of loud paste.)
+      const sawUpdateBody = screenB2.includes(UPDATE_BODY);
+      check('★ LIVE receiver B did NOT get the update body pasted (update path honors silent-default)', !sawUpdateBody,
+        sawUpdateBody ? `UPDATE BODY LEAKED into live prompt: ${UPDATE_BODY}` : 'update body correctly withheld from live prompt');
+    } else {
+      check('update→B precondition (prior send taskId present)', false, 'no taskId from send→B');
+    }
   } catch (err) {
     check('FATAL during scenario', false, err.stack || err.message);
   }

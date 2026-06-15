@@ -2,6 +2,8 @@ import type { RpcRouter } from '../RpcRouter';
 import { eventBus } from '../../events/EventBus';
 import {
   WMUX_EVENT_TYPES,
+  RING_CAPACITY,
+  POLL_DEFAULT_MAX,
   type WmuxEventType,
   type A2aTaskEvent,
 } from '../../../shared/events';
@@ -73,10 +75,17 @@ export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup):
     // could ever match it. So we poll WITHOUT the strict wsFilter and re-impose
     // scoping below: strict (`workspaceId === caller`) for every non-a2a type —
     // identical to the old EventBus gate — and dual-party (`from`/`to`) for
-    // a2a.task only. Cursor math is unaffected (filtering the result array
-    // never rewinds nextCursor — the same property notifications.read relies
-    // on).
-    const result = eventBus.poll(cursor, { types, max });
+    // a2a.task only.
+    //
+    // `max` is ALSO deferred to after the scope filter (placement B): handing it
+    // to EventBus would let unrelated workspaces' events fill the page and then
+    // get post-filtered away, starving a small-`max` scoped subscriber (its own
+    // matching event sits just past the foreign ones, so it takes one extra poll
+    // per foreign event). Instead we over-fetch the whole ring window, scope,
+    // THEN truncate to the caller's page size and rewind nextCursor to the last
+    // delivered event — so the next poll resumes exactly after it and no
+    // matching event is ever skipped.
+    const result = eventBus.poll(cursor, { types, max: RING_CAPACITY });
 
     // Dual-party + strict scoping post-filter. `caller` is the verified
     // wsFilter (server-pinned for MCP via requireWorkspaceId), or undefined for
@@ -93,6 +102,18 @@ export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup):
           (!!caller &&
             ((e as A2aTaskEvent).from === caller || (e as A2aTaskEvent).to === caller)),
     );
+
+    // Re-impose the caller's page size AFTER scoping (see the over-fetch note
+    // above). EventBus drained the ring for us, so if the scoped page still
+    // exceeds `max` we truncate here and rewind nextCursor to the last delivered
+    // event's seq — the next poll resumes right after it. seq is monotonic, so
+    // this never skips a withheld matching event (it only defers it one page).
+    const pageMax = max ?? POLL_DEFAULT_MAX;
+    if (result.events.length > pageMax) {
+      const page = result.events.slice(0, pageMax);
+      result.nextCursor = page[page.length - 1].seq;
+      result.events = page;
+    }
 
     // notifications.read opt-in gate (see allowsNotifications). Applied as
     // a post-poll filter — NOT by rewriting `types` — because EventBus

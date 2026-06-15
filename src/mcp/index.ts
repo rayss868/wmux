@@ -576,7 +576,12 @@ const sendMessageHandler = async ({ to, title, task_id, message, execute, silent
   if (to) params.to = to;
   if (title) params.title = title;
   if (execute) params.execute = true;
-  if (silent) params.silent = true;
+  // Forward `silent` whenever it is explicitly provided (true OR false), not
+  // only when truthy: the renderer's silent-default treats an EXPLICIT
+  // `silent:false` as "force the loud full-body paste even to a live TUI
+  // agent". Dropping the `false` here would make that documented override
+  // unreachable through the MCP tools (it would read as omitted → default).
+  if (silent !== undefined) params.silent = silent;
   if (data) {
     params.data = data;
     params.dataMimeType = data_mime_type || 'application/json';
