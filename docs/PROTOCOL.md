@@ -224,6 +224,18 @@ Event `seq` is monotonic in **arrival order**, not in **causal order**. Two inde
 
 Clients must not assume `seq` order implies causal order across producer boundaries. Use timestamps (`ts`) for cross-producer reasoning when ordering matters.
 
+### 2.8 Workspace scoping and the `a2a.task` dual-party exception
+
+Every event carries a `workspaceId`, and `events.poll` scopes results to the caller's claimed workspace by default so workspaces stay isolated. **One event type breaks strict single-workspace scoping by design: `a2a.task`.**
+
+`a2a.task` describes an agent-to-agent task that, by definition, involves **two** workspaces — `from` (the sender) and `to` (the receiver). Both parties must be able to observe the task's lifecycle: the sender for a delivery/status receipt, the receiver to learn a task arrived without a terminal paste. So `events.poll` resolves it as **dual-party**:
+
+- The base `workspaceId` is **always** set `=== from`. A consumer that does not special-case `a2a.task` therefore still scopes it to the sender and **never** leaks it to a third workspace.
+- The poll filter adds `to` as a **second** matchable key for `a2a.task` **only**: the event is delivered when the caller's workspace equals **either** `from` **or** `to`. Every other event type keeps strict `workspaceId === caller` scoping.
+- An **unscoped** poll (no `workspaceId` — e.g. the plugin-host forwarding poll) receives **zero** `a2a.task` events. This is load-bearing: it prevents a bare `events.subscribe` plugin from reading every pair's task traffic.
+
+The event is a **pointer, not the payload.** `messagePreview` (≤200 chars) is omitted by default; the receiving party fetches the task body via `a2a.task.query` (MCP `a2a_task_query`). Wire shape: `taskId`, `from`, `to`, `kind: 'created'|'updated'|'cancelled'`, `state: TaskState`, optional `messagePreview`. The scoping is enforced server-side in `src/main/pipe/handlers/events.rpc.ts`; the typed shape lives in `src/shared/events.ts` (`A2aTaskEvent`). See also [`api/inventory.md`](./api/inventory.md#event-types).
+
 ---
 
 ## 3. Snapshot envelope (`pane.list`)
@@ -471,6 +483,7 @@ Things external clients may run into that aren't bugs but are explicit substrate
 | Draft 3 | 2026-05-18 | Phase 2.1 follow-up — §4.2 adds structured rejection result for `mcp.declarePermissions` (discriminated union with per-entry `errors`) and the trust-DB invariants subsection: capability-widening demotion, LRU eviction cap, transport-close identity clear. No method-dispatch enforcement yet. |
 | Draft 4 | 2026-06-01 | Substrate 3.0 lifecycle boundary — adds §7 (daemon lifecycle three-tier model, config contract for the 5 new lifecycle knobs, lifecycle facts/event deferral to v3.1) and the §8 "Lifecycle neutrality" boundary entry. Documents resource-floor neutrality: substrate refuses/GCs on pressure/count, never evicts a live session on idle/age (that is outer-layer policy). Renumbered prior §7/§8 → §8/§9. |
 | Draft 5 | 2026-06-09 | §4 corrected to reflect shipped enforcement. Points #1–#3 (method dispatch, metadata path write, event subscription) are no longer "record-only" — enforce-mode dispatch gating shipped in PR #71 (Phase 2.2) as the production default, with `shadow` the dev/test default. Adds the enforce-vs-shadow mode summary and points at `api/mcp-plugin-spec.md` §4.4 for the full wire contract. No wire-format change — clarifies status only. |
+| Draft 7 | 2026-06-15 | §2.8 added — workspace scoping plus the `a2a.task` **dual-party** exception. `a2a.task` is the first (and only) event type that intentionally breaks strict single-workspace scoping: it is delivered to both the sending (`from`) and receiving (`to`) workspace and to no third party, with the base `workspaceId` pinned `=== from` and an unscoped poll receiving zero such events. Documents the pointer-not-payload contract (body fetched via `a2a.task.query`). No change to the cursor/bootId/snapshot wire contract — adds an event type and its scoping rule. |
 | Draft 6 | 2026-06-09 | §5 transport correction. The Windows pipe is `\\.\pipe\wmux-<username>` (`os.userInfo().username`), NOT `wmux-rpc-<token>`; the token lives at `~/.wmux-auth-token` as a plain UUID, NOT `%APPDATA%\wmux\pipe-token`. Adds the POSIX Unix-domain-socket endpoint (`~/.wmux.sock`), the Windows loopback TCP fallback (`~/.wmux-tcp-port`, used on pipe `EPERM`), and the note that wmux PTYs inherit `WMUX_AUTH_TOKEN`/`WMUX_SOCKET_PATH` so in-pane plugins authenticate without reading the file. No wire-format change — corrects the documented endpoint/token paths to match `src/shared/constants.ts` and `PipeServer`. |
 
 This document evolves alongside the implementation. Changes that affect the wire contract require a major-version bump per [`api/versioning.md`](./api/versioning.md). Changes that clarify existing semantics ship in any release.
