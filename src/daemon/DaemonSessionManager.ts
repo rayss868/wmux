@@ -259,10 +259,15 @@ export class DaemonSessionManager extends EventEmitter {
     // supplied value. The delete branch is the security-critical half: a
     // production daemon (no suffix) recovering a '-dev'-tainted blob must SCRUB the
     // key, not leave the child on the dev pipe.
+    // Scrub ANY case-variant first (a replayed / hand-edited blob may carry
+    // `wmux_data_suffix` or mixed case; Windows process env is case-insensitive,
+    // so a stray variant would otherwise reach the child even after we set the
+    // canonical key). Then apply the daemon's own value, or leave it absent.
+    for (const k of Object.keys(env)) {
+      if (k.toUpperCase() === ENV_KEYS.DATA_SUFFIX) delete env[k];
+    }
     if (globalThis.process.env[ENV_KEYS.DATA_SUFFIX]) {
       env[ENV_KEYS.DATA_SUFFIX] = globalThis.process.env[ENV_KEYS.DATA_SUFFIX] as string;
-    } else {
-      delete env[ENV_KEYS.DATA_SUFFIX];
     }
 
     let spawnArgs: string[] = [];

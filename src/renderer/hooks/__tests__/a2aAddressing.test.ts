@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PaneLeaf, Surface } from '../../../shared/types';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend } from '../a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves } from '../a2aAddressing';
 
 function surface(id: string, ptyId: string, surfaceType: Surface['surfaceType'] = 'terminal'): Surface {
   return { id, ptyId, title: id, shell: '', cwd: '', surfaceType } as Surface;
@@ -97,5 +97,19 @@ describe('decideSameWsSend', () => {
     // Common pid-map-miss / env-hint case: we cannot prove the target isn't self,
     // so suppress the paste (task still persisted + pollable) — never a loop.
     expect(decideSameWsSend(true, 'pty-sibling', '')).toEqual({ kind: 'deliver', suppressPaste: true });
+  });
+});
+
+describe('isTerminalPtyInLeaves', () => {
+  it('accepts a real terminal pty in the tree', () => {
+    expect(isTerminalPtyInLeaves(leaves, 'pty-A')).toBe(true);
+    expect(isTerminalPtyInLeaves(leaves, 'pty-B2')).toBe(true);
+  });
+  it('rejects a browser-surface pty (not a terminal)', () => {
+    expect(isTerminalPtyInLeaves(leaves, 'pty-web')).toBe(false);
+  });
+  it('rejects a foreign/unknown pty and the empty string', () => {
+    expect(isTerminalPtyInLeaves(leaves, 'pty-from-other-ws')).toBe(false);
+    expect(isTerminalPtyInLeaves(leaves, '')).toBe(false);
   });
 });

@@ -108,7 +108,8 @@ const sendResp = (r) => {
 
 function spawnApp() {
   const proc = spawn(APP_EXE, [], { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], detached: false });
-  proc.stdout.on('data', () => {}); proc.stderr.on('data', () => {});
+  const drain = () => undefined; // keep the pipes flowing without buffering
+  proc.stdout.on('data', drain); proc.stderr.on('data', drain);
   return proc;
 }
 async function waitMainToken(timeoutMs) {
@@ -140,10 +141,15 @@ async function main() {
   // ws1 is the only workspace at boot → active. Split its pane into two so the
   // single workspace hosts two addressable terminal panes (A and B).
   await rpcResult('pane.split', { direction: 'vertical' }).catch((e) => console.log('  (split note:', e.message, ')'));
-  await sleep(1500); // let the second pane auto-spawn its PTY
 
-  let surfaces = await rpcResult('surface.list', { workspaceId: ws1 });
-  surfaces = surfaces.filter((s) => s.surfaceType !== 'browser' && s.ptyId);
+  // Poll until the second pane has auto-spawned its PTY (bounded), rather than a
+  // fixed sleep that flakes on slower hosts.
+  let surfaces = [];
+  for (let i = 0; i < 40; i++) {
+    surfaces = (await rpcResult('surface.list', { workspaceId: ws1 })).filter((s) => s.surfaceType !== 'browser' && s.ptyId);
+    if (surfaces.length >= 2) break;
+    await sleep(250);
+  }
   check('ws1 has two terminal surfaces after split', surfaces.length >= 2, `surfaces=${surfaces.length}`);
   if (surfaces.length < 2) throw new Error('need two panes to test same-ws addressing');
   const surfA = surfaces[0]; // sender pane
@@ -213,7 +219,7 @@ async function main() {
 main()
   .catch((e) => { console.error('FATAL', e); check('harness completed without fatal error', false, e.message); })
   .finally(async () => {
-    try { await rpcResult('daemon.shutdown', {}).catch(() => {}); } catch { /* */ }
+    try { await rpcResult('daemon.shutdown', {}).catch(() => undefined); } catch { /* */ }
     try { if (app) app.kill(); } catch { /* */ }
     await sleep(800);
     const passed = results.filter((r) => r.ok).length;

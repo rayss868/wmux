@@ -62,6 +62,17 @@ export function resolvePaneAddress(
   return { ptyId: term.ptyId, paneId: leaf.id, surfaceId: term.id };
 }
 
+/**
+ * True iff `ptyId` is a live TERMINAL surface's pty within `leaves`. Used to
+ * validate a caller-supplied senderPtyId against the sender's own workspace tree
+ * before trusting it (a bogus / foreign value is treated as absent → the safe
+ * silent fallback). Empty ptyId is never a member.
+ */
+export function isTerminalPtyInLeaves(leaves: PaneLeaf[], ptyId: string): boolean {
+  if (!ptyId) return false;
+  return leaves.some((l) => l.surfaces.some((s) => s.surfaceType !== 'browser' && s.ptyId === ptyId));
+}
+
 export type SameWsSendDecision =
   | { kind: 'reject'; error: string }
   | { kind: 'deliver'; suppressPaste: boolean };

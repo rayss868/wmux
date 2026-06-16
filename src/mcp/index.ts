@@ -133,7 +133,15 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   let currentPid = process.ppid;
   for (let depth = 0; depth < 10; depth++) {
     const match = knownPids.get(currentPid);
-    if (match) return { status: 'hit', wsId: match.wsId, ptyId: match.ptyId };
+    if (match) {
+      // Capture our OWN pane anchor on EVERY verified hit — including when a
+      // terminal tool warms this lookup before any A2A call. resolveWorkspaceId's
+      // cache fast-path returns without re-running this walk, so setting MY_PTY_ID
+      // only there would leave it empty whenever a terminal op resolved identity
+      // first (senderPtyId would then be silently absent on the next send).
+      MY_PTY_ID = match.ptyId ?? '';
+      return { status: 'hit', wsId: match.wsId, ptyId: match.ptyId };
+    }
     const parentPid = await getParentPid(currentPid);
     if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
     currentPid = parentPid;
@@ -158,7 +166,8 @@ async function resolveWorkspaceId(): Promise<string> {
   const lookup = await lookupPidMapWorkspace();
   if (lookup.status === 'hit') {
     MY_WORKSPACE_ID = lookup.wsId;
-    MY_PTY_ID = lookup.ptyId ?? ''; // our own pane anchor for the A2A self-send guard
+    // MY_PTY_ID is set inside lookupPidMapWorkspace on the hit (so the
+    // terminal-route warm path populates it too — see there).
     workspaceResolved = true;
     return MY_WORKSPACE_ID;
   }

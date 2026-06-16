@@ -184,6 +184,25 @@ describe('DaemonSessionManager', () => {
     }
   });
 
+  it('scrubs a CASE-VARIANT WMUX_DATA_SUFFIX from a replayed blob (Windows env is case-insensitive)', () => {
+    const prev = process.env.WMUX_DATA_SUFFIX;
+    delete process.env.WMUX_DATA_SUFFIX; // production daemon: no suffix
+    try {
+      manager.createSession({
+        id: 'suffix-case',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        env: { wmux_data_suffix: '-stale', FOO: 'bar' }, // lowercase variant survives stripReservedAuth
+      });
+      const spawned = lastMockPty?.spawnEnv ?? {};
+      const anyVariant = Object.keys(spawned).some((k) => k.toUpperCase() === 'WMUX_DATA_SUFFIX');
+      expect(anyVariant).toBe(false); // no case-variant reaches the child
+      expect(spawned.FOO).toBe('bar');
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_DATA_SUFFIX; else process.env.WMUX_DATA_SUFFIX = prev;
+    }
+  });
+
   it("propagates the daemon's own suffix in the process.env fallback (no supplied env)", () => {
     const prev = process.env.WMUX_DATA_SUFFIX;
     process.env.WMUX_DATA_SUFFIX = '-rc35';

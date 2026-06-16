@@ -16,7 +16,7 @@ import { readPtyBufferLines } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, type PaneAddress } from './a2aAddressing';
 
 // ---------------------------------------------------------------------------
 // Pane tree utilities
@@ -1351,6 +1351,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       if (task.metadata.from.workspaceId !== workspaceId && task.metadata.to.workspaceId !== workspaceId) {
         return { error: 'a2a.task.send: not authorized to reply to this task' };
       }
+      // NOTE: for a SAME-workspace task (from.ws === to.ws) this collapses to
+      // 'user' for either party — the sender/receiver distinction needs per-pane
+      // identity, deferred to the from.ptyId model (S-C2). Delivery for same-ws
+      // tasks is suppressed below, so the only residual effect is the stored
+      // history role; documented interim limitation, not a cross-ws regression.
       const role = task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent';
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
       store.addTaskMessage(taskId, msg);
@@ -1465,8 +1470,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // Same-workspace send policy (relocated self-guard + KS-1 true-self guard).
     // senderPtyId is the caller's OWN pane anchor, supplied by the MCP server on
     // a verified PID-map hit (absent on the env-hint fallback → fail closed on
-    // the paste, see suppressPaste below).
-    const senderPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
+    // the paste, see suppressPaste below). It is NOT an agent-settable tool param;
+    // as defense-in-depth for the main-pipe/token path, only trust it if it
+    // resolves to a real terminal pty in the SENDER's own workspace — a bogus /
+    // foreign value is treated as ABSENT (→ silent), never as a loud-paste enabler.
+    const rawSenderPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
+    const senderPtyId = (sender && isTerminalPtyInLeaves(findLeafPanes(sender.rootPane), rawSenderPtyId)) ? rawSenderPtyId : '';
     const sameWsDecision = decideSameWsSend(target.id === workspaceId, resolvedAddr?.ptyId, senderPtyId);
     if (sameWsDecision.kind === 'reject') return { error: `a2a.task.send: ${sameWsDecision.error}` };
 
@@ -1576,6 +1585,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       if (task.metadata.from.workspaceId !== workspaceId && task.metadata.to.workspaceId !== workspaceId) {
         return { error: 'a2a.task.update: not authorized' };
       }
+      // Same-ws role collapses to 'user' for either party (see the a2a.task.send
+      // reply branch) — per-pane role needs the from.ptyId model (S-C2). Delivery
+      // is suppressed for same-ws below, so only the stored history role is
+      // affected; documented interim limitation.
       const role = task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent';
 
       const parts: Part[] = [{ kind: 'text', text: message }];
@@ -1587,9 +1600,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       // (its prompt is not corrupted); a receiver with no live agent keeps the
       // loud paste. Mirrors the a2a.task.send reply branch so EVERY delivery
       // path honors the live-agent protection, not just the initial send.
+      // Same-ws task: suppress the PTY paste (mirrors the a2a.task.send reply
+      // branch). A same-ws update has no reliable per-pane reply address and
+      // would paste to the ws active pane — risking a loop into the caller's own
+      // or an uninvolved pane. The update is still persisted + teed onto the bus,
+      // so the other pane sees it via a2a_task_query.
+      const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
       const targetWsId = role === 'user' ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
       const targetWs = store.workspaces.find((w) => w.id === targetWsId);
-      if (targetWs) {
+      if (targetWs && !sameWsTask) {
         const callerWs = store.workspaces.find((w) => w.id === workspaceId);
         const callerName = callerWs?.name ?? 'unknown';
         if (isLiveTuiAgent(targetWs.metadata)) {
