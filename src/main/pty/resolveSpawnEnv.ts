@@ -1,5 +1,6 @@
 import { buildSafeChildEnv } from '../../shared/envFilter';
 import { applyProfileEnv } from '../../shared/workspaceProfile';
+import { ENV_KEYS } from '../../shared/constants';
 
 /**
  * Resolve the environment for a NEW child PTY, in the single canonical order
@@ -30,6 +31,15 @@ export function resolveSpawnEnv(
   identity: Record<string, string>,
 ): Record<string, string> {
   const env = buildSafeChildEnv(baseEnv);
+  // Capture the instance-isolation suffix from the SPAWNING process's own env
+  // BEFORE the blanket WMUX_* strip below, and re-apply it last (like identity).
+  // It is NOT an ownership claim — it only selects which instance a child joins —
+  // so unlike WORKSPACE_ID/SURFACE_ID/SOCKET_PATH it must SURVIVE: without it an
+  // isolated (dev / dogfood) pane's agent/MCP/CLI computes an empty suffix and
+  // connects to the PRODUCTION control pipe, where it can drive the user's real
+  // workspaces. Sourced ONLY from baseEnv (main/daemon's own env), never from
+  // profileEnv — so it isolates without being a spoofable identity.
+  const dataSuffix = baseEnv[ENV_KEYS.DATA_SUFFIX];
   // Drop the ENTIRE reserved WMUX_* namespace from the baseline before we
   // overlay or force anything. buildSafeChildEnv only strips WMUX_AUTH*, so a
   // wmux launched from inside a wmux pane (e.g. `npm start` while dogfooding)
@@ -48,5 +58,11 @@ export function resolveSpawnEnv(
   for (const [k, v] of Object.entries(identity)) {
     if (typeof v === 'string') env[k] = v;
   }
+  // Re-apply the captured suffix AFTER identity (same "forced last, unspoofable"
+  // discipline). A profile can never set it (applyProfileEnv skips WMUX_*); only
+  // the spawning process's real suffix survives. baseEnv here is always the live
+  // process.env (never a persisted blob), so a simple presence check is enough —
+  // the daemon recovery path scrubs a stale blob suffix separately.
+  if (typeof dataSuffix === 'string' && dataSuffix) env[ENV_KEYS.DATA_SUFFIX] = dataSuffix;
   return env;
 }

@@ -144,6 +144,76 @@ describe('DaemonSessionManager', () => {
     expect(lastMockPty?.spawnEnv?.WMUX_AUTH_TOKEN).toBeUndefined();
   });
 
+  // Instance-isolation suffix (WMUX_DATA_SUFFIX) must always reflect THIS
+  // daemon's own instance, never a value carried in a replayed/persisted env
+  // blob — otherwise a recovered pane could be pointed at a DIFFERENT instance's
+  // control pipe. stripReservedAuth keeps non-auth WMUX_* from a supplied env, so
+  // the daemon forces its own inherited suffix over the blob (and scrubs it when
+  // the daemon itself has none).
+  it("forces the daemon's own WMUX_DATA_SUFFIX over a replayed env blob", () => {
+    const prev = process.env.WMUX_DATA_SUFFIX;
+    process.env.WMUX_DATA_SUFFIX = '-rc35';
+    try {
+      manager.createSession({
+        id: 'suffix-override',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        env: { WMUX_DATA_SUFFIX: '-attacker', FOO: 'bar' },
+      });
+      expect(lastMockPty?.spawnEnv?.WMUX_DATA_SUFFIX).toBe('-rc35'); // blob value overwritten
+      expect(lastMockPty?.spawnEnv?.FOO).toBe('bar');
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_DATA_SUFFIX; else process.env.WMUX_DATA_SUFFIX = prev;
+    }
+  });
+
+  it('scrubs a stale WMUX_DATA_SUFFIX from a replayed blob when the daemon has none (prod)', () => {
+    const prev = process.env.WMUX_DATA_SUFFIX;
+    delete process.env.WMUX_DATA_SUFFIX; // production daemon: no suffix
+    try {
+      manager.createSession({
+        id: 'suffix-scrub',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        env: { WMUX_DATA_SUFFIX: '-dev', FOO: 'bar' },
+      });
+      expect(lastMockPty?.spawnEnv?.WMUX_DATA_SUFFIX).toBeUndefined(); // not left on the '-dev' pipe
+      expect(lastMockPty?.spawnEnv?.FOO).toBe('bar');
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_DATA_SUFFIX; else process.env.WMUX_DATA_SUFFIX = prev;
+    }
+  });
+
+  it('scrubs a CASE-VARIANT WMUX_DATA_SUFFIX from a replayed blob (Windows env is case-insensitive)', () => {
+    const prev = process.env.WMUX_DATA_SUFFIX;
+    delete process.env.WMUX_DATA_SUFFIX; // production daemon: no suffix
+    try {
+      manager.createSession({
+        id: 'suffix-case',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        env: { wmux_data_suffix: '-stale', FOO: 'bar' }, // lowercase variant survives stripReservedAuth
+      });
+      const spawned = lastMockPty?.spawnEnv ?? {};
+      const anyVariant = Object.keys(spawned).some((k) => k.toUpperCase() === 'WMUX_DATA_SUFFIX');
+      expect(anyVariant).toBe(false); // no case-variant reaches the child
+      expect(spawned.FOO).toBe('bar');
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_DATA_SUFFIX; else process.env.WMUX_DATA_SUFFIX = prev;
+    }
+  });
+
+  it("propagates the daemon's own suffix in the process.env fallback (no supplied env)", () => {
+    const prev = process.env.WMUX_DATA_SUFFIX;
+    process.env.WMUX_DATA_SUFFIX = '-rc35';
+    try {
+      manager.createSession({ id: 'suffix-fallback', cmd: 'cmd.exe', cwd: '.' }); // no env
+      expect(lastMockPty?.spawnEnv?.WMUX_DATA_SUFFIX).toBe('-rc35');
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_DATA_SUFFIX; else process.env.WMUX_DATA_SUFFIX = prev;
+    }
+  });
+
   it('emits session:created event', () => {
     const handler = vi.fn();
     manager.on('session:created', handler);

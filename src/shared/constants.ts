@@ -204,6 +204,13 @@ export const ENV_KEYS = {
   // hook bridge). Lets a hook attribute its capture to the EXACT pane instead of
   // collapsing to the workspace's active surface (split-pane / shared-cwd fix).
   PTY_ID: 'WMUX_PTY_ID',
+  // Instance-isolation suffix (dev / dogfood vs prod). Re-keys the control pipe
+  // + data dir — see dataSuffix() / getPipeName(). Unlike the identity vars it is
+  // NOT an ownership claim; it only selects WHICH instance a child joins, so it
+  // is deliberately PROPAGATED to child PTYs (forced from the spawning process's
+  // OWN env, never a child/profile value) so an agent/MCP/CLI inside a pane
+  // re-keys onto THIS instance's pipe instead of silently leaking onto production.
+  DATA_SUFFIX: 'WMUX_DATA_SUFFIX',
   SOCKET_PATH: 'WMUX_SOCKET_PATH',
   AUTH_TOKEN: 'WMUX_AUTH_TOKEN',
   SHELL_HOOK: 'WMUX_SHELL_HOOK',

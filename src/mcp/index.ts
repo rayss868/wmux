@@ -40,6 +40,12 @@ function getVersion(): string {
 // fall back to the env hint only when the live map is unavailable.
 const ENV_WORKSPACE_HINT = process.env.WMUX_WORKSPACE_ID || '';
 let MY_WORKSPACE_ID = '';
+// Our OWN pane anchor (ptyId), captured alongside MY_WORKSPACE_ID on a verified
+// PID-map hit. Threaded to a2a.task.send as `senderPtyId` so the renderer can
+// reject a true self-send (addressing our own pane). Empty when identity came
+// from the env-hint fallback (no PID match) — the renderer then fails closed by
+// suppressing the same-ws paste rather than trusting an absent guard.
+let MY_PTY_ID = '';
 let workspaceResolved = false;
 
 const server = new McpServer({
@@ -94,9 +100,11 @@ function invalidateWorkspaceId(): void {
  */
 async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   let mappings: Record<string, string> | undefined;
+  let entries: Array<{ pid: string; ptyId: string; workspaceId: string }> | undefined;
   try {
     const result = await sendRpc('a2a.resolve.identity' as RpcMethod, {});
     mappings = (result as { mappings: Record<string, string> }).mappings;
+    entries = (result as { entries?: Array<{ pid: string; ptyId: string; workspaceId: string }> }).entries;
   } catch {
     return { status: 'rpc-down' };
   }
@@ -104,17 +112,36 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     return { status: 'empty-map' };
   }
 
-  const knownPids = new Map<number, string>();
-  for (const [pidStr, wsId] of Object.entries(mappings)) {
-    const pid = parseInt(pidStr, 10);
-    if (!isNaN(pid)) knownPids.set(pid, wsId);
+  // Prefer entries[] — it carries the immutable ptyId anchor per PID, so a
+  // verified hit can also surface the caller's OWN ptyId (used by A2A send to
+  // reject a true self-send). Fall back to mappings (pid→wsId, no ptyId) if an
+  // older main omits entries; the wsId resolution is identical either way.
+  const knownPids = new Map<number, { wsId: string; ptyId?: string }>();
+  if (entries && entries.length > 0) {
+    for (const e of entries) {
+      const pid = parseInt(e.pid, 10);
+      if (!isNaN(pid)) knownPids.set(pid, { wsId: e.workspaceId, ptyId: e.ptyId });
+    }
+  } else {
+    for (const [pidStr, wsId] of Object.entries(mappings)) {
+      const pid = parseInt(pidStr, 10);
+      if (!isNaN(pid)) knownPids.set(pid, { wsId });
+    }
   }
 
   // Walk process tree upward: MCP server → Claude Code → shell(PTY)
   let currentPid = process.ppid;
   for (let depth = 0; depth < 10; depth++) {
-    const wsId = knownPids.get(currentPid);
-    if (wsId) return { status: 'hit', wsId };
+    const match = knownPids.get(currentPid);
+    if (match) {
+      // Capture our OWN pane anchor on EVERY verified hit — including when a
+      // terminal tool warms this lookup before any A2A call. resolveWorkspaceId's
+      // cache fast-path returns without re-running this walk, so setting MY_PTY_ID
+      // only there would leave it empty whenever a terminal op resolved identity
+      // first (senderPtyId would then be silently absent on the next send).
+      MY_PTY_ID = match.ptyId ?? '';
+      return { status: 'hit', wsId: match.wsId, ptyId: match.ptyId };
+    }
     const parentPid = await getParentPid(currentPid);
     if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
     currentPid = parentPid;
@@ -139,6 +166,8 @@ async function resolveWorkspaceId(): Promise<string> {
   const lookup = await lookupPidMapWorkspace();
   if (lookup.status === 'hit') {
     MY_WORKSPACE_ID = lookup.wsId;
+    // MY_PTY_ID is set inside lookupPidMapWorkspace on the hit (so the
+    // terminal-route warm path populates it too — see there).
     workspaceResolved = true;
     return MY_WORKSPACE_ID;
   }
@@ -166,6 +195,7 @@ async function resolveWorkspaceId(): Promise<string> {
   // (workspace.list transiently down) to carry the call through a boot blip.
   if (MY_WORKSPACE_ID && (await isLiveWorkspace(MY_WORKSPACE_ID)) === 'absent') {
     MY_WORKSPACE_ID = '';
+    MY_PTY_ID = '';
     workspaceResolved = false;
   }
   return MY_WORKSPACE_ID;
@@ -572,6 +602,12 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
     workspaceId: wsId,
     message,
   };
+  // KS-1 (true self-send guard): include our OWN verified ptyId so the renderer
+  // can reject addressing our own pane (bracket-paste + forced submit into our
+  // own prompt = loop) and can safely allow a loud same-ws sibling paste.
+  // Best-effort: only present on a verified PID-map hit; absent on the env-hint
+  // fallback, where the renderer fails closed by suppressing the same-ws paste.
+  if (MY_PTY_ID) params.senderPtyId = MY_PTY_ID;
   if (task_id) params.taskId = task_id;
   if (to) params.to = to;
   // Pane-level addressing: route delivery to a specific pane/surface inside the

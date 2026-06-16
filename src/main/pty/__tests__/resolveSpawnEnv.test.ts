@@ -77,4 +77,34 @@ describe('resolveSpawnEnv', () => {
     expect(env.wmux_socket_path).toBeUndefined();
     expect(env.PATH).toBe('/p');
   });
+
+  it('propagates the instance-isolation suffix from the spawning env (dogfood pipe, not prod)', () => {
+    // WMUX_DATA_SUFFIX selects which instance a child joins; unlike identity it
+    // must SURVIVE the WMUX_* strip, else an isolated pane's agent/MCP/CLI
+    // computes an empty suffix and connects to the PRODUCTION control pipe.
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin', WMUX_DATA_SUFFIX: '-rc35' },
+      undefined,
+      { WMUX_WORKSPACE_ID: 'child-ws' },
+    );
+    expect(env.WMUX_DATA_SUFFIX).toBe('-rc35'); // re-keyed onto THIS instance
+    expect(env.WMUX_WORKSPACE_ID).toBe('child-ws');
+  });
+
+  it('never lets a profile set the isolation suffix (only the spawning env)', () => {
+    // A profile cannot redirect a child onto another instance's pipe:
+    // applyProfileEnv skips reserved WMUX_*, and the suffix is re-applied ONLY
+    // from baseEnv (the spawning process's real env).
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin' },              // real env has NO suffix
+      { WMUX_DATA_SUFFIX: '-attacker' }, // profile tries to inject one
+      {},
+    );
+    expect(env.WMUX_DATA_SUFFIX).toBeUndefined();
+  });
+
+  it('omits the suffix when the spawning env has none (production child stays on the prod pipe)', () => {
+    const env = resolveSpawnEnv({ PATH: '/usr/bin' }, undefined, {});
+    expect(env.WMUX_DATA_SUFFIX).toBeUndefined();
+  });
 });
