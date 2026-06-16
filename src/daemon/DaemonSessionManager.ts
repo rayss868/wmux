@@ -249,6 +249,22 @@ export class DaemonSessionManager extends EventEmitter {
     // across reboot. This is the join key the spool ingest matches on.
     env[ENV_KEYS.PTY_ID] = params.id;
 
+    // Instance-isolation suffix: force the child onto THIS daemon's instance (its
+    // own inherited WMUX_DATA_SUFFIX), overriding whatever a replayed session.env
+    // blob carried. The recovery path above runs stripReservedAuth, which strips
+    // only WMUX_AUTH* — so a persisted (or hand-edited) WMUX_DATA_SUFFIX would
+    // otherwise survive verbatim and could point a recovered pane at a DIFFERENT
+    // instance's control pipe. Sourced ONLY from the daemon's own process.env (the
+    // authoritative instance key, inherited from main at spawn), never a child-
+    // supplied value. The delete branch is the security-critical half: a
+    // production daemon (no suffix) recovering a '-dev'-tainted blob must SCRUB the
+    // key, not leave the child on the dev pipe.
+    if (globalThis.process.env[ENV_KEYS.DATA_SUFFIX]) {
+      env[ENV_KEYS.DATA_SUFFIX] = globalThis.process.env[ENV_KEYS.DATA_SUFFIX] as string;
+    } else {
+      delete env[ENV_KEYS.DATA_SUFFIX];
+    }
+
     let spawnArgs: string[] = [];
     if (params.exec) {
       // X8 exec unit: the command IS the pane process — no interactive
