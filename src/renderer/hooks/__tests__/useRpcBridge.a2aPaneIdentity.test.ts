@@ -54,6 +54,36 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     // the resolved target ws id is returned for the main-side execute path
     expect(block).toMatch(/toWorkspaceId: target\.id/);
   });
+
+  it('a2a.task.send replaces the whole-ws self-guard with per-pane decideSameWsSend', () => {
+    const block = region("method === 'a2a\\.task\\.send'", "method === 'a2a\\.task\\.query'");
+    // the old workspace-granular guard is gone (it blocked legitimate sibling sends)
+    expect(block).not.toMatch(/cannot send to yourself/);
+    // the relocated guard runs AFTER address resolution, keyed on the sender's
+    // own verified ptyId (threaded from the MCP server as params.senderPtyId)
+    expect(block).toMatch(/const senderPtyId = typeof params\.senderPtyId === 'string'/);
+    expect(block).toMatch(/decideSameWsSend\(target\.id === workspaceId, resolvedAddr\?\.ptyId, senderPtyId\)/);
+    expect(block).toMatch(/sameWsDecision\.kind === 'reject'/);
+    // delivery is gated by suppressPaste (silent OR same-ws-can't-prove-non-self)
+    expect(block).toMatch(/const suppressPaste = silent \|\| sameWsDecision\.suppressPaste/);
+    expect(block).toMatch(/if \(!suppressPaste\)/);
+    // same-ws task replies suppress the PTY paste (no active-pane loop)
+    expect(block).toMatch(/const sameWsTask = task\.metadata\.from\.workspaceId === task\.metadata\.to\.workspaceId/);
+    expect(block).toMatch(/if \(!silent && !sameWsTask\)/);
+  });
+});
+
+describe('mcp — A2A send threads the caller\'s own ptyId (KS-1 self-send guard)', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', 'mcp', 'index.ts'),
+    'utf-8',
+  );
+  it('captures MY_PTY_ID on a verified hit and forwards it as senderPtyId', () => {
+    // hit path records the caller's own pane anchor …
+    expect(src).toMatch(/MY_PTY_ID = lookup\.ptyId/);
+    // … and the send handler forwards it (best-effort: only when present).
+    expect(src).toMatch(/if \(MY_PTY_ID\) params\.senderPtyId = MY_PTY_ID/);
+  });
 });
 
 describe('a2a.rpc — execute uses the resolved workspaceId', () => {

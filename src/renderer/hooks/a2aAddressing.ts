@@ -61,3 +61,53 @@ export function resolvePaneAddress(
   if (!term) return { error: `pane_id "${paneId}" has no terminal surface` };
   return { ptyId: term.ptyId, paneId: leaf.id, surfaceId: term.id };
 }
+
+export type SameWsSendDecision =
+  | { kind: 'reject'; error: string }
+  | { kind: 'deliver'; suppressPaste: boolean };
+
+/**
+ * Decide whether an A2A NEW-TASK send is allowed and whether its PTY paste must
+ * be suppressed, once same-workspace pane-to-pane sends are permitted. Pure so
+ * it is unit-testable (useRpcBridge can't be imported under vitest).
+ *
+ * The historical guard rejected ANY same-workspace send ("cannot send to
+ * yourself"), which also blocked legitimate sibling-pane delivery. Now the rule
+ * is per-pane:
+ *
+ *  - Different workspace → always deliver (cross-ws path unchanged).
+ *  - Same workspace, NO resolved pane address → REJECT: ambiguous; a bare
+ *    same-ws send would fall back to the sender's own active pane and loop.
+ *  - Same workspace, resolved address == sender's OWN pty (only knowable when
+ *    senderPtyId is present) → REJECT: true self-send = bracket-paste + forced
+ *    submit into your own prompt = loop.
+ *  - Same workspace, resolved SIBLING address, senderPtyId VERIFIED (present and
+ *    ≠ target) → deliver with a loud paste (we proved it isn't self).
+ *  - Same workspace, resolved address but senderPtyId ABSENT → deliver but
+ *    SUPPRESS the paste. Absent senderPtyId is the common case (PID-map miss →
+ *    env-hint identity), so we cannot prove the target isn't the sender's own
+ *    pane; fail closed on the PASTE only. The task is still persisted + teed onto
+ *    the EventBus, so a sibling still receives it (pollable via a2a_task_query)
+ *    and a self-addressed send is at worst a no-op pointer — never a loop.
+ */
+export function decideSameWsSend(
+  targetIsSelfWorkspace: boolean,
+  resolvedPtyId: string | undefined,
+  senderPtyId: string,
+): SameWsSendDecision {
+  if (!targetIsSelfWorkspace) return { kind: 'deliver', suppressPaste: false };
+  if (!resolvedPtyId) {
+    return {
+      kind: 'reject',
+      error:
+        'cannot send to your own workspace without addressing a specific pane ' +
+        '(pass pane_id or surface_id of a sibling pane)',
+    };
+  }
+  if (senderPtyId && resolvedPtyId === senderPtyId) {
+    return { kind: 'reject', error: 'cannot send to your own pane' };
+  }
+  // Verified sibling (senderPtyId present and ≠ target) → loud paste; otherwise
+  // (senderPtyId absent) deliver silently so an unprovable self-send can't loop.
+  return { kind: 'deliver', suppressPaste: !senderPtyId };
+}

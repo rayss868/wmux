@@ -22,6 +22,11 @@ export default function ExecuteApprovalDialog() {
 
   const senderName = workspaces.find((w) => w.id === approval.senderWorkspaceId)?.name ?? approval.senderWorkspaceId ?? 'unknown sender';
   const receiverName = workspaces.find((w) => w.id === approval.receiverWorkspaceId)?.name ?? approval.receiverWorkspaceId ?? 'unknown receiver';
+  // Same-workspace execute (an agent asking to spawn an autonomous agent in its
+  // OWN workspace). The default "remote A2A caller … in this workspace" wording
+  // implies an inter-workspace handoff and reads as harmless; be explicit so the
+  // user isn't social-engineered into waving through a self-spawned bypass agent.
+  const sameWs = !!approval.senderWorkspaceId && approval.senderWorkspaceId === approval.receiverWorkspaceId;
   const remainingMs = Math.max(0, approval.expiresAt - now);
   const remainingSec = Math.ceil(remainingMs / 1000);
 
@@ -53,8 +58,18 @@ export default function ExecuteApprovalDialog() {
           </p>
         </div>
         <p className="text-xs" style={{ color: 'var(--text-sub)' }}>
-          A remote A2A caller wants to spawn a Claude CLI with{' '}
-          <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span> in this workspace.
+          {sameWs ? (
+            <>
+              An agent in <span style={{ color: 'var(--accent-red)' }}>this workspace</span> wants to spawn
+              another autonomous Claude CLI with{' '}
+              <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span> in the same workspace.
+            </>
+          ) : (
+            <>
+              A remote A2A caller wants to spawn a Claude CLI with{' '}
+              <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span> in this workspace.
+            </>
+          )}
         </p>
         <div
           className="text-xs font-mono flex flex-col gap-1 p-3 rounded-md"

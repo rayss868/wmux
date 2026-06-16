@@ -16,7 +16,7 @@ import { readPtyBufferLines } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, type PaneAddress } from './a2aAddressing';
 
 // ---------------------------------------------------------------------------
 // Pane tree utilities
@@ -1360,7 +1360,16 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       // a live TUI agent, send a one-line nudge instead of the full body so we
       // don't corrupt its prompt; otherwise (no live agent, or explicit
       // silent:false) keep the loud full-body paste.
-      if (!silent) {
+      // Same-ws task reply safety: a task whose from/to are the SAME workspace
+      // has no reliable per-pane reply address (the `from` side carries none), so
+      // the active-pane delivery below could paste back into the sender's own
+      // pane (loop) or an uninvolved pane. Suppress the paste for same-ws tasks;
+      // the reply is still persisted (addTaskMessage above) + queryable via
+      // a2a_task_query. NOTE: same-ws reply/status authz stays workspace-granular
+      // (any pane in the ws can reply) pending the per-pane `from.ptyId` model
+      // (S-C2 follow-up) — a documented limitation, not a cross-ws regression.
+      const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
+      if (!silent && !sameWsTask) {
         const replyingToReceiver = role === 'user';
         const targetWsId = replyingToReceiver ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
         const targetWs = store.workspaces.find((w) => w.id === targetWsId);
@@ -1426,7 +1435,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       const available = store.workspaces.map((w) => w.name).join(', ');
       return { error: `a2a.task.send: target "${to}" not found. Available: ${available}` };
     }
-    if (target.id === workspaceId) return { error: 'a2a.task.send: cannot send to yourself' };
+    // The same-workspace self-guard moved BELOW pane-address resolution (see
+    // decideSameWsSend) so a precise sibling-pane address is honored. A same-ws
+    // send is now rejected only when it has NO address (ambiguous) or resolves to
+    // the sender's OWN pane (true self). Cross-ws sends are unaffected.
 
     // Part A — optional pane-level addressing. Resolve paneId/surfaceId to a
     // concrete pty INSIDE the target ws (cross-ws ids fail-closed: only
@@ -1450,6 +1462,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       resolvedAddr = addr;
     }
 
+    // Same-workspace send policy (relocated self-guard + KS-1 true-self guard).
+    // senderPtyId is the caller's OWN pane anchor, supplied by the MCP server on
+    // a verified PID-map hit (absent on the env-hint fallback → fail closed on
+    // the paste, see suppressPaste below).
+    const senderPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
+    const sameWsDecision = decideSameWsSend(target.id === workspaceId, resolvedAddr?.ptyId, senderPtyId);
+    if (sameWsDecision.kind === 'reject') return { error: `a2a.task.send: ${sameWsDecision.error}` };
+
     const initialMessage: Message = { kind: 'message', messageId: generateId('msg'), role: 'user', parts };
 
     const newTaskId = store.createA2aTask({
@@ -1469,7 +1489,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // receiver must poll via a2a_task_query to discover it. silent-default:
     // an unset silent + live-TUI receiver gets a one-line nudge (prompt not
     // flooded); no live agent (or explicit silent:false) keeps the loud paste.
-    if (!silent) {
+    // Suppress the PTY paste when the user asked (silent) OR when a same-ws send
+    // can't be proven non-self (decideSameWsSend → suppressPaste). The task is
+    // still created + teed onto the EventBus below, so a sibling can poll it via
+    // a2a_task_query — only the loud prompt injection is withheld.
+    const suppressPaste = silent || sameWsDecision.suppressPaste;
+    if (!suppressPaste) {
       const explicitPty = resolvedAddr?.ptyId;
       // Liveness for the nudge-vs-paste choice must reflect the ADDRESSED pane's
       // agent (a workspace can host >1 agent), not ws-level metadata.

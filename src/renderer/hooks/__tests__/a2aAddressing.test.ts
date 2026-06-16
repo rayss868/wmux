@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PaneLeaf, Surface } from '../../../shared/types';
-import { resolvePaneAddress, activePaneTerminalPty } from '../a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend } from '../a2aAddressing';
 
 function surface(id: string, ptyId: string, surfaceType: Surface['surfaceType'] = 'terminal'): Surface {
   return { id, ptyId, title: id, shell: '', cwd: '', surfaceType } as Surface;
@@ -67,5 +67,35 @@ describe('activePaneTerminalPty', () => {
   });
   it('returns null when no terminal surface exists', () => {
     expect(activePaneTerminalPty([leaf('p', [surface('w', 'pw', 'browser')])], 'p')).toBeNull();
+  });
+});
+
+describe('decideSameWsSend', () => {
+  it('cross-workspace send always delivers loud (path unchanged)', () => {
+    expect(decideSameWsSend(false, 'pty-X', '')).toEqual({ kind: 'deliver', suppressPaste: false });
+    expect(decideSameWsSend(false, undefined, 'pty-self')).toEqual({ kind: 'deliver', suppressPaste: false });
+  });
+
+  it('same-ws with NO resolved address is rejected (ambiguous → would loop to self)', () => {
+    const r = decideSameWsSend(true, undefined, 'pty-self');
+    expect(r.kind).toBe('reject');
+    expect(r.kind === 'reject' && r.error).toMatch(/without addressing a specific pane/);
+  });
+
+  it('same-ws addressing the sender\'s OWN pane is rejected (true self-send loop)', () => {
+    const r = decideSameWsSend(true, 'pty-self', 'pty-self');
+    expect(r.kind).toBe('reject');
+    expect(r.kind === 'reject' && r.error).toMatch(/your own pane/);
+  });
+
+  it('same-ws sibling pane with a VERIFIED sender pty delivers loud', () => {
+    // senderPtyId present and ≠ target → proven not-self → loud paste allowed.
+    expect(decideSameWsSend(true, 'pty-sibling', 'pty-self')).toEqual({ kind: 'deliver', suppressPaste: false });
+  });
+
+  it('same-ws sibling pane with an ABSENT sender pty delivers SILENT (fail-closed paste)', () => {
+    // Common pid-map-miss / env-hint case: we cannot prove the target isn't self,
+    // so suppress the paste (task still persisted + pollable) — never a loop.
+    expect(decideSameWsSend(true, 'pty-sibling', '')).toEqual({ kind: 'deliver', suppressPaste: true });
   });
 });

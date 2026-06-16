@@ -37,7 +37,7 @@
 import type { PinnedRoute } from './paneResolver';
 
 export type PidMapLookup =
-  | { status: 'hit'; wsId: string }
+  | { status: 'hit'; wsId: string; ptyId?: string } // ptyId = the caller's OWN pane anchor (A2A self-send guard); terminal routing ignores it
   | { status: 'miss' } // map non-empty but our process chain isn't in it → confirmed external
   | { status: 'rpc-down' } // a2a.resolve.identity threw → transient (daemon unreachable)
   | { status: 'empty-map' }; // RPC answered but mappings empty → boot/respawn reconcile window
