@@ -140,6 +140,23 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     return () => window.removeEventListener('keydown', handler);
   }, [isActive]);
 
+  // Pull DOM keyboard focus onto the webview when this surface is the active
+  // one. useActivePaneFocus deliberately skips browser/editor surfaces (they
+  // have no xterm to focus), so without this the keyboard focus stays on the
+  // previously focused terminal / <body> and every keystroke in the page is
+  // dropped — mouse works (Electron handles pointer natively) but typing does
+  // nothing (#252, pre-existing since #75).
+  //
+  // Gated on `isActive` (focus), NOT `visible` (display): in a terminal+browser
+  // split BOTH sides are visible but only one is active, and focus must follow
+  // the active surface so the browser never steals focus from the terminal
+  // side. `isReady` ensures the guest webContents exists before we focus it.
+  // DOM focus is singular, so webview.focus() moves focus off the prior xterm.
+  useEffect(() => {
+    if (!isActive || !(visible ?? isActive) || !isReady) return;
+    webviewRef.current?.focus();
+  }, [isActive, visible, isReady]);
+
   const handleNavigate = useCallback((url: string) => {
     if (!isSafeBrowserUrl(url)) return;
     const wv = webviewRef.current;
@@ -326,6 +343,12 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
   return (
     <div
       className="flex flex-col h-full w-full overflow-hidden"
+      // Clicking the toolbar / title strip / page chrome (anywhere in the
+      // pane) pulls keyboard focus onto the webview. Clicking *inside* page
+      // content already focuses the guest natively, but pane-switch clicks and
+      // clicks on our own chrome do not — without this, keyboard input stays
+      // dead after such a click (#252).
+      onClick={() => webviewRef.current?.focus()}
       style={{
         position: 'absolute',
         inset: 0,
