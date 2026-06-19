@@ -197,6 +197,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     startupDirectory: state.startupDirectory || undefined,
     scrollbackLines: state.scrollbackLines,
     scrollbackRestoreEnabled: state.scrollbackRestoreEnabled,
+    a2aAutoApproveExecute: state.a2aAutoApproveExecute,
     sidebarPosition: state.sidebarPosition,
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,

@@ -15,11 +15,10 @@ import { resolveExecuteApproval } from './executeApproval';
 //     resolvePrompt/cancelPrompt, so an early local removal + a later push is
 //     harmless.
 //
-//   - a2a → resolveExecuteApproval(approved). Its settle() nulls
-//     pendingExecuteApproval, clears the 30s timer, and resolves the parked main
-//     Promise. We must NEVER call setPendingExecuteApproval(null) directly here:
-//     that would clear the renderer slot while orphaning the main Promise, which
-//     would then time out into a silent auto-deny.
+//   - a2a → resolveExecuteApproval(approvalId, approved). Its settle() removes
+//     exactly that approval, clears its 30s timer, and resolves the parked
+//     Promise. We must NEVER remove the store row directly here: that would clear
+//     the renderer slot while orphaning the Promise, which would then time out.
 export function resolveInboxItem(item: InboxItem, approved: boolean): void {
   switch (item.source) {
     case 'mcp': {
@@ -28,7 +27,7 @@ export function resolveInboxItem(item: InboxItem, approved: boolean): void {
       return;
     }
     case 'a2a': {
-      resolveExecuteApproval(approved);
+      resolveExecuteApproval(item.approvalId, approved);
       return;
     }
   }

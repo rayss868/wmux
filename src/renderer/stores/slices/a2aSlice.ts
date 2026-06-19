@@ -13,6 +13,7 @@ function isoNow(): string {
 
 /** Pending approval prompt for an A2A `execute:true` request. */
 export interface PendingExecuteApproval {
+  approvalId: string;
   taskId: string;
   senderWorkspaceId: string;
   receiverWorkspaceId: string;
@@ -29,11 +30,17 @@ export interface A2aSlice {
   // Agent skills: workspaceId -> AgentSkill[]
   a2aAgentSkills: Record<string, AgentSkill[] | null>;
 
-  /** Currently displayed execute-approval prompt, or null if none. */
+  /** Pending execute approvals keyed by approvalId. */
+  pendingExecuteApprovals: Record<string, PendingExecuteApproval>;
+  pendingExecuteApprovalOrder: string[];
+  /** Oldest displayed execute-approval prompt, or null if none. */
   pendingExecuteApproval: PendingExecuteApproval | null;
+  /** Global YOLO mode: auto-approve new A2A execute:true requests. */
+  a2aAutoApproveExecute: boolean;
 
   // Actions
   createA2aTask: (task: {
+    id?: string;
     title: string;
     // Optional pane-level anchors, passed verbatim into WmuxTaskMetadata. `to`
     // pins the receiver pane (Part A); `from` pins the sender pane (S-C2) so a
@@ -56,7 +63,10 @@ export interface A2aSlice {
   getTask: (taskId: string) => Task | undefined;
   setAgentSkills: (workspaceId: string, skills: AgentSkill[]) => void;
   getAgentSkills: (workspaceId: string) => AgentSkill[] | null;
+  enqueueExecuteApproval: (approval: PendingExecuteApproval) => void;
+  removeExecuteApproval: (approvalId: string) => void;
   setPendingExecuteApproval: (approval: PendingExecuteApproval | null) => void;
+  setA2aAutoApproveExecute: (enabled: boolean) => void;
 
   // GC
   gcTerminalTasks: () => void;
@@ -65,14 +75,42 @@ export interface A2aSlice {
 export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]], [], A2aSlice> = (set, get) => ({
   a2aTasks: {},
   a2aAgentSkills: {},
+  pendingExecuteApprovals: {},
+  pendingExecuteApprovalOrder: [],
   pendingExecuteApproval: null,
+  a2aAutoApproveExecute: false,
+
+  enqueueExecuteApproval: (approval) => set((state: StoreState) => {
+    const existing = state.pendingExecuteApprovals[approval.approvalId];
+    state.pendingExecuteApprovals[approval.approvalId] = approval;
+    if (!existing) state.pendingExecuteApprovalOrder.push(approval.approvalId);
+    const firstId = state.pendingExecuteApprovalOrder[0];
+    state.pendingExecuteApproval = firstId ? state.pendingExecuteApprovals[firstId] ?? null : null;
+  }),
+
+  removeExecuteApproval: (approvalId) => set((state: StoreState) => {
+    delete state.pendingExecuteApprovals[approvalId];
+    state.pendingExecuteApprovalOrder = state.pendingExecuteApprovalOrder.filter((id) => id !== approvalId);
+    const firstId = state.pendingExecuteApprovalOrder[0];
+    state.pendingExecuteApproval = firstId ? state.pendingExecuteApprovals[firstId] ?? null : null;
+  }),
 
   setPendingExecuteApproval: (approval) => set((state: StoreState) => {
+    state.pendingExecuteApprovals = {};
+    state.pendingExecuteApprovalOrder = [];
+    if (approval) {
+      state.pendingExecuteApprovals[approval.approvalId] = approval;
+      state.pendingExecuteApprovalOrder = [approval.approvalId];
+    }
     state.pendingExecuteApproval = approval;
   }),
 
+  setA2aAutoApproveExecute: (enabled) => set((state: StoreState) => {
+    state.a2aAutoApproveExecute = enabled;
+  }),
+
   createA2aTask: (input) => {
-    const id = generateId('task');
+    const id = input.id ?? generateId('task');
     const now = isoNow();
     set((state: StoreState) => {
       state.a2aTasks[id] = {

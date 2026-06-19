@@ -234,11 +234,13 @@ describe('a2aSlice — updateTaskStatus pane-granular authz (S-C2 P2)', () => {
 });
 
 describe('a2aSlice — pendingExecuteApproval', () => {
-  it('starts null and round-trips through setter', () => {
+  it('starts empty and round-trips through queue actions', () => {
     const store = createTestStore();
     expect(store.getState().pendingExecuteApproval).toBeNull();
+    expect(store.getState().pendingExecuteApprovalOrder).toEqual([]);
 
-    store.getState().setPendingExecuteApproval({
+    store.getState().enqueueExecuteApproval({
+      approvalId: 'approval-1',
       taskId: 'task-1',
       senderWorkspaceId: 'ws-from',
       receiverWorkspaceId: 'ws-to',
@@ -247,8 +249,43 @@ describe('a2aSlice — pendingExecuteApproval', () => {
       expiresAt: Date.now() + 30_000,
     });
     expect(store.getState().pendingExecuteApproval?.taskId).toBe('task-1');
+    expect(store.getState().pendingExecuteApprovalOrder).toEqual(['approval-1']);
 
-    store.getState().setPendingExecuteApproval(null);
+    store.getState().removeExecuteApproval('approval-1');
     expect(store.getState().pendingExecuteApproval).toBeNull();
+    expect(store.getState().pendingExecuteApprovalOrder).toEqual([]);
+  });
+
+  it('keeps the oldest approval as the legacy single prompt', () => {
+    const store = createTestStore();
+    store.getState().enqueueExecuteApproval({
+      approvalId: 'approval-1',
+      taskId: 'task-1',
+      senderWorkspaceId: 'ws-from',
+      receiverWorkspaceId: 'ws-to',
+      messagePreview: 'one',
+      cwd: null,
+      expiresAt: Date.now() + 30_000,
+    });
+    store.getState().enqueueExecuteApproval({
+      approvalId: 'approval-2',
+      taskId: 'task-2',
+      senderWorkspaceId: 'ws-from',
+      receiverWorkspaceId: 'ws-to',
+      messagePreview: 'two',
+      cwd: null,
+      expiresAt: Date.now() + 30_000,
+    });
+
+    expect(store.getState().pendingExecuteApproval?.approvalId).toBe('approval-1');
+    store.getState().removeExecuteApproval('approval-1');
+    expect(store.getState().pendingExecuteApproval?.approvalId).toBe('approval-2');
+  });
+
+  it('toggles global A2A execute auto-approve', () => {
+    const store = createTestStore();
+    expect(store.getState().a2aAutoApproveExecute).toBe(false);
+    store.getState().setA2aAutoApproveExecute(true);
+    expect(store.getState().a2aAutoApproveExecute).toBe(true);
   });
 });

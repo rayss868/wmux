@@ -11,6 +11,7 @@ function mcpPrompt(promptId: string, declaredCapabilities: string[], overrides: 
 
 function a2aApproval(taskId: string): PendingExecuteApproval {
   return {
+    approvalId: `approval-${taskId}`,
     taskId,
     senderWorkspaceId: 'ws-sender',
     receiverWorkspaceId: 'ws-receiver',
@@ -24,7 +25,8 @@ function fixture(over: Partial<ApprovalInboxState> = {}): ApprovalInboxState {
   return {
     mcpPrompts: {},
     mcpPromptOrder: [],
-    pendingExecuteApproval: null,
+    pendingExecuteApprovals: {},
+    pendingExecuteApprovalOrder: [],
     ...over,
   };
 }
@@ -40,12 +42,17 @@ describe('selectApprovalInbox', () => {
     expect(selectApprovalInbox(fixture())).toEqual([]);
   });
 
-  it('emits a single a2a item from pendingExecuteApproval', () => {
-    const items = selectApprovalInbox(fixture({ pendingExecuteApproval: a2aApproval('task-1') }));
+  it('emits a single a2a item from pendingExecuteApprovals', () => {
+    const approval = a2aApproval('task-1');
+    const items = selectApprovalInbox(fixture({
+      pendingExecuteApprovals: { [approval.approvalId]: approval },
+      pendingExecuteApprovalOrder: [approval.approvalId],
+    }));
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       source: 'a2a',
-      key: 'a2a:task-1',
+      key: 'a2a:approval-task-1',
+      approvalId: 'approval-task-1',
       taskId: 'task-1',
       messagePreview: 'run the build',
       expiresAt: 1_700_000_000_000,
@@ -53,6 +60,16 @@ describe('selectApprovalInbox', () => {
       receiverWorkspaceId: 'ws-receiver',
       cwd: 'C:\\repo',
     });
+  });
+
+  it('emits multiple a2a items in approval order', () => {
+    const a1 = a2aApproval('task-1');
+    const a2 = a2aApproval('task-2');
+    const items = selectApprovalInbox(fixture({
+      pendingExecuteApprovals: { [a1.approvalId]: a1, [a2.approvalId]: a2 },
+      pendingExecuteApprovalOrder: [a2.approvalId, a1.approvalId],
+    }));
+    expect(items.map((i) => i.key)).toEqual(['a2a:approval-task-2', 'a2a:approval-task-1']);
   });
 
   it('emits two concurrent MCP items keyed by promptId in insertion order', () => {
@@ -84,13 +101,14 @@ describe('selectApprovalInbox', () => {
   it('orders A2A first, then MCP', () => {
     const items = selectApprovalInbox(
       fixture({
-        pendingExecuteApproval: a2aApproval('task-1'),
+        pendingExecuteApprovals: { 'approval-task-1': a2aApproval('task-1') },
+        pendingExecuteApprovalOrder: ['approval-task-1'],
         mcpPrompts: { p1: mcpPrompt('p1', ['meta.read']) },
         mcpPromptOrder: ['p1'],
       }),
     );
     expect(items.map((i) => i.source)).toEqual(['a2a', 'mcp']);
-    expect(items[0].key).toBe('a2a:task-1');
+    expect(items[0].key).toBe('a2a:approval-task-1');
     expect(items[1].key).toBe('mcp:p1');
   });
 

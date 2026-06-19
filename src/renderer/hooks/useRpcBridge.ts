@@ -9,7 +9,7 @@ import { generateId } from '../../shared/types';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
-import { setExecuteApprovalResolver } from '../utils/executeApproval';
+import { resolveExecuteApproval, setExecuteApprovalResolver } from '../utils/executeApproval';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import { terminalRegistry } from './useTerminal';
 import { readPtyBufferLines } from '../utils/terminalTail';
@@ -107,6 +107,43 @@ function submitToPty(ptyId: string, text: string): void {
 
 type RpcParams = Record<string, unknown>;
 type RpcResult = unknown;
+
+const EXECUTE_APPROVAL_TIMEOUT_MS = 30_000;
+
+function requestExecuteApproval(input: {
+  taskId: string;
+  senderWorkspaceId: string;
+  receiverWorkspaceId: string;
+  messagePreview: string;
+  cwd: string | null;
+}): Promise<boolean> {
+  if (useStore.getState().a2aAutoApproveExecute) return Promise.resolve(true);
+
+  const approvalId = generateId('approval');
+  const expiresAt = Date.now() + EXECUTE_APPROVAL_TIMEOUT_MS;
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const settle = (approved: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      useStore.getState().removeExecuteApproval(approvalId);
+      resolve(approved);
+    };
+    const timer = setTimeout(() => resolveExecuteApproval(approvalId, false), EXECUTE_APPROVAL_TIMEOUT_MS);
+    setExecuteApprovalResolver(approvalId, settle);
+    useStore.getState().enqueueExecuteApproval({
+      approvalId,
+      taskId: input.taskId,
+      senderWorkspaceId: input.senderWorkspaceId,
+      receiverWorkspaceId: input.receiverWorkspaceId,
+      messagePreview: input.messagePreview,
+      cwd: input.cwd,
+      expiresAt,
+    });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -1167,10 +1204,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // -------------------------------------------------------------------------
 
   if (method === 'a2a.confirmExecute') {
-    // Main process is asking the user whether to spawn a bypassPermissions
-    // Claude CLI for this incoming task. We park the prompt in zustand so the
-    // <ExecuteApprovalDialog/> can render it, and resolve once the user clicks
-    // Approve/Deny — or after a 30s timeout (auto-deny).
+    // Compatibility path for older main flows. New a2a.task.send requests gate
+    // execute inside the renderer before task creation.
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
     if (!taskId) return { approved: false };
 
@@ -1178,28 +1213,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const receiverWorkspaceId = typeof params.receiverWorkspaceId === 'string' ? params.receiverWorkspaceId : '';
     const messagePreview = typeof params.messagePreview === 'string' ? params.messagePreview : '';
     const cwd = typeof params.cwd === 'string' ? params.cwd : null;
-    const expiresAt = Date.now() + 30_000;
-
-    return new Promise<{ approved: boolean }>((resolve) => {
-      let settled = false;
-      const settle = (approved: boolean) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        useStore.getState().setPendingExecuteApproval(null);
-        resolve({ approved });
-      };
-      const timer = setTimeout(() => settle(false), 30_000);
-      setExecuteApprovalResolver(settle);
-      useStore.getState().setPendingExecuteApproval({
-        taskId,
-        senderWorkspaceId,
-        receiverWorkspaceId,
-        messagePreview,
-        cwd,
-        expiresAt,
-      });
-    });
+    const approved = await requestExecuteApproval({ taskId, senderWorkspaceId, receiverWorkspaceId, messagePreview, cwd });
+    return { approved };
   }
 
   if (method === 'a2a.resolve.identity') {
@@ -1319,6 +1334,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
   if (method === 'a2a.task.send') {
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
+    const executeRequested = params.execute === true;
     const rawMessage = typeof params.message === 'string' ? params.message : '';
     const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
     if (!workspaceId) return { error: 'a2a.task.send: missing "workspaceId". Ensure WMUX_WORKSPACE_ID is set.' };
@@ -1358,6 +1374,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         data: params.data as Record<string, unknown>,
         metadata: { mimeType: typeof params.dataMimeType === 'string' ? params.dataMimeType : 'application/json' },
       });
+    }
+
+    if (taskId && executeRequested) {
+      return { error: 'a2a.task.send: execute is only supported for new tasks' };
     }
 
     // ── Reply branch: taskId exists → add message to existing task ──
@@ -1528,8 +1548,24 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const senderAddr = resolveSenderPaneAddress(senderLeaves, senderPtyId);
 
     const initialMessage: Message = { kind: 'message', messageId: generateId('msg'), role: 'user', parts };
+    const newTaskId = generateId('task');
 
-    const newTaskId = store.createA2aTask({
+    if (executeRequested) {
+      const cwd = typeof params.cwd === 'string' ? params.cwd : null;
+      const approved = await requestExecuteApproval({
+        taskId: newTaskId,
+        senderWorkspaceId: workspaceId,
+        receiverWorkspaceId: target.id,
+        messagePreview: message.slice(0, 500),
+        cwd,
+      });
+      if (!approved) {
+        return { ok: false, error: 'a2a.task.send: execute approval denied' };
+      }
+    }
+
+    store.createA2aTask({
+      id: newTaskId,
       title: title || message.slice(0, 100),
       from: {
         workspaceId,
@@ -1575,9 +1611,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (createdTask) emitA2aTaskEvent(createdTask, 'created');
 
     // Return the RESOLVED target workspaceId so the main-side a2a.rpc handler
-    // uses it for execute:true (confirm + ClaudeWorker), instead of the raw
-    // fuzzy `to` string (which could be a number/partial name).
-    return { ok: true, taskId: newTaskId, silent, toWorkspaceId: target.id };
+    // uses it for execute:true ClaudeWorker spawn, instead of the raw fuzzy `to`
+    // string (which could be a number/partial name).
+    return { ok: true, taskId: newTaskId, silent, toWorkspaceId: target.id, executeApproved: executeRequested };
   }
 
   if (method === 'a2a.task.query') {

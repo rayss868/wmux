@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { FIRST_PARTY_CLIENT_NAMES, FIRST_PARTY_METHODS, isFirstPartyClient } from '../firstParty';
-import { METHOD_CAPABILITY } from '../methodCapabilityMap';
+import { METHOD_CAPABILITY, resolveRequiredCapability } from '../methodCapabilityMap';
 import type { RpcMethod } from '../../../shared/rpc';
 
 // src/main/mcp/__tests__ -> src/mcp
@@ -109,7 +109,7 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
   // consciously added to the exception set below.
   it('first-party never reaches a reserved (wmux.internal) method outside the curated read/messaging exceptions', () => {
     const reserved = (Object.keys(METHOD_CAPABILITY) as RpcMethod[]).filter(
-      (m) => METHOD_CAPABILITY[m].capability === 'wmux.internal',
+      (m) => resolveRequiredCapability(METHOD_CAPABILITY[m], {}) === 'wmux.internal',
     );
 
     // The ONLY reserved methods the bundled first-party server legitimately

@@ -694,8 +694,8 @@ const sendMessageParams = {
   title: z.string().optional().describe('Short title for the message'),
   task_id: z.string().optional().describe('Reply to existing task ID'),
   message: z.string().describe('Message to send'),
-  execute: z.boolean().optional().describe('Set true to run as background task (Claude executes the request). Default: false (just delivers the message)'),
-  silent: z.boolean().optional().describe('Skip the PTY paste delivery on the receiver. The task is still persisted and the receiver can poll via a2a_task_query — use this to avoid injecting content into a running TUI agent\'s prompt stream. Default: false.'),
+  execute: z.boolean().optional().describe('Set true on a NEW task to run it as a background Claude task. The user is prompted unless global A2A execute auto-approve / YOLO is enabled. Not supported with task_id. Default: false.'),
+  silent: z.boolean().optional().describe('Skip the PTY paste delivery on the receiver. The task is still persisted and the receiver can poll via a2a_task_query — use this to avoid injecting content into a running TUI agent\'s prompt stream. If omitted, live TUI agents receive a one-line nudge instead of a full paste.'),
   data: z.record(z.string(), z.unknown()).optional().describe('Optional structured data (JSON)'),
   data_mime_type: z.string().optional().describe('MIME type for data (default: application/json)'),
 };

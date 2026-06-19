@@ -102,69 +102,23 @@ export function registerA2aRpc(router: RpcRouter, getWindow: GetWindow, claudeWo
   router.register('a2a.broadcast', (params) => sendToRenderer(getWindow, 'a2a.broadcast', params));
   router.register('meta.setSkills', (params) => sendToRenderer(getWindow, 'meta.setSkills', params));
 
-  // task.send: store via renderer + background execution for new tasks
+  // task.send: renderer validates, approval-gates execute:true, then stores +
+  // delivers. Main only spawns the background worker after renderer reports that
+  // the pre-create execute approval succeeded.
   router.register('a2a.task.send', async (params) => {
-    // 1) Save task to store + deliver via PTY paste (renderer handles both)
     const result = await sendToRenderer(getWindow, 'a2a.task.send', params);
 
-    // 2) Background execution only when explicitly requested (execute: true)
-    //    AND user has approved via the confirmation dialog. The Claude CLI is
-    //    spawned with --permission-mode bypassPermissions so any external MCP
-    //    caller flipping execute:true would otherwise gain unattended RCE.
-    if (params.execute) {
-      const taskId = (result as Record<string, unknown>)?.taskId as string | undefined;
-      if (taskId && !params.taskId) {
-        const senderWsId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
-        // Use the RESOLVED target workspaceId returned by the renderer, not the
-        // raw `params.to` (which may be a number / partial name / fuzzy match).
-        // The confirmation dialog and ClaudeWorker.execute both key off this id,
-        // so a fuzzy `to` would otherwise confirm/run against the wrong (or no)
-        // workspace. Fall back to params.to only if the renderer didn't resolve.
-        //
-        // NOTE: pane-level addressing (paneId/surfaceId) is intentionally NOT
-        // propagated here — `execute:true` spawns a HEADLESS background Claude
-        // scoped to the receiver WORKSPACE (no pane/TUI). Pane addressing only
-        // steers the renderer-side delivery/nudge; background execution stays
-        // ws-level by design.
-        const resolvedTo = (result as Record<string, unknown>)?.toWorkspaceId;
-        const receiverWsId = typeof resolvedTo === 'string' && resolvedTo
-          ? resolvedTo
-          : (typeof params.to === 'string' ? params.to : '');
+    if (params.execute === true && !params.taskId) {
+      const record = result as Record<string, unknown> | null;
+      const taskId = typeof record?.taskId === 'string' ? record.taskId : '';
+      const receiverWsId = typeof record?.toWorkspaceId === 'string' ? record.toWorkspaceId : '';
+      const executeApproved = record?.executeApproved === true;
+      if (taskId && receiverWsId && executeApproved) {
         const message = typeof params.message === 'string' ? params.message : '';
         const cwd = typeof params.cwd === 'string' ? params.cwd : undefined;
-
-        let approved = false;
-        try {
-          const decision = await sendToRenderer(
-            getWindow,
-            'a2a.confirmExecute',
-            {
-              taskId,
-              senderWorkspaceId: senderWsId,
-              receiverWorkspaceId: receiverWsId,
-              messagePreview: message.slice(0, 500),
-              cwd: cwd ?? null,
-            },
-            { timeoutMs: 35_000 },
-          );
-          approved = (decision as { approved?: boolean } | null)?.approved === true;
-        } catch (err) {
-          console.warn(`[a2a.rpc] confirmExecute failed for task ${taskId}:`, err);
-          approved = false;
-        }
-
-        if (approved) {
-          claudeWorker.execute(taskId, receiverWsId, message, cwd).catch((err) => {
-            console.error(`[a2a.rpc] Background worker failed for task ${taskId}:`, err);
-          });
-        } else {
-          // Mark task canceled so the sender's a2a_task_query reflects the
-          // denial. The original message delivery still happened in step 1.
-          await sendToRenderer(getWindow, 'a2a.task.cancel', {
-            taskId,
-            workspaceId: receiverWsId,
-          }).catch(() => { /* best-effort */ });
-        }
+        claudeWorker.execute(taskId, receiverWsId, message, cwd).catch((err) => {
+          console.error(`[a2a.rpc] Background worker failed for task ${taskId}:`, err);
+        });
       }
     }
 

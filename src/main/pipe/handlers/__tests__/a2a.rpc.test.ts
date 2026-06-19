@@ -55,10 +55,13 @@ describe('a2a.rpc — execute confirmation gate', () => {
     expect(methods).toEqual(['a2a.task.send']);
   });
 
-  it('spawns worker when user approves the confirm prompt', async () => {
-    sendToRendererMock
-      .mockResolvedValueOnce({ taskId: 'task-2' })   // a2a.task.send
-      .mockResolvedValueOnce({ approved: true });    // a2a.confirmExecute
+  it('spawns worker when renderer reports pre-create execute approval', async () => {
+    sendToRendererMock.mockResolvedValueOnce({
+      ok: true,
+      taskId: 'task-2',
+      toWorkspaceId: 'ws-to-resolved',
+      executeApproved: true,
+    });
     const worker = makeWorker();
     const router = setupRouter(worker);
 
@@ -68,28 +71,13 @@ describe('a2a.rpc — execute confirmation gate', () => {
       params: { workspaceId: 'ws-from', to: 'ws-to', message: 'run this', execute: true, cwd: '/tmp/foo' },
     });
 
-    expect(worker.execute).toHaveBeenCalledWith('task-2', 'ws-to', 'run this', '/tmp/foo');
+    expect(worker.execute).toHaveBeenCalledWith('task-2', 'ws-to-resolved', 'run this', '/tmp/foo');
     const methods = sendToRendererMock.mock.calls.map((c) => c[1]);
-    expect(methods).toEqual(['a2a.task.send', 'a2a.confirmExecute']);
-
-    // confirmExecute payload carries the right fields for the dialog
-    const confirmCall = sendToRendererMock.mock.calls.find((c) => c[1] === 'a2a.confirmExecute');
-    expect(confirmCall?.[2]).toMatchObject({
-      taskId: 'task-2',
-      senderWorkspaceId: 'ws-from',
-      receiverWorkspaceId: 'ws-to',
-      messagePreview: 'run this',
-      cwd: '/tmp/foo',
-    });
-    // Long timeout requested for the user prompt
-    expect(confirmCall?.[3]).toEqual({ timeoutMs: 35_000 });
+    expect(methods).toEqual(['a2a.task.send']);
   });
 
-  it('cancels task and skips worker when user denies', async () => {
-    sendToRendererMock
-      .mockResolvedValueOnce({ taskId: 'task-3' })   // a2a.task.send
-      .mockResolvedValueOnce({ approved: false })    // a2a.confirmExecute
-      .mockResolvedValueOnce({ ok: true });          // a2a.task.cancel
+  it('skips worker and does not cancel when renderer denies before task creation', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: false, error: 'a2a.task.send: execute approval denied' });
     const worker = makeWorker();
     const router = setupRouter(worker);
 
@@ -101,15 +89,11 @@ describe('a2a.rpc — execute confirmation gate', () => {
 
     expect(worker.execute).not.toHaveBeenCalled();
     const calls = sendToRendererMock.mock.calls.map((c) => ({ method: c[1], params: c[2] }));
-    expect(calls.map((c) => c.method)).toEqual(['a2a.task.send', 'a2a.confirmExecute', 'a2a.task.cancel']);
-    expect(calls[2].params).toMatchObject({ taskId: 'task-3', workspaceId: 'ws-to' });
+    expect(calls.map((c) => c.method)).toEqual(['a2a.task.send']);
   });
 
-  it('treats confirmExecute timeout/error as denial', async () => {
-    sendToRendererMock
-      .mockResolvedValueOnce({ taskId: 'task-4' })                                     // a2a.task.send
-      .mockRejectedValueOnce(new Error('RPC timeout: a2a.confirmExecute (35000ms)'))   // a2a.confirmExecute
-      .mockResolvedValueOnce({ ok: true });                                            // a2a.task.cancel
+  it('does not spawn when executeApproved is absent', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true, taskId: 'task-4', toWorkspaceId: 'ws-to' });
     const worker = makeWorker();
     const router = setupRouter(worker);
 
@@ -121,11 +105,11 @@ describe('a2a.rpc — execute confirmation gate', () => {
 
     expect(worker.execute).not.toHaveBeenCalled();
     const methods = sendToRendererMock.mock.calls.map((c) => c[1]);
-    expect(methods).toEqual(['a2a.task.send', 'a2a.confirmExecute', 'a2a.task.cancel']);
+    expect(methods).toEqual(['a2a.task.send']);
   });
 
-  it('does not gate replies (execute:true on existing taskId is ignored regardless)', async () => {
-    sendToRendererMock.mockResolvedValueOnce({ taskId: 'existing-task' });
+  it('does not spawn for replies even if execute:true is present', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: false, error: 'a2a.task.send: execute is only supported for new tasks' });
     const worker = makeWorker();
     const router = setupRouter(worker);
 
@@ -140,22 +124,17 @@ describe('a2a.rpc — execute confirmation gate', () => {
     expect(methods).toEqual(['a2a.task.send']);
   });
 
-  it('truncates messagePreview in confirmExecute payload', async () => {
-    const longMessage = 'x'.repeat(800);
-    sendToRendererMock
-      .mockResolvedValueOnce({ taskId: 'task-6' })
-      .mockResolvedValueOnce({ approved: false })
-      .mockResolvedValueOnce({ ok: true });
+  it('ignores truthy non-boolean execute values', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true, taskId: 'task-6', toWorkspaceId: 'ws-to', executeApproved: true });
     const worker = makeWorker();
     const router = setupRouter(worker);
 
     await router.dispatch({
       id: 'rpc-6',
       method: 'a2a.task.send',
-      params: { workspaceId: 'ws-from', to: 'ws-to', message: longMessage, execute: true },
+      params: { workspaceId: 'ws-from', to: 'ws-to', message: 'do not execute', execute: 'true' },
     });
 
-    const confirmCall = sendToRendererMock.mock.calls.find((c) => c[1] === 'a2a.confirmExecute');
-    expect((confirmCall?.[2] as { messagePreview: string }).messagePreview.length).toBe(500);
+    expect(worker.execute).not.toHaveBeenCalled();
   });
 });

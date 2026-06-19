@@ -20,6 +20,7 @@ type TestState = WorkspaceSlice & {
   terminalFontFamily: string;
   defaultShell: string;
   scrollbackLines: number;
+  a2aAutoApproveExecute: boolean;
   sidebarPosition: 'left' | 'right';
   notificationSoundEnabled: boolean;
   toastEnabled: boolean;
@@ -62,6 +63,7 @@ function createTestStore() {
       terminalFontFamily: 'Cascadia Code',
       defaultShell: 'powershell',
       scrollbackLines: 10000,
+      a2aAutoApproveExecute: false,
       sidebarPosition: 'left',
       notificationSoundEnabled: true,
       toastEnabled: true,
@@ -389,6 +391,45 @@ describe('loadSession — agent toolbar prefs', () => {
     expect(store.getState().agentToolbarEnabled).toBe(false);
     expect(store.getState().toolbarSnippets).toEqual([{ id: 's1', label: 'A', text: 'aaa' }]);
     expect(store.getState().newConversationCommand).toBe('/reset');
+  });
+});
+
+describe('loadSession — A2A execute auto-approve', () => {
+  it('hydrates the global A2A execute auto-approve flag', () => {
+    const store = createTestStore();
+    const ws: Workspace = {
+      id: 'ws-a2a',
+      name: 'A2A',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    expect(store.getState().a2aAutoApproveExecute).toBe(false);
+    store.getState().loadSession({
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      a2aAutoApproveExecute: true,
+    } as unknown as SessionData);
+    expect(store.getState().a2aAutoApproveExecute).toBe(true);
+  });
+
+  it('fails closed on a non-boolean persisted value', () => {
+    const store = createTestStore();
+    const ws: Workspace = {
+      id: 'ws-a2a',
+      name: 'A2A',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    // A malformed persisted string is truthy; the guard must reject it so a
+    // corrupted session can't silently enable bypassPermissions auto-approval.
+    store.getState().loadSession({
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      a2aAutoApproveExecute: 'true',
+    } as unknown as SessionData);
+    expect(store.getState().a2aAutoApproveExecute).toBe(false);
   });
 });
 

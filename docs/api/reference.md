@@ -151,10 +151,10 @@ Total: **100** methods (`ALL_RPC_METHODS` in
 | `a2a.resolve.identity` | `a2a.read` | `a2a` |
 | `a2a.whoami` | `a2a.read` | `a2a` |
 | `a2a.discover` | `a2a.read` | `a2a` |
-| `a2a.task.send` | `a2a.send` | `a2a` |
+| `a2a.task.send` | `a2a.send / a2a.execute (execute:true)` | `a2a` |
 | `a2a.task.query` | `a2a.read` | `a2a` |
 | `a2a.task.update` | `a2a.send` | `a2a` |
-| `a2a.task.cancel` | `a2a.execute` | `a2a` |
+| `a2a.task.cancel` | `a2a.send` | `a2a` |
 | `a2a.broadcast` | `a2a.send` | `a2a` |
 
 ### `company.a2a`
