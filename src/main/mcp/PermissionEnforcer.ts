@@ -47,6 +47,7 @@ import type {
 } from '../../shared/rpc';
 import {
   METHOD_CAPABILITY,
+  resolveRequiredCapability,
   type PathExtractor,
   type RequiredCapability,
 } from './methodCapabilityMap';
@@ -166,9 +167,11 @@ export function check(input: EnforcerInput): EnforcerOutcome {
     };
   }
 
+  const capability = resolveRequiredCapability(entry, input.params);
+
   // Identity bootstrap (mcp.identify / mcp.declarePermissions / system.*) —
   // no capability needed regardless of trust state.
-  if (entry.capability === null) {
+  if (capability === null) {
     return { kind: 'allow' };
   }
 
@@ -217,7 +220,7 @@ export function check(input: EnforcerInput): EnforcerOutcome {
       rejection: {
         reason: 'identity-status',
         method: input.method,
-        capability: entry.capability,
+        capability,
         status: 'unconfirmed',
         // No pendingApproval — the plugin hasn't declared yet.
       },
@@ -231,7 +234,7 @@ export function check(input: EnforcerInput): EnforcerOutcome {
       rejection: {
         reason: 'identity-status',
         method: input.method,
-        capability: entry.capability,
+        capability,
         status: 'denied',
         // spec §4.3: denied never regresses, no pendingApproval offered
       },
@@ -243,7 +246,7 @@ export function check(input: EnforcerInput): EnforcerOutcome {
       rejection: {
         reason: 'identity-status',
         method: input.method,
-        capability: entry.capability,
+        capability,
         status: 'unconfirmed',
         // ApprovalQueue (Pre-commit 5) overwrites this with a real promptId
         // at dispatch time. Enforcer is pure — it doesn't mint IDs.
@@ -259,14 +262,14 @@ export function check(input: EnforcerInput): EnforcerOutcome {
   // capability. Reserved 'wmux.internal' can never appear in a declaration
   // (RESERVED_PREFIXES in permissionGrammar rejects it at declaration time)
   // so internal methods always fall through to capability-not-declared here.
-  const grant = findCapabilityGrant(input.trust, entry.capability);
+  const grant = findCapabilityGrant(input.trust, capability);
   if (!hasAnyDeclarationFor(grant)) {
     return {
       kind: 'reject',
       rejection: {
         reason: 'capability-not-declared',
         method: input.method,
-        capability: entry.capability,
+        capability,
       },
     };
   }
@@ -311,7 +314,7 @@ export function check(input: EnforcerInput): EnforcerOutcome {
       rejection: {
         reason: 'path-not-allowed',
         method: input.method,
-        capability: entry.capability,
+        capability,
         path: r.path,
         declared: r.declared,
       },
@@ -329,7 +332,7 @@ export function check(input: EnforcerInput): EnforcerOutcome {
       rejection: {
         reason: 'paths-partially-allowed',
         method: input.method,
-        capability: entry.capability,
+        capability,
         allowed,
         rejected,
       },
@@ -344,7 +347,7 @@ export function check(input: EnforcerInput): EnforcerOutcome {
     rejection: {
       reason: 'paths-partially-allowed',
       method: input.method,
-      capability: entry.capability,
+      capability,
       allowed,
       rejected,
     },

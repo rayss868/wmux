@@ -10,6 +10,8 @@ import { resolveExecuteApproval } from '../../utils/executeApproval';
 export default function ExecuteApprovalDialog() {
   const approval = useStore((s) => s.pendingExecuteApproval);
   const workspaces = useStore((s) => s.workspaces);
+  const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
+  const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -94,19 +96,29 @@ export default function ExecuteApprovalDialog() {
           {approval.messagePreview || '<empty message>'}
         </div>
         <div className="flex items-center justify-between">
+          <label className="flex items-center gap-2 text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
+            <input
+              type="checkbox"
+              checked={a2aAutoApproveExecute}
+              onChange={(e) => setA2aAutoApproveExecute(e.currentTarget.checked)}
+            />
+            Auto-approve future A2A execute requests (YOLO)
+          </label>
+        </div>
+        <div className="flex items-center justify-between">
           <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
             auto-deny in {remainingSec}s
           </span>
           <div className="flex gap-2">
             <button
-              onClick={() => resolveExecuteApproval(false)}
+              onClick={() => resolveExecuteApproval(approval.approvalId, false)}
               className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
               style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)' }}
             >
               Deny
             </button>
             <button
-              onClick={() => resolveExecuteApproval(true)}
+              onClick={() => resolveExecuteApproval(approval.approvalId, true)}
               className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
               style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
             >

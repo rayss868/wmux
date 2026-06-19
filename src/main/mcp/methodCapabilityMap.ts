@@ -39,6 +39,7 @@ import type { RpcMethod } from '../../shared/rpc';
  *                          legacy path.
  */
 export type RequiredCapabilityName = string | null;
+export type CapabilityResolver = (params: Record<string, unknown>) => RequiredCapabilityName;
 
 /**
  * Extracts the path strings being touched by a request, for the path-glob
@@ -90,10 +91,17 @@ export type RiskClass =
 export type MultiPathMode = 'partial' | 'all-or-nothing';
 
 export interface RequiredCapability {
-  capability: RequiredCapabilityName;
+  capability: RequiredCapabilityName | CapabilityResolver;
   pathFromParams?: PathExtractor;
   riskClass?: RiskClass;
   multiPathMode?: MultiPathMode;
+}
+
+export function resolveRequiredCapability(
+  entry: RequiredCapability,
+  params: Record<string, unknown>,
+): RequiredCapabilityName {
+  return typeof entry.capability === 'function' ? entry.capability(params) : entry.capability;
 }
 
 // === Path extractors ===
@@ -142,6 +150,10 @@ function pathsFromEventsPoll(params: Record<string, unknown>): string | string[]
     return filtered.length > 0 ? filtered : '**';
   }
   return '**';
+}
+
+function capabilityFromA2aTaskSend(params: Record<string, unknown>): RequiredCapabilityName {
+  return params.execute === true ? 'a2a.execute' : 'a2a.send';
 }
 
 // === The map ===
@@ -293,10 +305,10 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.resolve.identity': { capability: 'a2a.read',    riskClass: 'a2a' },
   'a2a.whoami':           { capability: 'a2a.read',    riskClass: 'a2a' },
   'a2a.discover':         { capability: 'a2a.read',    riskClass: 'a2a' },
-  'a2a.task.send':        { capability: 'a2a.send',    riskClass: 'a2a' },
+  'a2a.task.send':        { capability: capabilityFromA2aTaskSend, riskClass: 'a2a' },
   'a2a.task.query':       { capability: 'a2a.read',    riskClass: 'a2a' },
   'a2a.task.update':      { capability: 'a2a.send',    riskClass: 'a2a' },
-  'a2a.task.cancel':      { capability: 'a2a.execute', riskClass: 'a2a' },
+  'a2a.task.cancel':      { capability: 'a2a.send',    riskClass: 'a2a' },
   'a2a.broadcast':        { capability: 'a2a.send',    riskClass: 'a2a' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All

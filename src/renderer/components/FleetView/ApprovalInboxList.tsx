@@ -41,6 +41,8 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
   // ExecuteApprovalDialog) so the row tells the user WHICH workspace wants
   // bypassPermissions — security context, not just a title.
   const workspaces = useStore((s) => s.workspaces);
+  const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
+  const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
   const wsName = (id: string) => workspaces.find((w) => w.id === id)?.name ?? id;
 
   // Live countdown tick for any A2A row, mirroring ExecuteApprovalDialog's
@@ -85,6 +87,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
 
         if (item.source === 'a2a') {
           const remainingSec = Math.ceil(Math.max(0, item.expiresAt - now) / 1000);
+          const sameWs = !!item.senderWorkspaceId && item.senderWorkspaceId === item.receiverWorkspaceId;
           return (
             <div
               key={item.key}
@@ -114,7 +117,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
                 {t('fleet.approvals.to')} {wsName(item.receiverWorkspaceId)}
               </div>
               <div className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
-                {t('fleet.approvals.a2aDesc')}
+                {t(sameWs ? 'fleet.approvals.a2aDescSameWorkspace' : 'fleet.approvals.a2aDescRemote')}
               </div>
               <p
                 className="text-xs font-mono whitespace-pre-wrap break-words"
@@ -129,16 +132,27 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
               >
                 {item.messagePreview || '<empty message>'}
               </p>
-              <div className="flex items-center justify-end gap-2">
-                {denyButton}
-                <button
-                  type="button"
-                  onClick={(e) => { stop(e); onResolve(item, true); }}
-                  className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                  style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
-                >
-                  {t('fleet.approvals.approve')}
-                </button>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="flex min-w-0 flex-1 items-center gap-2 text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
+                  <input
+                    type="checkbox"
+                    className="shrink-0"
+                    checked={a2aAutoApproveExecute}
+                    onChange={(e) => setA2aAutoApproveExecute(e.currentTarget.checked)}
+                  />
+                  <span className="truncate">{t('fleet.approvals.a2aAutoApprove')}</span>
+                </label>
+                <div className="flex shrink-0 items-center justify-end gap-2">
+                  {denyButton}
+                  <button
+                    type="button"
+                    onClick={(e) => { stop(e); onResolve(item, true); }}
+                    className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                    style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
+                  >
+                    {t('fleet.approvals.approve')}
+                  </button>
+                </div>
               </div>
             </div>
           );

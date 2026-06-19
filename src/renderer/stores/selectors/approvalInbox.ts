@@ -5,8 +5,7 @@ import { groupCapabilities } from '../../components/Approval/capabilityGrouping'
 //
 // Pure derivation (mirrors selectors/fleet.ts): no daemon round-trip, no second
 // copy of truth. Folds the two distinct approval sources into one render list:
-//   - A2A: the 0-or-1 `pendingExecuteApproval` (a parked main Promise awaiting
-//     the user's execute decision; 30s urgency → sorted FIRST).
+//   - A2A: pending execute approvals (30s urgency → sorted FIRST).
 //   - MCP: the renderer-aggregated `mcpPrompts` keyed by `mcpPromptOrder`.
 //
 // The discriminated union keeps the two sources structurally distinct so the
@@ -17,6 +16,7 @@ export type InboxItem =
   | {
       source: 'a2a';
       key: string;
+      approvalId: string;
       taskId: string;
       messagePreview: string;
       expiresAt: number;
@@ -37,18 +37,20 @@ export type InboxItem =
 /** Minimal store surface the selector reads — keeps the subscription narrow. */
 export type ApprovalInboxState = Pick<
   StoreState,
-  'mcpPrompts' | 'mcpPromptOrder' | 'pendingExecuteApproval'
+  'mcpPrompts' | 'mcpPromptOrder' | 'pendingExecuteApprovals' | 'pendingExecuteApprovalOrder'
 >;
 
 export function selectApprovalInbox(state: ApprovalInboxState): InboxItem[] {
   const items: InboxItem[] = [];
 
-  // A2A FIRST (30s urgency). 0-or-1 — pendingExecuteApproval is a single slot.
-  const a2a = state.pendingExecuteApproval;
-  if (a2a) {
+  // A2A FIRST (30s urgency), oldest prompt first.
+  for (const approvalId of state.pendingExecuteApprovalOrder) {
+    const a2a = state.pendingExecuteApprovals[approvalId];
+    if (!a2a) continue;
     items.push({
       source: 'a2a',
-      key: `a2a:${a2a.taskId}`,
+      key: `a2a:${a2a.approvalId}`,
+      approvalId: a2a.approvalId,
       taskId: a2a.taskId,
       messagePreview: a2a.messagePreview,
       expiresAt: a2a.expiresAt,

@@ -4,6 +4,7 @@ import {
   CAPABILITY_RISK_CLASS,
   METHOD_CAPABILITY,
   RISK_CLASS_COPY,
+  resolveRequiredCapability,
   type RiskClass,
 } from '../methodCapabilityMap';
 import { listKnownCapabilities } from '../permissionGrammar';
@@ -28,18 +29,31 @@ describe('methodCapabilityMap capability validity', () => {
   it('every non-null, non-internal capability appears in KNOWN_CAPABILITIES', () => {
     const known = new Set(listKnownCapabilities());
     for (const method of ALL_RPC_METHODS) {
-      const cap = METHOD_CAPABILITY[method].capability;
-      if (cap === null) continue;
-      if (cap === 'wmux.internal') continue;
-      expect(known.has(cap), `method=${method} capability=${cap}`).toBe(true);
+      const caps = new Set([
+        resolveRequiredCapability(METHOD_CAPABILITY[method], {}),
+        resolveRequiredCapability(METHOD_CAPABILITY[method], { execute: true }),
+      ]);
+      for (const cap of caps) {
+        if (cap === null) continue;
+        if (cap === 'wmux.internal') continue;
+        expect(known.has(cap), `method=${method} capability=${cap}`).toBe(true);
+      }
     }
   });
 
   it('identity bootstrap methods declare capability: null', () => {
-    expect(METHOD_CAPABILITY['mcp.identify'].capability).toBeNull();
-    expect(METHOD_CAPABILITY['mcp.declarePermissions'].capability).toBeNull();
-    expect(METHOD_CAPABILITY['system.identify'].capability).toBeNull();
-    expect(METHOD_CAPABILITY['system.capabilities'].capability).toBeNull();
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['mcp.identify'], {})).toBeNull();
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['mcp.declarePermissions'], {})).toBeNull();
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['system.identify'], {})).toBeNull();
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['system.capabilities'], {})).toBeNull();
+  });
+
+  it('a2a.task.send requires a2a.execute only for execute:true', () => {
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['a2a.task.send'], {})).toBe('a2a.send');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['a2a.task.send'], { execute: false })).toBe('a2a.send');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['a2a.task.send'], { execute: 'false' })).toBe('a2a.send');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['a2a.task.send'], { execute: true })).toBe('a2a.execute');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['a2a.task.cancel'], {})).toBe('a2a.send');
   });
 });
 

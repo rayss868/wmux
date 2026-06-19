@@ -896,6 +896,8 @@ function TabGeneral() {
   const setScrollbackLines = useStore((s) => s.setScrollbackLines);
   const scrollbackRestoreEnabled = useStore((s) => s.scrollbackRestoreEnabled);
   const setScrollbackRestoreEnabled = useStore((s) => s.setScrollbackRestoreEnabled);
+  const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
+  const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
   const splitInheritsCwd = useStore((s) => s.splitInheritsCwd);
   const setSplitInheritsCwd = useStore((s) => s.setSplitInheritsCwd);
   const imeResidueGuardEnabled = useStore((s) => s.imeResidueGuardEnabled);
@@ -1003,6 +1005,18 @@ function TabGeneral() {
             checked={scrollbackRestoreEnabled}
             onChange={setScrollbackRestoreEnabled}
             label={t('settings.scrollbackRestore')}
+          />
+        </SettingRow>
+      </div>
+
+      {/* A2A execution */}
+      <div className="flex flex-col gap-2">
+        <SectionLabel label={t('settings.a2aExecution')} />
+        <SettingRow label={t('settings.a2aAutoApproveExecute')} description={t('settings.a2aAutoApproveExecuteDesc')}>
+          <Toggle
+            checked={a2aAutoApproveExecute}
+            onChange={setA2aAutoApproveExecute}
+            label={t('settings.a2aAutoApproveExecute')}
           />
         </SettingRow>
       </div>

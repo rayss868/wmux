@@ -68,10 +68,11 @@ export default function FleetView() {
   // (A2A-first, then MCP). Mirrors the fleet selector's narrow subscription.
   const mcpPrompts = useStore((s) => s.mcpPrompts);
   const mcpPromptOrder = useStore((s) => s.mcpPromptOrder);
-  const pendingExecuteApproval = useStore((s) => s.pendingExecuteApproval);
+  const pendingExecuteApprovals = useStore((s) => s.pendingExecuteApprovals);
+  const pendingExecuteApprovalOrder = useStore((s) => s.pendingExecuteApprovalOrder);
   const inbox = useMemo(
-    () => selectApprovalInbox({ mcpPrompts, mcpPromptOrder, pendingExecuteApproval }),
-    [mcpPrompts, mcpPromptOrder, pendingExecuteApproval],
+    () => selectApprovalInbox({ mcpPrompts, mcpPromptOrder, pendingExecuteApprovals, pendingExecuteApprovalOrder }),
+    [mcpPrompts, mcpPromptOrder, pendingExecuteApprovals, pendingExecuteApprovalOrder],
   );
 
   // S-C2 Phase 2 — live output tail. ONE shared coarse interval (the whole

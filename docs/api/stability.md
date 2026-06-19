@@ -208,7 +208,7 @@ Stable in v3.0. All A2A surfaces continue with the v2.7.3 execute-approval contr
 | `a2a.resolve.identity` | Returns the canonical identity for a workspace's agent. |
 | `a2a.whoami` | The calling MCP's claimed identity. |
 | `a2a.discover` | Lists other agents in the local wmux instance. |
-| `a2a.task.send` | Send a task with optional `requiresExecuteApproval`. |
+| `a2a.task.send` | Send a task; `execute:true` is new-task only and is approval-gated before task creation unless global auto-approve is enabled. |
 | `a2a.task.query` | Fetch the status of a task by id. |
 | `a2a.task.update` | Update task status. |
 | `a2a.task.cancel` | Cancel an in-flight task. |

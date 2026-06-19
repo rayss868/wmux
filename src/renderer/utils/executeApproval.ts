@@ -1,26 +1,29 @@
 /**
- * Module-level resolver for the A2A execute confirmation dialog.
+ * Module-level resolvers for A2A execute confirmation dialogs.
  *
- * The main process asks renderer "may I spawn a bypassPermissions Claude CLI
- * for this incoming a2a task?" via the `a2a.confirmExecute` RPC. The handler
- * in useRpcBridge stores the approval prompt in zustand and parks the resolver
- * here so the dialog component can call it once the user clicks Approve/Deny.
+ * The renderer parks one resolver per approval prompt so concurrent
+ * `execute:true` requests cannot overwrite each other. Dialog surfaces pass
+ * the approvalId back when the user clicks Approve/Deny.
  */
 
 type Resolver = (approved: boolean) => void;
 
-let pendingResolver: Resolver | null = null;
+const pendingResolvers = new Map<string, Resolver>();
 
-export function setExecuteApprovalResolver(resolver: Resolver): void {
-  pendingResolver = resolver;
+export function setExecuteApprovalResolver(approvalId: string, resolver: Resolver): void {
+  pendingResolvers.set(approvalId, resolver);
 }
 
-export function resolveExecuteApproval(approved: boolean): void {
-  const resolver = pendingResolver;
-  pendingResolver = null;
+export function clearExecuteApprovalResolver(approvalId: string): void {
+  pendingResolvers.delete(approvalId);
+}
+
+export function resolveExecuteApproval(approvalId: string, approved: boolean): void {
+  const resolver = pendingResolvers.get(approvalId);
+  pendingResolvers.delete(approvalId);
   if (resolver) resolver(approved);
 }
 
-export function hasPendingExecuteApproval(): boolean {
-  return pendingResolver !== null;
+export function hasPendingExecuteApproval(approvalId?: string): boolean {
+  return approvalId ? pendingResolvers.has(approvalId) : pendingResolvers.size > 0;
 }

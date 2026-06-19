@@ -103,7 +103,7 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 | `a2a.resolve.identity` | `{ workspaceId? }` | stable | Returns `{ mappings }` — the current PID→ptyId map (from `~/.wmux/pid-map`) that a caller walks up its own process tree to resolve its owning workspace (PROTOCOL.md §6.1 path B). Not a finished identity; the pty→workspace edge is resolved live. |
 | `a2a.whoami` | — | stable | The calling MCP's claimed identity. |
 | `a2a.discover` | `{ filter? }` | stable | Lists other agents in the local wmux instance. |
-| `a2a.task.send` | `{ to, kind, payload, requiresExecuteApproval? }` | stable | v2.7.3 added execute-approval gate (see memory `project_a2a_execute_gate.md`). |
+| `a2a.task.send` | `{ to, paneId?, surfaceId?, title?, taskId?, message, execute?, silent?, data? }` | stable | `execute:true` is new-task only; approval is gated before task creation unless global A2A execute auto-approve is enabled. |
 | `a2a.task.query` | `{ id }` | stable | |
 | `a2a.task.update` | `{ id, status, result? }` | stable | |
 | `a2a.task.cancel` | `{ id }` | stable | |
@@ -285,8 +285,8 @@ The capability column below summarises the table. Three sentinels:
 | `browser.session.status` / `browser.session.list` / `browser.cdp.target` / `browser.cdp.info` | `browser.read` | — | browser |
 | `browser.session.start` / `browser.session.stop` | `browser.navigate` | — | browser |
 | `a2a.whoami` / `a2a.discover` / `a2a.resolve.identity` / `a2a.task.query` | `a2a.read` | — | a2a |
-| `a2a.task.send` / `a2a.task.update` / `a2a.broadcast` | `a2a.send` | — | a2a |
-| `a2a.task.cancel` | `a2a.execute` | — | a2a |
+| `a2a.task.send` / `a2a.task.update` / `a2a.broadcast` | `a2a.send` | `a2a.task.send` with `execute:true` requires `a2a.execute` | a2a |
+| `a2a.task.cancel` | `a2a.send` | — | a2a |
 | `workspace.list` / `workspace.current` | `workspace.read` | — | workspace |
 | `workspace.new` / `workspace.focus` / `workspace.close` | `wmux.internal` | — | — |
 | `surface.list` / `surface.new` / `surface.focus` / `surface.close` | `wmux.internal` | — | — |

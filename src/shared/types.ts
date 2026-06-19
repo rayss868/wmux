@@ -417,6 +417,12 @@ export interface SessionData {
    *   files within ~1 launch cycle and 7 days respectively.
    */
   scrollbackRestoreEnabled?: boolean;
+  /**
+   * Global YOLO setting for A2A execute:true requests. Default false.
+   * When true, incoming A2A execute requests may spawn Claude with
+   * bypassPermissions without showing the per-request approval prompt.
+   */
+  a2aAutoApproveExecute?: boolean;
   sidebarPosition?: 'left' | 'right';
   notificationSoundEnabled?: boolean;
   toastEnabled?: boolean;

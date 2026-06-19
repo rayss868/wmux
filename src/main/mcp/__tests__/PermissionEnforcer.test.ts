@@ -142,6 +142,32 @@ describe('PermissionEnforcer.check — trusted: capability check', () => {
     }
     expect(out.rejection.capability).toBe('wmux.internal');
   });
+
+  it('requires a2a.execute for a2a.task.send execute:true', () => {
+    const base = {
+      method: 'a2a.task.send' as const,
+      ctx: ctx('p1'),
+      trust: trust({ name: 'p1', status: 'trusted', declaredCapabilities: ['a2a.send'] }),
+    };
+
+    expect(check({ ...base, params: { message: 'hi' } })).toEqual({ kind: 'allow' });
+
+    const out = check({ ...base, params: { message: 'run', execute: true } });
+    if (out.kind !== 'reject' || out.rejection.reason !== 'capability-not-declared') {
+      throw new Error('expected capability-not-declared');
+    }
+    expect(out.rejection.capability).toBe('a2a.execute');
+  });
+
+  it('allows a2a.task.cancel with a2a.send', () => {
+    const out = check({
+      method: 'a2a.task.cancel',
+      params: { taskId: 'task-1' },
+      ctx: ctx('p1'),
+      trust: trust({ name: 'p1', status: 'trusted', declaredCapabilities: ['a2a.send'] }),
+    });
+    expect(out).toEqual({ kind: 'allow' });
+  });
 });
 
 describe('PermissionEnforcer.check — trusted: path check (single-path)', () => {

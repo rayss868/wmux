@@ -99,6 +99,19 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     expect(block).toMatch(/const senderAddr = resolveSenderPaneAddress\(senderLeaves, senderPtyId\)/);
   });
 
+  it('a2a.task.send gates execute:true before creating or delivering the task', () => {
+    const block = region("method === 'a2a\\.task\\.send'", "method === 'a2a\\.task\\.query'");
+    expect(block).toMatch(/const executeRequested = params\.execute === true/);
+    expect(block).toMatch(/execute is only supported for new tasks/);
+    const approvalIdx = block.indexOf('requestExecuteApproval({');
+    const createIdx = block.indexOf('store.createA2aTask({');
+    const deliveryIdx = block.indexOf('const suppressPaste = silent || sameWsDecision.suppressPaste');
+    expect(approvalIdx).toBeGreaterThan(-1);
+    expect(createIdx).toBeGreaterThan(approvalIdx);
+    expect(deliveryIdx).toBeGreaterThan(createIdx);
+    expect(block).toMatch(/executeApproved: executeRequested/);
+  });
+
   it('a2a.task.update mirrors the reply branch: per-pane role, symmetric pin + self-loop, pane-granular authz', () => {
     const block = region("method === 'a2a\\.task\\.update'", 'addTaskArtifact');
     // per-pane role + symmetric pin (same model as the reply branch)
@@ -134,9 +147,10 @@ describe('a2a.rpc — execute uses the resolved workspaceId', () => {
     'utf-8',
   );
   it('reads toWorkspaceId from the renderer result instead of the raw fuzzy `to`', () => {
-    // The resolved id is pulled off the renderer result and preferred over params.to.
-    expect(src).toMatch(/resolvedTo\b/);
+    // The resolved id is pulled off the renderer result and no raw params.to fallback
+    // is used for worker execution.
     expect(src).toMatch(/toWorkspaceId/);
-    expect(src).toMatch(/resolvedTo[\s\S]*?:\s*\(typeof params\.to/); // fallback to params.to
+    expect(src).toMatch(/const receiverWsId = typeof record\?\.toWorkspaceId === 'string' \? record\.toWorkspaceId : ''/);
+    expect(src).toMatch(/executeApproved/);
   });
 });

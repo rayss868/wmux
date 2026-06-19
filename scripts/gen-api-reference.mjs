@@ -40,6 +40,10 @@ const SRC = {
 };
 const OUT = path.join(REPO_ROOT, 'docs', 'api', 'reference.md');
 
+const CAPABILITY_RESOLVER_DOC = new Map([
+  ['capabilityFromA2aTaskSend', 'a2a.send / a2a.execute (execute:true)'],
+]);
+
 const HELP = `gen-api-reference.mjs — regenerate docs/api/reference.md from source.
 
 Reads the canonical RPC method list, event types, ring constants, and the
@@ -185,12 +189,21 @@ function parseCapabilityMap(source, file) {
   while ((em = entryRe.exec(body)) !== null) {
     const method = em[1];
     const entryBody = em[2];
-    const capM = /capability\s*:\s*(null|'([^']*)')/.exec(entryBody);
+    const capM = /capability\s*:\s*(null|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))/.exec(entryBody);
     let capability;
     if (!capM) {
       die(`METHOD_CAPABILITY entry for '${method}' has no \`capability\` field in ${path.relative(REPO_ROOT, file)}`);
     }
-    capability = capM[1] === 'null' ? null : capM[2];
+    if (capM[1] === 'null') {
+      capability = null;
+    } else if (capM[2] !== undefined) {
+      capability = capM[2];
+    } else {
+      capability = CAPABILITY_RESOLVER_DOC.get(capM[3]);
+      if (!capability) {
+        die(`METHOD_CAPABILITY entry for '${method}' uses unsupported capability resolver \`${capM[3]}\` in ${path.relative(REPO_ROOT, file)}`);
+      }
+    }
     const riskM = /riskClass\s*:\s*'([^']*)'/.exec(entryBody);
     const riskClass = riskM ? riskM[1] : null;
     map.set(method, { capability, riskClass });
