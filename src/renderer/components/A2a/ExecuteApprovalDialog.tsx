@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../stores';
 import { resolveExecuteApproval } from '../../utils/executeApproval';
+import { t } from '../../i18n';
 
 /**
  * Approval prompt for `a2a_task_send` requests with `execute: true`.
@@ -102,7 +103,7 @@ export default function ExecuteApprovalDialog() {
               checked={a2aAutoApproveExecute}
               onChange={(e) => setA2aAutoApproveExecute(e.currentTarget.checked)}
             />
-            Auto-approve future A2A execute requests (YOLO)
+            {t('fleet.approvals.a2aAutoApprove')}
           </label>
         </div>
         <div className="flex items-center justify-between">

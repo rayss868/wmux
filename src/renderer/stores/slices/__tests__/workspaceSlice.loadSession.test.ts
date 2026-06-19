@@ -412,6 +412,25 @@ describe('loadSession — A2A execute auto-approve', () => {
     } as unknown as SessionData);
     expect(store.getState().a2aAutoApproveExecute).toBe(true);
   });
+
+  it('fails closed on a non-boolean persisted value', () => {
+    const store = createTestStore();
+    const ws: Workspace = {
+      id: 'ws-a2a',
+      name: 'A2A',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    // A malformed persisted string is truthy; the guard must reject it so a
+    // corrupted session can't silently enable bypassPermissions auto-approval.
+    store.getState().loadSession({
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      a2aAutoApproveExecute: 'true',
+    } as unknown as SessionData);
+    expect(store.getState().a2aAutoApproveExecute).toBe(false);
+  });
 });
 
 // Forward-compat config merge: a session saved by an older build must not strip

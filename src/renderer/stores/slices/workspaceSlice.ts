@@ -407,7 +407,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.startupDirectory === 'string') state.startupDirectory = data.startupDirectory.trim();
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
       if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;
-      if (data.a2aAutoApproveExecute != null) state.a2aAutoApproveExecute = data.a2aAutoApproveExecute;
+      // Fail closed: only an explicit boolean enables this security-sensitive
+      // YOLO flag. A malformed persisted value (e.g. the string "false") must
+      // not become truthy and silently auto-approve bypassPermissions execs.
+      if (typeof data.a2aAutoApproveExecute === 'boolean') {
+        state.a2aAutoApproveExecute = data.a2aAutoApproveExecute;
+      }
       if (data.sidebarPosition) state.sidebarPosition = data.sidebarPosition;
       if (data.notificationSoundEnabled != null) state.notificationSoundEnabled = data.notificationSoundEnabled;
       if (data.toastEnabled != null) {
