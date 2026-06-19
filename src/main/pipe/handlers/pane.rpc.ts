@@ -217,6 +217,22 @@ export function registerPaneRpc(
   });
 
   /**
+   * pane.close — closes a leaf pane and disposes its surfaces' PTYs.
+   * params: { id: string }
+   *
+   * paneIds are globally unique, so the renderer resolves the target across
+   * ALL workspaces (mirrors surface.close) rather than the UI-active one. This
+   * lets an external multi-agent caller clean up a worker pane it created via
+   * pane.split in its own background workspace. No active-ws fallback.
+   */
+  router.register('pane.close', (params) => {
+    if (typeof params['id'] !== 'string') {
+      return Promise.reject(new Error('pane.close: missing required param "id"'));
+    }
+    return sendToRenderer(getWindow, 'pane.close', { id: params['id'] });
+  });
+
+  /**
    * Resolves the target pane for a metadata RPC. Two paths:
    *
    *   - `paneId` provided: ask the renderer to confirm the paneId actually

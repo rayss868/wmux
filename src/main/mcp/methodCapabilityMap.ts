@@ -185,6 +185,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'pane.list':   { capability: 'pane.read', riskClass: 'pane-lifecycle' },
   'pane.focus':  { capability: 'pane.read', riskClass: 'pane-lifecycle' },
   'pane.split':  { capability: 'pane.create', riskClass: 'pane-lifecycle' },
+  'pane.close':  { capability: 'pane.create', riskClass: 'pane-lifecycle' },
   'pane.search': { capability: 'pane.search', riskClass: 'terminal-content' },
 
   // --- Metadata (spec §3.4) ---
