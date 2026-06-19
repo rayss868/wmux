@@ -110,7 +110,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
                 </span>
               </div>
               {/* Who is asking + what they want — security context (subordinate,
-                  muted, mono). Uses the previously-dead from/to/a2aDesc keys. */}
+                  muted, mono). Uses the from/to/a2aDescRemote/a2aDescSameWorkspace keys. */}
               <div className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
                 {t('fleet.approvals.from')} {wsName(item.senderWorkspaceId)}
                 {' → '}
