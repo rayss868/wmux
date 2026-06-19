@@ -137,7 +137,6 @@ export const en = {
   'fleet.approvals.deny': 'Deny',
   'fleet.approvals.critical': 'Critical',
   'fleet.approvals.a2aTitle': 'Background execution',
-  'fleet.approvals.a2aDesc': 'A remote A2A caller wants to spawn a Claude CLI with bypassPermissions.',
   'fleet.approvals.a2aDescRemote': 'A remote A2A caller wants to spawn a Claude CLI with bypassPermissions.',
   'fleet.approvals.a2aDescSameWorkspace': 'An agent in this workspace wants to spawn another Claude CLI with bypassPermissions.',
   'fleet.approvals.a2aAutoApprove': 'Auto-approve future A2A execute requests',

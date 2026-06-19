@@ -92,7 +92,6 @@ export const ko = {
   'fleet.approvals.deny': '거부',
   'fleet.approvals.critical': '위험',
   'fleet.approvals.a2aTitle': '백그라운드 실행',
-  'fleet.approvals.a2aDesc': '원격 A2A 호출자가 bypassPermissions로 Claude CLI를 실행하려 합니다.',
   'fleet.approvals.a2aDescRemote': '원격 A2A 호출자가 bypassPermissions로 Claude CLI를 실행하려 합니다.',
   'fleet.approvals.a2aDescSameWorkspace': '이 workspace의 에이전트가 같은 workspace에 bypassPermissions Claude CLI를 추가로 실행하려 합니다.',
   'fleet.approvals.a2aAutoApprove': '앞으로 A2A execute 자동 승인',

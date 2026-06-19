@@ -65,7 +65,6 @@ export interface A2aSlice {
   getAgentSkills: (workspaceId: string) => AgentSkill[] | null;
   enqueueExecuteApproval: (approval: PendingExecuteApproval) => void;
   removeExecuteApproval: (approvalId: string) => void;
-  setPendingExecuteApproval: (approval: PendingExecuteApproval | null) => void;
   setA2aAutoApproveExecute: (enabled: boolean) => void;
 
   // GC
@@ -93,16 +92,6 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     state.pendingExecuteApprovalOrder = state.pendingExecuteApprovalOrder.filter((id) => id !== approvalId);
     const firstId = state.pendingExecuteApprovalOrder[0];
     state.pendingExecuteApproval = firstId ? state.pendingExecuteApprovals[firstId] ?? null : null;
-  }),
-
-  setPendingExecuteApproval: (approval) => set((state: StoreState) => {
-    state.pendingExecuteApprovals = {};
-    state.pendingExecuteApprovalOrder = [];
-    if (approval) {
-      state.pendingExecuteApprovals[approval.approvalId] = approval;
-      state.pendingExecuteApprovalOrder = [approval.approvalId];
-    }
-    state.pendingExecuteApproval = approval;
   }),
 
   setA2aAutoApproveExecute: (enabled) => set((state: StoreState) => {

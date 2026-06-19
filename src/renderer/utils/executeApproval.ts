@@ -14,10 +14,6 @@ export function setExecuteApprovalResolver(approvalId: string, resolver: Resolve
   pendingResolvers.set(approvalId, resolver);
 }
 
-export function clearExecuteApprovalResolver(approvalId: string): void {
-  pendingResolvers.delete(approvalId);
-}
-
 export function resolveExecuteApproval(approvalId: string, approved: boolean): void {
   const resolver = pendingResolvers.get(approvalId);
   pendingResolvers.delete(approvalId);
