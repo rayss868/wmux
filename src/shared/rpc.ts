@@ -91,6 +91,7 @@ export type RpcMethod =
   | 'pane.list'
   | 'pane.focus'
   | 'pane.split'
+  | 'pane.close'
   | 'pane.setMetadata'
   | 'pane.getMetadata'
   | 'pane.clearMetadata'
@@ -194,6 +195,7 @@ export const ALL_RPC_METHODS = [
   'pane.list',
   'pane.focus',
   'pane.split',
+  'pane.close',
   'pane.setMetadata',
   'pane.getMetadata',
   'pane.clearMetadata',

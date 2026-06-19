@@ -1478,3 +1478,44 @@ describe('pane.rpc — pane.split workspaceId forwarding (#236)', () => {
     expect(sendToRendererMock).not.toHaveBeenCalled();
   });
 });
+
+describe('pane.rpc — pane.close (#236 follow-up)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sendToRendererMock.mockResolvedValue({ ok: true });
+  });
+
+  it('forwards the paneId to the renderer', async () => {
+    const router = register();
+    const res = await router.dispatch({
+      id: 'c1',
+      method: 'pane.close',
+      params: { id: 'pane-7' },
+    });
+    expect(res.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      'pane.close',
+      { id: 'pane-7' },
+    );
+  });
+
+  it('rejects a missing id before any renderer call', async () => {
+    const router = register();
+    const res = await router.dispatch({ id: 'c2', method: 'pane.close', params: {} });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/id/);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-string id', async () => {
+    const router = register();
+    const res = await router.dispatch({
+      id: 'c3',
+      method: 'pane.close',
+      params: { id: 42 as unknown as string },
+    });
+    expect(res.ok).toBe(false);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+});

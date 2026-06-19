@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **100** methods (`ALL_RPC_METHODS` in
+Total: **101** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -63,6 +63,7 @@ Total: **100** methods (`ALL_RPC_METHODS` in
 | `pane.list` | `pane.read` | `pane-lifecycle` |
 | `pane.focus` | `pane.read` | `pane-lifecycle` |
 | `pane.split` | `pane.create` | `pane-lifecycle` |
+| `pane.close` | `pane.create` | `pane-lifecycle` |
 | `pane.setMetadata` | `meta.write` | `metadata` |
 | `pane.getMetadata` | `meta.read` | `metadata` |
 | `pane.clearMetadata` | `meta.write` | `metadata` |

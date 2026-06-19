@@ -473,8 +473,21 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'surface.new') {
-    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
-    if (!ws) return { error: 'no active workspace' };
+    // #236 family: honor an explicit workspaceId so a multi-agent caller opens
+    // the surface in ITS OWN workspace, not whichever the user is viewing.
+    // Fail CLOSED on an explicit-but-unknown id (never fall back to active —
+    // that would open the terminal in the wrong agent's workspace).
+    const requestedWsId =
+      typeof params.workspaceId === 'string' && params.workspaceId.length > 0
+        ? params.workspaceId
+        : store.activeWorkspaceId;
+    const ws = store.workspaces.find((w) => w.id === requestedWsId);
+    if (!ws) {
+      if (typeof params.workspaceId === 'string' && params.workspaceId.length > 0) {
+        return { error: `surface.new: workspace "${requestedWsId}" not found` };
+      }
+      return { error: 'surface.new: no active workspace' };
+    }
 
     const paneId = ws.activePaneId;
     const shell = typeof params.shell === 'string' ? params.shell : '';
@@ -491,18 +504,19 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       ),
     );
 
-    // Re-read state after async gap — paneId may have been removed.
+    // Re-read state after async gap — the pane may have been removed. Look up
+    // the SAME workspace by id (NOT the active one, which may have changed).
     const freshAfterCreate = useStore.getState();
-    const freshWsAfterCreate = freshAfterCreate.workspaces.find((w) => w.id === freshAfterCreate.activeWorkspaceId);
+    const freshWsAfterCreate = freshAfterCreate.workspaces.find((w) => w.id === ws.id);
     if (!freshWsAfterCreate || !findPaneById(freshWsAfterCreate.rootPane, paneId)) {
       // Pane was removed during async gap — dispose the orphaned PTY
       try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
       return { error: 'pane was removed during PTY creation' };
     }
-    freshAfterCreate.addSurface(paneId, ptyId, shell, cwd);
+    freshAfterCreate.addSurface(paneId, ptyId, shell, cwd, ws.id);
 
     const fresh = useStore.getState();
-    const freshWs = fresh.workspaces.find((w) => w.id === fresh.activeWorkspaceId);
+    const freshWs = fresh.workspaces.find((w) => w.id === ws.id);
     if (!freshWs) return { ptyId };
     const pane = findPaneById(freshWs.rootPane, paneId);
     if (!pane || pane.type !== 'leaf') return { ptyId };
@@ -522,6 +536,34 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
     store.setActivePane(targetLeaf.id);
     store.setActiveSurface(targetLeaf.id, surfaceId);
+    return { ok: true };
+  }
+
+  if (method === 'pane.close') {
+    // paneIds are globally unique → resolve across ALL workspaces (mirrors
+    // surface.close), so an external caller can close a worker pane it created
+    // (via pane.split) in its own background workspace. No active-ws fallback.
+    const paneId = String(params.id ?? '');
+    if (!paneId) return { error: 'pane.close: missing required param "id"' };
+
+    let targetWs: Workspace | null = null;
+    for (const ws of store.workspaces) {
+      if (findPaneById(ws.rootPane, paneId)) { targetWs = ws; break; }
+    }
+    if (!targetWs) return { error: `pane.close: pane ${paneId} not found` };
+
+    // Dispose every PTY owned by the pane's surfaces (all leaves under it),
+    // mirroring surface.close's explicit pty.dispose.
+    const pane = findPaneById(targetWs.rootPane, paneId);
+    const ptyIds = pane
+      ? findLeafPanes(pane).flatMap((l) => l.surfaces.map((s) => s.ptyId).filter((p): p is string => !!p))
+      : [];
+
+    store.closePane(paneId, targetWs.id);
+
+    for (const ptyId of ptyIds) {
+      try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
+    }
     return { ok: true };
   }
 

@@ -20,11 +20,26 @@ export function registerSurfaceRpc(router: RpcRouter, getWindow: GetWindow): voi
   );
 
   /**
-   * surface.new — creates a new surface in the active pane
+   * surface.new — creates a new surface in the active pane of a workspace.
+   * params: { workspaceId?, shell?, cwd? } — omitted workspaceId ⇒ active ws.
+   *
+   * Earlier this dropped params entirely, so an explicit workspaceId/shell/cwd
+   * was silently ignored and every surface opened in the on-screen workspace
+   * (the #236 family of bugs). Forward them so a multi-agent caller can open a
+   * terminal in ITS OWN workspace; the renderer fails closed on an unknown
+   * explicit workspaceId.
    */
-  router.register('surface.new', (_params) =>
-    sendToRenderer(getWindow, 'surface.new'),
-  );
+  router.register('surface.new', (params) => {
+    const workspaceId = params['workspaceId'];
+    if (workspaceId !== undefined && typeof workspaceId !== 'string') {
+      return Promise.reject(new Error('surface.new: "workspaceId" must be a string if provided'));
+    }
+    return sendToRenderer(getWindow, 'surface.new', {
+      ...(workspaceId !== undefined && { workspaceId }),
+      ...(typeof params['shell'] === 'string' && { shell: params['shell'] }),
+      ...(typeof params['cwd'] === 'string' && { cwd: params['cwd'] }),
+    });
+  });
 
   /**
    * surface.focus — focuses a specific surface
