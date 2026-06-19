@@ -552,12 +552,17 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     if (!targetWs) return { error: `pane.close: pane ${paneId} not found` };
 
-    // Dispose every PTY owned by the pane's surfaces (all leaves under it),
-    // mirroring surface.close's explicit pty.dispose.
+    // Only leaf panes are closable, and never the root: closePane is a no-op for
+    // the root pane (findParent returns null), so disposing its PTYs would orphan
+    // live surfaces with dead PTYs (CodeRabbit). Reject non-leaf / root up front.
     const pane = findPaneById(targetWs.rootPane, paneId);
-    const ptyIds = pane
-      ? findLeafPanes(pane).flatMap((l) => l.surfaces.map((s) => s.ptyId).filter((p): p is string => !!p))
-      : [];
+    if (!pane || pane.type !== 'leaf') {
+      return { error: `pane.close: pane ${paneId} is not a closable leaf` };
+    }
+    if (paneId === targetWs.rootPane.id) {
+      return { error: 'pane.close: cannot close the root pane' };
+    }
+    const ptyIds = pane.surfaces.map((s) => s.ptyId).filter((p): p is string => !!p);
 
     store.closePane(paneId, targetWs.id);
 
