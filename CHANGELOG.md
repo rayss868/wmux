@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The zoom restore button is now a quiet, minimal control that matches the maximize button.** When a pane is zoomed, the toggle that returns it to the grid was a bold red `ZOOM` badge — it reused the cursor accent color, which is a strong red in several themes. It's now styled identically to the hover-revealed `⤢` maximize button (neutral surface background, subtle border) and uses a `⤡` restore glyph, so the maximize and restore controls read as a matched pair instead of the restore button drawing the eye. It still stays visible while zoomed so the way back out is always obvious ([#258](https://github.com/openwong2kim/wmux/pull/258) follow-up).
+
 - **Hardened the A2A execute path against off-machine callers.** Every internal RPC now carries a required trust-origin tag (`local` vs `remote`), and the agent-spawning `a2a.task.send` path only runs when the call provably came from this machine, a positive-allow gate that fails closed for anything else. A source-level test pins that the background daemon can never even import the code that spawns agents. Nothing changes for same-machine multi-agent use today; this is the foundation for cross-PC A2A where remote agents can exchange messages but never execute commands.
 
 ## [3.7.0] — 2026-06-20 — A2A execute approval hardened, and remote RPC that lands in the right workspace

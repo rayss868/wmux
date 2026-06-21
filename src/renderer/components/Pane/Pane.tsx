@@ -276,20 +276,19 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             top: 4,
             right: 6,
             zIndex: 20,
-            padding: '1px 6px',
-            fontSize: 10,
+            padding: '0 5px',
+            height: 16,
+            fontSize: 12,
+            lineHeight: '16px',
             fontFamily: 'ui-monospace, monospace',
-            fontWeight: 700,
-            letterSpacing: '0.08em',
-            color: 'var(--bg-main)',
-            backgroundColor: 'var(--accent-cursor)',
-            border: 'none',
+            color: 'var(--text-main)',
+            backgroundColor: 'var(--bg-surface)',
+            border: '1px solid var(--bg-surface0, rgba(255,255,255,0.12))',
             borderRadius: 3,
             cursor: 'pointer',
-            opacity: 0.85,
           }}
         >
-          ZOOM
+          ⤡
         </button>
       )}
       {/* Issue #182 discoverability: an un-zoomed pane exposes a quiet maximize
