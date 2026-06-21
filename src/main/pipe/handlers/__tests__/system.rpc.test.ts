@@ -41,7 +41,15 @@ describe('system.rpc — system.capabilities', () => {
       };
     };
 
-    expect(result.methods).toEqual(ALL_RPC_METHODS);
+    // capabilities advertises ONLY methods registered on this router. The test
+    // router has just registerSystemRpc, so control-pipe-only RPCs (lanlink.* /
+    // daemon.*) and every other unregistered method are correctly excluded — a
+    // wire caller can't invoke them, so they shouldn't be advertised (codex review).
+    const registered = router.getRegisteredMethods();
+    expect(result.methods).toEqual(ALL_RPC_METHODS.filter((m) => registered.includes(m)));
+    expect(result.methods).toContain('system.capabilities');
+    expect(result.methods).not.toContain('lanlink.pair.begin');
+    expect(result.methods).not.toContain('daemon.inbox.poll');
     expect(result.features.events.types).toEqual(WMUX_EVENT_TYPES);
     expect(result.features.events.maxRingSize).toBe(RING_CAPACITY);
     expect(typeof result.features.events.bootId).toBe('string');
