@@ -98,6 +98,17 @@ export class RpcRouter {
     this.handlers.set(method, handler);
   }
 
+  /**
+   * The methods actually wired into THIS router (i.e. reachable over the RPC
+   * wire). A subset of `ALL_RPC_METHODS`: control-pipe-only RPCs (daemon.* /
+   * lanlink.*) are dispatched by the daemon control pipe, never registered here,
+   * so `system.capabilities` advertises only what a caller can really invoke
+   * (codex review) rather than the full static list.
+   */
+  getRegisteredMethods(): RpcMethod[] {
+    return [...this.handlers.keys()];
+  }
+
   // Wire the trust-store side. main/index.ts injects a recorder backed by
   // PluginTrustStore.upsertLegacyContact; tests leave it unset for isolation.
   setLegacyContactRecorder(recorder: LegacyContactRecorder | undefined): void {

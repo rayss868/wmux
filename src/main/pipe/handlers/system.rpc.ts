@@ -39,12 +39,18 @@ export function registerSystemRpc(router: RpcRouter): void {
     // wrote `if (caps.features.paneMetadata)` keep working because a non-null
     // object is truthy. v2.9.0+ clients can feature-detect by reading the
     // fields directly.
+    // Advertise only methods actually registered on THIS router. Control-pipe-only
+    // RPCs (daemon.* / lanlink.*) are dispatched by the daemon pipe and are never
+    // registered here, so listing the full static ALL_RPC_METHODS would advertise
+    // methods a wire caller can't invoke (they'd get unknown-method). Filtering to
+    // the registered set keeps capabilities honest (codex review).
+    const registered = new Set(router.getRegisteredMethods());
     const paneMetadata: PaneMetadataCapabilities = {
       optimisticConcurrency: true,
       mergeModes: ['merge', 'replace', 'replaceShared'],
     };
     return Promise.resolve({
-      methods: ALL_RPC_METHODS,
+      methods: ALL_RPC_METHODS.filter((m) => registered.has(m)),
       features: {
         paneMetadata,
         events: {
