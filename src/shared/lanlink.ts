@@ -143,6 +143,9 @@ export const LANLINK_PORT_MIN = 1024;
 /** Highest valid LanLink listen port. */
 export const LANLINK_PORT_MAX = 65535;
 
+/** Default LanLink listen port when none is persisted (the daemon's DEFAULT_PORT). */
+export const LANLINK_DEFAULT_PORT = 45651;
+
 /**
  * Persisted NIC identity. NOT a raw IP — the interface display name plus MAC, so
  * the same physical NIC is re-resolvable across reboots / DHCP renewals (C2). The
@@ -179,7 +182,11 @@ export interface LanLinkConfig {
 export interface LanLinkStatus {
   enabled: boolean;
   nic: LanLinkNic | null;
+  /** Persisted port override; `null` means "use the default". */
   port: number | null;
+  /** The port the daemon actually listens on (`port ?? LANLINK_DEFAULT_PORT`). The
+   *  Settings pairing UI shows this so a peer knows which port to join. */
+  effectivePort: number;
   /** Live LAN-capable NICs (re-enumerated each call); drives the Settings dropdown. */
   nics: NicInfo[];
 }

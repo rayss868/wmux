@@ -122,7 +122,8 @@ async function main() {
   const nic = s0.nics[0] ? { name: s0.nics[0].name, mac: s0.nics[0].mac } : null;
   const s1 = await rpc('lanlink.configure', nic ? { enabled: true, nic } : { enabled: true });
   assert(s1.enabled === true, 'configure: LanLink enabled');
-  console.log(`    NIC: ${nic ? nic.name : '(none — enable-only)'}`);
+  assert(typeof s1.effectivePort === 'number' && s1.effectivePort > 0, `status exposes effectivePort (${s1.effectivePort}) — peer's join target (codex#5)`);
+  console.log(`    NIC: ${nic ? nic.name : '(none — enable-only)'}  effectivePort: ${s1.effectivePort}`);
 
   // 1. pair.begin — mints a 6-digit PIN + arms the window.
   const pb = await rpc('lanlink.pair.begin', {});

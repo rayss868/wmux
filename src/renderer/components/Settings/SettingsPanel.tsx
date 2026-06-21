@@ -1002,6 +1002,8 @@ function LanLinkSection() {
 
 export interface LanLinkPairingViewProps {
   enabled: boolean;
+  /** This machine's host:port for a peer's Join form (null until a NIC resolves). */
+  selfAddress: string | null;
   // pair this machine
   pin: string | null;
   countdownSec: number | null;
@@ -1031,7 +1033,7 @@ export interface LanLinkPairingViewProps {
 
 export function LanLinkPairingView(props: LanLinkPairingViewProps) {
   const {
-    enabled, pin, countdownSec, failCount, pairBusy, onBeginPair, onCancelPair,
+    enabled, selfAddress, pin, countdownSec, failCount, pairBusy, onBeginPair, onCancelPair,
     joinHost, joinPort, joinPin, onJoinHost, onJoinPort, onJoinPin, onJoin, joinBusy,
     peers, confirmingRevoke, onAskRevoke, onConfirmRevoke, onCancelRevoke, error, t,
   } = props;
@@ -1081,6 +1083,11 @@ export function LanLinkPairingView(props: LanLinkPairingViewProps) {
           </Button>
         )}
       </SettingRow>
+      {pin && selfAddress && (
+        <p data-testid="lanlink-pair-self" className="text-[10px] font-mono px-1" style={{ color: 'var(--text-subtle)' }}>
+          {t('settings.lanlinkPairSelfAddress', { address: selfAddress })}
+        </p>
+      )}
       {failCount > 0 && (
         <p className="text-[10px] font-mono px-1" style={{ color: 'var(--accent-yellow)' }}>
           {t('settings.lanlinkPairFailCount', { count: failCount })}
@@ -1181,6 +1188,8 @@ function LanLinkPairingSection() {
 
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [nic, setNic] = useState<LanLinkNic | null>(null);
+  const [effectivePort, setEffectivePort] = useState<number | null>(null);
+  const [nics, setNics] = useState<NicInfo[]>([]);
   const [unavailable, setUnavailable] = useState(false);
   const [pin, setPin] = useState<string | null>(null);
   const [deadline, setDeadline] = useState<number | null>(null);
@@ -1204,8 +1213,11 @@ function LanLinkPairingSection() {
   const refreshStatus = useCallback(async () => {
     if (!api?.status) { setUnavailable(true); return; }
     const r = await ipcInvoke(() => api.status());
-    if (r.ok) { setEnabled(r.data.enabled); setNic(r.data.nic); setUnavailable(false); }
-    else setUnavailable(true);
+    if (r.ok) {
+      setEnabled(r.data.enabled); setNic(r.data.nic);
+      setEffectivePort(r.data.effectivePort); setNics(r.data.nics);
+      setUnavailable(false);
+    } else setUnavailable(true);
   }, [api, ipcInvoke]);
 
   const refreshPairStatus = useCallback(async () => {
@@ -1311,11 +1323,22 @@ function LanLinkPairingSection() {
     );
   }
 
+  // This machine's reachable address for a peer to enter on their "Join" form: the
+  // selected NIC's IP + the daemon's effective listen port. Shown next to the PIN so
+  // the peer knows the full host:port, not just the code (codex#5).
+  const selfAddress = (() => {
+    if (!nic || effectivePort == null) return null;
+    const match = nics.find((n) => n.name === nic.name && n.mac === nic.mac);
+    const ip = match?.addresses[0];
+    return ip ? `${ip}:${effectivePort}` : null;
+  })();
+
   const countdownSec = deadline != null ? Math.max(0, Math.ceil((deadline - now) / 1000)) : null;
 
   return (
     <LanLinkPairingView
       enabled={enabled === true && nic !== null}
+      selfAddress={selfAddress}
       pin={pin}
       countdownSec={countdownSec}
       failCount={failCount}

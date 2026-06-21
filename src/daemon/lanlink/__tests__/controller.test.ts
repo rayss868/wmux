@@ -31,6 +31,7 @@ describe('LanLinkController', () => {
     expect(status.enabled).toBe(false);
     expect(status.nic).toBeNull();
     expect(status.port).toBeNull();
+    expect(status.effectivePort).toBe(45651); // LANLINK_DEFAULT_PORT when none persisted (codex#5)
     expect(status.nics.map((n) => n.name)).toEqual(['Ethernet']); // loopback excluded
   });
 
@@ -90,6 +91,7 @@ describe('LanLinkController', () => {
     const { config, controller } = makeController();
     const status = controller.configure({ port: 41234 });
     expect(status.port).toBe(41234);
+    expect(status.effectivePort).toBe(41234); // persisted port wins over the default (codex#5)
     expect(config.lanlink?.port).toBe(41234);
   });
 });

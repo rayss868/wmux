@@ -35,9 +35,9 @@ import {
 import { admitKind } from './router';
 import { sanitizeRemoteText, sanitizeRemotePeerName, hasResidualControl } from './sanitize';
 import { applyLanLinkFirewall, removeLanLinkFirewall } from './firewall';
-import type { InboxRecord, LanLinkNic, NicInfo } from '../../shared/lanlink';
+import { LANLINK_DEFAULT_PORT, type InboxRecord, type LanLinkNic, type NicInfo } from '../../shared/lanlink';
 
-export const DEFAULT_PORT = 45651;
+export const DEFAULT_PORT = LANLINK_DEFAULT_PORT;
 
 const HANDSHAKE_TIMEOUT_MS = 5_000; // absolute, NOT reset by byte arrival (slow-loris)
 const IDLE_TIMEOUT_MS = 60_000;
