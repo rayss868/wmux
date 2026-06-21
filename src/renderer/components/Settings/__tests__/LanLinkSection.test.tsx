@@ -115,6 +115,7 @@ describe('LanLinkView — onChange wiring', () => {
 function makePairProps(overrides: Partial<LanLinkPairingViewProps> = {}): LanLinkPairingViewProps {
   return {
     enabled: true,
+    selfAddress: null,
     pin: null,
     countdownSec: null,
     failCount: 0,
@@ -160,6 +161,21 @@ describe('LanLinkPairingView — markup', () => {
     expect(html).toContain('lanlink-pair-pin');
     expect(html).toContain('123456');
     expect(html).toContain('settings.lanlinkPairCountdown');
+  });
+
+  it('shows this machine host:port next to the PIN when available (codex#5)', () => {
+    // tStub returns the key (no {address} interpolation), so assert the self line
+    // renders; the actual host:port value is exercised by the CDP dogfood.
+    const withAddr = renderToStaticMarkup(
+      createElement(LanLinkPairingView, makePairProps({ pin: '123456', selfAddress: '192.168.1.5:45651' })),
+    );
+    expect(withAddr).toContain('lanlink-pair-self');
+    expect(withAddr).toContain('settings.lanlinkPairSelfAddress');
+    // No self line before a PIN is minted (nothing to share yet).
+    const noPin = renderToStaticMarkup(
+      createElement(LanLinkPairingView, makePairProps({ pin: null, selfAddress: '192.168.1.5:45651' })),
+    );
+    expect(noPin).not.toContain('lanlink-pair-self');
   });
 
   it('renders a peer row with the "remote peer" badge and a revoke control', () => {

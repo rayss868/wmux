@@ -281,6 +281,7 @@ export const en = {
   'settings.lanlinkPairStart': 'Pair this machine',
   'settings.lanlinkPairStartDesc': 'Generate a one-time PIN, then enter it on the other machine within 2 minutes.',
   'settings.lanlinkPairStartButton': 'Generate PIN',
+  'settings.lanlinkPairSelfAddress': 'On this machine: {address} — give this address and the PIN to the other machine.',
   'settings.lanlinkPairCountdown': 'expires in {seconds}s',
   'settings.lanlinkPairExpired': 'expired',
   'settings.lanlinkPairCancel': 'Cancel',

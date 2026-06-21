@@ -223,15 +223,6 @@
 - **Depends on:** 구체적 적대 멀티에이전트 위협 리포트 발생 시.
 - **Priority:** P3
 
-## LanLink: expose effective pairing port + host address on the PIN (P2)
-- **What:** 페어링 PIN 발급 시 이 머신의 effective `host:port`를 함께 표시해 상대가 join 가능하게. 데몬 status에 `effectivePort`(persisted port 없으면 데몬 기본 listen 포트) 추가 + 렌더러 `LanLinkPairingView`가 선택 NIC IP + port를 PIN 옆에 노출. join 폼 port 기본값 `0`(invalid) 개선.
-- **Why:** codex review(PR-5 #275, codex#5). 현재 PIN만 표시 → 상대가 우리 IP/port를 몰라 join 불가. `status.port`는 persisted만(null이면 데몬 기본 = 렌더러가 모름).
-- **Pros:** 페어링 UX 완성(상대가 PIN 하나로 우리 접속정보 전부 획득).
-- **Cons:** 데몬 status 확장 필요(PR-5는 데몬 0줄 원칙 → follow-up은 데몬 변경 허용). NIC IP 계산(status.nics에서 선택 NIC 매칭).
-- **Context:** `src/daemon/lanlink/server.ts` getStatus + `src/shared/lanlink.ts` LanLinkStatus(+effectivePort) + `SettingsPanel.tsx` LanLinkPairingSection(status.port/nics 노출).
-- **Depends on:** —
-- **Priority:** P2
-
 ## LanLink: unify the double daemon status probe (P3)
 - **What:** `LanLinkSection`(PR-3)과 `LanLinkPairingSection`(PR-5)이 각각 `lanlink.status`를 폴링 → LanLink 탭 열 때 status RPC 2회. 상위 컨테이너가 status를 한 번 읽어 둘에 props로 공유.
 - **Why:** codex review(PR-5 #275, codex P2). read-only minor지만 중복 probe.

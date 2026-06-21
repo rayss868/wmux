@@ -3,6 +3,7 @@ import os from 'node:os';
 import type { DaemonConfig } from '../types';
 import {
   defaultLanLinkConfig,
+  LANLINK_DEFAULT_PORT,
   type LanLinkConfig,
   type LanLinkConfigurePatch,
   type LanLinkStatus,
@@ -68,6 +69,7 @@ export class LanLinkController extends EventEmitter {
       enabled: cur.enabled,
       nic: cur.nic,
       port: cur.port ?? null,
+      effectivePort: cur.port ?? LANLINK_DEFAULT_PORT,
       nics: enumerateNics(this.ifaces()),
     };
   }

@@ -228,6 +228,7 @@ export const ko = {
   'settings.lanlinkPairStart': '이 머신 페어링',
   'settings.lanlinkPairStartDesc': '일회용 PIN을 생성한 뒤 2분 안에 다른 머신에 입력하세요.',
   'settings.lanlinkPairStartButton': 'PIN 생성',
+  'settings.lanlinkPairSelfAddress': '이 머신: {address} — 이 주소와 PIN을 다른 머신에 알려주세요.',
   'settings.lanlinkPairCountdown': '{seconds}초 후 만료',
   'settings.lanlinkPairExpired': '만료됨',
   'settings.lanlinkPairCancel': '취소',
