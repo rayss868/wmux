@@ -16,6 +16,7 @@ import { registerWaitTools } from './playwright/tools/wait';
 import { registerFileTools } from './playwright/tools/file';
 import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
+import { registerChannelTools } from './channels';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -881,6 +882,19 @@ server.tool(
   {},
   async () => callRpc('company.a2a.status'),
 );
+
+// === A2A channel tools ===
+// Six standard MCP tools that expose the a2a.channel.* pipe RPC surface.
+// `channel.history` is intentionally deferred per plan Scope Boundaries.
+// Workspace identity uses the same resolveWorkspaceId as the other
+// workspace-routed tools (verified PID-map hit first, env-hint fallback).
+// D5: also expose the server's verified senderPtyId (MY_PTY_ID, the PID-map
+// walk result) so the main-side a2a.channel handler resolves + stamps the
+// workspace identity server-side, ignoring any client-supplied value.
+registerChannelTools(server, {
+  resolveWorkspaceId: requireWorkspaceId,
+  getSenderPtyId: () => MY_PTY_ID,
+});
 
 // === Start server ===
 

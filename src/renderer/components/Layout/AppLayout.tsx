@@ -24,6 +24,7 @@ import KeyboardCheatSheet from '../KeyboardCheatSheet';
 import ToastContainer from '../Toast/ToastContainer';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
+import { ChannelView } from '../Channels/ChannelView';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useActivePaneFocus } from '../../hooks/useActivePaneFocus';
@@ -32,6 +33,7 @@ import { useRpcBridge } from '../../hooks/useRpcBridge';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
+import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../shared/types';
@@ -300,6 +302,11 @@ export default function AppLayout() {
   // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
   // so remote peer messages accumulate in the store before any surface opens.
   useRemoteInboxBridge();
+  // U6 — channel.message subscription. Polls events.poll on a 1s cadence
+  // and dispatches into channelsSlice. Always-on (not gated on any
+  // panel visibility) so the unread badge stays accurate while the
+  // sidebar is collapsed.
+  useChannelsEventSubscription();
   // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
   usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();
@@ -1165,6 +1172,15 @@ export default function AppLayout() {
       )}
       <NotificationPanel />
       <MessageFeedPanel />
+      {/* A2A channel view (U8). Always mounted; returns null when no
+          channel is active, so the gate is internal (matches the
+          NotificationPanel pattern). The view docks to the right
+          edge of the main area when a channel is active. The wrapper
+          uses a fixed-position overlay so it stacks above the panes
+          but does not disturb the workspace layout — the panes
+          remain fully interactive when the channel view is hidden
+          (pointer-events: none on the wrapper). */}
+      <ChannelView />
       {/* Cross-pane search results panel (T-F). Mount-gated on
           searchPanelOpen at this level (I3) so the panel's 6-field zustand
           subscriptions don't run when closed. */}

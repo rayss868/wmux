@@ -12,6 +12,7 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
+import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope } from './channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
@@ -970,6 +971,7 @@ function registerRpcHandlers(
   lanLinkInbox: LanLinkInbox,
   lanLinkController: LanLinkController,
   lanLinkServer: LanLinkServer,
+  channelStateWriter: ChannelStateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   startTime: number,
@@ -977,6 +979,7 @@ function registerRpcHandlers(
   watchdog: Watchdog,
   paneSupervisor: PaneSupervisor,
   triggerSnapshot: () => void,
+  channelService: ChannelService,
 ): void {
   // daemon.createSession
   pipeServer.onRpc('daemon.createSession', async (params) => {
@@ -1456,6 +1459,173 @@ function registerRpcHandlers(
     };
   });
 
+  // === A2A Channels (a2a-channels U4) ===
+  // Seven thin pass-throughs onto ChannelService. Each handler validates the
+  // caller-supplied shape enough to keep `params as unknown as XParams`
+  // sound, then returns the service's Result envelope verbatim. Wire-format
+  // errors (the `ChannelError` branch) flow back to the renderer untouched
+  // so a typed RPC failure mirrors the typed service error. The Post path
+  // additionally emits a `channel.message` event via the injected emit
+  // sink (ChannelService.emit → pipeServer.broadcast) — see ChannelService
+  // plan KTD3 for the critical-section placement.
+  //
+  // Capability enforcement lives upstream in RpcRouter (methodCapabilityMap)
+  // and gates these as either `a2a.channel.read` (list, get, getMessages,
+  // getMembers) or `a2a.channel.send` (create, post, join, leave, archive).
+  // The pipe layer has no per-call identity context here; the auth token
+  // covers the daemon transport, and finer-grained plugin permission will
+  // land in the follow-up PR that introduces the permission enforcer for
+  // method dispatch (mcp-plugin-spec).
+  pipeServer.onRpc('a2a.channel.list', async (params) => {
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'verifiedWorkspaceId is required',
+        },
+      };
+    }
+    return { ok: true, channels: channelService.list(verifiedWorkspaceId) };
+  });
+
+  pipeServer.onRpc('a2a.channel.get', async (params) => {
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!channelId) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
+    }
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'verifiedWorkspaceId is required',
+        },
+      };
+    }
+    const channel = channelService.get(channelId, verifiedWorkspaceId);
+    if (!channel) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${channelId}` } };
+    }
+    return { ok: true, channel };
+  });
+
+  pipeServer.onRpc('a2a.channel.getMessages', async (params) => {
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!channelId) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
+    }
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'verifiedWorkspaceId is required',
+        },
+      };
+    }
+    const sinceSeq = typeof params['sinceSeq'] === 'number' ? params['sinceSeq'] : undefined;
+    return { ok: true, messages: channelService.getMessages(channelId, sinceSeq, verifiedWorkspaceId) };
+  });
+
+  pipeServer.onRpc('a2a.channel.getMembers', async (params) => {
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!channelId) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
+    }
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'verifiedWorkspaceId is required',
+        },
+      };
+    }
+    return { ok: true, members: channelService.getMembers(channelId, verifiedWorkspaceId) };
+  });
+
+  pipeServer.onRpc('a2a.channel.create', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').CreateChannelParams;
+    if (!p.name || !p.visibility || !p.createdBy) {
+      return { ok: false, error: { code: 'INVALID_NAME', message: 'name, visibility, and createdBy are required' } };
+    }
+    // D5: create is a mutating call whose server-pinned `createdBy` feeds the
+    // archive authz gate — require a server-resolved verifiedWorkspaceId and
+    // fail closed without one, identical to join/leave/post/archive below.
+    if (!p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'name, visibility, createdBy, and a server-resolved verifiedWorkspaceId are required',
+        },
+      };
+    }
+    return channelService.create(p);
+  });
+
+  pipeServer.onRpc('a2a.channel.archive', async (params) => {
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const archivedBy = typeof params['archivedBy'] === 'string' ? params['archivedBy'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!channelId || !archivedBy || !verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'channelId, archivedBy, and verifiedWorkspaceId are required',
+        },
+      };
+    }
+    return channelService.archive({ channelId, archivedBy, verifiedWorkspaceId });
+  });
+
+  pipeServer.onRpc('a2a.channel.join', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').JoinChannelParams;
+    if (!p.channelId || !p.member || !p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: { code: 'NOT_AUTHORIZED', message: 'channelId, member, and a server-resolved verifiedWorkspaceId are required' },
+      };
+    }
+    return channelService.join(p);
+  });
+
+  pipeServer.onRpc('a2a.channel.leave', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').LeaveChannelParams;
+    if (!p.channelId || !p.workspaceId || !p.memberId || !p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: { code: 'NOT_AUTHORIZED', message: 'channelId, workspaceId, memberId, and a server-resolved verifiedWorkspaceId are required' },
+      };
+    }
+    return channelService.leave(p);
+  });
+
+  pipeServer.onRpc('a2a.channel.post', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').PostMessageParams;
+    if (!p.channelId || !p.sender || typeof p.text !== 'string' || !p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'channelId, sender, text, and verifiedWorkspaceId are required',
+        },
+      };
+    }
+    return channelService.post(p);
+  });
+
   // daemon.shutdown — gracefully terminate the daemon process. A2 makes
   // this RPC awaitable: the handler runs the full shutdown body (dumps,
   // state save, dispose) before returning, then defers the pipe stop and
@@ -1469,6 +1639,7 @@ function registerRpcHandlers(
       sessionManager,
       pipeServer,
       stateWriter,
+      channelStateWriter,
       sessionPipes,
       processMonitor,
       watchdog,
@@ -1877,6 +2048,7 @@ async function shutdown(
   sessionManager: DaemonSessionManager,
   pipeServer: DaemonPipeServer,
   stateWriter: StateWriter,
+  channelStateWriter: ChannelStateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   watchdog: Watchdog,
@@ -1984,6 +2156,7 @@ async function shutdown(
   phaseLog('disposeAll', disposeStart, { count: disposedCount });
 
   stateWriter.dispose();
+  channelStateWriter.dispose();
 
   // Stop IPC server — skipped when the caller (e.g., daemon.shutdown RPC)
   // still needs the pipe to flush its ack.
@@ -2056,6 +2229,39 @@ async function main(): Promise<void> {
   const sessionManager = new DaemonSessionManager();
   sessionManager.setConfig(config);
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
+  // Channels (a2a-channels U3). Channels live in their own file
+  // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event
+  // cannot cascade into session-state failure. The service receives
+  // `pipeServer.broadcast` as its emit sink so a successful post is
+  // fanned out to every connected client before the next RPC turn.
+  // Company id is hardcoded to `'co-default'` until the company-mode
+  // config key lands; the channel state format already supports
+  // multi-company, so this is a single line to swap.
+  const channelStateWriter = new ChannelStateWriter(wmuxDir);
+  const channelService = new ChannelService({
+    writer: channelStateWriter,
+    companyId: 'co-default',
+    // U5 archive-authz (KTD-F): the CEO override is gated on this field.
+    // The renderer owns `Company.ceoWorkspaceId` today; the daemon does
+    // not have a copy, so we pass `undefined` (creator-only archive)
+    // until the company-mode config key lands. The gate in
+    // `ChannelService.archive()` is already wired and will activate
+    // automatically once a real value is plumbed in.
+    ceoWorkspaceId: undefined,
+    emit: (event) => {
+      // Wrap the ChannelMessageEvent in the canonical DaemonEvent envelope
+      // before broadcasting on the control pipe. The helper lives in
+      // `src/daemon/channels/channelEventEnvelope.ts` and is unit tested
+      // for shape stability — the prior producer emitted a raw event,
+      // which the main-side consumer never matched, silently dropping
+      // every channel.message fan-out (plan R2).
+      try {
+        pipeServer.broadcast(wrapChannelMessageEnvelope(event));
+      } catch (err) {
+        log('warn', `channel emit failed for ${event.channelId}#${event.seq}:`, err);
+      }
+    },
+  });
   const processMonitor = new ProcessMonitor();
 
   // LanLink PR-4 — the network surface. An ISOLATED net.Server (its OWN admission
@@ -2200,6 +2406,7 @@ async function main(): Promise<void> {
     lanLinkInbox,
     lanLinkController,
     lanLinkServer,
+    channelStateWriter,
     sessionPipes,
     processMonitor,
     startTime,
@@ -2209,6 +2416,7 @@ async function main(): Promise<void> {
     () => {
       if (runSnapshotOnceRef) void runSnapshotOnceRef();
     },
+    channelService,
   );
 
   // 6. Wire events
@@ -2258,7 +2466,7 @@ async function main(): Promise<void> {
   // SIGTERM/SIGINT/daemon.shutdown — referenced from within the
   // Watchdog tick (always runs after this point in the boot order).
   const doShutdown = (sig: string): Promise<void> =>
-    shutdown(sig, sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, watchdog);
+    shutdown(sig, sessionManager, pipeServer, stateWriter, channelStateWriter, sessionPipes, processMonitor, watchdog);
 
   // 8. Start watchdog with escalation callbacks
   watchdog.setCallbacks({

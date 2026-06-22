@@ -19,6 +19,7 @@ import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
 import { registerAllHandlers } from './ipc/registerHandlers';
 import { RpcRouter } from './pipe/RpcRouter';
+import type { RpcMethod } from '../shared/rpc';
 import { PipeServer } from './pipe/PipeServer';
 import { registerWorkspaceRpc } from './pipe/handlers/workspace.rpc';
 import { registerSurfaceRpc } from './pipe/handlers/surface.rpc';
@@ -34,12 +35,14 @@ import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
+import { registerA2aChannelRpc } from './pipe/handlers/a2a.channel.rpc';
 import { registerCompanyRpc } from './pipe/handlers/company.rpc';
 import { registerEventsRpc } from './pipe/handlers/events.rpc';
 import { PluginHostLoader } from './plugins/PluginHostLoader';
 import { registerPluginSchemePrivileges, registerPluginProtocolHandler } from './plugins/pluginProtocol';
 import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
 import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.handler';
+import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
 import { registerUiPluginRpc } from './pipe/handlers/uiPlugin.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
@@ -422,7 +425,24 @@ const mcpHandlerOptions = {
 // variable (no closure snapshot).
 registerSessionHandlers(() => daemonClient?.isConnected === true);
 
-let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
+// Bridge the in-renderer `__wmuxEventsPoll` / `__wmuxChannelsRpc` globals
+// (installed in `src/renderer/hooks/useRpcBridge.ts`) into the live pipe
+// `RpcRouter`. A request id is synthesized per call because the
+// renderer-to-main IPC channel is request/response (no correlation id
+// echoed back), and the router only requires id+method+params to dispatch.
+// Used by every `registerAllHandlers` call site below; factoring it out
+// keeps the three swaps consistent.
+const invokeRendererRpc = (method: string, params: Record<string, unknown>): Promise<unknown> =>
+  rpcRouter.dispatch({
+    id: `renderer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    method: method as RpcMethod,
+    params,
+  });
+
+let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, {
+  ...mcpHandlerOptions,
+  invokeRendererRpc,
+});
 
 // First-run wizard orchestrator (Plan 1.15) — registered once and survives
 // crash-recovery handler-reload because it owns its own marker + IPC channels
@@ -511,6 +531,7 @@ registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker);
+registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter, (clientName) => getPluginTrustStore().get(clientName));
 registerUiPluginRpc(rpcRouter, () => mainWindow);
@@ -523,6 +544,11 @@ registerPluginHostHandlers(rpcRouter, () => pluginHostLoader, () => approvalQueu
 // surface — never exposed on the pipe RPC (external clients must not be able
 // to read project files or grant trust). Registered once, like plugin host.
 registerProjectConfigHandlers();
+// Renderer-only channel-mutation surface (D5). Lets the in-app channels UI
+// (create + composer post) mutate channel state — the pipe-facing a2a.channel
+// handler fails a no-senderPtyId mutation closed, and this ipcMain.handle
+// channel is unreachable from the pipe. See channelLocal.handler.ts.
+registerChannelLocalHandlers(() => daemonClient);
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
 const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient);
@@ -800,7 +826,10 @@ app.on('ready', async () => {
       logLine('info', 'main', 'handler swap (daemon connect): cleanup begin');
       cleanupHandlers();
       logLine('info', 'main', 'handler swap (daemon connect): cleanup done, register begin');
-      cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient, mcpHandlerOptions);
+      cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient, {
+        ...mcpHandlerOptions,
+        invokeRendererRpc,
+      });
       logLine('info', 'main', 'handler swap (daemon connect): register done');
       // Mount the notification router now that we have a live daemon
       // client. PTY data flows through daemon → DaemonClient events,
@@ -866,7 +895,10 @@ app.on('ready', async () => {
       logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
       cleanupHandlers();
       logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup done, register begin');
-      cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
+      cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, {
+        ...mcpHandlerOptions,
+        invokeRendererRpc,
+      });
       logLine('warn', 'main', 'handler swap (daemon disconnect): register done');
     },
     emit: (event) => {
