@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.0] — 2026-06-23 — Agent channels, with a verified sender on every message
+
+Headline: **A2A channels** grow up. The multi-party half (U2) lands, so several agents in one workspace can talk in a shared, named room instead of only the one-to-one task messages A2A started with — and every channel message now carries a **server-verified sender** an agent cannot forge. Building on the channel domain types and persistence from U1 ([#269](https://github.com/openwong2kim/wmux/pull/269)), agents create, join, leave, post, and archive channels; the daemon pins each message's sender, each membership, and each channel's authorship to a workspace identity that the main process resolves from the *actual sending pane* rather than trusting a tag the caller put on the wire. A forged `verifiedWorkspaceId` is rejected outright — never attributed to the workspace it tried to impersonate — and private channels stay readable only to their members. Alongside it, the bundled CLI takes a stable identity so the legacy permission grandfather can start closing.
+
+### Added
+
+- **A2A channels — multi-party rooms with a server-verified sender (U2 + D5, [#280](https://github.com/openwong2kim/wmux/pull/280)).** Channels are Slack-style rooms for the agents in a workspace: a shared, named thread several agents post into, rather than the one-to-one task messages A2A began with. This release lands the multi-party operations on top of U1's domain types and persistence ([#269](https://github.com/openwong2kim/wmux/pull/269)) — create, join, leave, post, and archive — and makes **caller identity server-verified** end to end. Every mutating channel call is stamped with the workspace identity the main process resolves from the sender's real pane (`senderPtyId`), not a `verifiedWorkspaceId` the caller supplied:
+  - the daemon's `ChannelService` pins the sender on each post, the member on each join/leave, and `createdBy` on each channel to that resolved identity, so a forged sender, member, or author is impossible;
+  - the main process strips any client-supplied workspace tag and re-derives it from the owning pane, failing closed on a mutating call it can't attribute;
+  - a forged `verifiedWorkspaceId` aimed at another workspace is **rejected**, never silently attributed to the victim;
+  - channel reads are membership-scoped, so a non-member can't read a private channel's messages, and message bodies are length-clamped so an oversized post can't stall the pipe.
+
+  Channel access stays gated behind the existing `a2a.channel.read` / `a2a.channel.send` capabilities, so this widens no trust boundary. Channels contributed by @AnandSundar; the verified caller-identity hardening (D5) by the wmux team.
+
+### Changed
+
+- **The bundled `wmux` CLI now reports a stable client identity, so the legacy permission grandfather can begin closing ([#282](https://github.com/openwong2kim/wmux/pull/282)).** The permission enforcer historically let any caller that sent no client name through unchecked (`if (!clientName) allow`) — a grandfather clause the bundled CLI, the one steady-state envelope-less caller, rode on. The CLI now identifies itself as `wmux-cli`, and the enforcer grants that identity *exactly* the narrow set of methods the CLI actually calls — a separate, tighter allowlist than the bundled MCP's first-party set, pinned by a source-level test so a new CLI command can't silently fall outside it. This is **additive**: nothing changes for callers today and the grandfather still admits envelope-less callers — it's the groundwork for a later release to close that grandfather behind the existing `enforcementMode` shadow→enforce switch.
+
 ## [3.8.0] — 2026-06-22 — LanLink: local-first cross-PC agent messaging
 
 Headline: **LanLink** lets two wmux machines on the same LAN pair once with a 6-digit PIN, then exchange read-only agent messages over an authenticated, encrypted channel — no cloud, no account, off by default. The epic is built so that **running commands across machines is physically impossible**: the background daemon imports none of the agent-spawning code, a remote message can only ever surface as a read-only card in the renderer (never pasted into a terminal), and every internal RPC now carries a required trust-origin so the execute path fails closed for anything not provably local. Also lands A2A channels U1 (the rooms half of a future cross-PC group chat), a Fleet View sort toggle, a quieter zoom-restore button, and a keyboard-focus self-heal.
