@@ -247,6 +247,10 @@ export function ChannelView(): React.ReactElement | null {
     activeChannelId ? s.channelMembers[activeChannelId] ?? EMPTY_MEMBERS : EMPTY_MEMBERS,
   );
   const company = useStore((s) => s.company);
+  // Channels are decoupled from in-app Company mode: the active workspace is
+  // the renderer's "self" identity when no company is set (mirrors
+  // useChannelsHydration / ChannelsPanel).
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -270,13 +274,13 @@ export function ChannelView(): React.ReactElement | null {
   // return makes the hook order stable across renders.
   const viewer = useMemo<ChannelMember | null>(() => {
     if (members.length === 0) return null;
-    const ownWorkspaceId = company?.ceoWorkspaceId;
-    if (ownWorkspaceId !== undefined) {
+    const ownWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId;
+    if (ownWorkspaceId) {
       const own = members.find((m) => m.workspaceId === ownWorkspaceId);
       if (own) return own;
     }
     return members[0] ?? null;
-  }, [members, company?.ceoWorkspaceId]);
+  }, [members, company?.ceoWorkspaceId, activeWorkspaceId]);
 
   if (!activeChannelId || !channel) {
     // The activeChannelId-but-channel-undefined case can fire on a
@@ -287,32 +291,28 @@ export function ChannelView(): React.ReactElement | null {
     return null;
   }
 
+  // Dock content (not a fixed overlay anymore). The ChannelDock owns width +
+  // positioning; ChannelView fills the dock's remaining height below the list.
   return (
-    <div
-      className="fixed top-0 right-0 h-screen pointer-events-none"
-      style={{ width: 360, zIndex: 40 }}
-      data-channel-view-wrapper
-    >
-      <div className="h-full pointer-events-auto">
-        <ChannelViewContent
-          channel={channel}
-          messages={messages}
-          viewer={viewer}
-          onClose={handleClose}
-          composerSlot={
-            channel.status === 'archived' ? (
-              <div
-                data-channel-archived-composer
-                className="px-4 py-2 text-[10px] font-mono text-[var(--text-muted)]"
-              >
-                {t('channels.archivedReadOnly') || 'Archived channels are read-only.'}
-              </div>
-            ) : (
-              <Composer channelId={channel.id} onError={pushToast} />
-            )
-          }
-        />
-      </div>
+    <div className="flex flex-col flex-1 min-h-0" data-channel-view-wrapper>
+      <ChannelViewContent
+        channel={channel}
+        messages={messages}
+        viewer={viewer}
+        onClose={handleClose}
+        composerSlot={
+          channel.status === 'archived' ? (
+            <div
+              data-channel-archived-composer
+              className="px-4 py-2 text-[10px] font-mono text-[var(--text-muted)]"
+            >
+              {t('channels.archivedReadOnly') || 'Archived channels are read-only.'}
+            </div>
+          ) : (
+            <Composer channelId={channel.id} onError={pushToast} />
+          )
+        }
+      />
     </div>
   );
 }

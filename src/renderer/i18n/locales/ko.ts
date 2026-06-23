@@ -7,6 +7,8 @@ export const ko = {
   'sidebar.newWorkspace': '새 워크스페이스',
   'sidebar.newWorkspaceTooltip': '새 워크스페이스 (Ctrl+N)',
   'sidebar.hideTooltip': '사이드바 숨기기 (Ctrl+B)',
+  'sidebar.showCompany': '회사 보기',
+  'sidebar.showWorkspaces': '워크스페이스 보기',
   'sidebar.expandTooltip': '사이드바 펼치기 (Ctrl+B)',
   'sidebar.unreadCount': '읽지 않음 {count}개',
 
@@ -188,6 +190,7 @@ export const ko = {
   'statusBar.company': '회사',
   'statusBar.session': '세션: {min}분',
   'statusBar.settingsTooltip': '설정 (Ctrl+,)',
+  'statusBar.channelsTooltip': '채널 토글',
 
   // Settings
   'settings.title': '설정',
@@ -564,6 +567,8 @@ export const ko = {
 
   // Channels (a2a.channel.* RPC UI surface)
   'channels.title': '채널',
+  'channels.dockTitle': '채널',
+  'channels.dockCollapse': '채널 접기',
   'channels.archived': '보관됨',
   'channels.empty': '아직 채널이 없습니다 — + 버튼으로 새로 만드세요.',
   'channels.emptyCompany': '채널은 회사 범위입니다 — 회사를 시작해 사용하세요.',
