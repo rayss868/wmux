@@ -59,7 +59,7 @@ import {
 import type { Company } from '../../../company/types';
 import { useStore } from '../../stores';
 import ChannelItem from './ChannelItem';
-import { IconPlus, IconChevron } from '../icons';
+import { IconPlus, IconChevron, IconChevronDir } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { tokenAttrs } from '../../themes';
 
@@ -286,6 +286,13 @@ export interface ChannelsPanelViewProps {
     name: string;
     visibility: ChannelVisibility;
   }) => boolean | Promise<boolean>;
+  /** When provided, render a collapse affordance in the header. The dock host
+   *  passes this to fold the whole dock away — it lives here (not in a separate
+   *  dock header) so the "Channels" title shows ONCE, not twice. */
+  onCollapse?: () => void;
+  /** Direction the collapse chevron points — toward the screen edge the dock
+   *  tucks into. Defaults to 'right' (sidebar-left / dock-right layout). */
+  collapseDir?: 'left' | 'right';
 }
 
 export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactElement {
@@ -296,6 +303,8 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
     company,
     onSelect,
     onCreate,
+    onCollapse,
+    collapseDir = 'right',
   } = props;
   const t = props.t ?? ((k: string) => k);
 
@@ -327,7 +336,9 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
       className="border-t border-[var(--bg-surface)] py-2"
       style={{ borderColor: 'var(--border-soft)' }}
     >
-      {/* Header row — section title + new-channel affordance */}
+      {/* Header row — section title + actions (new-channel + collapse).
+            The collapse button is merged here from the old ChannelDock header
+            so the "Channels" title renders once, not twice. */}
       <div className="relative flex items-center justify-between px-4 pb-1">
         <span
           className="text-[10px] font-mono tracking-widest uppercase text-[var(--text-muted)]"
@@ -344,19 +355,33 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
             </span>
           )}
         </span>
-        <button
-          type="button"
-          className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
-          onClick={() => setCreatorOpen((v) => !v)}
-          title={t('channels.newChannelTooltip') || 'New channel'}
-          aria-label={t('channels.newChannelTooltip') || 'New channel'}
-          data-channels-new
-          {...tokenAttrs('textSub', 'text')}
-          {...tokenAttrs('success', 'accent')}
-          data-derived="textSubtle"
-        >
-          <IconPlus size={11} />
-        </button>
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+            onClick={() => setCreatorOpen((v) => !v)}
+            title={t('channels.newChannelTooltip') || 'New channel'}
+            aria-label={t('channels.newChannelTooltip') || 'New channel'}
+            data-channels-new
+            {...tokenAttrs('textSub', 'text')}
+            {...tokenAttrs('success', 'accent')}
+            data-derived="textSubtle"
+          >
+            <IconPlus size={11} />
+          </button>
+          {onCollapse && (
+            <button
+              type="button"
+              className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+              onClick={onCollapse}
+              title={t('channels.dockCollapse') || 'Collapse channels'}
+              aria-label={t('channels.dockCollapse') || 'Collapse channels'}
+              data-channel-dock-collapse
+            >
+              <IconChevronDir dir={collapseDir} />
+            </button>
+          )}
+        </div>
         {creatorOpen && (
           <CreateChannelModal
             onClose={() => setCreatorOpen(false)}
@@ -447,6 +472,12 @@ export function ChannelsPanel(): React.ReactElement {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const createChannelDaemon = useStore((s) => s.createChannelDaemon);
+  // Dock host wiring: the panel's collapse affordance folds the whole dock
+  // away (the panel is the dock's only host — the old separate dock header
+  // was removed to drop the duplicate title). The chevron mirrors the dock's
+  // edge so it points toward the screen edge it tucks into.
+  const sidebarPosition = useStore((s) => s.sidebarPosition);
+  const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
 
   const handleCreate = useCallback(
     async (params: { name: string; visibility: ChannelVisibility }) => {
@@ -506,6 +537,8 @@ export function ChannelsPanel(): React.ReactElement {
       company={company}
       onSelect={setActiveChannel}
       onCreate={handleCreate}
+      onCollapse={() => setChannelDockVisible(false)}
+      collapseDir={sidebarPosition !== 'right' ? 'right' : 'left'}
     />
   );
 }
