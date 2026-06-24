@@ -610,8 +610,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       )) {
         return false; // let DOM bubble to useKeyboard's zoom handlers
       }
-      if (e.ctrlKey && e.shiftKey) {
-        return false; // all Ctrl+Shift combos → app shortcuts
+      // Ctrl+Shift+C / Ctrl+Shift+V are explicit copy/paste, handled below.
+      // Let them fall through; bubble every OTHER Ctrl+Shift combo to app
+      // shortcuts. Exception matched by physical `code` so it survives a CJK IME
+      // (e.key would be a composed jamo / 'Process', not 'C'/'V') — without this
+      // the copy/paste handlers below were dead under any IME and even plain.
+      if (e.ctrlKey && e.shiftKey && e.code !== 'KeyC' && e.code !== 'KeyV') {
+        return false; // all other Ctrl+Shift combos → app shortcuts
       }
 
       // Custom keybindings: let function keys and matched combos pass through to useKeyboard
@@ -630,8 +635,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
       }
 
-      // Ctrl+C: copy if selection exists, otherwise send SIGINT
-      if (e.ctrlKey && !e.shiftKey && e.key === 'c') {
+      // Ctrl+C: copy if selection exists, otherwise send SIGINT. Match physical
+      // `code` (KeyC) too — under a CJK IME xterm derives Ctrl+<letter> from the
+      // deprecated keyCode, which becomes 229 ("Process"), so `e.key` is the
+      // composed jamo ('ㅊ') or 'Process' rather than 'c'. Without the code
+      // fallback the copy silently falls through to SIGINT (the reported "Ctrl+C
+      // copy broken in Hangul mode" bug). Same IME class as the Ctrl+J / Escape
+      // handlers above.
+      if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
         const sel = terminal.getSelection();
         if (sel) {
           // main now throws on clipboard failure — await + catch so the
@@ -644,7 +655,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       // Ctrl+V: paste from clipboard (use our IPC clipboard, block event
       // so xterm doesn't also paste via browser's native paste event)
-      if (e.ctrlKey && !e.shiftKey && e.key === 'v') {
+      if (e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
         e.preventDefault();
         void (async () => {
           // Try text first
@@ -671,7 +682,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
 
       // Ctrl+Shift+C: copy fallback
-      if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.code === 'KeyC')) {
         const sel = terminal.getSelection();
         if (sel) {
           // Note: original handler did NOT clearSelection here. Preserve that
@@ -685,7 +696,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return false;
       }
       // Ctrl+Shift+V: paste fallback
-      if (e.ctrlKey && e.shiftKey && e.key === 'V') {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.code === 'KeyV')) {
         e.preventDefault();
         void (async () => {
           const text = await window.clipboardAPI.readText();
