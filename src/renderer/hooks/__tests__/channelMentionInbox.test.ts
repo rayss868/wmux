@@ -137,6 +137,7 @@ describe('routeChannelMentionToInbox', () => {
       name: 'My WS',
       paneId: 'pane-A',
       surfaceId: 'surf-A',
+      ptyId: 'pty-A',
     });
     expect(published[0].taskId).toBe('chmention-ch-1-5-pane-A');
   });

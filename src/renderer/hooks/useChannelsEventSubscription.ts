@@ -1,4 +1,4 @@
-// ─── Renderer-side channel.message subscription ──────────────────────────
+// ─── Renderer-side channel.message + agent.lifecycle subscription ────────
 //
 // The renderer has no inbound event subscription mechanism today
 // (`events.publish` in `src/preload/preload.ts` is one-way outbound). To
@@ -14,10 +14,11 @@
 //     runs at the same cadence.
 //   - Channels are a low-frequency, low-stakes surface — even a
 //     2-3s tail-latency on a new message is fine for chat.
-//   - We can scope the poll to `types: ['channel.message']` so the
-//     poll response carries only channel traffic; the renderer never
-//     pays the cost of receiving pane/process/agent events it doesn't
-//     care about.
+//   - We scope the poll to `types: ['channel.message', 'agent.lifecycle']`
+//     so the response carries only channel traffic plus agent turn-boundary
+//     (Stop) events — the latter triggers P1 autoresponse: queued @-mention
+//     tasks are pasted into the now-idle pane's PTY (see channelMentionFlush).
+//     The renderer still never pays for pane/process/notification events.
 //
 // Per-recipient scoping: `events.poll` already filters by caller's
 // `workspaceId` for the base event; the channel.event fan-out adds every
@@ -50,7 +51,9 @@ import { loadChannelHistory } from './useChannelsHydration';
 import { routeChannelMentionToInbox } from './channelMentionInbox';
 import { findLeafPanes } from './a2aAddressing';
 import { publishA2aTask } from '../events/publisher';
-import type { WmuxEvent, ChannelMessageEvent } from '../../shared/events';
+import { flushMentions, type FlushOpts } from './channelMentionFlush';
+import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
+import type { WmuxEvent, ChannelMessageEvent, AgentLifecycleEvent } from '../../shared/events';
 
 /** Polling cadence. 1 Hz is the same as the PluginFrame forwardEvents
  *  loop — established precedent. Higher frequency buys sub-second
@@ -64,6 +67,15 @@ const EVENT_POLL_INTERVAL_MS = 1000;
  *  is fine here too, but 64 keeps the per-poll JSON small. */
 const EVENT_POLL_MAX = 64;
 
+/** Paste is unsafe while the agent is actively producing ('running') or blocked
+ *  on a confirmation prompt ('awaiting_input') — those defer to the agent's
+ *  Stop. 'waiting' (turn ended, ready for input), 'complete', 'idle', and
+ *  unknown are all paste-safe (deliver immediately). */
+const PASTE_UNSAFE_STATUSES: ReadonlySet<string> = new Set(['running', 'awaiting_input']);
+function isBusyStatus(status: string | undefined): boolean {
+  return status != null && PASTE_UNSAFE_STATUSES.has(status);
+}
+
 /** Bridge global installed by `useRpcBridge` that forwards the
  *  `events.poll` call into the main process. Single-method facade
  *  matching the function-shaped global the bridge installs — the
@@ -72,7 +84,7 @@ const EVENT_POLL_MAX = 64;
 interface EventsPollBridge {
   (params: {
     cursor: number;
-    types: ['channel.message'];
+    types: readonly ('channel.message' | 'agent.lifecycle')[];
     max?: number;
     workspaceId: string;
   }): Promise<EventsPollEnvelope | null>;
@@ -156,10 +168,30 @@ export function useChannelsEventSubscription(): void {
     let cursor = 0;
     let inFlight = false;
 
+    // Drain queued channel mentions into their target panes' PTYs. Reads live
+    // store state on each call (no stale closure). Stop path pins onlyPtyId +
+    // requireIdle:false; arrival path scans all targets + requireIdle:true.
+    const runFlush = (opts: FlushOpts) => {
+      const st = useStore.getState();
+      const selfWs = st.workspaces.find((w) => w.id === workspaceId);
+      if (!selfWs) return;
+      const selfLeaves = findLeafPanes(selfWs.rootPane);
+      flushMentions(workspaceId, selfLeaves, {
+        getUndeliveredChannelMentionTasks: st.getUndeliveredChannelMentionTasks,
+        // surfaceAgent (NOT surfaceAgentStatus) is the busy source: surfaceAgentStatus
+        // is attention-only and DELETES running/idle entries (paneSlice.setSurfaceAgentStatus),
+        // so a running agent would read as undefined→idle and get pasted mid-turn (codex P1).
+        // surfaceAgent retains the live status for the PTY's lifetime.
+        isBusy: (ptyId) => isBusyStatus(st.surfaceAgent[ptyId]?.status),
+        deliverNudge: (ptyId, text) => submitBracketedPasteToPty(ptyId, text),
+        markDelivered: st.markChannelMentionDelivered,
+      }, opts);
+    };
+
     const tick = () => {
       if (disposed || inFlight) return;
       inFlight = true;
-      bridge({ cursor, types: ['channel.message'], max: EVENT_POLL_MAX, workspaceId })
+      bridge({ cursor, types: ['channel.message', 'agent.lifecycle'], max: EVENT_POLL_MAX, workspaceId })
         .then((raw) => {
           if (disposed || !raw) return;
           // Peel the RPC transport envelope { id, ok, result }. The daemon's
@@ -201,6 +233,7 @@ export function useChannelsEventSubscription(): void {
             }
             return;
           }
+          let sawChannelMessage = false;
           for (const event of result.events) {
             // The daemon already scoped by `events.poll`'s base
             // workspaceId + per-recipient fan-out, so every event
@@ -210,6 +243,14 @@ export function useChannelsEventSubscription(): void {
               const channelEvent = event as ChannelMessageEvent;
               const st = useStore.getState();
               st.appendMessageFromEvent(channelEvent.message);
+              // Route on REPLAYED events too (no historical drop): with single-ws
+              // polling, a mention that arrived while this subscription was on
+              // ANOTHER workspace must still enqueue on switch-back (codex R6).
+              // routeChannelMentionToInbox is idempotent (deterministic task id +
+              // getTask short-circuit), and the flush's busy check stops a stale
+              // replay from pasting into a running agent. Duplicate re-delivery
+              // after a FULL renderer reload (transient delivered map lost) is a
+              // known trade-off — durable delivery state is a follow-up.
               // #7 + agent-pane redesign: a post that @-mentions THIS workspace
               // becomes an a2a inbox task. The router resolves the mention's
               // pinned paneId against our own live leaves (fail-closed ptyId
@@ -227,7 +268,45 @@ export function useChannelsEventSubscription(): void {
                   useStore.getState().workspaces.find((w) => w.id === id)?.name ?? id,
                 publish: publishA2aTask,
               });
+              // Trigger the idle-immediate flush; requireIdle:true means only
+              // now-idle target panes receive — busy panes wait for their Stop.
+              sawChannelMessage = true;
+            } else if (event.type === 'agent.lifecycle') {
+              // P1 autoresponse: agent.stop is the flush trigger, but only the
+              // RIGHT kind+source is a paste-safe idle boundary.
+              //   - subagent_stop: a nested subagent returned while the PARENT is
+              //     still processing (often the same pty) → ignored, else we paste
+              //     mid-turn (codex+GLM P1). The parent's own agent.stop flushes.
+              //   - awaiting_input: mid-turn confirmation prompt → ignored.
+              //   - source hook/detector: a real agent turn boundary → deliver
+              //     unconditionally (requireIdle:false).
+              //   - source osc133: a generic shell command_end (e.g. `npm test`
+              //     finishing) on the pty, NOT an agent boundary — the agent may
+              //     still be running, so KEEP the busy check (codex round-2 P1).
+              const ev = event as AgentLifecycleEvent;
+              // EVERY agent.stop triggers a flush — we do NOT filter on decision.
+              //   - A hook stop can be polled while surfaceAgent is still 'running'
+              //     (the detector's status broadcast hasn't landed yet) → busy
+              //     skip; the detector's later dedup stop carries the now-idle
+              //     status and MUST be allowed to retry (codex round-8 P1).
+              //   - A genuinely stale stop (agent already in a new turn), a
+              //     replayed historical stop, or an osc133 shell command_end on a
+              //     busy agent are all made safe by the flush's live busy check
+              //     plus per-task idempotency: a busy pty is skipped, and an
+              //     already-delivered mention is dropped from the undelivered set
+              //     (no double paste — codex round-4/7). The pty's CURRENT status
+              //     is the single source of truth.
+              // subagent_stop / awaiting_input never reach here (kind check).
+              if (ev.kind === 'agent.stop') {
+                runFlush({ onlyPtyId: ev.ptyId });
+              }
             }
+          }
+          // Idle-immediate: a mention that just arrived for an already-idle pane
+          // is delivered now; busy panes are skipped by the flush's busy check
+          // and wait for their own Stop (handled above).
+          if (sawChannelMessage) {
+            runFlush({});
           }
         })
         .catch(() => {

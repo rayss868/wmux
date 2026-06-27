@@ -48,7 +48,7 @@ export interface MentionInboxDeps {
     id?: string;
     title: string;
     from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
-    to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
+    to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
     history: Message[];
     artifacts: Artifact[];
   }) => string;
@@ -112,11 +112,13 @@ export function routeChannelMentionToInbox(
     // role:agent query — never delivered to a wrong successor pane.
     let toPaneId: string | undefined;
     let toSurfaceId: string | undefined;
+    let toPtyId: string | undefined;
     if (mn.paneId) {
       const r = resolvePaneAddress(selfLeaves, mn.paneId, '');
       if (!('error' in r) && (!mn.ptyId || r.ptyId === mn.ptyId)) {
         toPaneId = r.paneId;
         toSurfaceId = r.surfaceId;
+        toPtyId = r.ptyId; // snapshot for restart fail-closed at flush time (codex R5)
       }
     }
 
@@ -152,7 +154,7 @@ export function routeChannelMentionToInbox(
         to: {
           workspaceId: selfWorkspaceId,
           name: deps.workspaceName(selfWorkspaceId),
-          ...(toPaneId ? { paneId: toPaneId, surfaceId: toSurfaceId } : {}),
+          ...(toPaneId ? { paneId: toPaneId, surfaceId: toSurfaceId, ptyId: toPtyId } : {}),
         },
         history,
         artifacts: [],

@@ -602,7 +602,10 @@ export interface WmuxTaskMetadata {
   // Always ws-scoped: the id must belong to its own `workspaceId` (validated at
   // delivery; cross-ws is refused).
   from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
-  to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
+  // `to.ptyId` (optional) is a delivery-time pty SNAPSHOT — channel-mention
+  // autoresponse stores it so a deferred flush can fail closed if the pane
+  // restarted (successor agent now holds the paneId) before delivery.
+  to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
   [key: string]: unknown;

@@ -1,0 +1,201 @@
+// ─── Tests for channel mention flush (P1 autoresponse) ───────────────────────
+//
+// Pure-function tests: nudge formatting, ptyId target resolution, and the
+// Stop/arrival flush logic — all dependency-injected, no store/window.
+
+import { describe, it, expect } from 'vitest';
+import {
+  isChannelMentionTask,
+  buildChannelMentionNudge,
+  resolveTaskTargetPty,
+  flushMentions,
+  type FlushMentionDeps,
+} from '../channelMentionFlush';
+import type { Task, PaneLeaf, Surface } from '../../../shared/types';
+
+function surface(id: string, ptyId: string): Surface {
+  return { id, ptyId, title: id, shell: '', cwd: '', surfaceType: 'terminal' } as Surface;
+}
+function leaf(id: string, surfaces: Surface[]): PaneLeaf {
+  return { id, type: 'leaf', surfaces, activeSurfaceId: surfaces[0]?.id ?? '' };
+}
+function makeTask(
+  id: string,
+  to: Task['metadata']['to'],
+  title = '#general — mention from Alice',
+): Task {
+  return {
+    kind: 'task',
+    id,
+    status: { state: 'submitted', timestamp: '2020-01-01T00:00:00Z' },
+    history: [],
+    artifacts: [],
+    metadata: {
+      title,
+      from: { workspaceId: 'ws-sender', name: 'Alice' },
+      to,
+      createdAt: '2020-01-01T00:00:00Z',
+      updatedAt: '2020-01-01T00:00:00Z',
+    },
+  } as Task;
+}
+
+function makeDeps(tasks: Task[]) {
+  const delivered: { ptyId: string; text: string }[] = [];
+  const marked: string[] = [];
+  const busy = new Set<string>();
+  let throwOn: string | null = null;
+  const deps: FlushMentionDeps = {
+    // Mirror the store selector: drop tasks already marked delivered.
+    getUndeliveredChannelMentionTasks: () => tasks.filter((t) => !marked.includes(t.id)),
+    isBusy: (ptyId) => busy.has(ptyId),
+    deliverNudge: (ptyId, text) => {
+      if (throwOn && ptyId === throwOn) throw new Error('write failed');
+      delivered.push({ ptyId, text });
+    },
+    markDelivered: (id) => {
+      marked.push(id);
+    },
+  };
+  return { deps, delivered, marked, busy, setThrowOn: (p: string) => { throwOn = p; } };
+}
+
+describe('isChannelMentionTask', () => {
+  it('matches the chmention- prefix only', () => {
+    expect(isChannelMentionTask('chmention-ch-1-5')).toBe(true);
+    expect(isChannelMentionTask('chmention-ch-1-5-pane-A')).toBe(true);
+    expect(isChannelMentionTask('task-abc')).toBe(false);
+    expect(isChannelMentionTask('')).toBe(false);
+  });
+});
+
+describe('buildChannelMentionNudge', () => {
+  it('single mention → title + query instruction on one line', () => {
+    const n = buildChannelMentionNudge([
+      { id: 'chmention-ch-1-5', metadata: { title: '#general — mention from Alice' } },
+    ]);
+    expect(n).toBe(
+      '[wmux-channel] #general — mention from Alice — run a2a_task_query role:agent to read',
+    );
+    expect(n).not.toMatch(/[\r\n]/);
+  });
+
+  it('multiple mentions → count + query instruction (no task ids — a2a_task_query takes none)', () => {
+    const n = buildChannelMentionNudge([
+      { id: 'chmention-ch-1-5', metadata: { title: 'a' } },
+      { id: 'chmention-ch-1-6', metadata: { title: 'b' } },
+    ]);
+    expect(n).toBe('[wmux-channel] 2 new channel mentions — run a2a_task_query role:agent to read');
+  });
+
+  it('strips CR/LF/control chars so the nudge stays one line', () => {
+    // eslint-disable-next-line no-control-regex
+    const n = buildChannelMentionNudge([{ id: 'chmention-x', metadata: { title: 'a\r\nb\tc\x1b' } }]);
+    // eslint-disable-next-line no-control-regex
+    expect(n).not.toMatch(/[\r\n\t\x1b]/);
+    expect(n).toContain('a b c');
+  });
+});
+
+describe('resolveTaskTargetPty', () => {
+  const leaves = [
+    leaf('pane-A', [surface('surf-A', 'pty-A')]),
+    leaf('pane-B', [surface('surf-B', 'pty-B')]),
+  ];
+
+  it('pinned paneId (no ptyId snapshot) → that pane terminal pty', () => {
+    const t = makeTask('t', { workspaceId: 'ws', name: 'x', paneId: 'pane-B', surfaceId: 'surf-B' });
+    expect(resolveTaskTargetPty(t, leaves)).toBe('pty-B');
+  });
+
+  it('pinned paneId with matching ptyId snapshot → that pane terminal pty', () => {
+    const t = makeTask('t', { workspaceId: 'ws', name: 'x', paneId: 'pane-B', surfaceId: 'surf-B', ptyId: 'pty-B' });
+    expect(resolveTaskTargetPty(t, leaves)).toBe('pty-B');
+  });
+
+  it('pinned paneId but ptyId snapshot mismatch (pane restarted) → null', () => {
+    const t = makeTask('t', { workspaceId: 'ws', name: 'x', paneId: 'pane-B', surfaceId: 'surf-B', ptyId: 'pty-OLD' });
+    expect(resolveTaskTargetPty(t, leaves)).toBeNull();
+  });
+
+  it('ws-level (no paneId) → null — NOT auto-delivered (avoids wrong-pane)', () => {
+    const t = makeTask('t', { workspaceId: 'ws', name: 'x' });
+    expect(resolveTaskTargetPty(t, leaves)).toBeNull();
+  });
+
+  it('stale/gone paneId → null (leave queued, never wrong pane)', () => {
+    const t = makeTask('t', { workspaceId: 'ws', name: 'x', paneId: 'pane-GONE' });
+    expect(resolveTaskTargetPty(t, leaves)).toBeNull();
+  });
+});
+
+describe('flushMentions', () => {
+  const leaves = [
+    leaf('pane-A', [surface('surf-A', 'pty-A')]),
+    leaf('pane-B', [surface('surf-B', 'pty-B')]),
+  ];
+
+  it('Stop path delivers only the stopped pane\'s mentions and marks them', () => {
+    const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const tB = makeTask('chmention-ch-1-2-pane-B', { workspaceId: 'ws', name: 'x', paneId: 'pane-B', surfaceId: 'surf-B' });
+    const { deps, delivered, marked } = makeDeps([tA, tB]);
+    const out = flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    expect(out).toEqual(['chmention-ch-1-1-pane-A']);
+    expect(delivered.map((d) => d.ptyId)).toEqual(['pty-A']);
+    expect(marked).toEqual(['chmention-ch-1-1-pane-A']);
+  });
+
+  it('skips a BUSY pane even on the Stop path (a stop stale by poll time = new turn)', () => {
+    const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const { deps, delivered, marked, busy } = makeDeps([tA]);
+    busy.add('pty-A'); // agent already started a new turn by the time we poll the stop
+    flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    expect(delivered).toHaveLength(0);
+    expect(marked).toHaveLength(0); // stays queued for the next real idle boundary
+  });
+
+  it('arrival path delivers to idle panes and skips busy ones', () => {
+    const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const tB = makeTask('chmention-ch-1-2-pane-B', { workspaceId: 'ws', name: 'x', paneId: 'pane-B', surfaceId: 'surf-B' });
+    const { deps, delivered, marked, busy } = makeDeps([tA, tB]);
+    busy.add('pty-B'); // pane B busy → wait for its Stop
+    flushMentions('ws', leaves, deps, {});
+    expect(delivered.map((d) => d.ptyId)).toEqual(['pty-A']);
+    expect(marked).toEqual(['chmention-ch-1-1-pane-A']);
+  });
+
+  it('collapses multiple mentions to one pane into a single nudge', () => {
+    const t1 = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const t2 = makeTask('chmention-ch-1-2-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const { deps, delivered, marked } = makeDeps([t1, t2]);
+    flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].text).toContain('2 new channel mentions');
+    expect(marked).toEqual(['chmention-ch-1-1-pane-A', 'chmention-ch-1-2-pane-A']);
+  });
+
+  it('does NOT auto-deliver ws-level mentions (no paneId → queued, dock badge only)', () => {
+    const wsTask = makeTask('chmention-ch-1-9', { workspaceId: 'ws', name: 'x' });
+    const { deps, delivered, marked } = makeDeps([wsTask]);
+    flushMentions('ws', leaves, deps, {});
+    expect(delivered).toHaveLength(0);
+    expect(marked).toHaveLength(0);
+  });
+
+  it('does not mark when the paste throws (retried on next Stop)', () => {
+    const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const { deps, marked, setThrowOn } = makeDeps([tA]);
+    setThrowOn('pty-A');
+    const out = flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    expect(out).toEqual([]);
+    expect(marked).toEqual([]);
+  });
+
+  it('skips human / dead targets with no deliverable pty', () => {
+    const human = makeTask('chmention-ch-1-1', { workspaceId: 'ws', name: 'x', paneId: 'pane-GONE' });
+    const { deps, delivered, marked } = makeDeps([human]);
+    flushMentions('ws', leaves, deps, {});
+    expect(delivered).toHaveLength(0);
+    expect(marked).toHaveLength(0);
+  });
+});

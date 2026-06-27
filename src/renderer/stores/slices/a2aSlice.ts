@@ -3,6 +3,7 @@ import type { StoreState } from '../index';
 import type { Task, Message, TaskState, Artifact, AgentSkill } from '../../../shared/types';
 import { generateId, validateTransition, TERMINAL_STATES, VALID_TRANSITIONS } from '../../../shared/types';
 import type { PaneAddress } from '../../hooks/a2aAddressing';
+import { isChannelMentionTask } from '../../hooks/channelMentionFlush';
 
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const GC_MAX_TASKS = 500;
@@ -47,7 +48,7 @@ export interface A2aSlice {
     // reply can return to the exact originating pane and history role is computed
     // per-pane. Both optional — a ws-only side keeps the prior behavior.
     from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
-    to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
+    to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
     history: Message[];
     artifacts: Artifact[];
   }) => string;
@@ -67,6 +68,16 @@ export interface A2aSlice {
   removeExecuteApproval: (approvalId: string) => void;
   setA2aAutoApproveExecute: (enabled: boolean) => void;
 
+  // ── Channel-mention delivery tracking (P1 autoresponse) ──
+  /** taskId → true once its nudge was pasted into the pane PTY. Kept OUT of the
+   *  Task store so the Task schema stays unchanged; pruned with task GC. */
+  channelMentionDelivered: Record<string, boolean>;
+  /** Mark a channel-mention task as pasted (idempotency for the Stop flush). */
+  markChannelMentionDelivered: (taskId: string) => void;
+  /** Undelivered channel-mention tasks (chmention-*, non-terminal) addressed to
+   *  this workspace — the queue the Stop/arrival flush drains. */
+  getUndeliveredChannelMentionTasks: (workspaceId: string) => Task[];
+
   // GC
   gcTerminalTasks: () => void;
 }
@@ -78,6 +89,7 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
   pendingExecuteApprovalOrder: [],
   pendingExecuteApproval: null,
   a2aAutoApproveExecute: false,
+  channelMentionDelivered: {},
 
   enqueueExecuteApproval: (approval) => set((state: StoreState) => {
     const existing = state.pendingExecuteApprovals[approval.approvalId];
@@ -234,6 +246,21 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     return get().a2aAgentSkills[workspaceId] ?? null;
   },
 
+  markChannelMentionDelivered: (taskId) => set((state: StoreState) => {
+    state.channelMentionDelivered[taskId] = true;
+  }),
+
+  getUndeliveredChannelMentionTasks: (workspaceId) => {
+    const { a2aTasks, channelMentionDelivered } = get();
+    return Object.values(a2aTasks).filter(
+      (task) =>
+        isChannelMentionTask(task.id) &&
+        task.metadata.to.workspaceId === workspaceId &&
+        !channelMentionDelivered[task.id] &&
+        !(TERMINAL_STATES as readonly string[]).includes(task.status.state),
+    );
+  },
+
   gcTerminalTasks: () => set((state: StoreState) => {
     const now = Date.now();
     const taskIds = Object.keys(state.a2aTasks);
@@ -273,6 +300,12 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
         delete state.a2aTasks[task.id];
         toRemove--;
       }
+    }
+
+    // Prune delivery markers for tasks that no longer exist (covers every
+    // removal path above) so channelMentionDelivered can't grow unbounded.
+    for (const id of Object.keys(state.channelMentionDelivered)) {
+      if (!state.a2aTasks[id]) delete state.channelMentionDelivered[id];
     }
   }),
 });

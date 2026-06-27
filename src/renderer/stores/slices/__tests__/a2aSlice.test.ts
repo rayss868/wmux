@@ -233,6 +233,67 @@ describe('a2aSlice — updateTaskStatus pane-granular authz (S-C2 P2)', () => {
   });
 });
 
+describe('a2aSlice — channel mention delivery tracking (P1 autoresponse)', () => {
+  let store: ReturnType<typeof createTestStore>;
+  beforeEach(() => { store = createTestStore(); });
+
+  function mention(id: string, toWs = 'ws-me'): string {
+    return store.getState().createA2aTask({
+      id,
+      title: '#general — mention from Alice',
+      from: { workspaceId: 'ws-sender', name: 'Alice' },
+      to: { workspaceId: toWs, name: 'Me' },
+      history: [],
+      artifacts: [],
+    });
+  }
+
+  it('lists undelivered chmention- tasks addressed to the workspace', () => {
+    mention('chmention-ch-1-5');
+    const out = store.getState().getUndeliveredChannelMentionTasks('ws-me');
+    expect(out.map((t) => t.id)).toEqual(['chmention-ch-1-5']);
+  });
+
+  it('excludes non-mention tasks (no chmention- prefix)', () => {
+    mention('chmention-ch-1-5');
+    store.getState().createA2aTask({
+      id: 'task-normal',
+      title: 'x',
+      from: { workspaceId: 'ws-sender', name: 'A' },
+      to: { workspaceId: 'ws-me', name: 'Me' },
+      history: [],
+      artifacts: [],
+    });
+    const out = store.getState().getUndeliveredChannelMentionTasks('ws-me');
+    expect(out.map((t) => t.id)).toEqual(['chmention-ch-1-5']);
+  });
+
+  it('excludes a task once marked delivered (idempotency for the Stop flush)', () => {
+    mention('chmention-ch-1-5');
+    store.getState().markChannelMentionDelivered('chmention-ch-1-5');
+    expect(store.getState().getUndeliveredChannelMentionTasks('ws-me')).toEqual([]);
+  });
+
+  it('excludes terminal-state mentions (already handled / canceled)', () => {
+    mention('chmention-ch-1-5');
+    store.getState().cancelTask('chmention-ch-1-5', 'ws-me'); // receiver denies → canceled
+    expect(store.getState().getUndeliveredChannelMentionTasks('ws-me')).toEqual([]);
+  });
+
+  it('scopes to the receiver workspace (the sender ws does not see it as inbox)', () => {
+    mention('chmention-ch-1-5', 'ws-me');
+    expect(store.getState().getUndeliveredChannelMentionTasks('ws-sender')).toEqual([]);
+  });
+
+  it('prunes delivery markers for tasks removed by GC', () => {
+    mention('chmention-ch-1-5');
+    store.getState().markChannelMentionDelivered('chmention-ch-1-5');
+    store.setState((s) => { delete s.a2aTasks['chmention-ch-1-5']; });
+    store.getState().gcTerminalTasks();
+    expect(store.getState().channelMentionDelivered['chmention-ch-1-5']).toBeUndefined();
+  });
+});
+
 describe('a2aSlice — pendingExecuteApproval', () => {
   it('starts empty and round-trips through queue actions', () => {
     const store = createTestStore();
