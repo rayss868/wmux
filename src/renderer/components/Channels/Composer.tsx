@@ -23,6 +23,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useStore } from '../../stores';
+import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { generateId } from '../../../shared/types';
 import type { ChannelMember, ChannelMention, ChannelMessage } from '../../../shared/channels';
 import { useT } from '../../hooks/useT';
@@ -66,13 +67,17 @@ export function synthesizeChannelMessage(params: {
 
 // ─── @-mention token detection ──────────────────────────────────────────
 
-/** A member the composer can @-mention. The human UI participates as one
- *  member per workspace (memberId `local-ui`), so the display label is the
- *  workspace name. */
+/** A live agent pane the composer can @-mention (agent-pane redesign). Each
+ *  candidate is one detected agent in a member workspace — addressed by its
+ *  stable `paneId` + a `ptyId` snapshot the receiving renderer re-checks
+ *  (fail-closed) before pinning the a2a task. `name` is the agent name (the
+ *  @token); `hint` (the workspace name) disambiguates same-named agents. */
 export interface MentionCandidate {
   workspaceId: string;
-  memberId: string;
+  paneId: string;
+  ptyId: string;
   name: string;
+  hint?: string;
 }
 
 /**
@@ -207,9 +212,9 @@ export function ComposerContent({
       const caret = before.length + insert.length;
       setText(before + insert + after);
       setPicked((prev) =>
-        prev.some((p) => p.workspaceId === c.workspaceId)
+        prev.some((p) => p.paneId === c.paneId && p.workspaceId === c.workspaceId)
           ? prev
-          : [...prev, { workspaceId: c.workspaceId, memberId: c.memberId, name: c.name }],
+          : [...prev, { workspaceId: c.workspaceId, paneId: c.paneId, ptyId: c.ptyId, name: c.name }],
       );
       setToken(null);
       setActiveIdx(0);
@@ -302,9 +307,10 @@ export function ComposerContent({
             {matches.map((c, idx) => (
               <button
                 type="button"
-                key={`${c.workspaceId}:${c.memberId}`}
+                key={`${c.workspaceId}:${c.paneId}`}
                 data-channel-mention-option
                 data-workspace-id={c.workspaceId}
+                data-pane-id={c.paneId}
                 data-active={idx === activeIdx ? 'true' : undefined}
                 role="option"
                 aria-selected={idx === activeIdx}
@@ -321,6 +327,9 @@ export function ComposerContent({
               >
                 <span className="text-[var(--accent-blue)]" aria-hidden="true">@</span>
                 <span className="truncate">{c.name}</span>
+                {c.hint && (
+                  <span className="ml-auto pl-2 text-[9px] opacity-60 truncate">{c.hint}</span>
+                )}
               </button>
             ))}
           </div>
@@ -386,6 +395,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
   const channel = useStore((s) => s.channels[channelId]);
   const members = useStore((s) => s.channelMembers[channelId] ?? EMPTY_MEMBERS);
   const workspaces = useStore((s) => s.workspaces);
+  const surfaceAgent = useStore((s) => s.surfaceAgent);
   const postMessageDaemon = useStore((s) => s.postMessageDaemon);
 
   // Sender identity: the CEO workspace when Company mode is active, else the
@@ -393,24 +403,40 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
   // sender.workspaceId === verifiedWorkspaceId AND membership.
   const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId ?? null;
 
-  // @-mention candidates: every member workspace except the sender's own (you
-  // can't ping yourself), deduped by workspace and labeled with the workspace
-  // name — members are workspace-level in the human UI (memberId `local-ui`).
+  // @-mention candidates (agent-pane redesign): every LIVE AGENT pane in a member
+  // workspace except our own. We walk each member workspace's live pane tree and
+  // keep only panes whose terminal surface has a detected agent (agentName !=
+  // null) — plain terminals and non-member workspaces are excluded, which is how
+  // non-agents drop out of the mention targets. The @token label is the agent
+  // name; when the same agent name appears more than once (e.g. a "claude" in two
+  // workspaces) we attach the workspace name as a dropdown disambiguator.
   const mentionCandidates = useMemo<MentionCandidate[]>(() => {
-    const seen = new Set<string>();
-    const out: MentionCandidate[] = [];
-    for (const m of members) {
-      if (m.workspaceId === selfWorkspaceId) continue;
-      if (seen.has(m.workspaceId)) continue;
-      seen.add(m.workspaceId);
-      out.push({
-        workspaceId: m.workspaceId,
-        memberId: m.memberId,
-        name: workspaces.find((w) => w.id === m.workspaceId)?.name ?? m.workspaceId,
-      });
+    const memberWs = new Set(members.map((m) => m.workspaceId));
+    const raw: Array<{ workspaceId: string; paneId: string; ptyId: string; agentName: string; wsName: string }> = [];
+    for (const w of workspaces) {
+      if (w.id === selfWorkspaceId) continue; // can't ping yourself
+      if (!memberWs.has(w.id)) continue; // channel members only
+      const wsName = w.name ?? w.id;
+      for (const leaf of findLeafPanes(w.rootPane)) {
+        for (const s of leaf.surfaces) {
+          if (s.surfaceType === 'browser' || !s.ptyId) continue;
+          const agentName = surfaceAgent[s.ptyId]?.name;
+          if (!agentName) continue; // live agents only — excludes plain terminals
+          raw.push({ workspaceId: w.id, paneId: leaf.id, ptyId: s.ptyId, agentName, wsName });
+        }
+      }
     }
-    return out;
-  }, [members, workspaces, selfWorkspaceId]);
+    // Disambiguate: attach the ws name to the label when an agent name collides.
+    const nameCount = new Map<string, number>();
+    for (const r of raw) nameCount.set(r.agentName, (nameCount.get(r.agentName) ?? 0) + 1);
+    return raw.map((r) => ({
+      workspaceId: r.workspaceId,
+      paneId: r.paneId,
+      ptyId: r.ptyId,
+      name: r.agentName,
+      ...((nameCount.get(r.agentName) ?? 0) > 1 ? { hint: r.wsName } : {}),
+    }));
+  }, [members, workspaces, surfaceAgent, selfWorkspaceId]);
 
   const handlePost = useCallback(
     async (text: string, mentions: ChannelMention[]) => {

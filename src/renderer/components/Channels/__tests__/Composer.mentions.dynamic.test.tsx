@@ -12,9 +12,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { ComposerContent, type MentionCandidate } from '../Composer';
 
 const CANDIDATES: MentionCandidate[] = [
-  { workspaceId: 'ws-2', memberId: 'local-ui', name: 'alice' },
-  { workspaceId: 'ws-3', memberId: 'local-ui', name: 'bob' },
-  { workspaceId: 'ws-4', memberId: 'local-ui', name: 'alf' },
+  { workspaceId: 'ws-2', paneId: 'pane-2', ptyId: 'pty-2', name: 'alice' },
+  { workspaceId: 'ws-3', paneId: 'pane-3', ptyId: 'pty-3', name: 'bob' },
+  { workspaceId: 'ws-4', paneId: 'pane-4', ptyId: 'pty-4', name: 'alf' },
 ];
 
 let container: HTMLDivElement;
@@ -176,7 +176,7 @@ describe('ComposerContent — @-mention autocomplete (jsdom)', () => {
     });
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith('@alice', [
-      { workspaceId: 'ws-2', memberId: 'local-ui', name: 'alice' },
+      { workspaceId: 'ws-2', paneId: 'pane-2', ptyId: 'pty-2', name: 'alice' },
     ]);
   });
 
