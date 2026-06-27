@@ -48,6 +48,7 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { loadChannelHistory } from './useChannelsHydration';
 import { routeChannelMentionToInbox } from './channelMentionInbox';
+import { findLeafPanes } from './a2aAddressing';
 import { publishA2aTask } from '../events/publisher';
 import type { WmuxEvent, ChannelMessageEvent } from '../../shared/events';
 
@@ -209,12 +210,16 @@ export function useChannelsEventSubscription(): void {
               const channelEvent = event as ChannelMessageEvent;
               const st = useStore.getState();
               st.appendMessageFromEvent(channelEvent.message);
-              // #7 Phase 2: a post that @-mentions THIS workspace becomes an
-              // a2a inbox task so the workspace's agent receives it through its
-              // normal poll (a2a_task_query / wmux_events_poll), bridging the
-              // deferred channel-read gap. Workspace-level (no pane pin);
-              // idempotent by deterministic task id.
-              routeChannelMentionToInbox(channelEvent.message, workspaceId, {
+              // #7 + agent-pane redesign: a post that @-mentions THIS workspace
+              // becomes an a2a inbox task. The router resolves the mention's
+              // pinned paneId against our own live leaves (fail-closed ptyId
+              // re-check) and pins to.paneId so a split workspace routes to
+              // EXACTLY the mentioned agent; a miss falls back to a ws-level task
+              // (any live agent picks it up via role:agent query). Idempotent by
+              // per-target deterministic task id.
+              const selfWs = st.workspaces.find((w) => w.id === workspaceId);
+              const selfLeaves = selfWs ? findLeafPanes(selfWs.rootPane) : [];
+              routeChannelMentionToInbox(channelEvent.message, workspaceId, selfLeaves, {
                 getTask: st.getTask,
                 createA2aTask: st.createA2aTask,
                 channelName: (id) => useStore.getState().channels[id]?.name ?? id,

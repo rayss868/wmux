@@ -3,9 +3,19 @@
 // the store/window and can't be imported under vitest). No React/window deps —
 // operates only on the pane-leaf list the caller passes in.
 
-import type { PaneLeaf } from '../../shared/types';
+import type { Pane, PaneLeaf } from '../../shared/types';
 
 export type PaneAddress = { ptyId: string; paneId: string; surfaceId: string };
+
+/**
+ * Flatten a pane tree (root → leaves). Pure tree walk shared by the A2A
+ * addressing paths, the channel mention composer (cross-ws live agent
+ * candidates), and the mention inbox router (self-ws pane resolution).
+ */
+export function findLeafPanes(root: Pane): PaneLeaf[] {
+  if (root.type === 'leaf') return [root];
+  return root.children.flatMap(findLeafPanes);
+}
 
 /**
  * The historical active-pane delivery target: the active leaf's first terminal

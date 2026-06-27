@@ -16,17 +16,12 @@ import { readPtyBufferLines } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 
 // ---------------------------------------------------------------------------
 // Pane tree utilities
 // ---------------------------------------------------------------------------
-
-function findLeafPanes(root: Pane): PaneLeaf[] {
-  if (root.type === 'leaf') return [root];
-  return root.children.flatMap(findLeafPanes);
-}
 
 /**
  * Resolve the ptyId of a workspace's active pane + active surface.
