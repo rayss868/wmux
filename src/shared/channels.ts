@@ -140,10 +140,20 @@ export interface ChannelMessage {
  * already pins membership on); `memberId` narrows it to a specific member when
  * one was targeted, else the mention is workspace-level. `name` is the display
  * snapshot at post time.
+ *
+ * Agent-pane redesign: `paneId` + `ptyId` capture the STABLE pane identity of a
+ * specific live agent at mention time (the composer snapshots them from
+ * `a2a_discover`). The daemon treats them as opaque pass-through (it owns the
+ * workspace/subscription gate, not the live pane tree); the RECEIVING renderer
+ * resolves `paneId` in its own leaves and re-checks `ptyId` is still live
+ * (fail-closed) before pinning an a2a task to that exact pane. Both absent for a
+ * workspace-level mention (targets any live agent in the ws — the legacy path).
  */
 export interface ChannelMention {
   workspaceId: string;
   memberId?: string;
+  paneId?: string;
+  ptyId?: string;
   name: string;
 }
 

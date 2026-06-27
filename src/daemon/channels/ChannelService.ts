@@ -758,22 +758,31 @@ export class ChannelService {
         status: 'pending' as const,
       }));
       // Validate @mentions against the FROZEN member set (the same snapshot the
-      // recipients use): keep only mentions of CURRENT members, deduped by
-      // workspace. A mention of a non-member is dropped — you cannot ping a
-      // workspace that isn't in the room. This bounded, member-verified set is
-      // exactly what Phase 2's inbox routing will ping; validating here (not in
-      // the renderer/MCP) keeps the trust on the server.
-      const mentionedWs = new Set<string>();
+      // recipients use): keep only mentions of CURRENT member workspaces, deduped
+      // by (workspaceId, paneId). A mention of a non-member workspace is dropped —
+      // you cannot ping a workspace that isn't in the room. Keying dedup on
+      // (workspaceId, paneId) lets TWO agents in the SAME workspace (split panes)
+      // both be mentioned in one post without the second collapsing into the
+      // first; a ws-level mention (no paneId) still dedupes per workspace exactly
+      // as before. `paneId`/`ptyId` are OPAQUE pass-through here: the daemon owns
+      // the workspace (subscription) membership gate, but it does not know the
+      // live pane tree — the RECEIVING renderer resolves paneId in its own leaves
+      // and re-checks ptyId liveness (fail-closed) before pinning the a2a task.
+      const mentionedKeys = new Set<string>();
       const mentions: ChannelMention[] = [];
       for (const mn of params.mentions ?? []) {
         if (!mn || typeof mn.workspaceId !== 'string') continue;
         if (!members.some((m) => m.workspaceId === mn.workspaceId)) continue;
-        if (mentionedWs.has(mn.workspaceId)) continue;
-        mentionedWs.add(mn.workspaceId);
+        const paneId = typeof mn.paneId === 'string' ? mn.paneId : '';
+        const key = `${mn.workspaceId} ${paneId}`;
+        if (mentionedKeys.has(key)) continue;
+        mentionedKeys.add(key);
         mentions.push({
           workspaceId: mn.workspaceId,
           name: typeof mn.name === 'string' && mn.name.length > 0 ? mn.name.slice(0, 80) : mn.workspaceId,
           ...(typeof mn.memberId === 'string' ? { memberId: mn.memberId } : {}),
+          ...(typeof mn.paneId === 'string' && mn.paneId.length > 0 ? { paneId: mn.paneId } : {}),
+          ...(typeof mn.ptyId === 'string' && mn.ptyId.length > 0 ? { ptyId: mn.ptyId } : {}),
         });
       }
       const seq = channel.nextSeq++;

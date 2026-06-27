@@ -582,6 +582,43 @@ describe('ChannelService', () => {
       if (!post.ok) throw new Error('post failed');
       expect(post.message.mentions).toBeUndefined();
     });
+
+    it('mentions two panes in the same workspace (split) without merging; preserves paneId/ptyId', async () => {
+      // Agent-pane redesign: (workspaceId, paneId) dedup lets two agents in ONE
+      // workspace (split panes) both be mentioned in a single post. paneId/ptyId
+      // pass through opaquely — the receiving renderer owns live-pane resolution.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error(`create failed: ${created.error.code}`);
+      const joined = await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      if (!joined.ok) throw new Error(`join failed: ${joined.error.code}`);
+      const post = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: '@claude and @codex',
+        verifiedWorkspaceId: 'ws-1',
+        mentions: [
+          { workspaceId: 'ws-2', paneId: 'pane-a', ptyId: 'pty-a', name: 'claude' },
+          { workspaceId: 'ws-2', paneId: 'pane-b', ptyId: 'pty-b', name: 'codex' },
+          { workspaceId: 'ws-2', paneId: 'pane-a', ptyId: 'pty-a', name: 'claude dup' }, // same (ws,pane) → dropped
+        ],
+      });
+      expect(post.ok).toBe(true);
+      if (!post.ok) throw new Error(`post failed: ${post.error.code}`);
+      expect(post.message.mentions).toEqual([
+        { workspaceId: 'ws-2', paneId: 'pane-a', ptyId: 'pty-a', name: 'claude' },
+        { workspaceId: 'ws-2', paneId: 'pane-b', ptyId: 'pty-b', name: 'codex' },
+      ]);
+    });
   });
 
   describe('concurrency', () => {
