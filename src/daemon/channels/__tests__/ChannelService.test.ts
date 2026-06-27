@@ -428,6 +428,34 @@ describe('ChannelService', () => {
       expect(r.error.code).toBe('NOT_A_MEMBER');
     });
 
+    it('accepts a post from a member workspace even when memberId differs from create (subscription-level membership; NOT_A_MEMBER regression)', async () => {
+      // The agent `member_id` is a client-supplied label (the MCP `member_id`
+      // param), NOT a server-verified key. A creator who creates with member_id
+      // "lead" and later posts with member_id "backend" (or any other value) is
+      // still the SAME verified workspace — membership is keyed on the
+      // subscription (workspaceId), so the post must succeed. Previously the
+      // (workspaceId, memberId) composite gate rejected this as NOT_A_MEMBER —
+      // the live dogfood bug (#2): a channel creator hit NOT_A_MEMBER on first
+      // post because its post memberId differed from its create memberId.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'lead', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
+      const r = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'backend', memberName: 'Alice' },
+        text: 'same ws, different memberId',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) throw new Error(`expected post ok, got ${r.error.code}: ${r.error.message}`);
+      expect(r.message.text).toBe('same ws, different memberId');
+    });
+
     it('rejects posts where sender.workspaceId disagrees with verifiedWorkspaceId (NOT_AUTHORIZED, no persist, no event)', async () => {
       // Sender-pin gate (R5): the server pins the authoritative caller
       // from `verifiedWorkspaceId`. A client that claims a different

@@ -685,10 +685,22 @@ export class ChannelService {
           // pruned by empty-channel reaper). Fall through to a fresh post.
         }
       }
-      // Membership check.
+      // Membership check — keyed on the SUBSCRIPTION unit (workspaceId), NOT
+      // (workspaceId, memberId). `memberId` is a client-supplied label (the MCP
+      // `member_id` param — "lead", "backend") that is NOT server-verified and may
+      // differ between channel_create and channel_post for the same agent. That
+      // create/post memberId mismatch was the NOT_A_MEMBER bug: the creator is
+      // auto-added as (ws, createdBy.memberId), then a post as (ws, otherMemberId)
+      // failed the composite match even though the SAME verified workspace was
+      // posting. The subscription (workspaceId) is the real, server-pinned
+      // membership unit (join/create pin it to verifiedWorkspaceId); memberId only
+      // narrows display + mention targeting, never authorization. The sender-pin
+      // gate above already proved sender.workspaceId === verifiedWorkspaceId, so a
+      // workspace match here means a verified member is posting — gating on the
+      // forgeable memberId on top of that added no security, only the bug.
       const members = this.state.members[channel.id] ?? [];
       const isMember = members.some(
-        (m) => m.workspaceId === params.sender.workspaceId && m.memberId === params.sender.memberId,
+        (m) => m.workspaceId === params.sender.workspaceId,
       );
       if (!isMember) {
         return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Not a channel member' } };
