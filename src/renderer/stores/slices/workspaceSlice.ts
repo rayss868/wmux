@@ -194,6 +194,35 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (state.workspaces.length <= 1) return;
       const idx = state.workspaces.findIndex((w: Workspace) => w.id === id);
       if (idx === -1) return;
+      // A8: this workspace hosts the receiver side of any task delegated TO it.
+      // It's going away, so fail its in-flight (non-terminal) received tasks —
+      // otherwise the sender sees them stuck 'working' forever (silent break).
+      // After this the break is VISIBLE: the sender's a2a_task_query reflects
+      // 'failed' with a reason. (A proactive EventBus push to the sender is a
+      // follow-up; the state transition is the substance.)
+      const closedAt = new Date().toISOString();
+      for (const task of Object.values(state.a2aTasks ?? {})) {
+        if (
+          task.metadata.to.workspaceId === id &&
+          task.status.state !== 'completed' &&
+          task.status.state !== 'failed' &&
+          task.status.state !== 'canceled'
+        ) {
+          task.status = {
+            state: 'failed',
+            message: {
+              kind: 'message',
+              messageId: `wsclose-${task.id}`,
+              role: 'agent',
+              parts: [
+                { kind: 'text', text: 'Receiver workspace closed before completing this task.' },
+              ],
+            },
+            timestamp: closedAt,
+          };
+          task.metadata.updatedAt = closedAt;
+        }
+      }
       // Drop ring state for every leaf pane in the removed workspace. closePane
       // covers the user-driven path; this mirrors the same invariant for
       // workspace-level deletion (Sidebar X, Ctrl+Shift+W, SettingsPanel reset)
