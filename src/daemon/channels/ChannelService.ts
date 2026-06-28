@@ -810,7 +810,7 @@ export class ChannelService {
               message: original,
               idempotent: true,
               ...(existing.droppedMentions && existing.droppedMentions.length > 0
-                ? { droppedMentions: existing.droppedMentions }
+                ? { droppedMentions: [...existing.droppedMentions] }
                 : {}),
             };
           }
@@ -918,9 +918,12 @@ export class ChannelService {
       const mentions: ChannelMention[] = [];
       const droppedMentions: ChannelDroppedMention[] = [];
       const droppedWorkspaces = new Set<string>();
+      // Build the member-workspace lookup ONCE so membership is O(1) per mention
+      // (O(n + m) overall) instead of O(mentions x members) under the lock.
+      const memberWorkspaces = new Set(members.map((m) => m.workspaceId));
       for (const mn of params.mentions ?? []) {
         if (!mn || typeof mn.workspaceId !== 'string') continue;
-        if (!members.some((m) => m.workspaceId === mn.workspaceId)) {
+        if (!memberWorkspaces.has(mn.workspaceId)) {
           // Was a SILENT drop. Record it (deduped per workspace) so the post
           // result tells the SENDER the mention didn't land — you cannot ping a
           // workspace that isn't in the room. Silent mis-route was the dominant
@@ -972,7 +975,9 @@ export class ChannelService {
         channelIdMap.set(params.clientMsgId, {
           seq,
           lastUsedAt: now,
-          ...(droppedMentions.length > 0 ? { droppedMentions } : {}),
+          // Store a COPY so a same-process caller mutating the returned array
+          // can't poison the cached replay value.
+          ...(droppedMentions.length > 0 ? { droppedMentions: [...droppedMentions] } : {}),
         });
         // LRU eviction down to CHANNEL_IDEMPOTENCY_CAP.
         if (channelIdMap.size > CHANNEL_IDEMPOTENCY_CAP) {
