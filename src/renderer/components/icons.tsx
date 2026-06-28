@@ -65,6 +65,16 @@ export function IconPlus({ size = 14 }: { size?: number }) {
   return <Icon size={size}><line x1="7" y1="2.5" x2="7" y2="11.5" /><line x1="2.5" y1="7" x2="11.5" y2="7" /></Icon>;
 }
 
+/** Refresh — circular arrow for a manual re-sync (channel catalog reload). */
+export function IconRefresh({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M11 5.5 A4.2 4.2 0 1 0 11.6 8.7" />
+      <polyline points="8.6,5.2 11.4,5.6 11.7,2.9" />
+    </Icon>
+  );
+}
+
 /** Directional chevron for the sidebar collapse/expand buttons (issue #151).
  *  `dir` is computed by sidebarGlyphs.ts so the arrow logic stays unit-testable. */
 export function IconChevronDir({ dir, size = 12 }: { dir: 'left' | 'right'; size?: number }) {

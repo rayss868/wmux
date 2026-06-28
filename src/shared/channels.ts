@@ -140,11 +140,34 @@ export interface ChannelMessage {
  * already pins membership on); `memberId` narrows it to a specific member when
  * one was targeted, else the mention is workspace-level. `name` is the display
  * snapshot at post time.
+ *
+ * Agent-pane redesign: `paneId` + `ptyId` capture the STABLE pane identity of a
+ * specific live agent at mention time (the composer snapshots them from
+ * `a2a_discover`). The daemon treats them as opaque pass-through (it owns the
+ * workspace/subscription gate, not the live pane tree); the RECEIVING renderer
+ * resolves `paneId` in its own leaves and re-checks `ptyId` is still live
+ * (fail-closed) before pinning an a2a task to that exact pane. Both absent for a
+ * workspace-level mention (targets any live agent in the ws — the legacy path).
  */
 export interface ChannelMention {
   workspaceId: string;
   memberId?: string;
+  paneId?: string;
+  ptyId?: string;
   name: string;
+}
+
+/**
+ * A requested @mention that could NOT be routed because its target workspace is
+ * not a member of the channel. `ChannelService.post` returns these to the sender
+ * so a mis-targeted mention is visible feedback, not a silent drop (the dominant
+ * A2A failure mode). `reason` is an enum so future drop causes (e.g. archived,
+ * rate-limited) extend it without breaking callers.
+ */
+export interface ChannelDroppedMention {
+  workspaceId: string;
+  name?: string;
+  reason: 'not_a_member';
 }
 
 /**
@@ -263,6 +286,13 @@ export const CHANNEL_BODY_MAX = 8192;
  *  the in-memory object size — a cheap O(n) proxy that catches
  *  obvious oversize payloads without deep object walks. */
 export const CHANNEL_DATA_MAX = 4096;
+
+/** Max @mentions per post. Bounds the O(mentions x members) validation done
+ *  inside the per-channel lock AND the size of the `droppedMentions` feedback
+ *  echoed back to the sender, so a single member can't wedge a channel with a
+ *  giant mention list. Enforced in `ChannelService.post` →
+ *  `CHANNEL_MENTIONS_TOO_MANY`. 64 is far above any real ping fan-out. */
+export const CHANNEL_MENTIONS_MAX = 64;
 
 /** Per-company channel cap. A company with N departments and
  *  cross-cutting workflows typically needs ~tens of channels;

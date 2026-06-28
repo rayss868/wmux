@@ -23,12 +23,14 @@ import {
   canonicalizeChannelName,
   CHANNEL_BODY_MAX,
   CHANNEL_DATA_MAX,
+  CHANNEL_MENTIONS_MAX,
   CHANNEL_IDEMPOTENCY_CAP,
   CHANNEL_MAX_COUNT,
   CHANNEL_MAX_MEMBERS,
   CHANNEL_TOPIC_MAX,
   isValidChannelName,
   type Channel,
+  type ChannelDroppedMention,
   type ChannelMember,
   type ChannelMention,
   type ChannelMessage,
@@ -82,7 +84,11 @@ export type ChannelErrorCode =
   | 'CHANNEL_DATA_TOO_LARGE'
   /** Per-company channel count over `CHANNEL_MAX_COUNT` or per-channel
    *  member count over `CHANNEL_MAX_MEMBERS`. Enforced in `create`. */
-  | 'CHANNEL_LIMIT_REACHED';
+  | 'CHANNEL_LIMIT_REACHED'
+  /** A single post requested more than `CHANNEL_MENTIONS_MAX` @mentions.
+   *  Bounds the O(mentions x members) validation done under the channel lock
+   *  and the size of the `droppedMentions` feedback echoed back to the sender. */
+  | 'CHANNEL_MENTIONS_TOO_MANY';
 
 export interface ChannelError {
   code: ChannelErrorCode;
@@ -168,6 +174,24 @@ export interface LeaveChannelParams {
   verifiedWorkspaceId: string;
 }
 
+export interface InviteChannelParams {
+  channelId: string;
+  /** The workspace/agent being ADDED. Unlike join(), the invitee is NOT the
+   *  caller — invite() adds a DIFFERENT workspace, gated by the inviter being
+   *  a current member (P1b authz decision A: any member may invite). The
+   *  invitee's workspaceId is the caller-supplied target (the one membership
+   *  mutation that is not self-pinned); same-machine identity is forgeable
+   *  (#113, accepted ceiling) so this sets the intended model, not a hard gate. */
+  invitedMember: SenderRef;
+  /** When false, the invitee's `historyFromSeq` is set to the channel's current
+   *  `nextSeq` (no older history). Default (undefined) = full history (0), so an
+   *  invited teammate can catch up — mirrors join()'s history rule. */
+  includeHistory?: boolean;
+  /** D5 — server-resolved INVITER workspace. The authz gate requires THIS to be
+   *  a current member; it is never the invitee. */
+  verifiedWorkspaceId: string;
+}
+
 export interface PostMessageParams {
   channelId: string;
   sender: SenderRef;
@@ -211,6 +235,10 @@ export type EmptyResult = Result<void>;
 interface IdempotencyEntry {
   seq: number;
   lastUsedAt: number;
+  /** droppedMentions computed on the ORIGINAL post, so a retry with the same
+   *  clientMsgId gets the same sender feedback instead of a silent drop on the
+   *  replay (in-memory only — not persisted across a daemon restart). */
+  droppedMentions?: ChannelDroppedMention[];
 }
 
 export class ChannelService {
@@ -316,8 +344,20 @@ export class ChannelService {
    *
    * The seq-floor is `Math.max(sinceSeq ?? 0, viewer.historyFromSeq)`
    * so a caller can still page with `sinceSeq` on top of the floor.
+   *
+   * `limit` (optional) caps the result to the most recent `limit` messages
+   * AFTER the seq-floor is applied (tail slice). It exists to protect an
+   * agent caller's context window: an MCP `channel_read` defaults it to a
+   * small N, while the renderer omits it (undefined = no cap = full history,
+   * the pre-existing behaviour — do NOT default it here or the human
+   * ChannelView would silently truncate).
    */
-  getMessages(channelId: string, sinceSeq: number | undefined, verifiedWorkspaceId: string): ChannelMessage[] {
+  getMessages(
+    channelId: string,
+    sinceSeq: number | undefined,
+    verifiedWorkspaceId: string,
+    limit?: number,
+  ): ChannelMessage[] {
     const channel = this.state.channels.find((c) => c.id === channelId);
     if (!channel) return [];
     if (!this.isVisibleTo(channel, verifiedWorkspaceId)) return [];
@@ -338,7 +378,14 @@ export class ChannelService {
       }
       floor = Math.max(floor, viewer.historyFromSeq);
     }
-    return all.filter((m) => m.seq >= floor);
+    const filtered = all.filter((m) => m.seq >= floor);
+    // Tail-slice to the most recent `limit` when a cap is requested.
+    // `Math.max(0, …)` keeps limit=0 → [] and limit>length → full list
+    // correct (a bare `.slice(-0)` would return the whole array).
+    if (limit !== undefined && limit >= 0) {
+      return filtered.slice(Math.max(0, filtered.length - limit));
+    }
+    return filtered;
   }
 
   /** Per-channel visibility rule. A channel is visible to the caller
@@ -620,6 +667,76 @@ export class ChannelService {
   }
 
   /**
+   * Invite (add) ANOTHER workspace to a channel (P1b). Unlike join() — which
+   * self-pins the joiner so a caller can only add ITSELF — invite() adds the
+   * caller-supplied `invitedMember` workspace, gated by the INVITER being a
+   * current member (decision A: any member may invite). This is the legitimate
+   * path into a PRIVATE channel (you cannot self-join one).
+   *
+   * Gate order mirrors join()/archive():
+   *   - `CHANNEL_NOT_FOUND` if the id is unknown OR the inviter cannot SEE a
+   *     private channel (symmetric existence-hiding with get/join/getMessages).
+   *   - `NOT_AUTHORIZED` if the verified inviter is not a current member.
+   *   - `CHANNEL_ARCHIVED` if the channel is read-only.
+   *   - `DUPLICATE_MEMBER` if the invitee (workspace, memberId) is already in.
+   *   - `PERSIST_FAILED` on a writer failure (rolled back).
+   *
+   * Authz is "soft governance": same-machine identity is forgeable (#113,
+   * accepted ceiling), so this encodes the intended model rather than a hard
+   * cross-user boundary. The grant is real, though — it adds a workspace to a
+   * private channel's member list, unlocking its history + live fan-out.
+   */
+  async invite(params: InviteChannelParams): Promise<EmptyResult> {
+    return this.withChannelLock(params.channelId, async () => {
+      const channel = this.state.channels.find((c) => c.id === params.channelId);
+      if (!channel) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
+      }
+      // Hide private existence from non-members (same as join()/read paths).
+      if (!this.isVisibleTo(channel, params.verifiedWorkspaceId)) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
+      }
+      const members = this.state.members[channel.id] ?? [];
+      // P1b authz (A): the verified INVITER must be a current member. Checked
+      // against the server-resolved workspace, never a client-supplied field.
+      if (!members.some((m) => m.workspaceId === params.verifiedWorkspaceId)) {
+        return {
+          ok: false,
+          error: { code: 'NOT_AUTHORIZED', message: 'Only a member may invite others to this channel' },
+        };
+      }
+      if (channel.status === 'archived') {
+        return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot invite to an archived channel' } };
+      }
+      const invitee = params.invitedMember;
+      if (members.some((m) => m.workspaceId === invitee.workspaceId && m.memberId === invitee.memberId)) {
+        return { ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } };
+      }
+      const previousEmptySince = channel.emptySince;
+      if (channel.emptySince !== undefined) {
+        delete channel.emptySince;
+      }
+      const now = this.now();
+      const historyFromSeq = params.includeHistory === false ? channel.nextSeq : 0;
+      members.push({
+        // The invitee is the caller-supplied TARGET (NOT verifiedWorkspaceId) —
+        // see the method doc + InviteChannelParams. Gated by inviter-is-member.
+        workspaceId: invitee.workspaceId,
+        memberId: invitee.memberId,
+        joinedAt: now,
+        historyFromSeq,
+      });
+      this.state.members[channel.id] = members;
+      if (!this.saveOrFail()) {
+        members.pop();
+        channel.emptySince = previousEmptySince;
+        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel invite' } };
+      }
+      return { ok: true };
+    });
+  }
+
+  /**
    * Post a message to a channel. Validates membership, freezes the
    * recipient snapshot at critical-section entry (KTD3 — a concurrent
    * `join` that lands later will not retroactively target this post),
@@ -644,6 +761,12 @@ export class ChannelService {
   async post(params: PostMessageParams): Promise<Result<{
     message: ChannelMessage;
     idempotent?: boolean;
+    /** @mentions whose target workspace is NOT a member of the channel. They
+     *  were dropped (you cannot ping a workspace that isn't in the room).
+     *  Returned so the SENDER gets explicit feedback instead of a silent drop —
+     *  the dominant failure mode found in A2A dogfooding was silent mis-route.
+     *  Present only on a fresh (non-idempotent) post with ≥1 dropped mention. */
+    droppedMentions?: ChannelDroppedMention[];
   }>> {
     return this.withChannelLock(params.channelId, async () => {
       // Sender-pin gate (R5). Must run BEFORE any state read or
@@ -679,16 +802,38 @@ export class ChannelService {
             (m) => m.seq === existing.seq,
           );
           if (original) {
-            return { ok: true, message: original, idempotent: true };
+            // Replay the original drop feedback too (review P1) — otherwise a
+            // retry after a missed first response (the moment feedback matters
+            // most) would silently lose the dropped-mention report.
+            return {
+              ok: true,
+              message: original,
+              idempotent: true,
+              ...(existing.droppedMentions && existing.droppedMentions.length > 0
+                ? { droppedMentions: [...existing.droppedMentions] }
+                : {}),
+            };
           }
           // Cache points at a seq that no longer exists (e.g. message was
           // pruned by empty-channel reaper). Fall through to a fresh post.
         }
       }
-      // Membership check.
+      // Membership check — keyed on the SUBSCRIPTION unit (workspaceId), NOT
+      // (workspaceId, memberId). `memberId` is a client-supplied label (the MCP
+      // `member_id` param — "lead", "backend") that is NOT server-verified and may
+      // differ between channel_create and channel_post for the same agent. That
+      // create/post memberId mismatch was the NOT_A_MEMBER bug: the creator is
+      // auto-added as (ws, createdBy.memberId), then a post as (ws, otherMemberId)
+      // failed the composite match even though the SAME verified workspace was
+      // posting. The subscription (workspaceId) is the real, server-pinned
+      // membership unit (join/create pin it to verifiedWorkspaceId); memberId only
+      // narrows display + mention targeting, never authorization. The sender-pin
+      // gate above already proved sender.workspaceId === verifiedWorkspaceId, so a
+      // workspace match here means a verified member is posting — gating on the
+      // forgeable memberId on top of that added no security, only the bug.
       const members = this.state.members[channel.id] ?? [];
       const isMember = members.some(
-        (m) => m.workspaceId === params.sender.workspaceId && m.memberId === params.sender.memberId,
+        (m) => m.workspaceId === params.sender.workspaceId,
       );
       if (!isMember) {
         return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Not a channel member' } };
@@ -736,6 +881,19 @@ export class ChannelService {
           };
         }
       }
+      // Mention count cap (review P2). Reject BEFORE allocating a seq so an
+      // abusive post consumes no idempotency slot. Bounds both the
+      // O(mentions x members) validation below (run under the channel lock) and
+      // the droppedMentions array echoed back in the response.
+      if ((params.mentions?.length ?? 0) > CHANNEL_MENTIONS_MAX) {
+        return {
+          ok: false,
+          error: {
+            code: 'CHANNEL_MENTIONS_TOO_MANY',
+            message: `Post exceeds ${CHANNEL_MENTIONS_MAX} mentions`,
+          },
+        };
+      }
       // Freeze the recipient snapshot at critical-section entry (plan KTD3).
       // We deliberately do NOT re-read members after this point; a concurrent
       // `join` that lands later will not retroactively change the snapshot
@@ -746,22 +904,55 @@ export class ChannelService {
         status: 'pending' as const,
       }));
       // Validate @mentions against the FROZEN member set (the same snapshot the
-      // recipients use): keep only mentions of CURRENT members, deduped by
-      // workspace. A mention of a non-member is dropped — you cannot ping a
-      // workspace that isn't in the room. This bounded, member-verified set is
-      // exactly what Phase 2's inbox routing will ping; validating here (not in
-      // the renderer/MCP) keeps the trust on the server.
-      const mentionedWs = new Set<string>();
+      // recipients use): keep only mentions of CURRENT member workspaces, deduped
+      // by (workspaceId, paneId). A mention of a non-member workspace is dropped —
+      // you cannot ping a workspace that isn't in the room. Keying dedup on
+      // (workspaceId, paneId) lets TWO agents in the SAME workspace (split panes)
+      // both be mentioned in one post without the second collapsing into the
+      // first; a ws-level mention (no paneId) still dedupes per workspace exactly
+      // as before. `paneId`/`ptyId` are OPAQUE pass-through here: the daemon owns
+      // the workspace (subscription) membership gate, but it does not know the
+      // live pane tree — the RECEIVING renderer resolves paneId in its own leaves
+      // and re-checks ptyId liveness (fail-closed) before pinning the a2a task.
+      const mentionedKeys = new Set<string>();
       const mentions: ChannelMention[] = [];
+      const droppedMentions: ChannelDroppedMention[] = [];
+      const droppedWorkspaces = new Set<string>();
+      // Build the member-workspace lookup ONCE so membership is O(1) per mention
+      // (O(n + m) overall) instead of O(mentions x members) under the lock.
+      const memberWorkspaces = new Set(members.map((m) => m.workspaceId));
       for (const mn of params.mentions ?? []) {
         if (!mn || typeof mn.workspaceId !== 'string') continue;
-        if (!members.some((m) => m.workspaceId === mn.workspaceId)) continue;
-        if (mentionedWs.has(mn.workspaceId)) continue;
-        mentionedWs.add(mn.workspaceId);
+        if (!memberWorkspaces.has(mn.workspaceId)) {
+          // Was a SILENT drop. Record it (deduped per workspace) so the post
+          // result tells the SENDER the mention didn't land — you cannot ping a
+          // workspace that isn't in the room. Silent mis-route was the dominant
+          // failure mode in A2A dogfooding.
+          if (!droppedWorkspaces.has(mn.workspaceId)) {
+            droppedWorkspaces.add(mn.workspaceId);
+            droppedMentions.push({
+              workspaceId: mn.workspaceId,
+              reason: 'not_a_member',
+              ...(typeof mn.name === 'string' && mn.name.length > 0
+                ? { name: mn.name.slice(0, 80) }
+                : {}),
+            });
+          }
+          continue;
+        }
+        const paneId = typeof mn.paneId === 'string' ? mn.paneId : '';
+        // Collision-free dedup key: JSON-encode the (workspaceId, paneId) pair so
+        // no separator-substring ambiguity can fold two distinct targets onto one
+        // key and silently drop the later mention (review-team: codex+GLM).
+        const key = JSON.stringify([mn.workspaceId, paneId]);
+        if (mentionedKeys.has(key)) continue;
+        mentionedKeys.add(key);
         mentions.push({
           workspaceId: mn.workspaceId,
           name: typeof mn.name === 'string' && mn.name.length > 0 ? mn.name.slice(0, 80) : mn.workspaceId,
           ...(typeof mn.memberId === 'string' ? { memberId: mn.memberId } : {}),
+          ...(typeof mn.paneId === 'string' && mn.paneId.length > 0 ? { paneId: mn.paneId } : {}),
+          ...(typeof mn.ptyId === 'string' && mn.ptyId.length > 0 ? { ptyId: mn.ptyId } : {}),
         });
       }
       const seq = channel.nextSeq++;
@@ -784,7 +975,13 @@ export class ChannelService {
       // Update idempotency cache.
       if (params.clientMsgId) {
         const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
-        channelIdMap.set(params.clientMsgId, { seq, lastUsedAt: now });
+        channelIdMap.set(params.clientMsgId, {
+          seq,
+          lastUsedAt: now,
+          // Store a COPY so a same-process caller mutating the returned array
+          // can't poison the cached replay value.
+          ...(droppedMentions.length > 0 ? { droppedMentions: [...droppedMentions] } : {}),
+        });
         // LRU eviction down to CHANNEL_IDEMPOTENCY_CAP.
         if (channelIdMap.size > CHANNEL_IDEMPOTENCY_CAP) {
           this.evictOldest(channelIdMap, channelIdMap.size - CHANNEL_IDEMPOTENCY_CAP);
@@ -829,7 +1026,90 @@ export class ChannelService {
         // the persisted recipientSnapshot.
         console.error('[ChannelService] emit failed:', err);
       }
-      return { ok: true, message };
+      return {
+        ok: true,
+        message,
+        ...(droppedMentions.length > 0 ? { droppedMentions } : {}),
+      };
+    });
+  }
+
+  /**
+   * Receipt acknowledgement (A1 — make deliveryStatus real). A member confirms
+   * it has RECEIVED messages up to `uptoSeq` (the renderer calls this when it
+   * loads a channel; read === received). For each such message, the caller's
+   * entry in the frozen `recipientSnapshot` flips `pending → delivered`, and the
+   * message's own `deliveryStatus` flips to `delivered` once ANY recipient has
+   * (matching `DeliveryResult.ok` = "at least one delivered"). Before this,
+   * `deliveryStatus` was vestigially stuck at `pending` (the ChannelDelivery
+   * transport seam was never wired) so success/failure was indistinguishable.
+   * Persists only when something actually changed (a repeat ack is a no-op).
+   */
+  async ack(params: {
+    channelId: string;
+    verifiedWorkspaceId: string;
+    uptoSeq: number;
+  }): Promise<Result<{ acked: number }>> {
+    return this.withChannelLock(params.channelId, async () => {
+      const channel = this.state.channels.find((c) => c.id === params.channelId);
+      // Symmetric existence-hiding with get/getMessages: a non-member of a
+      // private channel sees CHANNEL_NOT_FOUND, never its existence.
+      if (!channel || !this.isVisibleTo(channel, params.verifiedWorkspaceId)) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
+      }
+      const msgs = this.state.messages[params.channelId] ?? [];
+      // Collect-then-apply so a persist failure can ROLL BACK (mirrors post): we
+      // snapshot each flip's prior values, apply, persist, and on failure restore
+      // — otherwise memory would be left flipped while we return PERSIST_FAILED,
+      // and a retry would be a no-op (entry already delivered) = permanent split
+      // (GLM review P1).
+      const flips: Array<{
+        entry: ChannelRecipientStatus;
+        prevEntryStatus: ChannelRecipientStatus['status'];
+        prevLastAttemptAt: number | undefined;
+        msg: ChannelMessage;
+        prevMsgStatus: ChannelMessage['deliveryStatus'];
+      }> = [];
+      for (const m of msgs) {
+        if (m.seq > params.uptoSeq) continue;
+        // A workspace may have MULTIPLE member rows in one channel (several
+        // agents from the same workspace each join with a distinct memberId), so
+        // the frozen recipientSnapshot can carry more than one entry for this
+        // workspaceId. The ack is workspace-scoped (the renderer never identifies
+        // a memberId), so flip EVERY pending row for this workspace — a `find()`
+        // would leave the siblings permanently 'pending', and a repeat ack would
+        // keep re-finding the first, already-delivered row (Codex review).
+        for (const entry of m.recipientSnapshot ?? []) {
+          if (entry.workspaceId === params.verifiedWorkspaceId && entry.status === 'pending') {
+            flips.push({
+              entry,
+              prevEntryStatus: entry.status,
+              prevLastAttemptAt: entry.lastAttemptAt,
+              msg: m,
+              prevMsgStatus: m.deliveryStatus,
+            });
+          }
+        }
+      }
+      const now = this.now();
+      for (const f of flips) {
+        f.entry.status = 'delivered';
+        f.entry.lastAttemptAt = now;
+        // ≥1 recipient delivered ⇒ message delivered (DeliveryResult.ok semantics
+        // — "at least one", NOT "all": a still-pending peer does not block it, and
+        // per-recipient detail remains in recipientSnapshot for callers who need it).
+        if (f.msg.deliveryStatus !== 'delivered') f.msg.deliveryStatus = 'delivered';
+      }
+      if (flips.length > 0 && !this.saveOrFail()) {
+        // Roll back the in-memory flips so memory ↔ disk stay consistent.
+        for (const f of flips) {
+          f.entry.status = f.prevEntryStatus;
+          f.entry.lastAttemptAt = f.prevLastAttemptAt;
+          f.msg.deliveryStatus = f.prevMsgStatus;
+        }
+        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
+      }
+      return { ok: true, acked: flips.length };
     });
   }
 

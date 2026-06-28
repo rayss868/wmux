@@ -6,6 +6,7 @@ import { MetadataCollector } from '../../metadata/MetadataCollector';
 import { prStatusCache } from '../../metadata/PrStatusCache';
 import { PTYManager } from '../../pty/PTYManager';
 import { wrapHandler } from '../wrapHandler';
+import { metadataStore } from '../../metadata/MetadataStore';
 
 /**
  * Single source for IPC.METADATA_UPDATE outgoing messages. All metadata-like
@@ -114,6 +115,34 @@ export function registerMetadataHandlers(
     return rest;
   }));
 
+  // P2 bootstrap (checklist C): MetadataStore.hydrate emits no events, so the
+  // renderer's volatile paneLabel mirror is empty after a restart. The renderer
+  // pulls this snapshot once on mount to seed labels for already-labeled panes;
+  // live renames then flow via the pane.metadata.changed relay.
+  ipcMain.removeHandler(IPC.METADATA_SNAPSHOT);
+  ipcMain.handle(IPC.METADATA_SNAPSHOT, wrapHandler(IPC.METADATA_SNAPSHOT, async () => {
+    return metadataStore.snapshot().entries
+      // Match the live relay (src/main/index.ts): seed only NON-EMPTY labels, else
+      // a cleared ('') label would be re-applied from the restart snapshot and
+      // resurrect a label the user removed (CodeRabbit review).
+      .filter((e) => typeof e.metadata.label === 'string' && (e.metadata.label as string).length > 0)
+      .map((e) => ({ paneId: e.paneId, label: e.metadata.label as string }));
+  }));
+
+  // P2 GUI pane rename: the renderer is the only non-MCP writer of pane labels.
+  // Route through MetadataStore (the sole authority) so the rename persists
+  // (metadata.json) and relays to every renderer via pane.metadata.changed.
+  ipcMain.removeHandler(IPC.METADATA_SET);
+  ipcMain.handle(IPC.METADATA_SET, wrapHandler(IPC.METADATA_SET, async (
+    _event: Electron.IpcMainInvokeEvent,
+    paneId: string,
+    workspaceId: string,
+    label: string,
+  ) => {
+    metadataStore.set(paneId, { label }, { workspaceId });
+    return { ok: true };
+  }));
+
   // Periodic metadata polling (every 5 seconds)
   const pollingInterval = setInterval(async () => {
     const win = getWindow();
@@ -148,6 +177,8 @@ export function registerMetadataHandlers(
   return () => {
     clearInterval(pollingInterval);
     ipcMain.removeHandler(IPC.METADATA_REQUEST);
+    ipcMain.removeHandler(IPC.METADATA_SNAPSHOT);
+    ipcMain.removeHandler(IPC.METADATA_SET);
   };
 }
 

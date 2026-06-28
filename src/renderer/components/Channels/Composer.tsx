@@ -23,11 +23,14 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useStore } from '../../stores';
-import { generateId } from '../../../shared/types';
+import { findLeafPanes } from '../../hooks/a2aAddressing';
+import { generateId, type Workspace } from '../../../shared/types';
+import type { AgentSlug } from '../../../shared/events';
 import type { ChannelMember, ChannelMention, ChannelMessage } from '../../../shared/channels';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
+import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 
 // ─── Synthesized message row for the optimistic local insert ───────────
 
@@ -66,13 +69,69 @@ export function synthesizeChannelMessage(params: {
 
 // ─── @-mention token detection ──────────────────────────────────────────
 
-/** A member the composer can @-mention. The human UI participates as one
- *  member per workspace (memberId `local-ui`), so the display label is the
- *  workspace name. */
+/** A live agent pane the composer can @-mention (agent-pane redesign). Each
+ *  candidate is one detected agent in a member workspace — addressed by its
+ *  stable `paneId` + a `ptyId` snapshot the receiving renderer re-checks
+ *  (fail-closed) before pinning the a2a task. P2: the @token is the pane's
+ *  stable unique auto name (`insertToken`); the dropdown shows the human
+ *  `displayName` (rename ?? auto name). The unique token is what disambiguates
+ *  two same-agent panes in one workspace. */
 export interface MentionCandidate {
   workspaceId: string;
-  memberId: string;
-  name: string;
+  paneId: string;
+  ptyId: string;
+  /** Stable, UNIQUE @-token inserted into the body and matched on submit — the
+   *  pane's auto name (e.g. "w1-2(claude)"). Routing still uses paneId. */
+  insertToken: string;
+  /** Human-facing label shown in the dropdown: pane rename when set, else the
+   *  auto name. May collide (harmless — paneId routes). */
+  displayName: string;
+}
+
+/**
+ * P2 — build the composer's @-mention candidates: one per LIVE AGENT pane in a
+ * member workspace (excluding our own). Each candidate carries a stable, unique
+ * `insertToken` (the pane auto name `w<ws>-<pane>(<agent>)`), so two same-agent
+ * panes in ONE workspace — the case the old agentName + wsName hint could not
+ * disambiguate — get distinct tokens. `displayName` (rename ?? auto name) is the
+ * dropdown label. Pure + exported so the disambiguation invariant is unit-tested
+ * directly (the packaged Electron UI can't be driven by automation).
+ */
+export function buildMentionCandidates(args: {
+  workspaces: Workspace[];
+  surfaceAgent: Record<string, { name: string; slug?: AgentSlug } | undefined>;
+  paneLabel: Record<string, string>;
+  memberWorkspaceIds: ReadonlySet<string>;
+  selfWorkspaceId: string | null;
+}): MentionCandidate[] {
+  const { workspaces, surfaceAgent, paneLabel, memberWorkspaceIds, selfWorkspaceId } = args;
+  const out: MentionCandidate[] = [];
+  for (const w of workspaces) {
+    if (w.id === selfWorkspaceId) continue; // can't ping yourself
+    if (!memberWorkspaceIds.has(w.id)) continue; // channel members only
+    const wsOrdinal = w.wsOrdinal ?? 0;
+    for (const leaf of findLeafPanes(w.rootPane)) {
+      // One candidate per PANE — mentions route by paneId, and the auto name is a
+      // pane coordinate. Emitting per-surface would make a multi-tab pane whose
+      // tabs run the same agent produce duplicate candidates with a COLLIDING
+      // insertToken. Pick the pane's representative agent surface: the active
+      // surface when it runs a live agent, else the first that does.
+      const agentSurfaces = leaf.surfaces.filter(
+        (s) => s.surfaceType !== 'browser' && !!s.ptyId && !!surfaceAgent[s.ptyId]?.name,
+      );
+      const repr = agentSurfaces.find((s) => s.id === leaf.activeSurfaceId) ?? agentSurfaces[0];
+      if (!repr) continue; // no live agent in this pane — excludes plain terminals
+      const autoName = computePaneAutoName(wsOrdinal, leaf.ordinal ?? 0, surfaceAgent[repr.ptyId]?.slug);
+      out.push({
+        workspaceId: w.id,
+        paneId: leaf.id,
+        ptyId: repr.ptyId,
+        insertToken: autoName,
+        displayName: paneDisplayName(paneLabel[leaf.id], autoName),
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -160,7 +219,11 @@ export function ComposerContent({
   const matches = useMemo(() => {
     if (!token) return EMPTY_CANDIDATES;
     const q = token.query.toLowerCase();
-    return candidates.filter((c) => c.name.toLowerCase().includes(q));
+    // Match the typed query against either the human label or the stable token,
+    // so "claude", "w1", or a rename like "backend" all surface the pane.
+    return candidates.filter(
+      (c) => c.displayName.toLowerCase().includes(q) || c.insertToken.toLowerCase().includes(q),
+    );
   }, [token, candidates]);
 
   const dropdownOpen = token !== null && matches.length > 0 && !inFlight && !disabled;
@@ -203,13 +266,13 @@ export function ComposerContent({
       if (!token) return;
       const before = text.slice(0, token.start);
       const after = text.slice(token.start + 1 + token.query.length);
-      const insert = `@${c.name} `;
+      const insert = `@${c.insertToken} `;
       const caret = before.length + insert.length;
       setText(before + insert + after);
       setPicked((prev) =>
-        prev.some((p) => p.workspaceId === c.workspaceId)
+        prev.some((p) => p.paneId === c.paneId && p.workspaceId === c.workspaceId)
           ? prev
-          : [...prev, { workspaceId: c.workspaceId, memberId: c.memberId, name: c.name }],
+          : [...prev, { workspaceId: c.workspaceId, paneId: c.paneId, ptyId: c.ptyId, name: c.insertToken }],
       );
       setToken(null);
       setActiveIdx(0);
@@ -230,29 +293,38 @@ export function ComposerContent({
       if (dropdownOpen) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
+          e.stopPropagation();
           setActiveIdx((i) => (i + 1) % matches.length);
           return;
         }
         if (e.key === 'ArrowUp') {
           e.preventDefault();
+          e.stopPropagation();
           setActiveIdx((i) => (i - 1 + matches.length) % matches.length);
           return;
         }
-        // Enter or Tab commits the highlighted mention instead of submitting.
-        if (e.key === 'Enter' || e.key === 'Tab') {
+        // Enter (without Shift) or Tab commits the highlighted mention. Shift+Enter
+        // falls through to insert a newline. Skip during IME composition (that Enter
+        // commits the Hangul/IME composition, not the mention).
+        if (((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') && !e.nativeEvent.isComposing) {
           e.preventDefault();
+          e.stopPropagation();
           applyMention(matches[activeIdx] ?? matches[0]);
           return;
         }
         if (e.key === 'Escape') {
           e.preventDefault();
+          e.stopPropagation();
           setToken(null);
           return;
         }
       }
-      // Enter submits; Shift+Enter inserts a newline.
-      if (e.key === 'Enter' && !e.shiftKey) {
+      // Enter submits; Shift+Enter inserts a newline. Skip during IME composition
+      // (Enter that commits a Hangul/IME composition must not send), and
+      // stopPropagation so the keystroke does not leak to the focused terminal.
+      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault();
+        e.stopPropagation();
         if (canSend) {
           void handleSubmit(e as unknown as FormEvent);
         }
@@ -302,9 +374,10 @@ export function ComposerContent({
             {matches.map((c, idx) => (
               <button
                 type="button"
-                key={`${c.workspaceId}:${c.memberId}`}
+                key={`${c.workspaceId}:${c.paneId}`}
                 data-channel-mention-option
                 data-workspace-id={c.workspaceId}
+                data-pane-id={c.paneId}
                 data-active={idx === activeIdx ? 'true' : undefined}
                 role="option"
                 aria-selected={idx === activeIdx}
@@ -320,7 +393,10 @@ export function ComposerContent({
                 {...tokenAttrs('textSub', 'text')}
               >
                 <span className="text-[var(--accent-blue)]" aria-hidden="true">@</span>
-                <span className="truncate">{c.name}</span>
+                <span className="truncate">{c.displayName}</span>
+                {c.displayName !== c.insertToken && (
+                  <span className="ml-auto pl-2 text-[9px] opacity-60 truncate">{c.insertToken}</span>
+                )}
               </button>
             ))}
           </div>
@@ -386,6 +462,8 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
   const channel = useStore((s) => s.channels[channelId]);
   const members = useStore((s) => s.channelMembers[channelId] ?? EMPTY_MEMBERS);
   const workspaces = useStore((s) => s.workspaces);
+  const surfaceAgent = useStore((s) => s.surfaceAgent);
+  const paneLabel = useStore((s) => s.paneLabel);
   const postMessageDaemon = useStore((s) => s.postMessageDaemon);
 
   // Sender identity: the CEO workspace when Company mode is active, else the
@@ -393,24 +471,23 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
   // sender.workspaceId === verifiedWorkspaceId AND membership.
   const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId ?? null;
 
-  // @-mention candidates: every member workspace except the sender's own (you
-  // can't ping yourself), deduped by workspace and labeled with the workspace
-  // name — members are workspace-level in the human UI (memberId `local-ui`).
-  const mentionCandidates = useMemo<MentionCandidate[]>(() => {
-    const seen = new Set<string>();
-    const out: MentionCandidate[] = [];
-    for (const m of members) {
-      if (m.workspaceId === selfWorkspaceId) continue;
-      if (seen.has(m.workspaceId)) continue;
-      seen.add(m.workspaceId);
-      out.push({
-        workspaceId: m.workspaceId,
-        memberId: m.memberId,
-        name: workspaces.find((w) => w.id === m.workspaceId)?.name ?? m.workspaceId,
-      });
-    }
-    return out;
-  }, [members, workspaces, selfWorkspaceId]);
+  // @-mention candidates (agent-pane redesign): every LIVE AGENT pane in a member
+  // workspace except our own. We walk each member workspace's live pane tree and
+  // keep only panes whose terminal surface has a detected agent (agentName !=
+  // null) — plain terminals and non-member workspaces are excluded, which is how
+  // non-agents drop out of the mention targets. The @token label is the agent
+  // name; when the same agent name appears more than once (e.g. a "claude" in two
+  // workspaces) we attach the workspace name as a dropdown disambiguator.
+  const mentionCandidates = useMemo<MentionCandidate[]>(
+    () => buildMentionCandidates({
+      workspaces,
+      surfaceAgent,
+      paneLabel,
+      memberWorkspaceIds: new Set(members.map((m) => m.workspaceId)),
+      selfWorkspaceId,
+    }),
+    [members, workspaces, surfaceAgent, paneLabel, selfWorkspaceId],
+  );
 
   const handlePost = useCallback(
     async (text: string, mentions: ChannelMention[]) => {

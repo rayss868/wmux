@@ -76,6 +76,9 @@ const channelJoin = tools.get('channel_join');
 const channelLeave = tools.get('channel_leave');
 const channelArchive = tools.get('channel_archive');
 const channelList = tools.get('channel_list');
+const channelRead = tools.get('channel_read');
+const channelInvite = tools.get('channel_invite');
+const channelGetMembers = tools.get('channel_get_members');
 
 if (
   !channelCreate ||
@@ -83,7 +86,10 @@ if (
   !channelJoin ||
   !channelLeave ||
   !channelArchive ||
-  !channelList
+  !channelList ||
+  !channelRead ||
+  !channelInvite ||
+  !channelGetMembers
 ) {
   throw new Error('channel tools failed to register');
 }
@@ -93,18 +99,22 @@ beforeEach(() => {
 });
 
 describe('channel_* tools: registration', () => {
-  it('registers all six standard tools', () => {
-    // The MCP server is the standard channel surface (channel.history is
-    // intentionally deferred per plan Scope Boundaries).
+  it('registers all nine standard tools', () => {
+    // channel_read exposes message history; channel_invite adds another
+    // workspace (the only path into a private channel); channel_get_members
+    // exposes the roster (who is in the channel).
     expect(channelCreate).toBeDefined();
     expect(channelPost).toBeDefined();
     expect(channelJoin).toBeDefined();
     expect(channelLeave).toBeDefined();
     expect(channelArchive).toBeDefined();
     expect(channelList).toBeDefined();
+    expect(channelRead).toBeDefined();
+    expect(channelInvite).toBeDefined();
+    expect(channelGetMembers).toBeDefined();
   });
 
-  it('does not register a channel_history tool (deferred per plan)', () => {
+  it('does not register a channel_history tool (history is exposed via channel_read)', () => {
     expect(tools.get('channel_history')).toBeUndefined();
   });
 });
@@ -127,6 +137,42 @@ describe('channel_list', () => {
     });
     const res = await channelList({});
     expect(res.content[0].text).toContain('ch-1');
+  });
+});
+
+describe('channel_read', () => {
+  it('forwards channel_id + default limit (50) and no sinceSeq when since_seq omitted', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, messages: [] });
+    const res = await channelRead({ channel_id: 'ch-123' });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.getMessages', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      channelId: 'ch-123',
+      limit: 50,
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('forwards since_seq and an explicit limit when provided', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, messages: [] });
+    await channelRead({ channel_id: 'ch-123', since_seq: 42, limit: 10 });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.getMessages', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      channelId: 'ch-123',
+      limit: 10,
+      sinceSeq: 42,
+    });
+  });
+
+  it('surfaces a daemon error envelope as isError', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: false,
+      error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel: ch-x' },
+    });
+    const res = await channelRead({ channel_id: 'ch-x' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('CHANNEL_NOT_FOUND');
   });
 });
 
@@ -381,8 +427,77 @@ describe('channel_archive', () => {
   });
 });
 
+describe('channel_invite', () => {
+  it('forwards channelId + invitedMember + verifiedWorkspaceId to a2a.channel.invite (include_history default true)', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true });
+    const res = await channelInvite({
+      channel_id: 'ch-1',
+      invited_workspace_id: 'ws-2',
+      member_id: 'm-2',
+      member_name: 'Bob',
+    });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.invite', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      channelId: 'ch-1',
+      invitedMember: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+      includeHistory: true,
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('passes include_history:false through', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true });
+    await channelInvite({
+      channel_id: 'ch-1',
+      invited_workspace_id: 'ws-2',
+      member_id: 'm-2',
+      member_name: 'Bob',
+      include_history: false,
+    });
+    expect(mockSendRpc).toHaveBeenCalledWith(
+      'a2a.channel.invite',
+      expect.objectContaining({ includeHistory: false }),
+    );
+  });
+
+  it('surfaces a NOT_AUTHORIZED daemon error as isError', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: false,
+      error: { code: 'NOT_AUTHORIZED', message: 'Only a member may invite others to this channel' },
+    });
+    const res = await channelInvite({
+      channel_id: 'ch-1',
+      invited_workspace_id: 'ws-2',
+      member_id: 'm-2',
+      member_name: 'Bob',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('NOT_AUTHORIZED');
+  });
+});
+
+describe('channel_get_members', () => {
+  it('forwards channelId + workspaceId + verifiedWorkspaceId to a2a.channel.getMembers', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, members: [] });
+    const res = await channelGetMembers({ channel_id: 'ch-1' });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.getMembers', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      channelId: 'ch-1',
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('passes through the typed RPC envelope (members list)', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, members: [{ workspaceId: 'ws-1', memberId: 'lead' }] });
+    const res = await channelGetMembers({ channel_id: 'ch-1' });
+    expect(res.content[0].text).toContain('lead');
+  });
+});
+
 describe('FIRST_PARTY_METHODS allowlist (channel coverage)', () => {
-  it('grants the bundled first-party MCP server access to all nine a2a.channel.* methods', () => {
+  it('grants the bundled first-party MCP server access to all ten a2a.channel.* methods', () => {
     // Without these, the bundled Claude/Codex MCP server is deadlocked in
     // enforce mode (plans/first-party-mcp-trust.md §2).
     for (const m of [
@@ -395,6 +510,7 @@ describe('FIRST_PARTY_METHODS allowlist (channel coverage)', () => {
       'a2a.channel.join',
       'a2a.channel.leave',
       'a2a.channel.post',
+      'a2a.channel.invite',
     ] as const) {
       expect(
         FIRST_PARTY_METHODS.has(m),

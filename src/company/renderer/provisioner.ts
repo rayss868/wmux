@@ -3,7 +3,7 @@
 // Creates workspace → PTY → runs Claude → waits for ready → injects role prompt.
 
 import { useStore } from '../../renderer/stores';
-import { createSurface, createLeafPane, generateId, sanitizePtyText } from '../../shared/types';
+import { createSurface, createLeafPane, assignPaneOrdinals, generateId, sanitizePtyText } from '../../shared/types';
 import type { AgentPreset } from '../types';
 import { hasSoul, prefetchSouls, writeSoulToFile } from '../core/SoulLoader';
 
@@ -73,9 +73,12 @@ export async function spawnAgentWorkspace(
   // 3. Build workspace with surface
   const surface = createSurface(ptyId, 'Terminal', cwd || '');
   const rootPane = createLeafPane(surface);
+  // P2: single-leaf workspace → leaf ordinal 1, nextPaneOrdinal 2.
+  const nextPaneOrdinal = assignPaneOrdinals(rootPane, 1);
 
   // 4. Add workspace to store
   useStore.setState((state) => {
+    const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
     state.workspaces.push({
       id: workspaceId,
       name: label,
@@ -83,7 +86,10 @@ export async function spawnAgentWorkspace(
       activePaneId: rootPane.id,
       companyRole,
       companyDeptName,
+      wsOrdinal,
+      nextPaneOrdinal,
     });
+    state.nextWorkspaceOrdinal = wsOrdinal + 1;
   });
 
   // 5. Write SOUL as .claude/CLAUDE.md BEFORE launching Claude Code

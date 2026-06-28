@@ -1532,7 +1532,16 @@ function registerRpcHandlers(
       };
     }
     const sinceSeq = typeof params['sinceSeq'] === 'number' ? params['sinceSeq'] : undefined;
-    return { ok: true, messages: channelService.getMessages(channelId, sinceSeq, verifiedWorkspaceId) };
+    // Normalize limit to a finite non-negative integer before it reaches
+    // getMessages — a NaN/Infinity/negative/fractional value would otherwise
+    // produce a nonsensical tail slice (CodeRabbit review). Invalid ⇒ undefined
+    // (no cap), the documented renderer default.
+    const rawLimit = params['limit'];
+    const limit =
+      typeof rawLimit === 'number' && Number.isInteger(rawLimit) && rawLimit >= 0
+        ? rawLimit
+        : undefined;
+    return { ok: true, messages: channelService.getMessages(channelId, sinceSeq, verifiedWorkspaceId, limit) };
   });
 
   pipeServer.onRpc('a2a.channel.getMembers', async (params) => {
@@ -1552,6 +1561,22 @@ function registerRpcHandlers(
       };
     }
     return { ok: true, members: channelService.getMembers(channelId, verifiedWorkspaceId) };
+  });
+
+  pipeServer.onRpc('a2a.channel.ack', async (params) => {
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    const rawUpto = params['uptoSeq'];
+    // Guard NaN/Infinity/negative (review A1 P3) — uptoSeq is a monotonic seq floor.
+    const uptoSeq = typeof rawUpto === 'number' && Number.isFinite(rawUpto) && rawUpto >= 0 ? rawUpto : 0;
+    if (!channelId) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
+    }
+    if (!verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    return channelService.ack({ channelId, verifiedWorkspaceId, uptoSeq });
   });
 
   pipeServer.onRpc('a2a.channel.create', async (params) => {
@@ -1625,6 +1650,26 @@ function registerRpcHandlers(
       };
     }
     return channelService.post(p);
+  });
+
+  pipeServer.onRpc('a2a.channel.invite', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').InviteChannelParams;
+    if (
+      !p.channelId ||
+      !p.invitedMember ||
+      !p.invitedMember.workspaceId ||
+      !p.invitedMember.memberId ||
+      !p.verifiedWorkspaceId
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'channelId, invitedMember{workspaceId,memberId}, and a server-resolved verifiedWorkspaceId are required',
+        },
+      };
+    }
+    return channelService.invite(p);
   });
 
   // daemon.shutdown — gracefully terminate the daemon process. A2 makes

@@ -31,7 +31,9 @@ export default function FleetCard({ card, focused, onJump, tail }: FleetCardProp
   const icon = AGENT_STATUS_ICON[card.agentStatus];
   const isAwaitingInput = card.agentStatus === 'awaiting_input';
   const isIdle = card.agentStatus === 'idle';
-  const displayName = card.agentName || card.title || t('surface.terminal');
+  // P2: a user rename wins so the cockpit reflects the same name as the composer
+  // / pane header; otherwise the existing agent name or surface title.
+  const displayName = card.paneLabel || card.agentName || card.title || t('surface.terminal');
   // Hook-driven activity line (fleet-activity-line-hook). When present it is the
   // card's primary status text — a meaningful one-liner ("✎ fleet.ts") instead
   // of raw scrollback. The raw tail is the FALLBACK, shown only for terminals

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
+import { createA2aSlice } from '../a2aSlice';
 import { createWorkspace, type Workspace } from '../../../../shared/types';
 
 // Minimal store satisfying WorkspaceSlice + the pieces of UISlice the
@@ -99,5 +100,64 @@ describe('WorkspaceSlice.setActiveWorkspace', () => {
     store.getState().setActiveWorkspace('ghost');
     expect(store.getState().activeWorkspaceId).toBe(wsA.id);
     expect(store.getState().multiviewIds).toEqual([wsA.id, wsB.id]);
+  });
+});
+
+describe('removeWorkspace — A8: fail tasks delegated to a closed workspace', () => {
+  // Combined store (workspace + a2a slices) so removeWorkspace can see a2aTasks.
+  function createComboStore(workspaces: Workspace[], activeId: string) {
+    return create<WorkspaceSlice & ReturnType<typeof createA2aSlice>>()(
+      immer((...args) => ({
+        // @ts-expect-error — minimal test store doesn't match full StoreState
+        ...createWorkspaceSlice(...args),
+        // @ts-expect-error — minimal test store doesn't match full StoreState
+        ...createA2aSlice(...args),
+        workspaces,
+        activeWorkspaceId: activeId,
+      })),
+    );
+  }
+
+  it('fails an in-flight task delegated TO the closed workspace', () => {
+    const wsA = createWorkspace('A');
+    const wsB = createWorkspace('B');
+    const store = createComboStore([wsA, wsB], wsA.id);
+    const id = store.getState().createA2aTask({
+      title: 't',
+      from: { workspaceId: wsA.id, name: 'A' },
+      to: { workspaceId: wsB.id, name: 'B' },
+      history: [],
+      artifacts: [],
+    });
+    store.getState().updateTaskStatus(id, 'working', wsB.id);
+    expect(store.getState().a2aTasks[id].status.state).toBe('working');
+    store.getState().removeWorkspace(wsB.id); // delegate workspace closes
+    expect(store.getState().a2aTasks[id].status.state).toBe('failed');
+    expect(store.getState().a2aTasks[id].status.message?.parts[0]).toMatchObject({ kind: 'text' });
+  });
+
+  it('leaves terminal tasks and tasks delegated elsewhere untouched', () => {
+    const wsA = createWorkspace('A');
+    const wsB = createWorkspace('B');
+    const store = createComboStore([wsA, wsB], wsA.id);
+    const done = store.getState().createA2aTask({
+      title: 'done',
+      from: { workspaceId: wsA.id, name: 'A' },
+      to: { workspaceId: wsB.id, name: 'B' },
+      history: [],
+      artifacts: [],
+    });
+    store.getState().updateTaskStatus(done, 'working', wsB.id);
+    store.getState().updateTaskStatus(done, 'completed', wsB.id);
+    const toA = store.getState().createA2aTask({
+      title: 'toA',
+      from: { workspaceId: wsB.id, name: 'B' },
+      to: { workspaceId: wsA.id, name: 'A' },
+      history: [],
+      artifacts: [],
+    });
+    store.getState().removeWorkspace(wsB.id);
+    expect(store.getState().a2aTasks[done].status.state).toBe('completed'); // terminal untouched
+    expect(store.getState().a2aTasks[toA].status.state).toBe('submitted'); // to A, untouched
   });
 });

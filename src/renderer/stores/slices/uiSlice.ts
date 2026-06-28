@@ -5,6 +5,7 @@ import type { FleetSortMode } from '../selectors/fleet';
 import {
   generateId,
   createLeafPane,
+  assignPaneOrdinals,
   type CustomKeybinding,
   type CustomThemeColors,
   type XtermThemeColors,
@@ -1276,6 +1277,9 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     const tmpl = state.layoutTemplates.find((t) => t.id === templateId);
     if (!tmpl) return;
     const newRoot = buildPaneFromLayout(tmpl.tree);
+    // P2: a template REPLACES the whole tree → number the new leaves fresh
+    // 1..n (the old panes are gone) and restart the per-ws counter.
+    ws.nextPaneOrdinal = assignPaneOrdinals(newRoot, 1);
     ws.rootPane = newRoot;
     ws.activePaneId = collectFirstLeafId(newRoot);
     state.zoomedPaneId = null;

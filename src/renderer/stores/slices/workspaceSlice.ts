@@ -1,13 +1,13 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, clonePaneTreeFresh, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, TERMINAL_STATES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
 import { resetInspectState } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
-import { publishWorkspaceMetadataChanged } from '../../events/publisher';
+import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 
 /** Collect all leaf panes from a pane tree */
 function collectLeafPanes(pane: Pane): PaneLeaf[] {
@@ -35,6 +35,9 @@ function nextCopyName(base: string, existing: string[]): string {
 export interface WorkspaceSlice {
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  /** P2 — global high-water for stable Workspace.wsOrdinal allocation. Never
+   *  decremented; persisted in SessionData so numbers survive restart. */
+  nextWorkspaceOrdinal: number;
   addWorkspace: (name?: string) => void;
   addWorkspaceWithPreset: (presetId: string, name?: string) => void;
   /**
@@ -81,10 +84,11 @@ export interface WorkspaceSlice {
 }
 
 export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], WorkspaceSlice> = (set) => {
-  const initial = createWorkspace('Workspace 1');
+  const initial = createWorkspace('Workspace 1', 1);
   return {
     workspaces: [initial],
     activeWorkspaceId: initial.id,
+    nextWorkspaceOrdinal: 2,
 
     addWorkspace: (name) => set((state: StoreState) => {
       let wsName = name;
@@ -101,7 +105,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         while (usedNumbers.has(n)) n++;
         wsName = `Workspace ${n}`;
       }
-      const ws = createWorkspace(wsName);
+      const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
+      const ws = createWorkspace(wsName, wsOrdinal);
+      state.nextWorkspaceOrdinal = wsOrdinal + 1;
       state.workspaces.push(ws);
       state.activeWorkspaceId = ws.id;
     }),
@@ -127,12 +133,17 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
 
       const rootPane = preset.createRootPane();
       const leaves = collectLeafPanes(rootPane);
+      const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
       const ws: Workspace = {
         id: generateId('ws'),
         name: wsName,
         rootPane,
         activePaneId: leaves[0]?.id || rootPane.id,
+        wsOrdinal,
+        // P2: number the preset's leaves fresh 1..n.
+        nextPaneOrdinal: assignPaneOrdinals(rootPane, 1),
       };
+      state.nextWorkspaceOrdinal = wsOrdinal + 1;
       state.workspaces.push(ws);
       state.activeWorkspaceId = ws.id;
     }),
@@ -159,23 +170,68 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         ? normalizeWorkspaceProfile({ ...src.profile, env: src.profile.env ? { ...src.profile.env } : undefined }, { dropSecretKeys: true })
         : undefined;
 
+      const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
       const ws: Workspace = {
         id: generateId('ws'),
         name: nextCopyName(src.name, state.workspaces.map((w: Workspace) => w.name)),
         rootPane,
         activePaneId,
+        wsOrdinal,
+        // P2: the clone gets a FRESH 1..n pane sequence (clonePaneTreeFresh
+        // intentionally drops source ordinals), so the duplicate's names don't
+        // alias the source's.
+        nextPaneOrdinal: assignPaneOrdinals(rootPane, 1),
         ...(profile ? { profile } : {}),
       };
+      state.nextWorkspaceOrdinal = wsOrdinal + 1;
       // Insert right after the source for intuitive placement, then activate.
       state.workspaces.splice(idx + 1, 0, ws);
       state.activeWorkspaceId = ws.id;
     }),
 
     // NOTE: PTY cleanup is the caller's responsibility (see Sidebar.handleClose, useKeyboard Ctrl+Shift+W)
-    removeWorkspace: (id) => set((state: StoreState) => {
-      if (state.workspaces.length <= 1) return;
-      const idx = state.workspaces.findIndex((w: Workspace) => w.id === id);
-      if (idx === -1) return;
+    removeWorkspace: (id) => {
+      // A8: this workspace hosts the receiver side of any task delegated TO it.
+      // It's going away, so fail its in-flight (non-terminal) received tasks —
+      // otherwise the sender sees them stuck 'working' forever (silent break).
+      // Collect the failed (id, from, to) inside the transaction, then emit the
+      // a2a.task pointer AFTER it (review A8 P1) so a CROSS-process sender
+      // (LanLink / separate window / durable inbox) also learns, not just
+      // same-process queryTasks pollers.
+      const failed: { id: string; from: string; to: string }[] = [];
+      set((state: StoreState) => {
+        if (state.workspaces.length <= 1) return;
+        const idx = state.workspaces.findIndex((w: Workspace) => w.id === id);
+        if (idx === -1) return;
+        const closedAt = new Date().toISOString();
+        for (const task of Object.values(state.a2aTasks ?? {})) {
+          if (
+            task.metadata.to.workspaceId === id &&
+            !(TERMINAL_STATES as readonly string[]).includes(task.status.state)
+          ) {
+            // Intentional teardown FORCE-fail: bypasses validateTransition (which
+            // forbids submitted/input-required → failed) because the receiver is
+            // gone — any non-terminal received task can no longer make progress.
+            task.status = {
+              state: 'failed',
+              message: {
+                kind: 'message',
+                messageId: `wsclose-${task.id}`,
+                role: 'agent', // synthetic teardown notice (no 'system' role in the A2A schema)
+                parts: [
+                  { kind: 'text', text: 'Receiver workspace closed before completing this task.' },
+                ],
+              },
+              timestamp: closedAt,
+            };
+            task.metadata.updatedAt = closedAt;
+            failed.push({
+              id: task.id,
+              from: task.metadata.from.workspaceId,
+              to: task.metadata.to.workspaceId,
+            });
+          }
+        }
       // Drop ring state for every leaf pane in the removed workspace. closePane
       // covers the user-driven path; this mirrors the same invariant for
       // workspace-level deletion (Sidebar X, Ctrl+Shift+W, SettingsPanel reset)
@@ -197,7 +253,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // already tears inspect down on a switch; mirror that here so killing/closing
       // the workspace while inspecting can't leave a stale overlay dangling.
       if (state.inspectModeActive) resetInspectState(state);
-    }),
+      });
+      // Same funnel as the normal status path (publishA2aTask) so the failure is
+      // visible cross-process, not only to same-process queryTasks (review A8 P1).
+      for (const f of failed) publishA2aTask(f.from, f.to, f.id, 'failed', 'updated');
+    },
 
     setActiveWorkspace: (id) => set((state: StoreState) => {
       if (!state.workspaces.some((w: Workspace) => w.id === id)) return;
@@ -371,6 +431,49 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.workspaces = data.workspaces;
       state.activeWorkspaceId = data.activeWorkspaceId;
       state.sidebarVisible = data.sidebarVisible;
+
+      // ── P2 hydration backfill (checklist F) ──────────────────────────────
+      // Pre-P2 sessions (and any drift) lack ordinals. Assign them here,
+      // atomically within this same `set`, so the first split/duplicate after
+      // load observes correct high-water counters and pane names stay stable.
+      //
+      // Pane ordinals: backfill a tree missing any leaf ordinal via DFS;
+      // otherwise recompute the per-ws high-water from live leaves so a saved
+      // nextPaneOrdinal can never sit below the actual max (which would recycle
+      // a number on the next split).
+      for (const ws of state.workspaces) {
+        const wsLeaves = collectLeafPanes(ws.rootPane);
+        // Backfill ONLY leaves missing an ordinal, numbering them PAST the current
+        // max — a partial gap (e.g. one freshly-added leaf) must NOT renumber panes
+        // that already have stable ordinals, which would shuffle their auto-names
+        // and any labels keyed off them (CodeRabbit review). When every leaf already
+        // has one this just recomputes the high-water; when all are missing (pre-P2)
+        // it assigns 1..N in the same DFS order as assignPaneOrdinals.
+        let maxLeaf = wsLeaves.reduce(
+          (m, l) => Math.max(m, typeof l.ordinal === 'number' ? l.ordinal : 0),
+          0,
+        );
+        for (const l of wsLeaves) {
+          if (typeof l.ordinal !== 'number') {
+            maxLeaf += 1;
+            l.ordinal = maxLeaf;
+          }
+        }
+        ws.nextPaneOrdinal = Math.max(ws.nextPaneOrdinal ?? 0, maxLeaf + 1);
+      }
+      // Workspace ordinals: honor existing wsOrdinals, assign any missing past
+      // the high-water, then persist the advanced global counter.
+      let nextWs = data.nextWorkspaceOrdinal ?? 1;
+      for (const ws of state.workspaces) {
+        if (typeof ws.wsOrdinal === 'number') nextWs = Math.max(nextWs, ws.wsOrdinal + 1);
+      }
+      for (const ws of state.workspaces) {
+        if (typeof ws.wsOrdinal !== 'number') {
+          ws.wsOrdinal = nextWs;
+          nextWs += 1;
+        }
+      }
+      state.nextWorkspaceOrdinal = nextWs;
 
       // Restore user preferences. Migrate legacy 37-field customThemeColors
       // shape to the new 10-token + xtermPaletteId form (idempotent).

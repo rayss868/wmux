@@ -7,14 +7,14 @@
 //     behind a useState-gated popover and store reads that the node-env harness
 //     can't drive, so we pin the load-bearing wiring in source (same lockstep
 //     pattern as the dock + company-mode guards). Protects the spec-review
-//     fixes from silent regression: self-only leave, public-only join,
+//     fixes from silent regression: self-only leave, member-can-invite (P1b),
 //     setActiveChannel(null) on self-leave.
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { ChannelMembersView } from '../ChannelMembers';
+import { ChannelMembersView, rosterParticipants } from '../ChannelMembers';
 import type { ChannelMember } from '../../../../shared/channels';
 
 const SRC = resolve(process.cwd(), 'src/renderer/components/Channels');
@@ -34,8 +34,8 @@ describe('ChannelMembersView — pure view', () => {
         selfMemberId="local-ui"
         joinableWorkspaces={[]}
         canJoin={false}
-        onJoin={() => {}}
-        onLeave={() => {}}
+        onJoin={() => undefined}
+        onLeave={() => undefined}
         t={(k) => k}
       />,
     );
@@ -47,12 +47,42 @@ describe('ChannelMembersView — pure view', () => {
   });
 });
 
+describe('rosterParticipants (owner is not a roster member)', () => {
+  it('drops the owner UI entry so a freshly created channel reads as 0 members', () => {
+    // create() auto-adds the creator as (ownerWs, local-ui). That is the owner,
+    // not a participant — the roster should be empty until agents are invited.
+    const out = rosterParticipants([member('ws-owner', 'local-ui')], 'ws-owner');
+    expect(out).toEqual([]);
+  });
+
+  it('keeps agents — including agents in the owner workspace — and other workspaces', () => {
+    const members = [
+      member('ws-owner', 'local-ui'), // owner human placeholder → dropped
+      member('ws-owner', 'backend'), // an AGENT in the owner ws → kept
+      member('ws-2', 'local-ui'), // another workspace explicitly added → kept
+      member('ws-3', 'lead'), // an agent elsewhere → kept
+    ];
+    const out = rosterParticipants(members, 'ws-owner');
+    expect(out.map((m) => `${m.workspaceId}:${m.memberId}`)).toEqual([
+      'ws-owner:backend',
+      'ws-2:local-ui',
+      'ws-3:lead',
+    ]);
+  });
+
+  it('is a no-op when the owner is not a UI member of the channel', () => {
+    const members = [member('ws-9', 'lead')];
+    expect(rosterParticipants(members, 'ws-owner')).toEqual(members);
+  });
+});
+
 describe('ChannelMembers — wiring regression guard', () => {
   const members = read('ChannelMembers.tsx');
   const view = read('ChannelView.tsx');
 
-  it('container wires join + leave daemon thunks', () => {
+  it('container wires join + invite + leave daemon thunks', () => {
     expect(members).toContain('joinChannelDaemon');
+    expect(members).toContain('inviteChannelDaemon');
     expect(members).toContain('leaveChannelDaemon');
   });
 
@@ -65,9 +95,14 @@ describe('ChannelMembers — wiring regression guard', () => {
     expect(members).toMatch(/m\.workspaceId === selfWorkspaceId && m\.memberId === selfMemberId/);
   });
 
-  it('join is public, non-archived channels only (private join deferred)', () => {
-    expect(members).toMatch(/visibility === 'public'/);
+  it('P1b: a member may invite another workspace (incl. private); join no longer public-only', () => {
+    // canJoin no longer gates on visibility==='public' — a member can invite to
+    // a private channel too. The picker still excludes archived channels.
+    expect(members).not.toMatch(/visibility === 'public'/);
     expect(members).toMatch(/status !== 'archived'/);
+    // self-join vs invite branch: adding ANOTHER workspace routes through invite.
+    expect(members).toContain('inviteChannelDaemon');
+    expect(members).toMatch(/workspaceId === selfWorkspaceId/);
   });
 
   it('ChannelView mounts the members control in the header slot', () => {

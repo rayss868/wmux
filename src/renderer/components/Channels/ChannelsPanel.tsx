@@ -59,28 +59,51 @@ import {
 import type { Company } from '../../../company/types';
 import { useStore } from '../../stores';
 import ChannelItem from './ChannelItem';
-import { IconPlus, IconChevron, IconChevronDir } from '../icons';
+import { IconPlus, IconChevron, IconChevronDir, IconRefresh } from '../icons';
+import { hydrateChannelsCatalog } from '../../hooks/useChannelsHydration';
 import { FOCUS_RING } from '../focusRing';
 import { tokenAttrs } from '../../themes';
 import { useT } from '../../hooks/useT';
 
 // ─── Grouping / aggregation helpers (pure, exported for unit tests) ──────────
 
-/** Pure grouping helper. Sorted by name (active) or archivedAt
- *  descending (archived). */
-export function groupChannels(channels: Channel[]): {
+/** Pure grouping helper. Sorted by name (active / discoverable) or
+ *  archivedAt descending (archived).
+ *
+ *  `isMember` (optional) splits non-archived channels into "joined" (active)
+ *  vs "joinable" (discoverable): a public channel the caller is NOT a member
+ *  of goes to `discoverable` so the panel can surface a Join affordance
+ *  instead of mixing it into the member list. A private channel the caller
+ *  isn't in is omitted (it isn't readable, so we never leak it into a group).
+ *  When `isMember` is omitted, every non-archived channel stays in `active`
+ *  — the pre-discovery behaviour, so existing callers/tests are unaffected. */
+export function groupChannels(
+  channels: Channel[],
+  isMember?: (channel: Channel) => boolean,
+): {
   active: Channel[];
   archived: Channel[];
+  discoverable: Channel[];
 } {
   const active: Channel[] = [];
   const archived: Channel[] = [];
+  const discoverable: Channel[] = [];
   for (const c of channels) {
-    if (c.status === 'archived') archived.push(c);
-    else active.push(c);
+    if (c.status === 'archived') {
+      archived.push(c);
+      continue;
+    }
+    if (isMember && !isMember(c)) {
+      if (c.visibility === 'public') discoverable.push(c);
+      // private non-member → omit (unreadable; never leak into a group)
+      continue;
+    }
+    active.push(c);
   }
   active.sort((a, b) => a.name.localeCompare(b.name));
   archived.sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0));
-  return { active, archived };
+  discoverable.sort((a, b) => a.name.localeCompare(b.name));
+  return { active, archived, discoverable };
 }
 
 /** Aggregated unread count across every channel. Mirrors the slice's
@@ -104,6 +127,9 @@ interface CreateChannelModalProps {
     name: string;
     visibility: ChannelVisibility;
   }) => boolean | Promise<boolean>;
+  /** The "+" trigger button. The modal anchors to it as a viewport-fixed
+   *  popover so the dock's `overflow-y-auto` wrapper can't clip it. */
+  anchorRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 /** Side-effect-free: derive a `FieldState` from raw input. Lives at
@@ -124,11 +150,34 @@ export function computeNameFieldState(raw: string): {
 function CreateChannelModal({
   onClose,
   onCreate,
+  anchorRef,
 }: CreateChannelModalProps): React.ReactElement {
   const [name, setName] = useState('');
   const [visibility] = useState<ChannelVisibility>('public');
   const [submitAttempted, setSubmitAttempted] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // Viewport-fixed position anchored to the "+" button. `fixed` (not `absolute`)
+  // is required: ChannelDock wraps the panel in an `overflow-y-auto` box, which
+  // clips an absolutely-positioned child (the modal's right edge + Cancel/Create
+  // buttons got cut off). Anchor + clamp keeps it on-screen for left/right docks.
+  const [pos, setPos] = useState<{ top: number; right: number }>({ top: 28, right: 8 });
+  useEffect(() => {
+    const el = anchorRef?.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const MODAL_W = 256; // w-64
+    let right = W - r.right;
+    right = Math.min(right, W - (MODAL_W + 8)); // keep the left edge ≥ 8px on-screen
+    right = Math.max(8, right);
+    let top = r.bottom + 4;
+    top = Math.min(top, H - 170); // keep the Cancel/Create buttons on-screen
+    top = Math.max(8, top);
+    setPos({ top: Math.round(top), right: Math.round(right) });
+  }, [anchorRef]);
 
   const field = computeNameFieldState(name);
   const showInlineError = submitAttempted && !field.valid;
@@ -163,18 +212,52 @@ function CreateChannelModal({
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      setSubmitAttempted(true);
-      if (!field.valid) return;
-      // The panel-level `handleCreate` is async (it round-trips to
-      // the daemon via `createChannelDaemon`); we await so the modal
-      // stays open on failure and only closes on confirmed success.
+  const doSubmit = useCallback(async () => {
+    setSubmitAttempted(true);
+    setSubmitError(null);
+    // In-flight guard: the create round-trips to the daemon; a second submit
+    // (double-click / repeat Enter) before it resolves would create a duplicate.
+    if (!field.valid || creating) return;
+    setCreating(true);
+    try {
+      // The panel-level `handleCreate` is async (it round-trips to the daemon
+      // via `createChannelDaemon`); we await so the modal stays open on failure
+      // and only closes on confirmed success.
       const ok = await onCreate({ name: field.canonical, visibility });
-      if (ok) onClose();
+      if (ok) {
+        onClose();
+      } else {
+        // Don't fail silently — the daemon rejected it (most often the name is
+        // already taken). Surface it so the user knows the click did something.
+        setSubmitError('Could not create the channel — that name may already be taken.');
+      }
+    } finally {
+      setCreating(false);
+    }
+  }, [field.canonical, field.valid, onCreate, onClose, visibility, creating]);
+
+  const handleSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      void doSubmit();
     },
-    [field.canonical, field.valid, onCreate, onClose, visibility],
+    [doSubmit],
+  );
+
+  // Enter-to-create. The native form submit doesn't reliably reach this modal
+  // (the app's global capture-phase key handler + the focused pane), so submit
+  // explicitly on Enter and stop the keystroke from leaking to the terminal.
+  // `isComposing` guard: don't fire mid-Hangul/IME composition (Enter there
+  // commits the composition, it is not a submit).
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+        e.preventDefault();
+        e.stopPropagation();
+        void doSubmit();
+      }
+    },
+    [doSubmit],
   );
 
   return (
@@ -183,7 +266,8 @@ function CreateChannelModal({
       role="dialog"
       aria-label="Create a new channel"
       data-create-channel-modal
-      className="absolute right-2 top-7 z-50 w-64 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-3 px-3 text-xs font-mono"
+      className="fixed z-50 w-64 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-3 px-3 text-xs font-mono"
+      style={{ top: pos.top, right: pos.right }}
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-2">
         <label className="flex flex-col gap-1">
@@ -199,7 +283,11 @@ function CreateChannelModal({
             }`}
             placeholder="release-notes"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (submitError) setSubmitError(null);
+            }}
+            onKeyDown={handleKeyDown}
             maxLength={CHANNEL_NAME_MAX + 16}
             aria-invalid={showInlineError || undefined}
           />
@@ -220,6 +308,16 @@ function CreateChannelModal({
           </div>
         )}
 
+        {submitError && !showInlineError && (
+          <div
+            data-create-channel-submit-error
+            className="text-[var(--accent-red)] text-[10px]"
+            role="alert"
+          >
+            {submitError}
+          </div>
+        )}
+
         <div className="flex items-center justify-end gap-2 pt-1">
           <button
             type="button"
@@ -231,10 +329,10 @@ function CreateChannelModal({
           <button
             type="submit"
             data-create-channel-submit
-            className={`px-2 py-0.5 text-[11px] rounded bg-[var(--accent-green)] text-[var(--bg-base)] hover:opacity-90 transition-opacity ${FOCUS_RING}`}
-            disabled={!field.valid && submitAttempted}
+            className={`px-2 py-0.5 text-[11px] rounded bg-[var(--accent-green)] text-[var(--bg-base)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${FOCUS_RING}`}
+            disabled={!field.valid || creating}
           >
-            Create
+            {creating ? 'Creating…' : 'Create'}
           </button>
         </div>
       </form>
@@ -280,10 +378,17 @@ export interface ChannelsPanelViewProps {
   channelMentions: Record<string, number>;
   activeChannelId: string | null;
   company: Company | null;
+  /** Channel ids the current (self) workspace is a member of. When provided,
+   *  the panel splits non-member public channels into a "Discover" group with
+   *  a Join affordance. Omit (undefined) to keep the flat member-less list. */
+  memberChannelIds?: Set<string>;
   /** Translates `channels.*` keys; defaults to identity if omitted so
    *  tests can pass a stub. */
   t?: (key: string) => string;
   onSelect: (channelId: string) => void;
+  /** Join a discoverable (public, not-yet-joined) channel as the self
+   *  workspace. Only wired when membership info is available. */
+  onJoinDiscoverable?: (channelId: string) => void;
   onCreate: (params: {
     name: string;
     visibility: ChannelVisibility;
@@ -295,6 +400,10 @@ export interface ChannelsPanelViewProps {
   /** Direction the collapse chevron points — toward the screen edge the dock
    *  tucks into. Defaults to 'right' (sidebar-left / dock-right layout). */
   collapseDir?: 'left' | 'right';
+  /** When provided, render a refresh button that re-pulls the channel catalog +
+   *  members from the daemon (manual re-sync for when a workspace/agent that
+   *  came online isn't reflected yet). */
+  onRefresh?: () => void;
 }
 
 export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactElement {
@@ -304,20 +413,32 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
     channelMentions,
     activeChannelId,
     company,
+    memberChannelIds,
     onSelect,
     onCreate,
+    onJoinDiscoverable,
     onCollapse,
     collapseDir = 'right',
+    onRefresh,
   } = props;
   const t = props.t ?? ((k: string) => k);
 
   const [creatorOpen, setCreatorOpen] = useState(false);
+  const newBtnRef = useRef<HTMLButtonElement | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [discoverExpanded, setDiscoverExpanded] = useState(false);
 
   const channelList = useMemo(() => Object.values(channels), [channels]);
-  const { active, archived } = useMemo(
-    () => groupChannels(channelList),
-    [channelList],
+  const isMember = useMemo(
+    () =>
+      memberChannelIds
+        ? (ch: Channel): boolean => memberChannelIds.has(ch.id)
+        : undefined,
+    [memberChannelIds],
+  );
+  const { active, archived, discoverable } = useMemo(
+    () => groupChannels(channelList, isMember),
+    [channelList, isMember],
   );
   const totalUnread = useMemo(
     () => sumUnread(channelUnread),
@@ -359,7 +480,21 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
           )}
         </span>
         <div className="flex items-center gap-0.5">
+          {onRefresh && (
+            <button
+              type="button"
+              className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+              onClick={onRefresh}
+              title={t('channels.refreshTooltip') || 'Refresh channels'}
+              aria-label={t('channels.refreshTooltip') || 'Refresh channels'}
+              data-channels-refresh
+              {...tokenAttrs('textSub', 'text')}
+            >
+              <IconRefresh size={11} />
+            </button>
+          )}
           <button
+            ref={newBtnRef}
             type="button"
             className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
             onClick={() => setCreatorOpen((v) => !v)}
@@ -389,6 +524,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
           <CreateChannelModal
             onClose={() => setCreatorOpen(false)}
             onCreate={onCreate}
+            anchorRef={newBtnRef}
           />
         )}
       </div>
@@ -418,6 +554,66 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
               />
             ))}
           </div>
+
+          {/* Discover group — public channels the self workspace hasn't
+                joined yet. Collapsible (like archived), each row previews on
+                name-click and joins via the Join button. Only renders when
+                membership info is available (onJoinDiscoverable wired). */}
+          {discoverable.length > 0 && (
+            <div className="mt-1" data-channels-discover-group>
+              <button
+                type="button"
+                className={`w-full flex items-center gap-1 px-4 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+                onClick={() => setDiscoverExpanded((v) => !v)}
+                aria-expanded={discoverExpanded}
+                data-channels-discover-toggle
+                {...tokenAttrs('textMuted', 'text')}
+              >
+                <span
+                  className={`transition-transform ${discoverExpanded ? 'rotate-90' : ''}`}
+                  aria-hidden="true"
+                >
+                  <IconChevron size={9} />
+                </span>
+                <span>
+                  {t('channels.discover') || 'Discover'} ({discoverable.length})
+                </span>
+              </button>
+              {discoverExpanded && (
+                <div className="space-y-0.5">
+                  {discoverable.map((ch) => (
+                    <div
+                      key={ch.id}
+                      className="flex items-center gap-1 px-4 py-0.5"
+                      data-channels-discover-item
+                      data-channel-id={ch.id}
+                    >
+                      <button
+                        type="button"
+                        className={`flex-1 min-w-0 text-left truncate text-[11px] font-mono text-[var(--text-subtle)] hover:text-[var(--text-main)] transition-colors ${FOCUS_RING}`}
+                        onClick={() => onSelect(ch.id)}
+                        title={`#${ch.name}`}
+                      >
+                        #{ch.name}
+                      </button>
+                      {onJoinDiscoverable && (
+                        <button
+                          type="button"
+                          className={`shrink-0 px-1.5 py-0.5 text-[10px] rounded text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors ${FOCUS_RING}`}
+                          onClick={() => onJoinDiscoverable(ch.id)}
+                          data-channels-discover-join
+                          aria-label={`${t('channels.join') || 'Join'} #${ch.name}`}
+                          {...tokenAttrs('success', 'accent')}
+                        >
+                          {t('channels.join') || 'Join'}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Archived group — collapsible disclosure, collapsed by
                 default. Sort is `archivedAt` descending (most recently
@@ -476,8 +672,12 @@ export function ChannelsPanel(): React.ReactElement {
   // the active workspace stands in as the creator identity so the `+` button
   // works without one (mirrors useChannelsHydration's identity resolution).
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const workspaces = useStore((s) => s.workspaces);
+  const channelMembers = useStore((s) => s.channelMembers);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const createChannelDaemon = useStore((s) => s.createChannelDaemon);
+  const joinChannelDaemon = useStore((s) => s.joinChannelDaemon);
+  const pushToast = useStore((s) => s.pushToast);
   // Dock host wiring: the panel's collapse affordance folds the whole dock
   // away (the panel is the dock's only host — the old separate dock header
   // was removed to drop the duplicate title). The chevron mirrors the dock's
@@ -485,6 +685,59 @@ export function ChannelsPanel(): React.ReactElement {
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const t = useT();
+
+  // Self workspace = CEO ws under Company mode, else the active workspace
+  // (mirrors handleCreate / ChannelMembersControl identity resolution).
+  const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId ?? null;
+
+  // Channel ids the self workspace is a member of — drives the joined vs
+  // discoverable split in the view. O(channels) but the catalog is small.
+  const memberChannelIds = useMemo<Set<string> | undefined>(() => {
+    // Until identity resolves, return undefined (NOT an empty set): the view's
+    // isMember then falls back to "every channel is joined" (the old flat list).
+    // An empty set instead would misclassify every public channel as discoverable
+    // and hide private ones entirely on the boot/no-workspace render, and
+    // handleJoinDiscoverable bails in that same state — a broken Discover view
+    // (CodeRabbit review).
+    if (!selfWorkspaceId) return undefined;
+    const ids = new Set<string>();
+    for (const [cid, members] of Object.entries(channelMembers)) {
+      if (members.some((m) => m.workspaceId === selfWorkspaceId)) ids.add(cid);
+    }
+    return ids;
+  }, [channelMembers, selfWorkspaceId]);
+
+  const handleJoinDiscoverable = useCallback(
+    (channelId: string) => {
+      if (!selfWorkspaceId) return;
+      const label =
+        workspaces.find((w) => w.id === selfWorkspaceId)?.name ?? selfWorkspaceId;
+      const channelName = channels[channelId]?.name ?? channelId;
+      void joinChannelDaemon(
+        channelId,
+        { workspaceId: selfWorkspaceId, memberId: 'local-ui', memberName: label },
+        selfWorkspaceId,
+      ).then((result) => {
+        if (result.ok) {
+          pushToast({
+            level: 'info',
+            message: t('channels.joinedToast', { workspace: label, channel: channelName }),
+          });
+        } else if (result.error.message.includes('DUPLICATE')) {
+          pushToast({
+            level: 'info',
+            message: t('channels.alreadyMemberToast', { workspace: label, channel: channelName }),
+          });
+        } else {
+          pushToast({
+            level: 'error',
+            message: t('channels.joinFailedToast', { workspace: label }),
+          });
+        }
+      });
+    },
+    [selfWorkspaceId, workspaces, channels, joinChannelDaemon, pushToast, t],
+  );
 
   const handleCreate = useCallback(
     async (params: { name: string; visibility: ChannelVisibility }) => {
@@ -536,6 +789,25 @@ export function ChannelsPanel(): React.ReactElement {
     [company, createChannelDaemon],
   );
 
+  // Manual re-sync: re-pull the channel catalog + per-channel members from the
+  // daemon. For when something that came online (a workspace, an agent that
+  // joined) isn't reflected yet — the live event stream can miss/lag, so give
+  // the user an explicit refresh instead of only an automatic one.
+  const handleRefresh = useCallback(() => {
+    const bridge = useStore.getState().channelsRpc();
+    if (!bridge) return;
+    const s = useStore.getState();
+    const wsId = s.company?.ceoWorkspaceId ?? s.activeWorkspaceId ?? '';
+    if (!wsId) return;
+    void hydrateChannelsCatalog({
+      rpc: bridge.rpc,
+      workspaceId: wsId,
+      setChannels: s.setChannels,
+    }).then(() => {
+      pushToast({ level: 'info', message: t('channels.refreshedToast') || 'Channels refreshed.' });
+    });
+  }, [pushToast, t]);
+
   return (
     <ChannelsPanelView
       channels={channels}
@@ -543,10 +815,13 @@ export function ChannelsPanel(): React.ReactElement {
       channelMentions={channelMentions}
       activeChannelId={activeChannelId}
       company={company}
+      memberChannelIds={memberChannelIds}
       onSelect={setActiveChannel}
       onCreate={handleCreate}
+      onJoinDiscoverable={handleJoinDiscoverable}
       onCollapse={() => setChannelDockVisible(false)}
       collapseDir={sidebarPosition !== 'right' ? 'right' : 'left'}
+      onRefresh={handleRefresh}
       t={t}
     />
   );

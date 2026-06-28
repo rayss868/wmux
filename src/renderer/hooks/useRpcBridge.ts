@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
+import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill, Task } from '../../shared/types';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
@@ -16,17 +17,12 @@ import { readPtyBufferLines } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 
 // ---------------------------------------------------------------------------
 // Pane tree utilities
 // ---------------------------------------------------------------------------
-
-function findLeafPanes(root: Pane): PaneLeaf[] {
-  if (root.type === 'leaf') return [root];
-  return root.children.flatMap(findLeafPanes);
-}
 
 /**
  * Resolve the ptyId of a workspace's active pane + active surface.
@@ -964,18 +960,22 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // and ptyId → paneId map for result tagging.
     const ptyToPaneId = new Map<string, string>();
     const ptyToSurfaceId = new Map<string, string>();
-    const ptyToPaneLabel = new Map<string, string | undefined>();
+    // P2: per-surface display name = pane rename ?? auto name `w<ws>-<pane>(<agent>)`.
+    // The renderer is authoritative for labels (paneLabel mirror) and ordinals
+    // (layout state), so compute the resolved name here and ship it — the daemon
+    // paneLabel is ignored. Each surface's own agent slug names its suffix.
+    const ptyToPaneLabel = new Map<string, string>();
+    const wsOrdinal = ws.wsOrdinal ?? 0;
     const leaves = findLeafPanes(ws.rootPane);
     for (const leaf of leaves) {
-      // PR #16 may add `metadata.label` to PaneLeaf — read defensively so we
-      // neither depend on the field's existence nor throw if it's missing.
-      const leafMeta = (leaf as PaneLeaf & { metadata?: { label?: string } }).metadata;
-      const leafLabel = leafMeta?.label;
+      const leafLabel = store.paneLabel[leaf.id];
+      const paneOrdinal = leaf.ordinal ?? 0;
       for (const s of leaf.surfaces) {
         if (s.ptyId) {
           ptyToPaneId.set(s.ptyId, leaf.id);
           ptyToSurfaceId.set(s.ptyId, s.id);
-          ptyToPaneLabel.set(s.ptyId, leafLabel);
+          const autoName = computePaneAutoName(wsOrdinal, paneOrdinal, store.surfaceAgent[s.ptyId]?.slug);
+          ptyToPaneLabel.set(s.ptyId, paneDisplayName(leafLabel, autoName));
         }
       }
     }
@@ -1727,7 +1727,27 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!workspaceId) return { error: 'a2a.task.query: missing "workspaceId". Ensure WMUX_WORKSPACE_ID is set.' };
     const status = typeof params.status === 'string' ? params.status as TaskState : undefined;
     const role = typeof params.role === 'string' ? params.role as 'user' | 'agent' : undefined;
-    const tasks = store.queryTasks(workspaceId, { status, role });
+    // Normalize the incremental cursor to canonical UTC ISO (new Date().toISOString())
+    // so the lexicographic compare in queryTasks is sound regardless of the caller's
+    // format. Without this, an offset cursor ("...+09:00") or a different ms precision
+    // ("...:00Z" vs "...:00.000Z") silently mis-compares → missed/duplicate tasks. An
+    // unparseable (or empty) cursor is rejected rather than silently treated as "no
+    // filter". (Review A9 P2/P3.)
+    let updatedSince: string | undefined;
+    {
+      const raw = typeof params.updatedSince === 'string' ? params.updatedSince.trim() : '';
+      // Empty/whitespace = "no lower bound" = no filter (return all) — matches
+      // the pre-cursor behavior + the common `updatedSince: cursor || ''` first-poll
+      // idiom (review U1 P2). Only a NON-empty, unparseable cursor is an error.
+      if (raw) {
+        const ms = Date.parse(raw);
+        if (Number.isNaN(ms)) {
+          return { error: 'a2a.task.query: updatedSince must be a parseable ISO-8601 timestamp' };
+        }
+        updatedSince = new Date(ms).toISOString();
+      }
+    }
+    const tasks = store.queryTasks(workspaceId, { status, role, updatedSince });
     return { workspaceId, tasks };
   }
 

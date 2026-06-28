@@ -216,14 +216,6 @@ function readChannelsRpc(): ChannelsRpcBridge | undefined {
   return (window as unknown as ChannelsBridgeWindow).__wmuxChannelsRpc;
 }
 
-/** Resolve the renderer's "self" workspace for channel reads. Prefer the
- *  in-app Company CEO workspace when Company mode is active; otherwise fall
- *  back to the active workspace so channels work without a company. Empty
- *  string means "no resolvable identity yet" — the caller skips the cycle. */
-function resolveSelfWorkspaceId(): string {
-  const s = useStore.getState();
-  return s.company?.ceoWorkspaceId ?? s.activeWorkspaceId ?? '';
-}
 
 /**
  * Mount once in AppLayout (parallel to `useChannelsEventSubscription`).
@@ -231,15 +223,23 @@ function resolveSelfWorkspaceId(): string {
  * its daemon listener on unmount.
  */
 export function useChannelsHydration(): void {
+  // Subscribe to the self workspace id (NOT read once via getState). On boot the
+  // hook can mount BEFORE activeWorkspaceId is set; with empty deps it captured
+  // workspaceId='' and hydrateChannelsCatalog bailed (no channels, no members) —
+  // so @mention candidates (which come from channelMembers) were always empty.
+  // Keying the effect on workspaceId re-runs hydration the moment identity
+  // resolves. Mirrors the boot-race fix in useChannelsEventSubscription (2b40035).
+  const workspaceId = useStore((s) => s.company?.ceoWorkspaceId ?? s.activeWorkspaceId ?? '');
   useEffect(() => {
     let disposed = false;
 
     const hydrate = (): void => {
       const bridge = readChannelsRpc();
       if (!bridge) return; // useRpcBridge installs this first (hook order); a miss self-heals on the next trigger.
+      if (!workspaceId) return; // identity not resolved yet; the effect re-runs when it is.
       void hydrateChannelsCatalog({
         rpc: bridge.rpc,
-        workspaceId: resolveSelfWorkspaceId(),
+        workspaceId,
         setChannels: useStore.getState().setChannels,
         isCurrent: () => !disposed,
       });
@@ -257,5 +257,5 @@ export function useChannelsHydration(): void {
       disposed = true;
       offConnected();
     };
-  }, []);
+  }, [workspaceId]);
 }

@@ -118,6 +118,11 @@ export function registerA2aChannelRpc(
   router.register('a2a.channel.get', (p) => forward('a2a.channel.get', p, false));
   router.register('a2a.channel.getMessages', (p) => forward('a2a.channel.getMessages', p, false));
   router.register('a2a.channel.getMembers', (p) => forward('a2a.channel.getMembers', p, false));
+  // NOTE: a2a.channel.ack is intentionally NOT registered here. It mutates
+  // (recipientSnapshot/deliveryStatus) but has no senderPtyId (renderer-driven on
+  // read), so the pipe path would leave its verifiedWorkspaceId unpinned →
+  // forgeable receipts. It rides the renderer-only channels:mutate-local path
+  // (channelLocal.handler) instead, pinned + pipe-unreachable.
 
   // Mutating — capability 'a2a.channel.send' (verifiable caller required)
   router.register('a2a.channel.create', (p) => forward('a2a.channel.create', p, true));
@@ -125,4 +130,5 @@ export function registerA2aChannelRpc(
   router.register('a2a.channel.join', (p) => forward('a2a.channel.join', p, true));
   router.register('a2a.channel.leave', (p) => forward('a2a.channel.leave', p, true));
   router.register('a2a.channel.post', (p) => forward('a2a.channel.post', p, true));
+  router.register('a2a.channel.invite', (p) => forward('a2a.channel.invite', p, true));
 }

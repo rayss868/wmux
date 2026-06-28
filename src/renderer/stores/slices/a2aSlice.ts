@@ -3,6 +3,7 @@ import type { StoreState } from '../index';
 import type { Task, Message, TaskState, Artifact, AgentSkill } from '../../../shared/types';
 import { generateId, validateTransition, TERMINAL_STATES, VALID_TRANSITIONS } from '../../../shared/types';
 import type { PaneAddress } from '../../hooks/a2aAddressing';
+import { isChannelMentionTask } from '../../hooks/channelMentionFlush';
 
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const GC_MAX_TASKS = 500;
@@ -47,7 +48,7 @@ export interface A2aSlice {
     // reply can return to the exact originating pane and history role is computed
     // per-pane. Both optional — a ws-only side keeps the prior behavior.
     from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
-    to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
+    to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
     history: Message[];
     artifacts: Artifact[];
   }) => string;
@@ -59,13 +60,26 @@ export interface A2aSlice {
   updateTaskStatus: (taskId: string, state: TaskState, callerWorkspaceId: string, callerAddr?: PaneAddress | null, statusMessage?: Message) => { ok: boolean; error?: string };
   addTaskArtifact: (taskId: string, artifact: Artifact) => void;
   cancelTask: (taskId: string, callerWorkspaceId: string) => { ok: boolean; error?: string };
-  queryTasks: (workspaceId: string, filters?: { status?: TaskState; role?: 'user' | 'agent' }) => Task[];
+  queryTasks: (
+    workspaceId: string,
+    filters?: { status?: TaskState; role?: 'user' | 'agent'; updatedSince?: string },
+  ) => Task[];
   getTask: (taskId: string) => Task | undefined;
   setAgentSkills: (workspaceId: string, skills: AgentSkill[]) => void;
   getAgentSkills: (workspaceId: string) => AgentSkill[] | null;
   enqueueExecuteApproval: (approval: PendingExecuteApproval) => void;
   removeExecuteApproval: (approvalId: string) => void;
   setA2aAutoApproveExecute: (enabled: boolean) => void;
+
+  // ── Channel-mention delivery tracking (P1 autoresponse) ──
+  /** taskId → true once its nudge was pasted into the pane PTY. Kept OUT of the
+   *  Task store so the Task schema stays unchanged; pruned with task GC. */
+  channelMentionDelivered: Record<string, boolean>;
+  /** Mark a channel-mention task as pasted (idempotency for the Stop flush). */
+  markChannelMentionDelivered: (taskId: string) => void;
+  /** Undelivered channel-mention tasks (chmention-*, non-terminal) addressed to
+   *  this workspace — the queue the Stop/arrival flush drains. */
+  getUndeliveredChannelMentionTasks: (workspaceId: string) => Task[];
 
   // GC
   gcTerminalTasks: () => void;
@@ -78,6 +92,7 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
   pendingExecuteApprovalOrder: [],
   pendingExecuteApproval: null,
   a2aAutoApproveExecute: false,
+  channelMentionDelivered: {},
 
   enqueueExecuteApproval: (approval) => set((state: StoreState) => {
     const existing = state.pendingExecuteApprovals[approval.approvalId];
@@ -102,6 +117,13 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     const id = input.id ?? generateId('task');
     const now = isoNow();
     set((state: StoreState) => {
+      // Idempotent create (A3 — completed-task resurrection). A deterministic id
+      // (channel-mention uses `chmention-<channelId>-<seq>`) is a dedup key: a
+      // re-delivery (reload, or an autoresponse flush re-firing) calls this again
+      // with the SAME id. Overwriting would reset an already working/completed
+      // task back to 'submitted' — the agent re-does finished work. If the id is
+      // already present, keep the existing task (and its state) untouched.
+      if (input.id && state.a2aTasks[input.id]) return;
       state.a2aTasks[id] = {
         kind: 'task',
         id,
@@ -218,6 +240,21 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
       // Status filter
       if (filters?.status && task.status.state !== filters.status) return false;
 
+      // Incremental cursor (A9): return only tasks updated AFTER the given
+      // ISO-8601 timestamp, so a poller can fetch just what changed instead of
+      // re-pulling the whole list. ISO-8601 strings sort lexicographically =
+      // chronologically (both sides canonical UTC: stored via isoNow(), the
+      // cursor normalized at the RPC entry), so a string compare is the cursor.
+      // updatedAt is bumped on every status change / artifact add.
+      // LIMITATION (ms precision + strictly-after): two updates within the SAME
+      // millisecond share an updatedAt, so a poller that cursors on the first
+      // would miss the second. Accepted over the alternative (`>=` re-returns the
+      // same timestamp every poll); revisit with a monotonic tie-break if rapid
+      // same-ms transitions ever need exact incremental coverage.
+      if (filters?.updatedSince && !(task.metadata.updatedAt > filters.updatedSince)) {
+        return false;
+      }
+
       return true;
     });
   },
@@ -232,6 +269,21 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
 
   getAgentSkills: (workspaceId) => {
     return get().a2aAgentSkills[workspaceId] ?? null;
+  },
+
+  markChannelMentionDelivered: (taskId) => set((state: StoreState) => {
+    state.channelMentionDelivered[taskId] = true;
+  }),
+
+  getUndeliveredChannelMentionTasks: (workspaceId) => {
+    const { a2aTasks, channelMentionDelivered } = get();
+    return Object.values(a2aTasks).filter(
+      (task) =>
+        isChannelMentionTask(task.id) &&
+        task.metadata.to.workspaceId === workspaceId &&
+        !channelMentionDelivered[task.id] &&
+        !(TERMINAL_STATES as readonly string[]).includes(task.status.state),
+    );
   },
 
   gcTerminalTasks: () => set((state: StoreState) => {
@@ -273,6 +325,12 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
         delete state.a2aTasks[task.id];
         toRemove--;
       }
+    }
+
+    // Prune delivery markers for tasks that no longer exist (covers every
+    // removal path above) so channelMentionDelivered can't grow unbounded.
+    for (const id of Object.keys(state.channelMentionDelivered)) {
+      if (!state.a2aTasks[id]) delete state.channelMentionDelivered[id];
     }
   }),
 });

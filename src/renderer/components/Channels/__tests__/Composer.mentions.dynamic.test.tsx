@@ -11,10 +11,14 @@ import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ComposerContent, type MentionCandidate } from '../Composer';
 
+// P2: insertToken is the stable unique @-token; displayName is what the
+// dropdown renders. For these simple fixtures the two coincide, so the existing
+// filter/commit/payload assertions hold (the committed mention's `name` is the
+// insertToken).
 const CANDIDATES: MentionCandidate[] = [
-  { workspaceId: 'ws-2', memberId: 'local-ui', name: 'alice' },
-  { workspaceId: 'ws-3', memberId: 'local-ui', name: 'bob' },
-  { workspaceId: 'ws-4', memberId: 'local-ui', name: 'alf' },
+  { workspaceId: 'ws-2', paneId: 'pane-2', ptyId: 'pty-2', insertToken: 'alice', displayName: 'alice' },
+  { workspaceId: 'ws-3', paneId: 'pane-3', ptyId: 'pty-3', insertToken: 'bob', displayName: 'bob' },
+  { workspaceId: 'ws-4', paneId: 'pane-4', ptyId: 'pty-4', insertToken: 'alf', displayName: 'alf' },
 ];
 
 let container: HTMLDivElement;
@@ -176,7 +180,7 @@ describe('ComposerContent — @-mention autocomplete (jsdom)', () => {
     });
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith('@alice', [
-      { workspaceId: 'ws-2', memberId: 'local-ui', name: 'alice' },
+      { workspaceId: 'ws-2', paneId: 'pane-2', ptyId: 'pty-2', name: 'alice' },
     ]);
   });
 

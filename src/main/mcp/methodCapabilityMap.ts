@@ -114,7 +114,7 @@ export function resolveRequiredCapability(
 function pathsFromSetMetadata(params: Record<string, unknown>): string[] | undefined {
   const paths: string[] = [];
   if (typeof params.label === 'string') paths.push('label');
-  if (typeof params.role === 'string') paths.push('role');
+  // P2: `role` is no longer a settable field (deprecated) — not advertised here.
   if (typeof params.status === 'string') paths.push('status');
   if (params.custom && typeof params.custom === 'object' && !Array.isArray(params.custom)) {
     for (const key of Object.keys(params.custom as Record<string, unknown>)) {
@@ -349,6 +349,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.channel.join':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.leave':       { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.post':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.invite':      { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.ack':         { capability: 'a2a.channel.read', riskClass: 'a2a' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.

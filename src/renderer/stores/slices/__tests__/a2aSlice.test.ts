@@ -61,6 +61,74 @@ describe('a2aSlice — cancelTask permissions', () => {
   });
 });
 
+describe('a2aSlice — createA2aTask idempotency (A3: no completed-task resurrection)', () => {
+  it('does not overwrite an existing task when re-created with the same id', () => {
+    const store = createTestStore();
+    const id = 'chmention-ch1-7'; // deterministic dedup key (channel-mention)
+    store.getState().createA2aTask({
+      id,
+      title: 'mention',
+      from: { workspaceId: 'ws-a', name: 'A' },
+      to: { workspaceId: 'ws-b', name: 'B' },
+      history: [makeMessage('hi')],
+      artifacts: [],
+    });
+    // Drive it to a terminal state.
+    store.getState().updateTaskStatus(id, 'working', 'ws-b');
+    store.getState().updateTaskStatus(id, 'completed', 'ws-b');
+    expect(store.getState().a2aTasks[id].status.state).toBe('completed');
+    // Re-delivery (reload / autoresponse re-flush) re-creates the SAME id. It
+    // must NOT resurrect the completed task back to 'submitted'.
+    const returned = store.getState().createA2aTask({
+      id,
+      title: 'mention (redelivered)',
+      from: { workspaceId: 'ws-a', name: 'A' },
+      to: { workspaceId: 'ws-b', name: 'B' },
+      history: [makeMessage('hi again')],
+      artifacts: [],
+    });
+    expect(returned).toBe(id);
+    expect(store.getState().a2aTasks[id].status.state).toBe('completed'); // preserved
+    expect(store.getState().a2aTasks[id].metadata.title).toBe('mention'); // not overwritten
+  });
+
+  it('still creates a fresh submitted task when the id is new', () => {
+    const store = createTestStore();
+    const id = store.getState().createA2aTask({
+      title: 'fresh',
+      from: { workspaceId: 'ws-a', name: 'A' },
+      to: { workspaceId: 'ws-b', name: 'B' },
+      history: [makeMessage('x')],
+      artifacts: [],
+    });
+    expect(store.getState().a2aTasks[id].status.state).toBe('submitted');
+  });
+});
+
+describe('a2aSlice — queryTasks updatedSince cursor (A9: incremental polling)', () => {
+  it('returns only tasks updated strictly after the cursor; no cursor = all', () => {
+    const store = createTestStore();
+    const id = store.getState().createA2aTask({
+      title: 't',
+      from: { workspaceId: 'ws-a', name: 'A' },
+      to: { workspaceId: 'ws-b', name: 'B' },
+      history: [makeMessage('x')],
+      artifacts: [],
+    });
+    const all = store.getState().queryTasks('ws-a', {});
+    expect(all.map((t) => t.id)).toContain(id); // back-compat: no cursor → included
+    // A cursor far in the past → the task is newer → included.
+    expect(
+      store.getState().queryTasks('ws-a', { updatedSince: '2000-01-01T00:00:00.000Z' }).map((t) => t.id),
+    ).toContain(id);
+    // A cursor in the future → nothing is newer → excluded.
+    expect(store.getState().queryTasks('ws-a', { updatedSince: '2999-01-01T00:00:00.000Z' })).toHaveLength(0);
+    // Cursor exactly at the task's updatedAt → strictly-after means excluded.
+    const at = store.getState().a2aTasks[id].metadata.updatedAt;
+    expect(store.getState().queryTasks('ws-a', { updatedSince: at })).toHaveLength(0);
+  });
+});
+
 describe('a2aSlice — gcTerminalTasks hard cap (issue #99)', () => {
   // Mirrors the GC_MAX_TASKS constant in a2aSlice.ts (not exported).
   const GC_MAX_TASKS = 500;
@@ -230,6 +298,67 @@ describe('a2aSlice — updateTaskStatus pane-granular authz (S-C2 P2)', () => {
     const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-sender', addrPaneB);
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/not the receiver/);
+  });
+});
+
+describe('a2aSlice — channel mention delivery tracking (P1 autoresponse)', () => {
+  let store: ReturnType<typeof createTestStore>;
+  beforeEach(() => { store = createTestStore(); });
+
+  function mention(id: string, toWs = 'ws-me'): string {
+    return store.getState().createA2aTask({
+      id,
+      title: '#general — mention from Alice',
+      from: { workspaceId: 'ws-sender', name: 'Alice' },
+      to: { workspaceId: toWs, name: 'Me' },
+      history: [],
+      artifacts: [],
+    });
+  }
+
+  it('lists undelivered chmention- tasks addressed to the workspace', () => {
+    mention('chmention-ch-1-5');
+    const out = store.getState().getUndeliveredChannelMentionTasks('ws-me');
+    expect(out.map((t) => t.id)).toEqual(['chmention-ch-1-5']);
+  });
+
+  it('excludes non-mention tasks (no chmention- prefix)', () => {
+    mention('chmention-ch-1-5');
+    store.getState().createA2aTask({
+      id: 'task-normal',
+      title: 'x',
+      from: { workspaceId: 'ws-sender', name: 'A' },
+      to: { workspaceId: 'ws-me', name: 'Me' },
+      history: [],
+      artifacts: [],
+    });
+    const out = store.getState().getUndeliveredChannelMentionTasks('ws-me');
+    expect(out.map((t) => t.id)).toEqual(['chmention-ch-1-5']);
+  });
+
+  it('excludes a task once marked delivered (idempotency for the Stop flush)', () => {
+    mention('chmention-ch-1-5');
+    store.getState().markChannelMentionDelivered('chmention-ch-1-5');
+    expect(store.getState().getUndeliveredChannelMentionTasks('ws-me')).toEqual([]);
+  });
+
+  it('excludes terminal-state mentions (already handled / canceled)', () => {
+    mention('chmention-ch-1-5');
+    store.getState().cancelTask('chmention-ch-1-5', 'ws-me'); // receiver denies → canceled
+    expect(store.getState().getUndeliveredChannelMentionTasks('ws-me')).toEqual([]);
+  });
+
+  it('scopes to the receiver workspace (the sender ws does not see it as inbox)', () => {
+    mention('chmention-ch-1-5', 'ws-me');
+    expect(store.getState().getUndeliveredChannelMentionTasks('ws-sender')).toEqual([]);
+  });
+
+  it('prunes delivery markers for tasks removed by GC', () => {
+    mention('chmention-ch-1-5');
+    store.getState().markChannelMentionDelivered('chmention-ch-1-5');
+    store.setState((s) => { delete s.a2aTasks['chmention-ch-1-5']; });
+    store.getState().gcTerminalTasks();
+    expect(store.getState().channelMentionDelivered['chmention-ch-1-5']).toBeUndefined();
   });
 });
 

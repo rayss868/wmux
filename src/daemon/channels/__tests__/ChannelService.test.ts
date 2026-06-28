@@ -13,6 +13,7 @@ import type {
   ChannelMessage,
   ChannelState,
 } from '../../../shared/channels';
+import { CHANNEL_MENTIONS_MAX } from '../../../shared/channels';
 
 /** In-memory fake of ChannelStateWriter. Returns whatever the test sets
  *  via `failNext`; defaults to success. Captures every `saveImmediate`
@@ -428,6 +429,34 @@ describe('ChannelService', () => {
       expect(r.error.code).toBe('NOT_A_MEMBER');
     });
 
+    it('accepts a post from a member workspace even when memberId differs from create (subscription-level membership; NOT_A_MEMBER regression)', async () => {
+      // The agent `member_id` is a client-supplied label (the MCP `member_id`
+      // param), NOT a server-verified key. A creator who creates with member_id
+      // "lead" and later posts with member_id "backend" (or any other value) is
+      // still the SAME verified workspace — membership is keyed on the
+      // subscription (workspaceId), so the post must succeed. Previously the
+      // (workspaceId, memberId) composite gate rejected this as NOT_A_MEMBER —
+      // the live dogfood bug (#2): a channel creator hit NOT_A_MEMBER on first
+      // post because its post memberId differed from its create memberId.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'lead', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
+      const r = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'backend', memberName: 'Alice' },
+        text: 'same ws, different memberId',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) throw new Error(`expected post ok, got ${r.error.code}: ${r.error.message}`);
+      expect(r.message.text).toBe('same ws, different memberId');
+    });
+
     it('rejects posts where sender.workspaceId disagrees with verifiedWorkspaceId (NOT_AUTHORIZED, no persist, no event)', async () => {
       // Sender-pin gate (R5): the server pins the authoritative caller
       // from `verifiedWorkspaceId`. A client that claims a different
@@ -532,6 +561,11 @@ describe('ChannelService', () => {
       // The emitted channel.message event carries the same validated set.
       const evt = emit.mock.calls.at(-1)?.[0];
       expect(evt?.message.mentions).toEqual([{ workspaceId: 'ws-2', name: 'Bob' }]);
+      // A2: the non-member mention is reported back to the sender (not silently
+      // dropped). The deduped member mention (ws-2 dup) is NOT a drop.
+      expect(post.droppedMentions).toEqual([
+        { workspaceId: 'ws-ghost', name: 'Ghost', reason: 'not_a_member' },
+      ]);
     });
 
     it('omits the mentions field entirely when none are valid (no empty array)', async () => {
@@ -553,6 +587,135 @@ describe('ChannelService', () => {
       expect(post.ok).toBe(true);
       if (!post.ok) throw new Error('post failed');
       expect(post.message.mentions).toBeUndefined();
+      // A2: even when NO mention is valid, the sender still gets feedback.
+      expect(post.droppedMentions).toEqual([
+        { workspaceId: 'ws-ghost', name: 'Ghost', reason: 'not_a_member' },
+      ]);
+    });
+
+    it('returns no droppedMentions when every mention is a member (clean post)', async () => {
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('create failed');
+      const joined = await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      if (!joined.ok) throw new Error('join failed');
+      const post = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'hi @Bob',
+        verifiedWorkspaceId: 'ws-1',
+        mentions: [{ workspaceId: 'ws-2', name: 'Bob' }],
+      });
+      expect(post.ok).toBe(true);
+      if (!post.ok) throw new Error('post failed');
+      expect(post.droppedMentions).toBeUndefined();
+    });
+
+    it('replays droppedMentions on an idempotent retry (same client_msg_id)', async () => {
+      // Review P1: a retry after a missed first response must still tell the
+      // sender the mention was dropped — not a silent drop on the replay.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('create failed');
+      const args = {
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'see @Ghost',
+        verifiedWorkspaceId: 'ws-1',
+        clientMsgId: 'k1',
+        mentions: [{ workspaceId: 'ws-ghost', name: 'Ghost' }],
+      };
+      const post1 = await svc.post({ ...args });
+      expect(post1.ok).toBe(true);
+      if (!post1.ok) throw new Error('post1 failed');
+      expect(post1.droppedMentions).toEqual([
+        { workspaceId: 'ws-ghost', name: 'Ghost', reason: 'not_a_member' },
+      ]);
+      const post2 = await svc.post({ ...args }); // same clientMsgId → idempotent
+      expect(post2.ok).toBe(true);
+      if (!post2.ok) throw new Error('post2 failed');
+      expect(post2.idempotent).toBe(true);
+      expect(post2.droppedMentions).toEqual([
+        { workspaceId: 'ws-ghost', name: 'Ghost', reason: 'not_a_member' },
+      ]);
+    });
+
+    it('rejects a post with more than CHANNEL_MENTIONS_MAX mentions', async () => {
+      // Review P2: cap mentions to bound O(mentions x members) under the lock
+      // and the droppedMentions response size.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('create failed');
+      const tooMany = Array.from({ length: CHANNEL_MENTIONS_MAX + 1 }, (_, i) => ({
+        workspaceId: `ws-${i}`,
+        name: `w${i}`,
+      }));
+      const post = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'spam',
+        verifiedWorkspaceId: 'ws-1',
+        mentions: tooMany,
+      });
+      expect(post.ok).toBe(false);
+      if (post.ok) throw new Error('expected rejection');
+      expect(post.error.code).toBe('CHANNEL_MENTIONS_TOO_MANY');
+    });
+
+    it('mentions two panes in the same workspace (split) without merging; preserves paneId/ptyId', async () => {
+      // Agent-pane redesign: (workspaceId, paneId) dedup lets two agents in ONE
+      // workspace (split panes) both be mentioned in a single post. paneId/ptyId
+      // pass through opaquely — the receiving renderer owns live-pane resolution.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error(`create failed: ${created.error.code}`);
+      const joined = await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      if (!joined.ok) throw new Error(`join failed: ${joined.error.code}`);
+      const post = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: '@claude and @codex',
+        verifiedWorkspaceId: 'ws-1',
+        mentions: [
+          { workspaceId: 'ws-2', paneId: 'pane-a', ptyId: 'pty-a', name: 'claude' },
+          { workspaceId: 'ws-2', paneId: 'pane-b', ptyId: 'pty-b', name: 'codex' },
+          { workspaceId: 'ws-2', paneId: 'pane-a', ptyId: 'pty-a', name: 'claude dup' }, // same (ws,pane) → dropped
+        ],
+      });
+      expect(post.ok).toBe(true);
+      if (!post.ok) throw new Error(`post failed: ${post.error.code}`);
+      expect(post.message.mentions).toEqual([
+        { workspaceId: 'ws-2', paneId: 'pane-a', ptyId: 'pty-a', name: 'claude' },
+        { workspaceId: 'ws-2', paneId: 'pane-b', ptyId: 'pty-b', name: 'codex' },
+      ]);
     });
   });
 
@@ -897,6 +1060,131 @@ describe('ChannelService', () => {
       });
       // Stranger — sees the message because the channel is public.
       expect(svc.getMessages(pub.channel.id, undefined, 'ws-9')).toHaveLength(1);
+    });
+
+    it('getMessages tail-limits to the most recent N (and undefined limit = full history, no regression)', async () => {
+      const { svc } = makeService();
+      const pub = await svc.create({
+        name: 'busy',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!pub.ok) throw new Error('expected create ok');
+      for (let i = 1; i <= 5; i++) {
+        await svc.post({
+          channelId: pub.channel.id,
+          sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+          text: `msg-${i}`,
+          verifiedWorkspaceId: 'ws-1',
+        });
+      }
+      // Regression guard: omitting limit returns the FULL history (the human
+      // ChannelView relies on this — the default-50 lives in the MCP tool, not here).
+      expect(svc.getMessages(pub.channel.id, undefined, 'ws-1')).toHaveLength(5);
+      // Tail-limit returns the most recent N, in seq order.
+      expect(svc.getMessages(pub.channel.id, undefined, 'ws-1', 2).map((m) => m.seq)).toEqual([4, 5]);
+      // limit >= length returns everything; limit 0 returns nothing.
+      expect(svc.getMessages(pub.channel.id, undefined, 'ws-1', 100)).toHaveLength(5);
+      expect(svc.getMessages(pub.channel.id, undefined, 'ws-1', 0)).toEqual([]);
+      // sinceSeq floor applies first, then the tail-limit on the remainder.
+      expect(svc.getMessages(pub.channel.id, 3, 'ws-1', 1).map((m) => m.seq)).toEqual([5]);
+    });
+  });
+
+  // ── P1b: invite (a member adds ANOTHER workspace) ────────────────
+  describe('invite', () => {
+    const alice = { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' };
+    const bob = { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' };
+
+    it('a member invites a non-member into a PRIVATE channel; invitee then sees it + full history', async () => {
+      const { svc } = makeService();
+      const priv = await svc.create({
+        name: 'team',
+        visibility: 'private',
+        createdBy: alice,
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!priv.ok) throw new Error('expected create ok');
+      await svc.post({ channelId: priv.channel.id, sender: alice, text: 'hi', verifiedWorkspaceId: 'ws-1' });
+      // Bob can't see the private channel yet.
+      expect(svc.get(priv.channel.id, 'ws-2')).toBeNull();
+      // Alice (member) invites Bob.
+      const r = await svc.invite({
+        channelId: priv.channel.id,
+        invitedMember: bob,
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(true);
+      // Bob now sees the channel AND its prior history (includeHistory default = full).
+      expect(svc.get(priv.channel.id, 'ws-2')?.id).toBe(priv.channel.id);
+      expect(svc.getMessages(priv.channel.id, undefined, 'ws-2')).toHaveLength(1);
+    });
+
+    it('rejects a non-member inviter with NOT_AUTHORIZED (public channel)', async () => {
+      const { svc } = makeService();
+      const pub = await svc.create({ name: 'general', visibility: 'public', createdBy: alice, verifiedWorkspaceId: 'ws-1' });
+      if (!pub.ok) throw new Error('expected create ok');
+      const r = await svc.invite({
+        channelId: pub.channel.id,
+        invitedMember: { workspaceId: 'ws-3', memberId: 'm-3', memberName: 'Carol' },
+        verifiedWorkspaceId: 'ws-9', // not a member
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      expect(r.error.code).toBe('NOT_AUTHORIZED');
+    });
+
+    it('hides a PRIVATE channel from a non-member inviter (CHANNEL_NOT_FOUND — no existence leak)', async () => {
+      const { svc } = makeService();
+      const priv = await svc.create({ name: 'secret', visibility: 'private', createdBy: alice, verifiedWorkspaceId: 'ws-1' });
+      if (!priv.ok) throw new Error('expected create ok');
+      const r = await svc.invite({
+        channelId: priv.channel.id,
+        invitedMember: bob,
+        verifiedWorkspaceId: 'ws-9',
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      expect(r.error.code).toBe('CHANNEL_NOT_FOUND');
+    });
+
+    it('rejects a duplicate invitee (DUPLICATE_MEMBER)', async () => {
+      const { svc } = makeService();
+      const pub = await svc.create({ name: 'general', visibility: 'public', createdBy: alice, verifiedWorkspaceId: 'ws-1' });
+      if (!pub.ok) throw new Error('expected create ok');
+      const first = await svc.invite({ channelId: pub.channel.id, invitedMember: bob, verifiedWorkspaceId: 'ws-1' });
+      expect(first.ok).toBe(true);
+      const dup = await svc.invite({ channelId: pub.channel.id, invitedMember: bob, verifiedWorkspaceId: 'ws-1' });
+      expect(dup.ok).toBe(false);
+      if (dup.ok) throw new Error('expected !ok');
+      expect(dup.error.code).toBe('DUPLICATE_MEMBER');
+    });
+
+    it('includeHistory:false starts the invitee at the current seq (no older history)', async () => {
+      const { svc } = makeService();
+      const priv = await svc.create({ name: 'team', visibility: 'private', createdBy: alice, verifiedWorkspaceId: 'ws-1' });
+      if (!priv.ok) throw new Error('expected create ok');
+      await svc.post({ channelId: priv.channel.id, sender: alice, text: 'old', verifiedWorkspaceId: 'ws-1' });
+      const r = await svc.invite({
+        channelId: priv.channel.id,
+        invitedMember: bob,
+        includeHistory: false,
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(true);
+      expect(svc.getMessages(priv.channel.id, undefined, 'ws-2')).toHaveLength(0);
+    });
+
+    it('rejects invites to an archived channel (CHANNEL_ARCHIVED)', async () => {
+      const { svc } = makeService();
+      const pub = await svc.create({ name: 'general', visibility: 'public', createdBy: alice, verifiedWorkspaceId: 'ws-1' });
+      if (!pub.ok) throw new Error('expected create ok');
+      await svc.archive({ channelId: pub.channel.id, archivedBy: 'ws-1', verifiedWorkspaceId: 'ws-1' });
+      const r = await svc.invite({ channelId: pub.channel.id, invitedMember: bob, verifiedWorkspaceId: 'ws-1' });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      expect(r.error.code).toBe('CHANNEL_ARCHIVED');
     });
   });
 
@@ -1528,6 +1816,68 @@ describe('D5 caller-identity server-pin', () => {
     const ch = svc.get(channelId, 'ws-creator');
     expect(ch?.status).toBe('active');
     expect(ch?.archivedBy).toBeUndefined();
+  });
+});
+
+describe('ack (A1: delivery receipt makes deliveryStatus real)', () => {
+  it('flips the caller recipient + the message to delivered; a repeat ack is a no-op', async () => {
+    const { svc } = makeService();
+    const created = await svc.create({
+      name: 'general',
+      visibility: 'public',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!created.ok) throw new Error('create failed');
+    const chId = created.channel.id;
+    const joined = await svc.join({
+      channelId: chId,
+      member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+      verifiedWorkspaceId: 'ws-2',
+    });
+    if (!joined.ok) throw new Error('join failed');
+    const post = await svc.post({
+      channelId: chId,
+      sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      text: 'hi',
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!post.ok) throw new Error('post failed');
+    expect(post.message.deliveryStatus).toBe('pending'); // nobody received it yet
+    const seq = post.message.seq;
+
+    const ack1 = await svc.ack({ channelId: chId, verifiedWorkspaceId: 'ws-2', uptoSeq: seq });
+    expect(ack1.ok).toBe(true);
+    if (!ack1.ok) throw new Error('ack1 failed');
+    expect(ack1.acked).toBe(1);
+
+    const m = svc.getMessages(chId, 0, 'ws-1').find((x) => x.seq === seq);
+    expect(m?.deliveryStatus).toBe('delivered');
+    expect(m?.recipientSnapshot?.find((r) => r.workspaceId === 'ws-2')?.status).toBe('delivered');
+
+    const ack2 = await svc.ack({ channelId: chId, verifiedWorkspaceId: 'ws-2', uptoSeq: seq });
+    expect(ack2.ok).toBe(true);
+    if (!ack2.ok) throw new Error('ack2 failed');
+    expect(ack2.acked).toBe(0); // already delivered → no change
+  });
+
+  it('a non-member ack on a private channel returns CHANNEL_NOT_FOUND (existence hidden)', async () => {
+    const { svc } = makeService();
+    const created = await svc.create({
+      name: 'priv',
+      visibility: 'private',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!created.ok) throw new Error('create failed');
+    const ack = await svc.ack({
+      channelId: created.channel.id,
+      verifiedWorkspaceId: 'ws-stranger',
+      uptoSeq: 99,
+    });
+    expect(ack.ok).toBe(false);
+    if (ack.ok) throw new Error('expected CHANNEL_NOT_FOUND');
+    expect(ack.error.code).toBe('CHANNEL_NOT_FOUND');
   });
 });
 

@@ -27,6 +27,8 @@ import {
   sortMessagesBySeq,
   viewerDeliveryStatus,
   renderMessageText,
+  renderMessageBody,
+  SCROLLBACK_PAGE,
 } from '../ChannelView';
 
 // ─── Test fixtures ──────────────────────────────────────────────────────
@@ -101,6 +103,53 @@ describe('renderMessageText', () => {
     const out = renderMessageText('email a@b.com', [{ workspaceId: 'ws-2', name: 'bob' }]);
     const html = renderToStaticMarkup(createElement('div', null, out));
     expect(html).not.toContain('data-channel-mention-token');
+  });
+});
+
+describe('renderMessageBody (markdown subset)', () => {
+  const html = (node: React.ReactNode): string =>
+    renderToStaticMarkup(createElement('div', null, node));
+
+  it('returns plain text verbatim when there is nothing to format', () => {
+    expect(renderMessageBody('just text')).toBe('just text');
+    expect(renderMessageBody('')).toBe('');
+  });
+
+  it('renders a fenced code block as <pre> and does NOT format inside it', () => {
+    const out = html(renderMessageBody('before\n```\nconst x = **not bold**\n```\nafter'));
+    expect(out).toContain('data-channel-code-block');
+    expect(out).toContain('const x = **not bold**'); // literal, not bolded
+    expect(out).not.toContain('data-md-bold');
+    expect(out).toContain('before');
+    expect(out).toContain('after');
+  });
+
+  it('renders inline `code` and **bold**', () => {
+    const out = html(renderMessageBody('use `npm run build` and **ship** it'));
+    expect(out).toContain('data-md-code');
+    expect(out).toContain('npm run build');
+    expect(out).toContain('data-md-bold');
+    expect(out).toContain('ship');
+  });
+
+  it('still highlights @mentions in plain runs', () => {
+    const out = html(renderMessageBody('hey @bob check `this`', [{ workspaceId: 'ws-2', name: 'bob' }]));
+    expect(out).toContain('data-channel-mention-token');
+    expect(out).toContain('@bob');
+    expect(out).toContain('data-md-code');
+  });
+
+  it('does not highlight an @mention inside a code block', () => {
+    const out = html(renderMessageBody('```\nping @bob\n```', [{ workspaceId: 'ws-2', name: 'bob' }]));
+    expect(out).toContain('data-channel-code-block');
+    expect(out).not.toContain('data-channel-mention-token');
+  });
+
+  it('never emits a raw HTML sink (no dangerouslySetInnerHTML escape)', () => {
+    const out = html(renderMessageBody('<script>alert(1)</script> **x**'));
+    // The angle brackets are escaped by React (rendered as text), not injected.
+    expect(out).toContain('&lt;script&gt;');
+    expect(out).not.toContain('<script>');
   });
 });
 
@@ -216,6 +265,7 @@ function renderView(args: {
   messages?: ChannelMessage[];
   viewer?: ChannelMember | null;
   onClose?: () => void;
+  onLeave?: () => void;
   onArchive?: () => void;
   composerSlot?: React.ReactNode;
 } = {}): string {
@@ -225,6 +275,7 @@ function renderView(args: {
       messages: args.messages ?? [],
       viewer: args.viewer === undefined ? null : args.viewer,
       onClose: args.onClose ?? (() => undefined),
+      onLeave: args.onLeave,
       onArchive: args.onArchive,
       composerSlot: args.composerSlot ?? <div data-fake-composer />,
     }),
@@ -249,6 +300,36 @@ describe('ChannelViewContent', () => {
     expect(html).toContain('data-channel-view-empty');
     expect(html).toContain('data-channel-view-messages');
     expect(html).toContain('data-message-count="0"');
+  });
+
+  it('windows the list to the most recent page and offers "load earlier" (P3b)', () => {
+    const messages = Array.from({ length: SCROLLBACK_PAGE + 1 }, (_, i) =>
+      makeMessage('ch-1', i + 1, { text: `m${i + 1}` }),
+    );
+    const html = renderView({ viewer: makeMember({ memberId: 'm-1' }), messages });
+    // The container still reports the TOTAL visible count.
+    expect(html).toContain(`data-message-count="${SCROLLBACK_PAGE + 1}"`);
+    // Only the most recent page of rows renders.
+    expect((html.match(/data-channel-message="true"/g) || []).length).toBe(SCROLLBACK_PAGE);
+    // The load-earlier affordance shows the hidden count (1).
+    expect(html).toContain('data-channels-load-earlier');
+    // Oldest (m1) is windowed out; newest (m201) is shown.
+    expect(html).not.toContain('>m1<');
+    expect(html).toContain('>m201<');
+  });
+
+  it('renders the search toggle but no search input until opened (P3c)', () => {
+    const html = renderView({ viewer: makeMember({ memberId: 'm-1' }), messages: [makeMessage('ch-1', 1)] });
+    expect(html).toContain('data-channel-search-toggle');
+    // The input is behind the toggle (useState) — absent in the static render.
+    expect(html).not.toContain('data-channel-search="true"');
+  });
+
+  it('does not render the load-earlier affordance when under the window (P3b)', () => {
+    const messages = Array.from({ length: 3 }, (_, i) => makeMessage('ch-1', i + 1, { text: `m${i + 1}` }));
+    const html = renderView({ viewer: makeMember({ memberId: 'm-1' }), messages });
+    expect(html).not.toContain('data-channels-load-earlier');
+    expect((html.match(/data-channel-message="true"/g) || []).length).toBe(3);
   });
 
   it('renders messages in seq order', () => {
@@ -364,14 +445,18 @@ describe('ChannelViewContent', () => {
     expect(html).toContain('composer-here');
   });
 
-  it('exposes a close affordance that calls onClose', () => {
-    // The close button has data-channel-view-close; we assert the
-    // attribute is present (the actual click handler cannot fire
-    // under renderToStaticMarkup, so we verify the wiring contract
-    // by passing an onClose spy and checking the markup exposes
-    // the close target).
+  it('exposes a close-view affordance (data-channel-view-close) for onClose', () => {
+    // Close-view button = deselect the conversation, channel stays. Present
+    // regardless of membership.
     const html = renderView();
     expect(html).toContain('data-channel-view-close');
+  });
+
+  it('shows the leave (X) affordance only when onLeave is provided', () => {
+    // X = leave the channel. The container passes onLeave only when self is a
+    // member; a public channel you are merely previewing has no leave button.
+    expect(renderView({ onLeave: () => undefined })).toContain('data-channel-view-leave');
+    expect(renderView()).not.toContain('data-channel-view-leave');
   });
 
   it('contains no literal hex colors in the rendered view (theme tokens only)', () => {

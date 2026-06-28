@@ -664,23 +664,23 @@ server.tool(
 
 server.tool(
   'pane_set_metadata',
-  'Attach descriptive metadata (label/role/status + custom k/v) to a leaf pane in the calling workspace. The custom map is deep-merged when mergeMode="merge" (the default), so cooperating tools can each write their own keys without clobbering. Use mergeMode="replace" to overwrite the entire metadata object, or "replaceShared" (v2.9.0+) to overwrite label/role/status while preserving another tool\'s custom keys verbatim. Pass expectedVersion (v2.9.0+) for optimistic concurrency — the call fails with VERSION_CONFLICT if the pane has been updated since you last read it. Omit paneId to target the active pane in the calling workspace.',
+  'Attach descriptive metadata (label/status + custom k/v) to a leaf pane in the calling workspace. The custom map is deep-merged when mergeMode="merge" (the default), so cooperating tools can each write their own keys without clobbering. Use mergeMode="replace" to overwrite the entire metadata object, or "replaceShared" (v2.9.0+) to overwrite label/status while preserving another tool\'s custom keys verbatim. Pass expectedVersion (v2.9.0+) for optimistic concurrency — the call fails with VERSION_CONFLICT if the pane has been updated since you last read it. Omit paneId to target the active pane in the calling workspace.',
   {
     paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace.'),
     label: z.string().max(64).optional().describe('Short human label, e.g. "Backend".'),
-    role: z.string().max(64).optional().describe('Free-form role tag, e.g. "service" or "test-runner".'),
+    // P2: `role` is deprecated — pane identity is the auto name + user label now.
+    // Removed from the input schema; any legacy role is read-only (dead-read).
     status: z.string().max(128).optional().describe('Current status, e.g. "running-tests".'),
     custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when mergeMode="merge". Recommended convention: namespace your keys with a tool prefix (e.g. "orchestrator.taskId", "qa.status") to avoid semantic collisions with other cooperating tools.'),
     merge: z.boolean().optional().describe('Legacy v2.8.x flag; prefer mergeMode. true → merge, false → replace. When both `merge` and `mergeMode` are provided, `mergeMode` wins.'),
-    mergeMode: z.enum(['merge', 'replace', 'replaceShared']).optional().describe('Explicit merge semantics (v2.9.0+). "merge" patches and deep-merges custom (default). "replace" wipes the metadata object and writes only the provided fields. "replaceShared" overwrites label/role/status but preserves another tool\'s custom keys. Overrides legacy `merge` boolean when both are provided.'),
+    mergeMode: z.enum(['merge', 'replace', 'replaceShared']).optional().describe('Explicit merge semantics (v2.9.0+). "merge" patches and deep-merges custom (default). "replace" wipes the metadata object and writes only the provided fields. "replaceShared" overwrites label/status but preserves another tool\'s custom keys. Overrides legacy `merge` boolean when both are provided.'),
     expectedVersion: z.number().int().nonnegative().optional().describe('Optimistic concurrency guard (v2.9.0+). If the pane\'s current metadata version differs, the call fails with VERSION_CONFLICT and does not mutate. Read the current version from pane_get_metadata or pane_list. Omit for unconditional writes (legacy v2.8.x behavior). expectedVersion: 0 is the correct guard for a pane that has never been written; it succeeds iff no concurrent writer has set anything on this pane yet (useful for "claim a fresh pane" patterns).'),
   },
-  async ({ paneId, label, role, status, custom, merge, mergeMode, expectedVersion }) => {
+  async ({ paneId, label, status, custom, merge, mergeMode, expectedVersion }) => {
     const workspaceId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId };
     if (paneId !== undefined) params['paneId'] = paneId;
     if (label !== undefined) params['label'] = label;
-    if (role !== undefined) params['role'] = role;
     if (status !== undefined) params['status'] = status;
     if (custom !== undefined) params['custom'] = custom;
     if (merge !== undefined) params['merge'] = merge;
@@ -858,24 +858,27 @@ server.tool('a2a_task_send', 'Alias for send_message.', sendMessageParams, sendM
 // 4. a2a_task_query — Query tasks by status/role
 server.tool(
   'a2a_task_query',
-  'Query tasks assigned to you or sent by you. Filter by status and role.',
+  'Query tasks assigned to you or sent by you. Filter by status and role. For incremental polling, pass updated_since (an ISO-8601 timestamp, e.g. a previous result\'s metadata.updatedAt) to get only tasks changed after that instant — cheaper than re-pulling the whole list each poll.',
   {
     status: z.enum(['submitted', 'working', 'input-required', 'completed', 'failed', 'canceled']).optional().describe('Filter by task status'),
     role: z.enum(['user', 'agent']).optional().describe('Filter: "user" = tasks you sent, "agent" = tasks assigned to you'),
+    updated_since: z.string().optional().describe('ISO-8601 timestamp; return only tasks whose metadata.updatedAt is strictly later (incremental cursor for polling).'),
   },
-  async ({ status, role }) => {
+  async ({ status, role, updated_since }) => {
     const wsId = await requireWorkspaceId();
-    return callRpc('a2a.task.query', { workspaceId: wsId, status, role });
+    return callRpc('a2a.task.query', { workspaceId: wsId, status, role, updatedSince: updated_since });
   },
 );
 
 // 5. a2a_task_update — Update task status
 server.tool(
   'a2a_task_update',
-  'Update a task\'s status. Only the receiver can change to working/completed/failed/input-required. Optionally attach artifacts on completion.',
+  'Update a task\'s status. Only the receiver workspace can change it. Transitions follow a state machine — you cannot jump straight from submitted to completed: take submitted -> working FIRST, then working -> completed/failed/input-required. Terminal states (completed/failed/canceled) are final and reject any further update (no resurrection). A rejected transition returns an error listing the allowed next states. Optionally attach artifacts on completion.',
   {
     task_id: z.string().describe('Task ID to update'),
-    status: z.enum(['working', 'completed', 'failed', 'input-required']).describe('New status'),
+    status: z
+      .enum(['working', 'completed', 'failed', 'input-required'])
+      .describe('New status. Allowed transitions: submitted->working; working->completed|failed|input-required; input-required->working. A fresh (submitted) task must go to working before it can complete.'),
     message: z.string().optional().describe('Optional status message'),
     artifact_name: z.string().optional().describe('Artifact name (for completed tasks)'),
     artifact_data: z.record(z.string(), z.unknown()).optional().describe('Artifact data payload'),

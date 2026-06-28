@@ -1,6 +1,6 @@
 // ─── Channel tools for the bundled MCP server ───────────────────────────
 //
-// Six standard MCP tools that expose the `a2a.channel.*` pipe RPC surface to
+// Nine standard MCP tools that expose the `a2a.channel.*` pipe RPC surface to
 // first-party MCP clients (Claude Code, Codex CLI). Each tool is a thin
 // pass-through over `sendRpc` plus a per-call workspaceId resolved by the
 // caller (index.ts injects `resolveWorkspaceId` so tests can stub it
@@ -17,7 +17,8 @@
 //    inspect the code rather than parse the message string.
 //  - The `a2a.channel.send` capability is enforced upstream in RpcRouter
 //    via methodCapabilityMap.ts. The MCP tool layer does not re-check it.
-//  - `channel.history` is intentionally deferred per plan Scope Boundaries.
+//  - `channel_read` exposes message history (the pull half of the attention
+//    model), bounded to the most recent N to protect the agent's context.
 //
 // Plan reference: U5 (a2a-channels first-party MCP allowlist + tools).
 
@@ -106,7 +107,7 @@ async function callChannelRpc(
   }
 }
 
-/** Register the six standard channel tools on the given MCP server. The
+/** Register the nine standard channel tools on the given MCP server. The
  *  parent module injects `resolveWorkspaceId` so workspace identity follows
  *  the same verification rules as the rest of the bundled server (verified
  *  PID-map hit first, env-hint fallback on miss). */
@@ -162,7 +163,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // ── channel_post ──────────────────────────────────────────────────
   server.tool(
     'channel_post',
-    'Post a message to a channel. Returns isError=true with code PERSIST_FAILED when persistence fails (U2 maintainer directive: do not swallow saveImmediate errors on the post path) and CHANNEL_ARCHIVED for read-only channels. Use client_msg_id for at-most-once delivery — a repeat post with the same key returns the original `seq` instead of appending a duplicate.',
+    'Post a message to a channel. Returns isError=true with code PERSIST_FAILED when persistence fails (U2 maintainer directive: do not swallow saveImmediate errors on the post path), CHANNEL_ARCHIVED for read-only channels, and CHANNEL_MENTIONS_TOO_MANY when a single post lists too many @mentions. Use client_msg_id for at-most-once delivery — a repeat post with the same key returns the original `seq` instead of appending a duplicate. IMPORTANT: check `droppedMentions` on the result — any @mention whose target workspace is NOT a channel member is reported there (not silently dropped), so you know that ping did not land.',
     {
       channel_id: z.string().describe('Target channel id.'),
       text: z.string().describe('Message body. Newlines are preserved.'),
@@ -181,7 +182,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
           }),
         )
         .optional()
-        .describe('@-mentions to ping specific members. Each must be a current channel member (non-members dropped). Mentioned workspaces are notified via their a2a inbox.'),
+        .describe('@-mentions to ping specific members. Each must be a current channel member; a non-member target is returned in `droppedMentions` (not silently dropped) so you know it did not land. Mentioned workspaces are notified via their a2a inbox.'),
     },
     async ({ channel_id, text, member_id, member_name, client_msg_id, mentions }) => {
       const workspaceId = await deps.resolveWorkspaceId();
@@ -271,6 +272,107 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         verifiedWorkspaceId: workspaceId,
         channelId: channel_id,
         archivedBy: workspaceId,
+      });
+    },
+  );
+
+  // ── channel_read ──────────────────────────────────────────────────
+  // The pull half of the channel attention model: agents are pushed only
+  // on @-mention, but can PULL recent history on demand here. `limit`
+  // defaults to a small N at this tool layer (NOT in the daemon) to protect
+  // the agent's context window — reading a busy channel is a token cost.
+  server.tool(
+    'channel_read',
+    'Read recent messages from a channel you can see (public, or private if you are a member). ' +
+      'Returns the most recent `limit` messages (default 50, newest last); use `since_seq` to page ' +
+      'forward from a known seq. Reading consumes your context window, so prefer a small `limit` and ' +
+      'read deliberately. A private channel you are not a member of returns an empty list; a missing ' +
+      'channel returns an error.',
+    {
+      channel_id: z.string().describe('Target channel id.'),
+      since_seq: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          'Return messages with seq >= since_seq (forward pagination). When combined with limit, the ' +
+            'floor is applied first, then the most recent `limit` of the remainder.',
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe('Max messages to return, taken from the newest end. Defaults to 50 to protect your context window.'),
+    },
+    async ({ channel_id, since_seq, limit }) => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      const params: Record<string, unknown> = {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+        channelId: channel_id,
+        limit: limit ?? 50,
+      };
+      if (since_seq !== undefined) params['sinceSeq'] = since_seq;
+      return callChannelRpc('a2a.channel.getMessages' as RpcMethod, params);
+    },
+  );
+
+  // ── channel_invite ────────────────────────────────────────────────
+  // Add ANOTHER workspace to a channel. Unlike channel_join (self-join), this
+  // adds a different workspace and is the only way into a PRIVATE channel.
+  // Any member may invite (P1b authz); the daemon gates on the caller being a
+  // current member. The invited workspace gains history + live messages.
+  server.tool(
+    'channel_invite',
+    'Invite ANOTHER workspace/agent to a channel you belong to. This is the only way to add someone to a private channel (you cannot self-join one). Any member may invite; the invited workspace gains the channel history and live messages. Use channel_join to add YOURSELF to a public channel instead.',
+    {
+      channel_id: z.string().describe('Target channel id.'),
+      invited_workspace_id: z.string().describe('Workspace id of the agent/workspace to add (the invitee, not you).'),
+      member_id: z
+        .string()
+        .describe('Member id for the INVITED workspace within the channel (e.g. "lead", "backend") — identifies the invitee, not the caller.'),
+      member_name: z.string().describe('Display name for the INVITED member shown in the channel UI — the invitee, not the caller.'),
+      include_history: z
+        .boolean()
+        .optional()
+        .describe('When true (default) the invited member sees the full channel history; false starts them at the current message.'),
+    },
+    async ({ channel_id, invited_workspace_id, member_id, member_name, include_history }) => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      return callChannelRpc('a2a.channel.invite' as RpcMethod, {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+        channelId: channel_id,
+        invitedMember: {
+          workspaceId: invited_workspace_id,
+          memberId: member_id,
+          memberName: member_name,
+        },
+        includeHistory: include_history !== false,
+      });
+    },
+  );
+
+  // ── channel_get_members ───────────────────────────────────────────
+  // The roster read: who is in a channel. Pairs with channel_invite (know who
+  // is already a member before adding) and channel_read (attribute messages).
+  // Wraps the existing a2a.channel.getMembers RPC; a private channel you are not
+  // a member of returns an empty list (its membership is never leaked).
+  server.tool(
+    'channel_get_members',
+    'List the members of a channel you can see. Returns each member\'s workspaceId, memberId, joinedAt, and history floor. A private channel you are not a member of returns an empty list (membership is not leaked to non-members).',
+    {
+      channel_id: z.string().describe('Target channel id.'),
+    },
+    async ({ channel_id }) => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      return callChannelRpc('a2a.channel.getMembers' as RpcMethod, {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+        channelId: channel_id,
       });
     },
   );

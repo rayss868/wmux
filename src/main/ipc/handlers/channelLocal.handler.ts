@@ -30,8 +30,8 @@
 //    neither enables nor depends on.
 //
 // Reads stay on the existing `a2a.channel.*` pipe handler (they accept a no-PTY
-// caller and fall back to the caller scope); only the five MUTATING methods are
-// routed here.
+// caller and fall back to the caller scope); only the channel-mutating methods
+// are routed here.
 
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
@@ -48,6 +48,16 @@ const CHANNEL_MUTATING_METHODS: ReadonlySet<string> = new Set<string>([
   'a2a.channel.join',
   'a2a.channel.leave',
   'a2a.channel.archive',
+  // invite is the ONLY in-app path into a private channel (ChannelMembers UI →
+  // inviteChannelDaemon → mutateLocal). Like the others it is daemon-gated
+  // (caller must be a current member) and the renderer-trusted verifiedWorkspaceId
+  // is the inviter; without it here every GUI invite returns NOT_AUTHORIZED.
+  'a2a.channel.invite',
+  // A1: receipt ack mutates recipientSnapshot/deliveryStatus, so it must NOT ride
+  // the pipe (where a no-PTY caller's verifiedWorkspaceId would be unpinned and a
+  // same-user pipe client could forge another member's receipt). The renderer
+  // drives it on channel read; route it through this pinned, pipe-unreachable path.
+  'a2a.channel.ack',
 ]);
 
 type ChannelRejection = { ok: false; error: { code: 'NOT_AUTHORIZED'; message: string } };

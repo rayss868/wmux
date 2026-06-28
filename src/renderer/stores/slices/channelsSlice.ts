@@ -198,6 +198,14 @@ export interface ChannelsSlice {
     member: ChannelMemberAddress,
     workspaceId: string,
   ) => Promise<ChannelActionResult<Record<string, never>>>;
+  // Invite ANOTHER workspace (P1b). The inviter (`inviterWorkspaceId`) must be
+  // a current member; the daemon adds `invitedMember` (NOT self-pinned). This is
+  // the only way into a private channel. Any member may invite (daemon authz).
+  inviteChannelDaemon: (
+    channelId: string,
+    invitedMember: ChannelMemberAddress,
+    inviterWorkspaceId: string,
+  ) => Promise<ChannelActionResult<Record<string, never>>>;
   leaveChannelDaemon: (
     channelId: string,
     memberId: string,
@@ -418,14 +426,26 @@ export const createChannelsSlice: StateCreator<
         next[idx] = message;
         state.channelMessages[channelId] = next;
       }
+      // `self` = the company CEO workspace when set, else the active workspace —
+      // mirrors ChannelView/Composer identity resolution.
+      const selfWs = state.company?.ceoWorkspaceId ?? state.activeWorkspaceId;
       if (isNew && state.activeChannelId !== channelId) {
-        state.channelUnread[channelId] =
-          (state.channelUnread[channelId] ?? 0) + 1;
-        // A message that @-mentions this renderer's own workspace bumps the
-        // mention counter too (the dock then shows a stronger red @ badge).
-        // `self` = the company CEO workspace when set, else the active
-        // workspace — mirrors ChannelView/Composer identity resolution.
-        const selfWs = state.company?.ceoWorkspaceId ?? state.activeWorkspaceId;
+        // A6 self-mute (unread): a workspace's OWN posts must not badge it as
+        // unread. A composer post never bumps unread anyway (the activeChannelId
+        // check above — the composer always posts to the active channel), but an
+        // MCP/agent post has NO optimistic row and arrives only as an event, so
+        // without this guard an agent posting via the API would see its own
+        // message as unread noise. TRADEOFF (ws-level unread limit): in a
+        // single-ws multi-agent setup a SIBLING pane's post is also muted here —
+        // pane-level unread would distinguish them, but the badge is ws-scoped.
+        if (message.workspaceId !== selfWs) {
+          state.channelUnread[channelId] =
+            (state.channelUnread[channelId] ?? 0) + 1;
+        }
+        // The @mention badge is evaluated INDEPENDENTLY of the self-mute (GLM
+        // review P2): being mentioned is a real signal even from a same-ws
+        // sender (pane A @-mentions sibling pane B), so a self-ws mention bumps
+        // the stronger red @ badge regardless of who sent it.
         if (selfWs && message.mentions?.some((mn) => mn.workspaceId === selfWs)) {
           state.channelMentions[channelId] =
             (state.channelMentions[channelId] ?? 0) + 1;
@@ -642,6 +662,33 @@ export const createChannelsSlice: StateCreator<
       return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.join failed') };
     }
     return get().joinChannelOptimistic(channelId, member, workspaceId);
+  },
+
+  inviteChannelDaemon: async (channelId, invitedMember, inviterWorkspaceId) => {
+    const bridge = get().channelsRpc();
+    if (!bridge) {
+      console.warn('[channelsSlice] inviteChannelDaemon invoked before bridge mounted — call ignored');
+      return { ok: false, error: { code: 'UNKNOWN', message: 'channels bridge not mounted' } };
+    }
+    let raw: unknown;
+    try {
+      // The inviter (verifiedWorkspaceId) must be a current member; the daemon
+      // adds the invitedMember workspace (NOT self-pinned) — the only path into
+      // a private channel. Invited members get full history by default.
+      raw = await bridge.mutateLocal('a2a.channel.invite', {
+        channelId,
+        invitedMember,
+        verifiedWorkspaceId: inviterWorkspaceId,
+        includeHistory: true,
+      });
+    } catch (err) {
+      return { ok: false, error: { code: 'UNKNOWN', message: err instanceof Error ? err.message : String(err) } };
+    }
+    if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
+      return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.invite failed') };
+    }
+    // Optimistically add the INVITEE row (keyed to the invitee's workspace).
+    return get().joinChannelOptimistic(channelId, invitedMember, invitedMember.workspaceId);
   },
 
   leaveChannelDaemon: async (channelId, memberId, workspaceId) => {

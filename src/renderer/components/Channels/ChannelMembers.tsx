@@ -11,12 +11,14 @@
 //   - ChannelMembersControl — store-connected; resolves identity, the joinable
 //     workspace list, and wires join/leave + the self-leave view cleanup.
 //
-// Scope (v1, locked by design + spec review):
+// Scope (P1b — invite):
 //   - Remove (✕) is SELF-ONLY and shows on the exact (self ws, self memberId)
 //     row — you can leave, not eject (matches daemon leave() capability).
-//   - "+ member" appears only for PUBLIC, non-archived channels (private join is
-//     an unresolved daemon-authz question — design Security note). The picker
-//     adds one of the human's own workspaces.
+//   - "+ member" shows for any non-archived channel with a resolvable self ws.
+//     A MEMBER may add any non-member workspace (invite — the only path into a
+//     private channel; daemon gates on the inviter being a member). A NON-member
+//     can only self-join (public), so the picker offers just their own ws.
+//     Adding self → joinChannelDaemon (self-pin); adding another → inviteChannelDaemon.
 //   - On a successful self-leave of the active channel, the container clears
 //     activeChannelId so the dock doesn't show a dead/blank pane.
 //
@@ -35,6 +37,22 @@ import { IconX } from '../icons';
 /** Stable UI member id — the human/GUI participates as one member per
  *  workspace. Mirrors the value the composer + create path already send. */
 const UI_MEMBER_ID = 'local-ui';
+
+/** The roster shows conversational PARTICIPANTS, not the channel's human owner.
+ *  The creating workspace is auto-added as a UI member on create (KTD10), but it
+ *  is the OWNER (channel.createdBy) and keeps full access — it is not a
+ *  participant. Exclude that one owner + UI-member entry so a freshly created
+ *  channel reads as 0 members and you populate it by inviting agents. Agents
+ *  (non-UI memberIds) — INCLUDING agents that live in the owner's own workspace
+ *  — are kept; only the owner's human placeholder is dropped. */
+export function rosterParticipants(
+  members: ChannelMember[],
+  ownerWorkspaceId: string | undefined,
+): ChannelMember[] {
+  return members.filter(
+    (m) => !(m.workspaceId === ownerWorkspaceId && m.memberId === UI_MEMBER_ID),
+  );
+}
 
 export interface JoinableWorkspace {
   id: string;
@@ -104,6 +122,18 @@ export function ChannelMembersView({
             {t('channels.members') || 'Members'} ({members.length})
           </div>
 
+          {/* P2: clarify the membership model — it is per-workspace, not
+                per-agent (the office-hours mental-model fix). Any agent in a
+                member workspace can read + post; the roster lists agents only
+                for attribution. */}
+          <div
+            className="px-3 pb-1 text-[9px] font-mono leading-snug text-[var(--text-muted)]"
+            data-channel-members-note
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {t('channels.membershipNote') || 'Anyone in a member workspace can read and post.'}
+          </div>
+
           {members.length === 0 ? (
             <div className="px-3 py-1.5 text-[10px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
               {t('channels.noMembers') || 'No members yet.'}
@@ -120,8 +150,13 @@ export function ChannelMembersView({
                 >
                   <span className="truncate flex-1 min-w-0 text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')} title={`${workspaceLabel(m.workspaceId)} · ${m.memberId}`}>
                     {workspaceLabel(m.workspaceId)}
-                    <span className="text-[var(--text-muted)]"> · {m.memberId}</span>
-                    {self && <span className="text-[var(--accent-blue)]"> ({t('channels.you') || 'you'})</span>}
+                    {/* P2: show the agent id only for real agents. Human/GUI
+                          members all share the UI member id (selfMemberId), an
+                          internal token — suppress it so the roster reads as
+                          agents + workspaces, not internal ids. */}
+                    {m.memberId !== selfMemberId && (
+                      <span className="text-[var(--text-muted)]"> · {m.memberId}</span>
+                    )}
                   </span>
                   {self && (
                     <button
@@ -189,30 +224,52 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
   const workspaceLabel = (workspaceId: string): string =>
     workspaces.find((w) => w.id === workspaceId)?.name ?? workspaceId;
 
-  // The human adds one of their OWN workspaces (tabs) that isn't a member yet.
-  const joinableWorkspaces: JoinableWorkspace[] = workspaces
-    .filter((w) => !members.some((m) => m.workspaceId === w.id))
-    .map((w) => ({ id: w.id, name: w.name }));
+  const selfIsMember =
+    !!selfWorkspaceId && members.some((m) => m.workspaceId === selfWorkspaceId);
 
-  // v1: join only public, non-archived channels (private join = unresolved
-  // daemon-authz question, design Security note). Need a resolvable self ws.
-  const canJoin =
-    channel.visibility === 'public' && channel.status !== 'archived' && !!selfWorkspaceId;
+  // Roster = conversational PARTICIPANTS (agents), not the human who created the
+  // channel (see rosterParticipants).
+  const rosterMembers = rosterParticipants(members, channel.createdBy);
+
+  // What the picker offers (P1b):
+  //  - a MEMBER may add any non-member workspace (invite — works for private too)
+  //  - a NON-member may only self-join, so offer just their own workspace
+  const joinableWorkspaces: JoinableWorkspace[] = (
+    selfIsMember
+      ? workspaces.filter((w) => !members.some((m) => m.workspaceId === w.id))
+      : workspaces.filter(
+          (w) => w.id === selfWorkspaceId && !members.some((m) => m.workspaceId === w.id),
+        )
+  ).map((w) => ({ id: w.id, name: w.name }));
+
+  // Show the picker for any non-archived channel with a resolvable self ws.
+  // A private channel is only ever visible to its members, so if this popover
+  // is open on one, the self ws is already a member → invite is valid (P1b).
+  const canJoin = channel.status !== 'archived' && !!selfWorkspaceId;
 
   const handleJoin = (workspaceId: string): void => {
     const label = workspaceLabel(workspaceId);
-    void useStore
-      .getState()
-      .joinChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, workspaceId)
-      .then((result) => {
-        if (result.ok) {
-          pushToast({ level: 'info', message: t('channels.joinedToast', { workspace: label, channel: channel.name }) });
-        } else if (result.error.message.includes('DUPLICATE')) {
-          pushToast({ level: 'info', message: t('channels.alreadyMemberToast', { workspace: label, channel: channel.name }) });
-        } else {
-          pushToast({ level: 'error', message: t('channels.joinFailedToast', { workspace: label }) });
-        }
-      });
+    // Self-join (add your OWN ws to a public channel) vs invite (a member adds
+    // ANOTHER ws — the only path into a private channel). The daemon enforces
+    // the inviter-is-member gate for invite either way.
+    const isSelf = workspaceId === selfWorkspaceId;
+    const action =
+      isSelf || !selfWorkspaceId
+        ? useStore
+            .getState()
+            .joinChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, workspaceId)
+        : useStore
+            .getState()
+            .inviteChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, selfWorkspaceId);
+    void action.then((result) => {
+      if (result.ok) {
+        pushToast({ level: 'info', message: t('channels.joinedToast', { workspace: label, channel: channel.name }) });
+      } else if (result.error.message.includes('DUPLICATE')) {
+        pushToast({ level: 'info', message: t('channels.alreadyMemberToast', { workspace: label, channel: channel.name }) });
+      } else {
+        pushToast({ level: 'error', message: t('channels.joinFailedToast', { workspace: label }) });
+      }
+    });
   };
 
   const handleLeave = (memberId: string, workspaceId: string): void => {
@@ -235,7 +292,7 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
 
   return (
     <ChannelMembersView
-      members={members}
+      members={rosterMembers}
       workspaceLabel={workspaceLabel}
       selfWorkspaceId={selfWorkspaceId}
       selfMemberId={UI_MEMBER_ID}

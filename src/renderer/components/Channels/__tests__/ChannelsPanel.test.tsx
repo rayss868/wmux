@@ -103,6 +103,34 @@ describe('groupChannels', () => {
     expect(out.active.map((c) => c.id)).toEqual(['a']);
     expect(out.archived.map((c) => c.id)).toEqual(['c', 'b']);
   });
+
+  it('without isMember keeps every non-archived channel in active (back-compat) and discoverable empty', () => {
+    const out = groupChannels([
+      makeChannel({ id: 'a', name: 'joined' }),
+      makeChannel({ id: 'b', name: 'unjoined-public', visibility: 'public' }),
+    ]);
+    expect(out.active.map((c) => c.id).sort()).toEqual(['a', 'b']);
+    expect(out.discoverable).toEqual([]);
+  });
+
+  it('with isMember: member→active, public non-member→discoverable, private non-member→omitted', () => {
+    const isMember = (c: Channel): boolean => c.id === 'mine';
+    const out = groupChannels(
+      [
+        makeChannel({ id: 'mine', name: 'joined', visibility: 'public' }),
+        makeChannel({ id: 'pub', name: 'browse-me', visibility: 'public' }),
+        makeChannel({ id: 'priv', name: 'secret', visibility: 'private' }),
+        makeChannel({ id: 'arch', name: 'old', status: 'archived', archivedAt: 5 }),
+      ],
+      isMember,
+    );
+    expect(out.active.map((c) => c.id)).toEqual(['mine']);
+    expect(out.discoverable.map((c) => c.id)).toEqual(['pub']);
+    // private non-member is never surfaced (unreadable → no leak)
+    expect(out.discoverable.some((c) => c.id === 'priv')).toBe(false);
+    expect(out.active.some((c) => c.id === 'priv')).toBe(false);
+    expect(out.archived.map((c) => c.id)).toEqual(['arch']);
+  });
 });
 
 describe('sumUnread', () => {
