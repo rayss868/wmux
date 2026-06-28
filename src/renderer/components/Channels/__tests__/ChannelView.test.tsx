@@ -27,6 +27,7 @@ import {
   sortMessagesBySeq,
   viewerDeliveryStatus,
   renderMessageText,
+  renderMessageBody,
 } from '../ChannelView';
 
 // ─── Test fixtures ──────────────────────────────────────────────────────
@@ -101,6 +102,53 @@ describe('renderMessageText', () => {
     const out = renderMessageText('email a@b.com', [{ workspaceId: 'ws-2', name: 'bob' }]);
     const html = renderToStaticMarkup(createElement('div', null, out));
     expect(html).not.toContain('data-channel-mention-token');
+  });
+});
+
+describe('renderMessageBody (markdown subset)', () => {
+  const html = (node: React.ReactNode): string =>
+    renderToStaticMarkup(createElement('div', null, node));
+
+  it('returns plain text verbatim when there is nothing to format', () => {
+    expect(renderMessageBody('just text')).toBe('just text');
+    expect(renderMessageBody('')).toBe('');
+  });
+
+  it('renders a fenced code block as <pre> and does NOT format inside it', () => {
+    const out = html(renderMessageBody('before\n```\nconst x = **not bold**\n```\nafter'));
+    expect(out).toContain('data-channel-code-block');
+    expect(out).toContain('const x = **not bold**'); // literal, not bolded
+    expect(out).not.toContain('data-md-bold');
+    expect(out).toContain('before');
+    expect(out).toContain('after');
+  });
+
+  it('renders inline `code` and **bold**', () => {
+    const out = html(renderMessageBody('use `npm run build` and **ship** it'));
+    expect(out).toContain('data-md-code');
+    expect(out).toContain('npm run build');
+    expect(out).toContain('data-md-bold');
+    expect(out).toContain('ship');
+  });
+
+  it('still highlights @mentions in plain runs', () => {
+    const out = html(renderMessageBody('hey @bob check `this`', [{ workspaceId: 'ws-2', name: 'bob' }]));
+    expect(out).toContain('data-channel-mention-token');
+    expect(out).toContain('@bob');
+    expect(out).toContain('data-md-code');
+  });
+
+  it('does not highlight an @mention inside a code block', () => {
+    const out = html(renderMessageBody('```\nping @bob\n```', [{ workspaceId: 'ws-2', name: 'bob' }]));
+    expect(out).toContain('data-channel-code-block');
+    expect(out).not.toContain('data-channel-mention-token');
+  });
+
+  it('never emits a raw HTML sink (no dangerouslySetInnerHTML escape)', () => {
+    const out = html(renderMessageBody('<script>alert(1)</script> **x**'));
+    // The angle brackets are escaped by React (rendered as text), not injected.
+    expect(out).toContain('&lt;script&gt;');
+    expect(out).not.toContain('<script>');
   });
 });
 

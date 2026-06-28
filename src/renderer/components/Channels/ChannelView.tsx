@@ -13,7 +13,7 @@
 //
 // Plan ref: U8, R21, R22.
 
-import { useEffect, useMemo, useCallback, useState } from 'react';
+import { useEffect, useMemo, useCallback, useState, Fragment } from 'react';
 import type {
   Channel,
   ChannelMessage,
@@ -123,6 +123,115 @@ export function renderMessageText(
     i = j;
   }
   return parts;
+}
+
+// ─── Lightweight markdown (P3a) ──────────────────────────────────────────
+//
+// Agents emit markdown + code, so a plain-text view reads poorly. We render a
+// safe SUBSET as real React nodes — never an HTML sink (no
+// dangerouslySetInnerHTML): fenced ``` code blocks, inline `code`, and **bold**.
+// Plain runs still flow through renderMessageText so @mentions keep highlighting;
+// code spans/blocks are literal (mentions inside code are NOT highlighted, which
+// is correct). Anything we don't recognise renders as plain text verbatim.
+
+/** Split text into fenced ``` code blocks and the surrounding text segments. */
+function splitFencedCode(text: string): { type: 'code' | 'text'; content: string }[] {
+  const FENCE_RE = /```[^\n]*\n?([\s\S]*?)```/g;
+  const segs: { type: 'code' | 'text'; content: string }[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = FENCE_RE.exec(text)) !== null) {
+    if (m.index > last) segs.push({ type: 'text', content: text.slice(last, m.index) });
+    segs.push({ type: 'code', content: m[1].replace(/\n$/, '') });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) segs.push({ type: 'text', content: text.slice(last) });
+  return segs;
+}
+
+/** Inline markdown within a non-code segment: `code` and **bold**, with the
+ *  remaining plain runs passed to renderMessageText (so @mentions still
+ *  highlight). Returns keyed nodes. */
+function renderInline(
+  text: string,
+  mentions: ChannelMention[] | undefined,
+  keyBase: string,
+): React.ReactNode[] {
+  const INLINE_RE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)/g;
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  let k = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INLINE_RE.exec(text)) !== null) {
+    if (m.index > last) {
+      out.push(
+        <Fragment key={`${keyBase}-t${k++}`}>
+          {renderMessageText(text.slice(last, m.index), mentions)}
+        </Fragment>,
+      );
+    }
+    if (m[1]) {
+      out.push(
+        <code
+          key={`${keyBase}-c${k++}`}
+          data-md-code
+          className="px-1 rounded bg-[var(--bg-surface)] text-[var(--text-main)]"
+          {...tokenAttrs('bgSurface', 'bg')}
+        >
+          {m[1].slice(1, -1)}
+        </code>,
+      );
+    } else if (m[2]) {
+      out.push(
+        <strong key={`${keyBase}-b${k++}`} data-md-bold className="font-bold text-[var(--text-main)]">
+          {m[2].slice(2, -2)}
+        </strong>,
+      );
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    out.push(
+      <Fragment key={`${keyBase}-t${k++}`}>
+        {renderMessageText(text.slice(last), mentions)}
+      </Fragment>,
+    );
+  }
+  return out;
+}
+
+/** Render a message body with the safe markdown subset + @mention highlighting.
+ *  Fast-paths to plain text when there is nothing to format. */
+export function renderMessageBody(
+  text: string,
+  mentions?: ChannelMention[],
+): React.ReactNode {
+  const segs = splitFencedCode(text);
+  if (segs.length === 0) return text;
+  // No code fences → if there's also no inline markdown, defer entirely to the
+  // mention renderer (preserves the plain-string fast path). Otherwise render
+  // the inline subset.
+  if (segs.length === 1 && segs[0].type === 'text') {
+    const seg = segs[0].content;
+    if (!/(`[^`\n]+`)|(\*\*[^*\n]+\*\*)/.test(seg)) {
+      return renderMessageText(seg, mentions);
+    }
+    return renderInline(seg, mentions, 'b0');
+  }
+  return segs.map((s, idx) =>
+    s.type === 'code' ? (
+      <pre
+        key={`blk${idx}`}
+        data-channel-code-block
+        className="my-1 px-2 py-1 rounded bg-[var(--bg-surface)] overflow-x-auto text-[11px] whitespace-pre"
+        {...tokenAttrs('bgSurface', 'bg')}
+      >
+        <code>{s.content}</code>
+      </pre>
+    ) : (
+      <Fragment key={`blk${idx}`}>{renderInline(s.content, mentions, `b${idx}`)}</Fragment>
+    ),
+  );
 }
 
 // ─── Pure view ──────────────────────────────────────────────────────────
@@ -286,7 +395,7 @@ export function ChannelViewContent({
                   data-channel-message-text
                   {...tokenAttrs('textMain', 'text')}
                 >
-                  {renderMessageText(m.text, m.mentions)}
+                  {renderMessageBody(m.text, m.mentions)}
                 </div>
                 {myStatus && (
                   <div
