@@ -141,3 +141,16 @@ describe('ChannelsPanelView — discovery group (jsdom)', () => {
     expect(q('[data-channels-discover-group]')).toBeNull();
   });
 });
+
+describe('ChannelsPanelView — create-channel modal positioning (jsdom)', () => {
+  it('opens as a viewport-fixed popover (not absolute) so the dock overflow cannot clip it', () => {
+    mount();
+    click(must('[data-channels-new]', 'new-channel button'));
+    const modal = must('[data-create-channel-modal]', 'create modal');
+    // The bug: an absolutely-positioned modal was clipped by ChannelDock's
+    // overflow-y-auto wrapper (right edge + Cancel/Create cut off). The fix
+    // makes it `fixed` (escapes every overflow ancestor), anchored to the "+".
+    expect(modal.className).toContain('fixed');
+    expect(modal.className).not.toContain('absolute');
+  });
+});

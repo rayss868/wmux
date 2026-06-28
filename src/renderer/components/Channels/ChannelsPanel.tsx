@@ -126,6 +126,9 @@ interface CreateChannelModalProps {
     name: string;
     visibility: ChannelVisibility;
   }) => boolean | Promise<boolean>;
+  /** The "+" trigger button. The modal anchors to it as a viewport-fixed
+   *  popover so the dock's `overflow-y-auto` wrapper can't clip it. */
+  anchorRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 /** Side-effect-free: derive a `FieldState` from raw input. Lives at
@@ -146,11 +149,32 @@ export function computeNameFieldState(raw: string): {
 function CreateChannelModal({
   onClose,
   onCreate,
+  anchorRef,
 }: CreateChannelModalProps): React.ReactElement {
   const [name, setName] = useState('');
   const [visibility] = useState<ChannelVisibility>('public');
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // Viewport-fixed position anchored to the "+" button. `fixed` (not `absolute`)
+  // is required: ChannelDock wraps the panel in an `overflow-y-auto` box, which
+  // clips an absolutely-positioned child (the modal's right edge + Cancel/Create
+  // buttons got cut off). Anchor + clamp keeps it on-screen for left/right docks.
+  const [pos, setPos] = useState<{ top: number; right: number }>({ top: 28, right: 8 });
+  useEffect(() => {
+    const el = anchorRef?.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const MODAL_W = 256; // w-64
+    let right = W - r.right;
+    right = Math.min(right, W - (MODAL_W + 8)); // keep the left edge ≥ 8px on-screen
+    right = Math.max(8, right);
+    let top = r.bottom + 4;
+    top = Math.min(top, H - 170); // keep the Cancel/Create buttons on-screen
+    top = Math.max(8, top);
+    setPos({ top: Math.round(top), right: Math.round(right) });
+  }, [anchorRef]);
 
   const field = computeNameFieldState(name);
   const showInlineError = submitAttempted && !field.valid;
@@ -205,7 +229,8 @@ function CreateChannelModal({
       role="dialog"
       aria-label="Create a new channel"
       data-create-channel-modal
-      className="absolute right-2 top-7 z-50 w-64 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-3 px-3 text-xs font-mono"
+      className="fixed z-50 w-64 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-3 px-3 text-xs font-mono"
+      style={{ top: pos.top, right: pos.right }}
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-2">
         <label className="flex flex-col gap-1">
@@ -343,6 +368,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
   const t = props.t ?? ((k: string) => k);
 
   const [creatorOpen, setCreatorOpen] = useState(false);
+  const newBtnRef = useRef<HTMLButtonElement | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [discoverExpanded, setDiscoverExpanded] = useState(false);
 
@@ -399,6 +425,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
         </span>
         <div className="flex items-center gap-0.5">
           <button
+            ref={newBtnRef}
             type="button"
             className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
             onClick={() => setCreatorOpen((v) => !v)}
@@ -428,6 +455,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
           <CreateChannelModal
             onClose={() => setCreatorOpen(false)}
             onCreate={onCreate}
+            anchorRef={newBtnRef}
           />
         )}
       </div>
