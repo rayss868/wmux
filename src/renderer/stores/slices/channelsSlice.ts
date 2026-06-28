@@ -429,15 +429,23 @@ export const createChannelsSlice: StateCreator<
       // `self` = the company CEO workspace when set, else the active workspace —
       // mirrors ChannelView/Composer identity resolution.
       const selfWs = state.company?.ceoWorkspaceId ?? state.activeWorkspaceId;
-      // A6 self-mute: a workspace's OWN posts must never badge it as unread /
-      // mention. The optimistic append already deduped renderer-composer posts,
-      // but an MCP/agent post has NO optimistic row, so without this guard an
-      // agent posting via the API would see its own message as unread noise.
-      if (isNew && state.activeChannelId !== channelId && message.workspaceId !== selfWs) {
-        state.channelUnread[channelId] =
-          (state.channelUnread[channelId] ?? 0) + 1;
-        // A message that @-mentions this renderer's own workspace bumps the
-        // mention counter too (the dock then shows a stronger red @ badge).
+      if (isNew && state.activeChannelId !== channelId) {
+        // A6 self-mute (unread): a workspace's OWN posts must not badge it as
+        // unread. A composer post never bumps unread anyway (the activeChannelId
+        // check above — the composer always posts to the active channel), but an
+        // MCP/agent post has NO optimistic row and arrives only as an event, so
+        // without this guard an agent posting via the API would see its own
+        // message as unread noise. TRADEOFF (ws-level unread limit): in a
+        // single-ws multi-agent setup a SIBLING pane's post is also muted here —
+        // pane-level unread would distinguish them, but the badge is ws-scoped.
+        if (message.workspaceId !== selfWs) {
+          state.channelUnread[channelId] =
+            (state.channelUnread[channelId] ?? 0) + 1;
+        }
+        // The @mention badge is evaluated INDEPENDENTLY of the self-mute (GLM
+        // review P2): being mentioned is a real signal even from a same-ws
+        // sender (pane A @-mentions sibling pane B), so a self-ws mention bumps
+        // the stronger red @ badge regardless of who sent it.
         if (selfWs && message.mentions?.some((mn) => mn.workspaceId === selfWs)) {
           state.channelMentions[channelId] =
             (state.channelMentions[channelId] ?? 0) + 1;

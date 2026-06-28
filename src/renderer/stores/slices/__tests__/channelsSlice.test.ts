@@ -286,7 +286,7 @@ describe('channelsSlice — appendMessageFromEvent', () => {
     expect(store.getState().channelUnread['ch-1']).toBe(1);
   });
 
-  it('A6 self-mute: a workspace does not unread/mention-badge its OWN posts', () => {
+  it('A6 self-mute: a workspace does not unread-badge its OWN (non-mention) posts', () => {
     const store = createTestStore();
     store.getState().createChannelOptimistic({
       name: 'general',
@@ -297,14 +297,30 @@ describe('channelsSlice — appendMessageFromEvent', () => {
     // self = ws-1 (not viewing ch-1). An MCP/agent post from ws-1 has no
     // optimistic row, so without the self guard it would unread-badge itself.
     store.setState((s) => ({ ...s, activeWorkspaceId: 'ws-1' }) as TestState);
-    store.getState().appendMessageFromEvent(
-      makeMessage('ch-1', 1, { workspaceId: 'ws-1', mentions: [{ workspaceId: 'ws-1', name: 'me' }] }),
-    );
+    store.getState().appendMessageFromEvent(makeMessage('ch-1', 1, { workspaceId: 'ws-1' }));
     expect(store.getState().channelUnread['ch-1'] ?? 0).toBe(0);
     expect(store.getState().channelMentions['ch-1'] ?? 0).toBe(0);
     // Another workspace's post on the same (inactive) channel still bumps.
     store.getState().appendMessageFromEvent(makeMessage('ch-1', 2, { workspaceId: 'ws-other' }));
     expect(store.getState().channelUnread['ch-1']).toBe(1);
+  });
+
+  it('A6: a @mention of self still bumps the mention badge even from a same-ws sender', () => {
+    const store = createTestStore();
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel(),
+    });
+    store.setState((s) => ({ ...s, activeWorkspaceId: 'ws-1' }) as TestState);
+    // Same-ws sender @mentions self-ws (pane A → sibling pane B): being mentioned
+    // is a real signal, so the @ badge bumps independently of the unread self-mute.
+    store.getState().appendMessageFromEvent(
+      makeMessage('ch-1', 1, { workspaceId: 'ws-1', mentions: [{ workspaceId: 'ws-1', name: 'B' }] }),
+    );
+    expect(store.getState().channelMentions['ch-1']).toBe(1);
+    expect(store.getState().channelUnread['ch-1'] ?? 0).toBe(0); // unread still self-muted
   });
 
   it('does NOT bump unread when the channel is active', () => {
