@@ -124,6 +124,13 @@ export interface FlushMentionDeps {
   /** Mark a task delivered so it is never pasted twice (idempotency). Called
    *  ONLY after a successful deliverNudge. */
   markDelivered: (taskId: string) => void;
+  /** A5 loop-breaker: true if this pane has been auto-nudged too many times in
+   *  the recent window — suppress the nudge (the task stays queued + pullable).
+   *  Optional for back-compat with callers/tests that don't wire it. */
+  isRateLimited?: (ptyId: string) => boolean;
+  /** Record a delivered auto-nudge toward the rate cap (after a successful
+   *  deliverNudge). Optional (paired with isRateLimited). */
+  recordNudge?: (ptyId: string) => void;
 }
 
 export interface FlushOpts {
@@ -170,9 +177,15 @@ export function flushMentions(
   }
   const delivered: string[] = [];
   for (const [ptyId, group] of byPty) {
+    // A5: suppress the auto-nudge if this pane has been nudged too often lately
+    // (runaway ping-pong). The tasks stay queued + unmarked, so the agent can
+    // still pull them via a2a_task_query and they'll auto-deliver once the burst
+    // subsides — only the automatic paste is withheld to break the loop.
+    if (deps.isRateLimited?.(ptyId)) continue;
     const nudge = buildChannelMentionNudge(group);
     try {
       deps.deliverNudge(ptyId, nudge);
+      deps.recordNudge?.(ptyId); // count this nudge toward the per-pane cap (A5)
       // Mark ONLY after a successful paste — a throw above retries next Stop.
       for (const t of group) {
         deps.markDelivered(t.id);

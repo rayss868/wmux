@@ -44,6 +44,8 @@ function makeDeps(tasks: Task[]) {
   const delivered: { ptyId: string; text: string }[] = [];
   const marked: string[] = [];
   const busy = new Set<string>();
+  const rateLimited = new Set<string>();
+  const nudged: string[] = [];
   let throwOn: string | null = null;
   const deps: FlushMentionDeps = {
     // Mirror the store selector: drop tasks already marked delivered.
@@ -56,8 +58,12 @@ function makeDeps(tasks: Task[]) {
     markDelivered: (id) => {
       marked.push(id);
     },
+    isRateLimited: (ptyId) => rateLimited.has(ptyId),
+    recordNudge: (ptyId) => {
+      nudged.push(ptyId);
+    },
   };
-  return { deps, delivered, marked, busy, setThrowOn: (p: string) => { throwOn = p; } };
+  return { deps, delivered, marked, busy, rateLimited, nudged, setThrowOn: (p: string) => { throwOn = p; } };
 }
 
 describe('isChannelMentionTask', () => {
@@ -143,6 +149,24 @@ describe('flushMentions', () => {
     expect(out).toEqual(['chmention-ch-1-1-pane-A']);
     expect(delivered.map((d) => d.ptyId)).toEqual(['pty-A']);
     expect(marked).toEqual(['chmention-ch-1-1-pane-A']);
+  });
+
+  it('A5: suppresses the nudge for a rate-limited pane (task stays queued, unmarked)', () => {
+    const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const { deps, delivered, marked, rateLimited } = makeDeps([tA]);
+    rateLimited.add('pty-A'); // pane already nudged too often → break the loop
+    const out = flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    expect(out).toEqual([]); // nothing delivered
+    expect(delivered).toEqual([]);
+    expect(marked).toEqual([]); // left queued — agent can still pull, auto-resumes later
+  });
+
+  it('A5: records a nudge toward the cap on a successful delivery', () => {
+    const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const { deps, delivered, nudged } = makeDeps([tA]);
+    flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    expect(delivered.map((d) => d.ptyId)).toEqual(['pty-A']);
+    expect(nudged).toEqual(['pty-A']);
   });
 
   it('skips a BUSY pane even on the Stop path (a stop stale by poll time = new turn)', () => {

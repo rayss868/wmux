@@ -50,6 +50,7 @@ import { useStore } from '../stores';
 import { loadChannelHistory } from './useChannelsHydration';
 import { routeChannelMentionToInbox } from './channelMentionInbox';
 import { isChannelMentionHandled, markChannelMentionHandled } from './channelMentionHandled';
+import { isNudgeRateLimited, recordNudge } from './channelMentionRateLimit';
 import { findLeafPanes } from './a2aAddressing';
 import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
@@ -186,6 +187,8 @@ export function useChannelsEventSubscription(): void {
         isBusy: (ptyId) => isBusyStatus(st.surfaceAgent[ptyId]?.status),
         deliverNudge: (ptyId, text) => submitBracketedPasteToPty(ptyId, text),
         markDelivered: st.markChannelMentionDelivered,
+        isRateLimited: isNudgeRateLimited,
+        recordNudge,
       }, opts);
     };
 
