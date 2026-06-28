@@ -1559,7 +1559,9 @@ function registerRpcHandlers(
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
-    const uptoSeq = typeof params['uptoSeq'] === 'number' ? params['uptoSeq'] : 0;
+    const rawUpto = params['uptoSeq'];
+    // Guard NaN/Infinity/negative (review A1 P3) — uptoSeq is a monotonic seq floor.
+    const uptoSeq = typeof rawUpto === 'number' && Number.isFinite(rawUpto) && rawUpto >= 0 ? rawUpto : 0;
     if (!channelId) {
       return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
     }

@@ -48,6 +48,11 @@ const CHANNEL_MUTATING_METHODS: ReadonlySet<string> = new Set<string>([
   'a2a.channel.join',
   'a2a.channel.leave',
   'a2a.channel.archive',
+  // A1: receipt ack mutates recipientSnapshot/deliveryStatus, so it must NOT ride
+  // the pipe (where a no-PTY caller's verifiedWorkspaceId would be unpinned and a
+  // same-user pipe client could forge another member's receipt). The renderer
+  // drives it on channel read; route it through this pinned, pipe-unreachable path.
+  'a2a.channel.ack',
 ]);
 
 type ChannelRejection = { ok: false; error: { code: 'NOT_AUTHORIZED'; message: string } };

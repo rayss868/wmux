@@ -1055,24 +1055,52 @@ export class ChannelService {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
       }
       const msgs = this.state.messages[params.channelId] ?? [];
-      let acked = 0;
+      // Collect-then-apply so a persist failure can ROLL BACK (mirrors post): we
+      // snapshot each flip's prior values, apply, persist, and on failure restore
+      // — otherwise memory would be left flipped while we return PERSIST_FAILED,
+      // and a retry would be a no-op (entry already delivered) = permanent split
+      // (GLM review P1).
+      const flips: Array<{
+        entry: ChannelRecipientStatus;
+        prevEntryStatus: ChannelRecipientStatus['status'];
+        prevLastAttemptAt: number | undefined;
+        msg: ChannelMessage;
+        prevMsgStatus: ChannelMessage['deliveryStatus'];
+      }> = [];
       for (const m of msgs) {
         if (m.seq > params.uptoSeq) continue;
         const entry = (m.recipientSnapshot ?? []).find(
           (r) => r.workspaceId === params.verifiedWorkspaceId,
         );
         if (entry && entry.status === 'pending') {
-          entry.status = 'delivered';
-          entry.lastAttemptAt = this.now();
-          // ≥1 recipient delivered ⇒ the message is delivered.
-          if (m.deliveryStatus !== 'delivered') m.deliveryStatus = 'delivered';
-          acked++;
+          flips.push({
+            entry,
+            prevEntryStatus: entry.status,
+            prevLastAttemptAt: entry.lastAttemptAt,
+            msg: m,
+            prevMsgStatus: m.deliveryStatus,
+          });
         }
       }
-      if (acked > 0 && !this.saveOrFail()) {
+      const now = this.now();
+      for (const f of flips) {
+        f.entry.status = 'delivered';
+        f.entry.lastAttemptAt = now;
+        // ≥1 recipient delivered ⇒ message delivered (DeliveryResult.ok semantics
+        // — "at least one", NOT "all": a still-pending peer does not block it, and
+        // per-recipient detail remains in recipientSnapshot for callers who need it).
+        if (f.msg.deliveryStatus !== 'delivered') f.msg.deliveryStatus = 'delivered';
+      }
+      if (flips.length > 0 && !this.saveOrFail()) {
+        // Roll back the in-memory flips so memory ↔ disk stay consistent.
+        for (const f of flips) {
+          f.entry.status = f.prevEntryStatus;
+          f.entry.lastAttemptAt = f.prevLastAttemptAt;
+          f.msg.deliveryStatus = f.prevMsgStatus;
+        }
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
       }
-      return { ok: true, acked };
+      return { ok: true, acked: flips.length };
     });
   }
 
