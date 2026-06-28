@@ -59,7 +59,8 @@ import {
 import type { Company } from '../../../company/types';
 import { useStore } from '../../stores';
 import ChannelItem from './ChannelItem';
-import { IconPlus, IconChevron, IconChevronDir } from '../icons';
+import { IconPlus, IconChevron, IconChevronDir, IconRefresh } from '../icons';
+import { hydrateChannelsCatalog } from '../../hooks/useChannelsHydration';
 import { FOCUS_RING } from '../focusRing';
 import { tokenAttrs } from '../../themes';
 import { useT } from '../../hooks/useT';
@@ -391,6 +392,10 @@ export interface ChannelsPanelViewProps {
   /** Direction the collapse chevron points — toward the screen edge the dock
    *  tucks into. Defaults to 'right' (sidebar-left / dock-right layout). */
   collapseDir?: 'left' | 'right';
+  /** When provided, render a refresh button that re-pulls the channel catalog +
+   *  members from the daemon (manual re-sync for when a workspace/agent that
+   *  came online isn't reflected yet). */
+  onRefresh?: () => void;
 }
 
 export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactElement {
@@ -406,6 +411,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
     onJoinDiscoverable,
     onCollapse,
     collapseDir = 'right',
+    onRefresh,
   } = props;
   const t = props.t ?? ((k: string) => k);
 
@@ -466,6 +472,19 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
           )}
         </span>
         <div className="flex items-center gap-0.5">
+          {onRefresh && (
+            <button
+              type="button"
+              className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+              onClick={onRefresh}
+              title={t('channels.refreshTooltip') || 'Refresh channels'}
+              aria-label={t('channels.refreshTooltip') || 'Refresh channels'}
+              data-channels-refresh
+              {...tokenAttrs('textSub', 'text')}
+            >
+              <IconRefresh size={11} />
+            </button>
+          )}
           <button
             ref={newBtnRef}
             type="button"
@@ -756,6 +775,25 @@ export function ChannelsPanel(): React.ReactElement {
     [company, createChannelDaemon],
   );
 
+  // Manual re-sync: re-pull the channel catalog + per-channel members from the
+  // daemon. For when something that came online (a workspace, an agent that
+  // joined) isn't reflected yet — the live event stream can miss/lag, so give
+  // the user an explicit refresh instead of only an automatic one.
+  const handleRefresh = useCallback(() => {
+    const bridge = useStore.getState().channelsRpc();
+    if (!bridge) return;
+    const s = useStore.getState();
+    const wsId = s.company?.ceoWorkspaceId ?? s.activeWorkspaceId ?? '';
+    if (!wsId) return;
+    void hydrateChannelsCatalog({
+      rpc: bridge.rpc,
+      workspaceId: wsId,
+      setChannels: s.setChannels,
+    }).then(() => {
+      pushToast({ level: 'info', message: t('channels.refreshedToast') || 'Channels refreshed.' });
+    });
+  }, [pushToast, t]);
+
   return (
     <ChannelsPanelView
       channels={channels}
@@ -769,6 +807,7 @@ export function ChannelsPanel(): React.ReactElement {
       onJoinDiscoverable={handleJoinDiscoverable}
       onCollapse={() => setChannelDockVisible(false)}
       collapseDir={sidebarPosition !== 'right' ? 'right' : 'left'}
+      onRefresh={handleRefresh}
       t={t}
     />
   );

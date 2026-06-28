@@ -596,6 +596,8 @@ export const ko = {
   'channels.archivedReadOnly': '보관된 채널은 읽기 전용입니다.',
   'channels.closeTooltip': '채널 닫기',
   'channels.closeViewTooltip': '대화 닫기 (채널은 목록에 남음)',
+  'channels.refreshTooltip': '채널 새로고침',
+  'channels.refreshedToast': '채널을 새로고침했습니다.',
   'channels.newChannelTooltip': '새 채널',
   'channels.composerPlaceholder': '메시지를 입력하세요…',
   'channels.composerAriaLabel': '채널 메시지 작성',
