@@ -3,6 +3,7 @@ import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createSurface, generateId } from '../../../shared/types';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
+import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
@@ -134,6 +135,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     const closedPtyId = pane.surfaces[idx].ptyId;
     if (closedPtyId && state.surfaceAgent) delete state.surfaceAgent[closedPtyId];
     if (closedPtyId && state.surfaceActivity) delete state.surfaceActivity[closedPtyId];
+    if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
 
     pane.surfaces.splice(idx, 1);
     if (pane.activeSurfaceId === surfaceId) {

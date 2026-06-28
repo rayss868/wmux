@@ -39,6 +39,14 @@ export function recordNudge(ptyId: string, now: number = Date.now()): void {
   stamps.set(ptyId, arr);
 }
 
+/** Forget a pane's nudge history. MUST be called when a pty is torn down (pane /
+ *  surface close) — otherwise (a) dead-pty entries accumulate (leak) and (b) a
+ *  REUSED ptyId would inherit the dead pane's count and start rate-limited,
+ *  silently suppressing a fresh pane's legit mentions (GLM review P1). */
+export function clearNudgesFor(ptyId: string): void {
+  stamps.delete(ptyId);
+}
+
 /** Test seam. */
 export function __resetNudgeRateLimitForTests(): void {
   stamps.clear();

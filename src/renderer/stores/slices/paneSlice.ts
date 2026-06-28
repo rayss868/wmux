@@ -12,6 +12,7 @@ import {
   publishPaneFocused,
 } from '../../events/publisher';
 import { t } from '../../i18n';
+import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 
 // Per-workspace leaf cap. xterm.js + node-pty memory scales linearly with
 // pane count, and the project memory budget targets ~200 MB for 10 panes
@@ -409,6 +410,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
           if (s.ptyId) {
             delete state.surfaceAgent[s.ptyId];
             delete state.surfaceActivity[s.ptyId];
+            clearNudgesFor(s.ptyId); // A5: don't let a reused ptyId inherit this pane's nudge cap
           }
         }
       }

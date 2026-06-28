@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   isNudgeRateLimited,
   recordNudge,
+  clearNudgesFor,
   __resetNudgeRateLimitForTests,
   NUDGE_RATE_LIMIT,
 } from '../channelMentionRateLimit';
@@ -34,5 +35,13 @@ describe('channelMentionRateLimit (A5 auto-nudge cap)', () => {
     for (let i = 0; i < MAX_NUDGES; i++) recordNudge('pty-A', t0);
     expect(isNudgeRateLimited('pty-A', t0)).toBe(true);
     expect(isNudgeRateLimited('pty-B', t0)).toBe(false);
+  });
+
+  it('clearNudgesFor frees the entry so a reused ptyId starts fresh (no stale cap, no leak)', () => {
+    const t0 = 1_000_000;
+    for (let i = 0; i < MAX_NUDGES; i++) recordNudge('pty-A', t0);
+    expect(isNudgeRateLimited('pty-A', t0)).toBe(true);
+    clearNudgesFor('pty-A'); // pane/surface closed → ptyId may be reused
+    expect(isNudgeRateLimited('pty-A', t0)).toBe(false);
   });
 });

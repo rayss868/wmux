@@ -177,11 +177,20 @@ export function flushMentions(
   }
   const delivered: string[] = [];
   for (const [ptyId, group] of byPty) {
-    // A5: suppress the auto-nudge if this pane has been nudged too often lately
-    // (runaway ping-pong). The tasks stay queued + unmarked, so the agent can
-    // still pull them via a2a_task_query and they'll auto-deliver once the burst
-    // subsides — only the automatic paste is withheld to break the loop.
-    if (deps.isRateLimited?.(ptyId)) continue;
+    // A5: rate-BOUND the auto-nudge if this pane has been nudged too often
+    // lately. This caps the RATE (not a hard stop) — once the burst subsides the
+    // window clears and auto-nudges resume; a true per-message chain depth isn't
+    // trackable (agents post freely). The tasks stay queued + unmarked so the
+    // agent can still pull them via a2a_task_query — only the automatic paste is
+    // withheld. NOTE: this can't distinguish a 1:1 ping-pong from legit fan-in
+    // (many senders → one pane); both are bounded. Log it (don't suppress
+    // silently — that's the very failure pattern this sprint is fixing).
+    if (deps.isRateLimited?.(ptyId)) {
+      console.warn(
+        `[channelMentionFlush] auto-nudge rate-capped for pty ${ptyId} — ${group.length} mention(s) stay queued (pull via a2a_task_query)`,
+      );
+      continue;
+    }
     const nudge = buildChannelMentionNudge(group);
     try {
       deps.deliverNudge(ptyId, nudge);
