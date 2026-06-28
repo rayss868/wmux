@@ -48,9 +48,11 @@ function makeDeps(overrides: Partial<MentionInboxDeps> = {}): {
   deps: MentionInboxDeps;
   created: CreatedTask[];
   published: Published[];
+  handled: Set<string>;
 } {
   const created: CreatedTask[] = [];
   const published: Published[] = [];
+  const handled = new Set<string>(); // stands in for the persisted handled set
   const deps: MentionInboxDeps = {
     getTask: () => undefined,
     createA2aTask: (t) => {
@@ -62,9 +64,13 @@ function makeDeps(overrides: Partial<MentionInboxDeps> = {}): {
     publish: (from, to, taskId, state, kind) => {
       published.push({ from, to, taskId, state, kind });
     },
+    isHandled: (id) => handled.has(id),
+    markHandled: (id) => {
+      handled.add(id);
+    },
     ...overrides,
   };
-  return { deps, created, published };
+  return { deps, created, published, handled };
 }
 
 describe('channelMentionTaskId', () => {
@@ -118,6 +124,26 @@ describe('routeChannelMentionToInbox', () => {
       state: 'submitted',
       kind: 'created',
     });
+  });
+
+  it('records the routed mention as handled (persisted backstop)', () => {
+    const { deps, handled } = makeDeps();
+    routeChannelMentionToInbox(makeMessage(), 'ws-me', [], deps);
+    expect(handled.has('chmention-ch-1-5')).toBe(true);
+  });
+
+  it('A3: does NOT re-route a mention already handled in a prior session (reload boot-replay)', () => {
+    const { deps, created } = makeDeps();
+    const msg = makeMessage();
+    // First session: routed + recorded as handled.
+    expect(routeChannelMentionToInbox(msg, 'ws-me', [], deps)).toHaveLength(1);
+    expect(created).toHaveLength(1);
+    // Simulate a RELOAD: the store is empty again (getTask still returns
+    // undefined here), and the daemon ring replays the same channel.message.
+    // The persisted handled set (isHandled) must stop a second task from being
+    // minted — no resurrection.
+    expect(routeChannelMentionToInbox(msg, 'ws-me', [], deps)).toEqual([]);
+    expect(created).toHaveLength(1); // still exactly one task ever created
   });
 
   it('pins to.paneId when the mention resolves to a live pane (ptyId snapshot matches)', () => {

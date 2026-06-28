@@ -49,6 +49,7 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { loadChannelHistory } from './useChannelsHydration';
 import { routeChannelMentionToInbox } from './channelMentionInbox';
+import { isChannelMentionHandled, markChannelMentionHandled } from './channelMentionHandled';
 import { findLeafPanes } from './a2aAddressing';
 import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
@@ -267,6 +268,8 @@ export function useChannelsEventSubscription(): void {
                 workspaceName: (id) =>
                   useStore.getState().workspaces.find((w) => w.id === id)?.name ?? id,
                 publish: publishA2aTask,
+                isHandled: isChannelMentionHandled,
+                markHandled: markChannelMentionHandled,
               });
               // Trigger the idle-immediate flush; requireIdle:true means only
               // now-idle target panes receive — busy panes wait for their Stop.

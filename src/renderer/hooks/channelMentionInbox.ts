@@ -64,6 +64,12 @@ export interface MentionInboxDeps {
     state: TaskState,
     kind: 'created' | 'updated' | 'cancelled',
   ) => void;
+  /** Durable (reload-surviving) "already routed this mention" check. The store
+   *  isn't persisted, so the in-memory getTask() guard misses after a reload —
+   *  this is the persisted backstop against boot-replay resurrection (A3). */
+  isHandled: (taskId: string) => boolean;
+  /** Record that this mention was routed (persisted). */
+  markHandled: (taskId: string) => void;
 }
 
 /** Deterministic, per-target task id for a channel mention — idempotent across
@@ -128,7 +134,11 @@ export function routeChannelMentionToInbox(
     // resolve to the SAME target (e.g. both fell back to ws-level) collapse here.
     if (seen.has(taskId)) continue;
     seen.add(taskId);
-    if (deps.getTask(taskId)) continue;
+    // Skip if already routed — in THIS session (getTask, live store) OR a prior
+    // one (isHandled, persisted). The persisted check is what stops a reload's
+    // boot-replay from resurrecting a completed mention task (A3): after a reload
+    // the store is empty so getTask misses, but isHandled still remembers.
+    if (deps.getTask(taskId) || deps.isHandled(taskId)) continue;
 
     const parts: Part[] = [{ kind: 'text', text: message.text }];
     const history: Message[] = [
@@ -163,6 +173,9 @@ export function routeChannelMentionToInbox(
       // immediately query the task (created-before-queryable race guard — same
       // ordering rule as the a2a.task.send path).
       deps.publish(message.workspaceId, selfWorkspaceId, taskId, 'submitted', 'created');
+      // Persist that we routed this mention so a later reload's boot-replay
+      // skips it (A3 — survives the empty-store window).
+      deps.markHandled(taskId);
       created.push(taskId);
     } catch {
       // Best-effort: never let inbox routing break channel message dispatch.
