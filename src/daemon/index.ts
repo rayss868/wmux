@@ -1628,6 +1628,20 @@ function registerRpcHandlers(
     return channelService.post(p);
   });
 
+  pipeServer.onRpc('a2a.channel.invite', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').InviteChannelParams;
+    if (!p.channelId || !p.invitedMember || !p.invitedMember.workspaceId || !p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'channelId, invitedMember{workspaceId,memberId}, and a server-resolved verifiedWorkspaceId are required',
+        },
+      };
+    }
+    return channelService.invite(p);
+  });
+
   // daemon.shutdown — gracefully terminate the daemon process. A2 makes
   // this RPC awaitable: the handler runs the full shutdown body (dumps,
   // state save, dispose) before returning, then defers the pipe stop and

@@ -77,6 +77,7 @@ const channelLeave = tools.get('channel_leave');
 const channelArchive = tools.get('channel_archive');
 const channelList = tools.get('channel_list');
 const channelRead = tools.get('channel_read');
+const channelInvite = tools.get('channel_invite');
 
 if (
   !channelCreate ||
@@ -85,7 +86,8 @@ if (
   !channelLeave ||
   !channelArchive ||
   !channelList ||
-  !channelRead
+  !channelRead ||
+  !channelInvite
 ) {
   throw new Error('channel tools failed to register');
 }
@@ -95,9 +97,10 @@ beforeEach(() => {
 });
 
 describe('channel_* tools: registration', () => {
-  it('registers all seven standard tools', () => {
+  it('registers all eight standard tools', () => {
     // channel_read exposes message history (the pull half of the attention
-    // model); it replaces the previously-deferred channel.history.
+    // model); channel_invite adds another workspace (the only path into a
+    // private channel).
     expect(channelCreate).toBeDefined();
     expect(channelPost).toBeDefined();
     expect(channelJoin).toBeDefined();
@@ -105,6 +108,7 @@ describe('channel_* tools: registration', () => {
     expect(channelArchive).toBeDefined();
     expect(channelList).toBeDefined();
     expect(channelRead).toBeDefined();
+    expect(channelInvite).toBeDefined();
   });
 
   it('does not register a channel_history tool (history is exposed via channel_read)', () => {
@@ -420,8 +424,58 @@ describe('channel_archive', () => {
   });
 });
 
+describe('channel_invite', () => {
+  it('forwards channelId + invitedMember + verifiedWorkspaceId to a2a.channel.invite (include_history default true)', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true });
+    const res = await channelInvite({
+      channel_id: 'ch-1',
+      invited_workspace_id: 'ws-2',
+      member_id: 'm-2',
+      member_name: 'Bob',
+    });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.invite', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      channelId: 'ch-1',
+      invitedMember: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+      includeHistory: true,
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('passes include_history:false through', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true });
+    await channelInvite({
+      channel_id: 'ch-1',
+      invited_workspace_id: 'ws-2',
+      member_id: 'm-2',
+      member_name: 'Bob',
+      include_history: false,
+    });
+    expect(mockSendRpc).toHaveBeenCalledWith(
+      'a2a.channel.invite',
+      expect.objectContaining({ includeHistory: false }),
+    );
+  });
+
+  it('surfaces a NOT_AUTHORIZED daemon error as isError', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: false,
+      error: { code: 'NOT_AUTHORIZED', message: 'Only a member may invite others to this channel' },
+    });
+    const res = await channelInvite({
+      channel_id: 'ch-1',
+      invited_workspace_id: 'ws-2',
+      member_id: 'm-2',
+      member_name: 'Bob',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('NOT_AUTHORIZED');
+  });
+});
+
 describe('FIRST_PARTY_METHODS allowlist (channel coverage)', () => {
-  it('grants the bundled first-party MCP server access to all nine a2a.channel.* methods', () => {
+  it('grants the bundled first-party MCP server access to all ten a2a.channel.* methods', () => {
     // Without these, the bundled Claude/Codex MCP server is deadlocked in
     // enforce mode (plans/first-party-mcp-trust.md §2).
     for (const m of [
@@ -434,6 +488,7 @@ describe('FIRST_PARTY_METHODS allowlist (channel coverage)', () => {
       'a2a.channel.join',
       'a2a.channel.leave',
       'a2a.channel.post',
+      'a2a.channel.invite',
     ] as const) {
       expect(
         FIRST_PARTY_METHODS.has(m),

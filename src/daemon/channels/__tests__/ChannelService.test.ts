@@ -994,6 +994,102 @@ describe('ChannelService', () => {
     });
   });
 
+  // ── P1b: invite (a member adds ANOTHER workspace) ────────────────
+  describe('invite', () => {
+    const alice = { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' };
+    const bob = { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' };
+
+    it('a member invites a non-member into a PRIVATE channel; invitee then sees it + full history', async () => {
+      const { svc } = makeService();
+      const priv = await svc.create({
+        name: 'team',
+        visibility: 'private',
+        createdBy: alice,
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!priv.ok) throw new Error('expected create ok');
+      await svc.post({ channelId: priv.channel.id, sender: alice, text: 'hi', verifiedWorkspaceId: 'ws-1' });
+      // Bob can't see the private channel yet.
+      expect(svc.get(priv.channel.id, 'ws-2')).toBeNull();
+      // Alice (member) invites Bob.
+      const r = await svc.invite({
+        channelId: priv.channel.id,
+        invitedMember: bob,
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(true);
+      // Bob now sees the channel AND its prior history (includeHistory default = full).
+      expect(svc.get(priv.channel.id, 'ws-2')?.id).toBe(priv.channel.id);
+      expect(svc.getMessages(priv.channel.id, undefined, 'ws-2')).toHaveLength(1);
+    });
+
+    it('rejects a non-member inviter with NOT_AUTHORIZED (public channel)', async () => {
+      const { svc } = makeService();
+      const pub = await svc.create({ name: 'general', visibility: 'public', createdBy: alice, verifiedWorkspaceId: 'ws-1' });
+      if (!pub.ok) throw new Error('expected create ok');
+      const r = await svc.invite({
+        channelId: pub.channel.id,
+        invitedMember: { workspaceId: 'ws-3', memberId: 'm-3', memberName: 'Carol' },
+        verifiedWorkspaceId: 'ws-9', // not a member
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      expect(r.error.code).toBe('NOT_AUTHORIZED');
+    });
+
+    it('hides a PRIVATE channel from a non-member inviter (CHANNEL_NOT_FOUND — no existence leak)', async () => {
+      const { svc } = makeService();
+      const priv = await svc.create({ name: 'secret', visibility: 'private', createdBy: alice, verifiedWorkspaceId: 'ws-1' });
+      if (!priv.ok) throw new Error('expected create ok');
+      const r = await svc.invite({
+        channelId: priv.channel.id,
+        invitedMember: bob,
+        verifiedWorkspaceId: 'ws-9',
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      expect(r.error.code).toBe('CHANNEL_NOT_FOUND');
+    });
+
+    it('rejects a duplicate invitee (DUPLICATE_MEMBER)', async () => {
+      const { svc } = makeService();
+      const pub = await svc.create({ name: 'general', visibility: 'public', createdBy: alice, verifiedWorkspaceId: 'ws-1' });
+      if (!pub.ok) throw new Error('expected create ok');
+      const first = await svc.invite({ channelId: pub.channel.id, invitedMember: bob, verifiedWorkspaceId: 'ws-1' });
+      expect(first.ok).toBe(true);
+      const dup = await svc.invite({ channelId: pub.channel.id, invitedMember: bob, verifiedWorkspaceId: 'ws-1' });
+      expect(dup.ok).toBe(false);
+      if (dup.ok) throw new Error('expected !ok');
+      expect(dup.error.code).toBe('DUPLICATE_MEMBER');
+    });
+
+    it('includeHistory:false starts the invitee at the current seq (no older history)', async () => {
+      const { svc } = makeService();
+      const priv = await svc.create({ name: 'team', visibility: 'private', createdBy: alice, verifiedWorkspaceId: 'ws-1' });
+      if (!priv.ok) throw new Error('expected create ok');
+      await svc.post({ channelId: priv.channel.id, sender: alice, text: 'old', verifiedWorkspaceId: 'ws-1' });
+      const r = await svc.invite({
+        channelId: priv.channel.id,
+        invitedMember: bob,
+        includeHistory: false,
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(true);
+      expect(svc.getMessages(priv.channel.id, undefined, 'ws-2')).toHaveLength(0);
+    });
+
+    it('rejects invites to an archived channel (CHANNEL_ARCHIVED)', async () => {
+      const { svc } = makeService();
+      const pub = await svc.create({ name: 'general', visibility: 'public', createdBy: alice, verifiedWorkspaceId: 'ws-1' });
+      if (!pub.ok) throw new Error('expected create ok');
+      await svc.archive({ channelId: pub.channel.id, archivedBy: 'ws-1', verifiedWorkspaceId: 'ws-1' });
+      const r = await svc.invite({ channelId: pub.channel.id, invitedMember: bob, verifiedWorkspaceId: 'ws-1' });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      expect(r.error.code).toBe('CHANNEL_ARCHIVED');
+    });
+  });
+
   describe('#288: join visibility gate (fail-closed private join)', () => {
     it('rejects a non-member self-join of a private channel with CHANNEL_NOT_FOUND (no membership, no persist)', async () => {
       const { svc, writer } = makeService();

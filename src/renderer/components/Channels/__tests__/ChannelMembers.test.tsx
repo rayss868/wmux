@@ -7,7 +7,7 @@
 //     behind a useState-gated popover and store reads that the node-env harness
 //     can't drive, so we pin the load-bearing wiring in source (same lockstep
 //     pattern as the dock + company-mode guards). Protects the spec-review
-//     fixes from silent regression: self-only leave, public-only join,
+//     fixes from silent regression: self-only leave, member-can-invite (P1b),
 //     setActiveChannel(null) on self-leave.
 
 import { describe, it, expect } from 'vitest';
@@ -34,8 +34,8 @@ describe('ChannelMembersView — pure view', () => {
         selfMemberId="local-ui"
         joinableWorkspaces={[]}
         canJoin={false}
-        onJoin={() => {}}
-        onLeave={() => {}}
+        onJoin={() => undefined}
+        onLeave={() => undefined}
         t={(k) => k}
       />,
     );
@@ -51,8 +51,9 @@ describe('ChannelMembers — wiring regression guard', () => {
   const members = read('ChannelMembers.tsx');
   const view = read('ChannelView.tsx');
 
-  it('container wires join + leave daemon thunks', () => {
+  it('container wires join + invite + leave daemon thunks', () => {
     expect(members).toContain('joinChannelDaemon');
+    expect(members).toContain('inviteChannelDaemon');
     expect(members).toContain('leaveChannelDaemon');
   });
 
@@ -65,9 +66,14 @@ describe('ChannelMembers — wiring regression guard', () => {
     expect(members).toMatch(/m\.workspaceId === selfWorkspaceId && m\.memberId === selfMemberId/);
   });
 
-  it('join is public, non-archived channels only (private join deferred)', () => {
-    expect(members).toMatch(/visibility === 'public'/);
+  it('P1b: a member may invite another workspace (incl. private); join no longer public-only', () => {
+    // canJoin no longer gates on visibility==='public' — a member can invite to
+    // a private channel too. The picker still excludes archived channels.
+    expect(members).not.toMatch(/visibility === 'public'/);
     expect(members).toMatch(/status !== 'archived'/);
+    // self-join vs invite branch: adding ANOTHER workspace routes through invite.
+    expect(members).toContain('inviteChannelDaemon');
+    expect(members).toMatch(/workspaceId === selfWorkspaceId/);
   });
 
   it('ChannelView mounts the members control in the header slot', () => {

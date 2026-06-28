@@ -125,4 +125,5 @@ export function registerA2aChannelRpc(
   router.register('a2a.channel.join', (p) => forward('a2a.channel.join', p, true));
   router.register('a2a.channel.leave', (p) => forward('a2a.channel.leave', p, true));
   router.register('a2a.channel.post', (p) => forward('a2a.channel.post', p, true));
+  router.register('a2a.channel.invite', (p) => forward('a2a.channel.invite', p, true));
 }

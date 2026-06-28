@@ -130,7 +130,7 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'a2a.task.update',
   'a2a.task.cancel',
   'a2a.broadcast',
-  // a2a channels — nine standard channel_* MCP tools
+  // a2a channels — standard channel_* MCP tools
   'a2a.channel.list',
   'a2a.channel.get',
   'a2a.channel.getMessages',
@@ -140,6 +140,7 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'a2a.channel.join',
   'a2a.channel.leave',
   'a2a.channel.post',
+  'a2a.channel.invite',
   // company mode (all wmux.internal — undeclarable, hence the need for this list)
   'company.a2a.whoami',
   'company.a2a.send',

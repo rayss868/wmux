@@ -349,6 +349,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.channel.join':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.leave':       { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.post':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.invite':      { capability: 'a2a.channel.send', riskClass: 'a2a' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.

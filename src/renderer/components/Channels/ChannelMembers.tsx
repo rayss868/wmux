@@ -11,12 +11,14 @@
 //   - ChannelMembersControl — store-connected; resolves identity, the joinable
 //     workspace list, and wires join/leave + the self-leave view cleanup.
 //
-// Scope (v1, locked by design + spec review):
+// Scope (P1b — invite):
 //   - Remove (✕) is SELF-ONLY and shows on the exact (self ws, self memberId)
 //     row — you can leave, not eject (matches daemon leave() capability).
-//   - "+ member" appears only for PUBLIC, non-archived channels (private join is
-//     an unresolved daemon-authz question — design Security note). The picker
-//     adds one of the human's own workspaces.
+//   - "+ member" shows for any non-archived channel with a resolvable self ws.
+//     A MEMBER may add any non-member workspace (invite — the only path into a
+//     private channel; daemon gates on the inviter being a member). A NON-member
+//     can only self-join (public), so the picker offers just their own ws.
+//     Adding self → joinChannelDaemon (self-pin); adding another → inviteChannelDaemon.
 //   - On a successful self-leave of the active channel, the container clears
 //     activeChannelId so the dock doesn't show a dead/blank pane.
 //
@@ -189,30 +191,48 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
   const workspaceLabel = (workspaceId: string): string =>
     workspaces.find((w) => w.id === workspaceId)?.name ?? workspaceId;
 
-  // The human adds one of their OWN workspaces (tabs) that isn't a member yet.
-  const joinableWorkspaces: JoinableWorkspace[] = workspaces
-    .filter((w) => !members.some((m) => m.workspaceId === w.id))
-    .map((w) => ({ id: w.id, name: w.name }));
+  const selfIsMember =
+    !!selfWorkspaceId && members.some((m) => m.workspaceId === selfWorkspaceId);
 
-  // v1: join only public, non-archived channels (private join = unresolved
-  // daemon-authz question, design Security note). Need a resolvable self ws.
-  const canJoin =
-    channel.visibility === 'public' && channel.status !== 'archived' && !!selfWorkspaceId;
+  // What the picker offers (P1b):
+  //  - a MEMBER may add any non-member workspace (invite — works for private too)
+  //  - a NON-member may only self-join, so offer just their own workspace
+  const joinableWorkspaces: JoinableWorkspace[] = (
+    selfIsMember
+      ? workspaces.filter((w) => !members.some((m) => m.workspaceId === w.id))
+      : workspaces.filter(
+          (w) => w.id === selfWorkspaceId && !members.some((m) => m.workspaceId === w.id),
+        )
+  ).map((w) => ({ id: w.id, name: w.name }));
+
+  // Show the picker for any non-archived channel with a resolvable self ws.
+  // A private channel is only ever visible to its members, so if this popover
+  // is open on one, the self ws is already a member → invite is valid (P1b).
+  const canJoin = channel.status !== 'archived' && !!selfWorkspaceId;
 
   const handleJoin = (workspaceId: string): void => {
     const label = workspaceLabel(workspaceId);
-    void useStore
-      .getState()
-      .joinChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, workspaceId)
-      .then((result) => {
-        if (result.ok) {
-          pushToast({ level: 'info', message: t('channels.joinedToast', { workspace: label, channel: channel.name }) });
-        } else if (result.error.message.includes('DUPLICATE')) {
-          pushToast({ level: 'info', message: t('channels.alreadyMemberToast', { workspace: label, channel: channel.name }) });
-        } else {
-          pushToast({ level: 'error', message: t('channels.joinFailedToast', { workspace: label }) });
-        }
-      });
+    // Self-join (add your OWN ws to a public channel) vs invite (a member adds
+    // ANOTHER ws — the only path into a private channel). The daemon enforces
+    // the inviter-is-member gate for invite either way.
+    const isSelf = workspaceId === selfWorkspaceId;
+    const action =
+      isSelf || !selfWorkspaceId
+        ? useStore
+            .getState()
+            .joinChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, workspaceId)
+        : useStore
+            .getState()
+            .inviteChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, selfWorkspaceId);
+    void action.then((result) => {
+      if (result.ok) {
+        pushToast({ level: 'info', message: t('channels.joinedToast', { workspace: label, channel: channel.name }) });
+      } else if (result.error.message.includes('DUPLICATE')) {
+        pushToast({ level: 'info', message: t('channels.alreadyMemberToast', { workspace: label, channel: channel.name }) });
+      } else {
+        pushToast({ level: 'error', message: t('channels.joinFailedToast', { workspace: label }) });
+      }
+    });
   };
 
   const handleLeave = (memberId: string, workspaceId: string): void => {

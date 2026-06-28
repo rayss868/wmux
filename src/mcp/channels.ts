@@ -1,6 +1,6 @@
 // ─── Channel tools for the bundled MCP server ───────────────────────────
 //
-// Seven standard MCP tools that expose the `a2a.channel.*` pipe RPC surface to
+// Eight standard MCP tools that expose the `a2a.channel.*` pipe RPC surface to
 // first-party MCP clients (Claude Code, Codex CLI). Each tool is a thin
 // pass-through over `sendRpc` plus a per-call workspaceId resolved by the
 // caller (index.ts injects `resolveWorkspaceId` so tests can stub it
@@ -107,7 +107,7 @@ async function callChannelRpc(
   }
 }
 
-/** Register the seven standard channel tools on the given MCP server. The
+/** Register the eight standard channel tools on the given MCP server. The
  *  parent module injects `resolveWorkspaceId` so workspace identity follows
  *  the same verification rules as the rest of the bundled server (verified
  *  PID-map hit first, env-hint fallback on miss). */
@@ -317,6 +317,40 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       };
       if (since_seq !== undefined) params['sinceSeq'] = since_seq;
       return callChannelRpc('a2a.channel.getMessages' as RpcMethod, params);
+    },
+  );
+
+  // ── channel_invite ────────────────────────────────────────────────
+  // Add ANOTHER workspace to a channel. Unlike channel_join (self-join), this
+  // adds a different workspace and is the only way into a PRIVATE channel.
+  // Any member may invite (P1b authz); the daemon gates on the caller being a
+  // current member. The invited workspace gains history + live messages.
+  server.tool(
+    'channel_invite',
+    'Invite ANOTHER workspace/agent to a channel you belong to. This is the only way to add someone to a private channel (you cannot self-join one). Any member may invite; the invited workspace gains the channel history and live messages. Use channel_join to add YOURSELF to a public channel instead.',
+    {
+      channel_id: z.string().describe('Target channel id.'),
+      invited_workspace_id: z.string().describe('Workspace id of the agent/workspace to add.'),
+      member_id: memberIdSchema,
+      member_name: memberNameSchema,
+      include_history: z
+        .boolean()
+        .optional()
+        .describe('When true (default) the invited member sees the full channel history; false starts them at the current message.'),
+    },
+    async ({ channel_id, invited_workspace_id, member_id, member_name, include_history }) => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      return callChannelRpc('a2a.channel.invite' as RpcMethod, {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+        channelId: channel_id,
+        invitedMember: {
+          workspaceId: invited_workspace_id,
+          memberId: member_id,
+          memberName: member_name,
+        },
+        includeHistory: include_history !== false,
+      });
     },
   );
 }

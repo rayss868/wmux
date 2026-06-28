@@ -168,6 +168,24 @@ export interface LeaveChannelParams {
   verifiedWorkspaceId: string;
 }
 
+export interface InviteChannelParams {
+  channelId: string;
+  /** The workspace/agent being ADDED. Unlike join(), the invitee is NOT the
+   *  caller — invite() adds a DIFFERENT workspace, gated by the inviter being
+   *  a current member (P1b authz decision A: any member may invite). The
+   *  invitee's workspaceId is the caller-supplied target (the one membership
+   *  mutation that is not self-pinned); same-machine identity is forgeable
+   *  (#113, accepted ceiling) so this sets the intended model, not a hard gate. */
+  invitedMember: SenderRef;
+  /** When false, the invitee's `historyFromSeq` is set to the channel's current
+   *  `nextSeq` (no older history). Default (undefined) = full history (0), so an
+   *  invited teammate can catch up — mirrors join()'s history rule. */
+  includeHistory?: boolean;
+  /** D5 — server-resolved INVITER workspace. The authz gate requires THIS to be
+   *  a current member; it is never the invitee. */
+  verifiedWorkspaceId: string;
+}
+
 export interface PostMessageParams {
   channelId: string;
   sender: SenderRef;
@@ -633,6 +651,76 @@ export class ChannelService {
         // Clear the emptySince stamp we just set.
         if (members.length === 1) delete channel.emptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel leave' } };
+      }
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Invite (add) ANOTHER workspace to a channel (P1b). Unlike join() — which
+   * self-pins the joiner so a caller can only add ITSELF — invite() adds the
+   * caller-supplied `invitedMember` workspace, gated by the INVITER being a
+   * current member (decision A: any member may invite). This is the legitimate
+   * path into a PRIVATE channel (you cannot self-join one).
+   *
+   * Gate order mirrors join()/archive():
+   *   - `CHANNEL_NOT_FOUND` if the id is unknown OR the inviter cannot SEE a
+   *     private channel (symmetric existence-hiding with get/join/getMessages).
+   *   - `NOT_AUTHORIZED` if the verified inviter is not a current member.
+   *   - `CHANNEL_ARCHIVED` if the channel is read-only.
+   *   - `DUPLICATE_MEMBER` if the invitee (workspace, memberId) is already in.
+   *   - `PERSIST_FAILED` on a writer failure (rolled back).
+   *
+   * Authz is "soft governance": same-machine identity is forgeable (#113,
+   * accepted ceiling), so this encodes the intended model rather than a hard
+   * cross-user boundary. The grant is real, though — it adds a workspace to a
+   * private channel's member list, unlocking its history + live fan-out.
+   */
+  async invite(params: InviteChannelParams): Promise<EmptyResult> {
+    return this.withChannelLock(params.channelId, async () => {
+      const channel = this.state.channels.find((c) => c.id === params.channelId);
+      if (!channel) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
+      }
+      // Hide private existence from non-members (same as join()/read paths).
+      if (!this.isVisibleTo(channel, params.verifiedWorkspaceId)) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
+      }
+      const members = this.state.members[channel.id] ?? [];
+      // P1b authz (A): the verified INVITER must be a current member. Checked
+      // against the server-resolved workspace, never a client-supplied field.
+      if (!members.some((m) => m.workspaceId === params.verifiedWorkspaceId)) {
+        return {
+          ok: false,
+          error: { code: 'NOT_AUTHORIZED', message: 'Only a member may invite others to this channel' },
+        };
+      }
+      if (channel.status === 'archived') {
+        return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot invite to an archived channel' } };
+      }
+      const invitee = params.invitedMember;
+      if (members.some((m) => m.workspaceId === invitee.workspaceId && m.memberId === invitee.memberId)) {
+        return { ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } };
+      }
+      const previousEmptySince = channel.emptySince;
+      if (channel.emptySince !== undefined) {
+        delete channel.emptySince;
+      }
+      const now = this.now();
+      const historyFromSeq = params.includeHistory === false ? channel.nextSeq : 0;
+      members.push({
+        // The invitee is the caller-supplied TARGET (NOT verifiedWorkspaceId) —
+        // see the method doc + InviteChannelParams. Gated by inviter-is-member.
+        workspaceId: invitee.workspaceId,
+        memberId: invitee.memberId,
+        joinedAt: now,
+        historyFromSeq,
+      });
+      this.state.members[channel.id] = members;
+      if (!this.saveOrFail()) {
+        members.pop();
+        channel.emptySince = previousEmptySince;
+        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel invite' } };
       }
       return { ok: true };
     });
