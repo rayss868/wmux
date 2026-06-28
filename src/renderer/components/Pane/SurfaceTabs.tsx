@@ -55,6 +55,10 @@ export default function SurfaceTabs({
   const [paneEditing, setPaneEditing] = useState(false);
   const [paneEditName, setPaneEditName] = useState('');
   const paneInputRef = useRef<HTMLInputElement>(null);
+  // Escape must CANCEL the rename, but Escape exits edit mode by unmounting the
+  // input, which fires onBlur=commitPaneRename first and would SAVE. This flag
+  // lets that blur skip persistence so Escape discards (CodeRabbit review).
+  const paneRenameCancelRef = useRef(false);
 
   // Double-click a tab to rename it (a free-text "mark" so a powershell is
   // easier to recognise). Edits surface.title directly — nothing auto-updates
@@ -104,10 +108,19 @@ export default function SurfaceTabs({
   const startPaneRename = () => {
     // Suppress the rename a double-click triggers right after a tab drag.
     if (Date.now() - dragStartTimeRef.current < 300) return;
+    // Clear any stale cancel flag from a prior edit whose unmount-blur didn't
+    // fire (e.g. parent unmounted) — else this rename would refuse to save (GLM).
+    paneRenameCancelRef.current = false;
     setPaneEditName(paneLabelMap[paneId] ?? '');
     setPaneEditing(true);
   };
   const commitPaneRename = () => {
+    // Escape set the cancel flag — discard without persisting and reset it.
+    if (paneRenameCancelRef.current) {
+      paneRenameCancelRef.current = false;
+      setPaneEditing(false);
+      return;
+    }
     // Empty clears the custom label (reverts to the auto name). The renderer is
     // not the label authority — route through MetadataStore so the change
     // persists (metadata.json) and relays back via pane.metadata.changed.
@@ -165,7 +178,12 @@ export default function SurfaceTabs({
           onBlur={commitPaneRename}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commitPaneRename();
-            else if (e.key === 'Escape') setPaneEditing(false);
+            else if (e.key === 'Escape') {
+              // Flag the cancel BEFORE exiting edit mode so the unmount-blur's
+              // commitPaneRename discards instead of saving.
+              paneRenameCancelRef.current = true;
+              setPaneEditing(false);
+            }
             e.stopPropagation();
           }}
           onClick={(e) => e.stopPropagation()}

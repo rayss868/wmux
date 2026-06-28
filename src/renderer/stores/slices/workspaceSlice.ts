@@ -443,13 +443,23 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // a number on the next split).
       for (const ws of state.workspaces) {
         const wsLeaves = collectLeafPanes(ws.rootPane);
-        const missingOrdinal = wsLeaves.some((l) => typeof l.ordinal !== 'number');
-        if (missingOrdinal) {
-          ws.nextPaneOrdinal = assignPaneOrdinals(ws.rootPane, 1);
-        } else {
-          const maxLeaf = wsLeaves.reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0);
-          ws.nextPaneOrdinal = Math.max(ws.nextPaneOrdinal ?? 0, maxLeaf + 1);
+        // Backfill ONLY leaves missing an ordinal, numbering them PAST the current
+        // max — a partial gap (e.g. one freshly-added leaf) must NOT renumber panes
+        // that already have stable ordinals, which would shuffle their auto-names
+        // and any labels keyed off them (CodeRabbit review). When every leaf already
+        // has one this just recomputes the high-water; when all are missing (pre-P2)
+        // it assigns 1..N in the same DFS order as assignPaneOrdinals.
+        let maxLeaf = wsLeaves.reduce(
+          (m, l) => Math.max(m, typeof l.ordinal === 'number' ? l.ordinal : 0),
+          0,
+        );
+        for (const l of wsLeaves) {
+          if (typeof l.ordinal !== 'number') {
+            maxLeaf += 1;
+            l.ordinal = maxLeaf;
+          }
         }
+        ws.nextPaneOrdinal = Math.max(ws.nextPaneOrdinal ?? 0, maxLeaf + 1);
       }
       // Workspace ordinals: honor existing wsOrdinals, assign any missing past
       // the high-water, then persist the advanced global counter.

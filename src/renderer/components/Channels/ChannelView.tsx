@@ -255,6 +255,10 @@ export interface ChannelViewContentProps {
   /** Archive the channel (one-way). Provided only when the viewer may archive
    *  it (the creator). Absent → no archive affordance is rendered. */
   onArchive?: () => void;
+  /** Page older persisted messages in from the daemon. Called with the earliest
+   *  currently-loaded seq; resolves to the number of messages fetched (0 ⇒ the
+   *  persisted floor is reached). Absent → local-window paging only (tests). */
+  onLoadEarlier?: (beforeSeq: number) => Promise<number>;
   /** Translator — defaults to identity. Tests pass a stub. */
   t?: (key: string) => string;
   /** Wrapper rendered after the message list; the composer lives here. */
@@ -272,6 +276,7 @@ export function ChannelViewContent({
   onClose,
   onLeave,
   onArchive,
+  onLoadEarlier,
   composerSlot,
   membersSlot,
   t: tProp,
@@ -286,16 +291,47 @@ export function ChannelViewContent({
   );
   // P3b: render only the most recent `shownCount`; "load earlier" grows it.
   const [shownCount, setShownCount] = useState(SCROLLBACK_PAGE);
+  // Daemon-paging floor: set once onLoadEarlier returns nothing new, so the
+  // "load earlier" affordance stops offering a fetch that can't progress.
+  const [reachedHistoryStart, setReachedHistoryStart] = useState(false);
   const windowed = useMemo(
     () => (visible.length > shownCount ? visible.slice(visible.length - shownCount) : visible),
     [visible, shownCount],
   );
   const hiddenEarlier = visible.length - windowed.length;
+  // "Load earlier": grow the local window, and when it reaches the start of the
+  // hydrated set, page the previous window in from the daemon (Codex review). seq
+  // starts at 1, so the persisted floor is max(viewer.historyFromSeq, 1).
+  const earliestSeq = visible.length > 0 ? visible[0].seq : 0;
+  const floorSeq = Math.max(viewer?.historyFromSeq ?? 0, 1);
+  const moreOnDaemon = !!onLoadEarlier && !reachedHistoryStart && earliestSeq > floorSeq;
+  const canLoadEarlier = hiddenEarlier > 0 || moreOnDaemon;
+  const handleLoadEarlier = useCallback(() => {
+    setShownCount((c) => c + SCROLLBACK_PAGE);
+    if (!onLoadEarlier || reachedHistoryStart) return;
+    const earliest = visible.length > 0 ? visible[0].seq : 0;
+    const floor = Math.max(viewer?.historyFromSeq ?? 0, 1);
+    if (earliest <= floor) return; // already at the persisted floor
+    void onLoadEarlier(earliest).then((loaded) => {
+      if (loaded === 0) setReachedHistoryStart(true);
+    });
+  }, [visible, viewer, onLoadEarlier, reachedHistoryStart]);
   // P3c: in-channel message search. Searches ALL viewer-visible messages (not
   // just the scrollback window) so old context is findable; an active query
   // bypasses the window and shows every match.
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
+  // Reset channel-local view state on channel switch — ChannelViewContent is
+  // reused across switches, so without this the scrollback window, the search
+  // query/visibility, and the archive-arm/daemon-paging flags would leak into
+  // the next channel (CodeRabbit review).
+  useEffect(() => {
+    setShownCount(SCROLLBACK_PAGE);
+    setSearchOpen(false);
+    setQuery('');
+    setArchiveArmed(false);
+    setReachedHistoryStart(false);
+  }, [channel.id]);
   const trimmedQuery = query.trim().toLowerCase();
   const matched = useMemo(
     () => (trimmedQuery ? visible.filter((m) => m.text.toLowerCase().includes(trimmedQuery)) : null),
@@ -461,15 +497,16 @@ export function ChannelViewContent({
           )
         ) : (
           <>
-            {matched === null && hiddenEarlier > 0 && (
+            {matched === null && canLoadEarlier && (
               <button
                 type="button"
                 data-channels-load-earlier
-                onClick={() => setShownCount((c) => c + SCROLLBACK_PAGE)}
+                onClick={handleLoadEarlier}
                 className={`w-full py-1 text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
                 {...tokenAttrs('textMuted', 'text')}
               >
-                {t('channels.loadEarlier') || 'Load earlier'} ({hiddenEarlier})
+                {t('channels.loadEarlier') || 'Load earlier'}
+                {hiddenEarlier > 0 ? ` (${hiddenEarlier})` : ''}
               </button>
             )}
             {rendered.map((m) => {
@@ -574,9 +611,14 @@ export function ChannelView(): React.ReactElement | null {
   // company CEO when set, else the active workspace).
   const selfWs = company?.ceoWorkspaceId ?? activeWorkspaceId ?? '';
   // The X = LEAVE the channel (removes this workspace's UI membership), then
-  // close the view. Only offered when self is actually a member — a public
-  // channel you're previewing but haven't joined shows no leave affordance.
-  const selfIsMember = !!selfWs && members.some((m) => m.workspaceId === selfWs);
+  // close the view. Gate on the ACTUAL (selfWs, 'local-ui') GUI member row, not
+  // just any member of this workspace: handleLeave always removes memberId
+  // 'local-ui', so a workspace present only via an agent member (e.g. 'lead')
+  // would show the X and then always fail with NOT_A_MEMBER (Codex review).
+  // Agent-only membership — and a public channel you're only previewing — show
+  // no leave affordance.
+  const selfIsMember =
+    !!selfWs && members.some((m) => m.workspaceId === selfWs && m.memberId === 'local-ui');
   const handleLeave = useCallback(() => {
     if (!activeChannelId || !selfWs) return;
     // memberId 'local-ui' is the human/GUI member id (one per workspace).
@@ -602,6 +644,27 @@ export function ChannelView(): React.ReactElement | null {
       if (!res.ok) pushToast({ message: res.error.message, level: 'error' });
     });
   }, [activeChannelId, selfWs, archiveChannelDaemon, pushToast]);
+  // P3b+: page OLDER persisted history in from the daemon. Channel-open hydration
+  // only fetches the most recent SCROLLBACK_PAGE messages, so a channel with more
+  // than that could never reach its older messages via the local window alone
+  // (Codex review). Called with the earliest currently-loaded seq; the helper
+  // fetches the SCROLLBACK_PAGE window just before it and merges by seq (dedup).
+  // Resolves to the number fetched (0 ⇒ persisted floor reached → stop offering).
+  const handleLoadEarlier = useCallback(
+    (beforeSeq: number): Promise<number> => {
+      const bridge = useStore.getState().channelsRpc();
+      if (!bridge || !selfWs || !activeChannelId) return Promise.resolve(0);
+      return loadChannelHistory({
+        rpc: bridge.rpc,
+        channelId: activeChannelId,
+        nextSeq: beforeSeq, // helper computes sinceSeq = beforeSeq - limit
+        workspaceId: selfWs,
+        apply: useStore.getState().hydrateChannelMessages,
+        limit: SCROLLBACK_PAGE,
+      });
+    },
+    [selfWs, activeChannelId],
+  );
 
   // Pick a stable viewer — first member whose workspaceId matches the
   // current renderer's workspace (the company's `ceoWorkspaceId` is the
@@ -662,13 +725,22 @@ export function ChannelView(): React.ReactElement | null {
       // doesn't mark messages received. NOTE: the flip is persisted on the daemon
       // and visible to the sender's NEXT poll/reopen (agents poll getMessages, so
       // they see it); live push to an already-open sender view is a follow-up.
-      if (disposed || !loaded || nextSeq <= 1) return;
+      if (disposed || !loaded) return;
+      // Compute uptoSeq from the messages ACTUALLY in the store, not the catalog
+      // row's nextSeq: appendMessageFromEvent/hydrateChannelMessages never advance
+      // channels[].nextSeq, so a catalog hydrated before later messages arrived
+      // leaves it stale (== 1). The old `nextSeq - 1` guard then skipped the ack
+      // for live messages, stranding the sender's deliveryStatus at 'pending' (Codex).
+      const stored = useStore.getState().channelMessages[activeChannelId] ?? [];
+      let uptoSeq = 0;
+      for (const m of stored) if (m.seq > uptoSeq) uptoSeq = m.seq;
+      if (uptoSeq < 1) return;
       void bridge
         .mutateLocal('a2a.channel.ack', {
           channelId: activeChannelId,
           workspaceId: selfWs,
           verifiedWorkspaceId: selfWs,
-          uptoSeq: nextSeq - 1,
+          uptoSeq,
         })
         .catch(() => undefined);
     });
@@ -697,6 +769,7 @@ export function ChannelView(): React.ReactElement | null {
         onClose={handleClose}
         onLeave={selfIsMember ? handleLeave : undefined}
         onArchive={canArchive ? handleArchive : undefined}
+        onLoadEarlier={handleLoadEarlier}
         t={t}
         membersSlot={<ChannelMembersControl channel={channel} />}
         composerSlot={

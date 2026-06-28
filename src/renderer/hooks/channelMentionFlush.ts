@@ -23,7 +23,7 @@
 // (`useChannelsEventSubscription`) wires the real store actions + PTY writer.
 
 import type { Task, PaneLeaf } from '../../shared/types';
-import { resolvePaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, resolveSenderPaneAddress } from './a2aAddressing';
 
 /** Task-id prefix minted by `channelMentionTaskId` (channelMentionInbox.ts). A
  *  channel-mention inbox task is identified structurally by this prefix — no
@@ -93,13 +93,20 @@ export function buildChannelMentionNudge(
 export function resolveTaskTargetPty(task: Task, leaves: PaneLeaf[]): string | null {
   const to = task.metadata.to;
   if (!to.paneId) return null;
+  if (to.ptyId) {
+    // Resolve by the route-time ptyId snapshot, NOT paneId+active-surface: a pane
+    // can hold several terminal surfaces and resolvePaneAddress(paneId-only) picks
+    // the active/first one, which may not be the originally-mentioned agent —
+    // leaving a still-alive mention queued forever (CodeRabbit review). Deliver
+    // ONLY when that exact pty is still live in the SAME pane; a restarted pane
+    // (pty replaced, a successor agent now holding it) fails closed to null so we
+    // never paste the old mention into the wrong agent (codex round-5 P2).
+    const addr = resolveSenderPaneAddress(leaves, to.ptyId);
+    return addr && addr.paneId === to.paneId ? addr.ptyId : null;
+  }
+  // No ptyId snapshot (legacy/human pane target): resolve by paneId/surfaceId.
   const r = resolvePaneAddress(leaves, to.paneId, to.surfaceId ?? '');
   if ('error' in r) return null;
-  // Restart fail-close: the route-time ptyId snapshot must still match the
-  // pane's CURRENT live pty. If the pane restarted, a successor agent now holds
-  // that paneId/surfaceId — delivering would paste the old mention into the
-  // WRONG agent (codex round-5 P2). A task with no snapshot keeps the resolved pty.
-  if (to.ptyId && r.ptyId !== to.ptyId) return null;
   return r.ptyId;
 }
 

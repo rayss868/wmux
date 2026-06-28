@@ -692,9 +692,15 @@ export function ChannelsPanel(): React.ReactElement {
 
   // Channel ids the self workspace is a member of — drives the joined vs
   // discoverable split in the view. O(channels) but the catalog is small.
-  const memberChannelIds = useMemo(() => {
+  const memberChannelIds = useMemo<Set<string> | undefined>(() => {
+    // Until identity resolves, return undefined (NOT an empty set): the view's
+    // isMember then falls back to "every channel is joined" (the old flat list).
+    // An empty set instead would misclassify every public channel as discoverable
+    // and hide private ones entirely on the boot/no-workspace render, and
+    // handleJoinDiscoverable bails in that same state — a broken Discover view
+    // (CodeRabbit review).
+    if (!selfWorkspaceId) return undefined;
     const ids = new Set<string>();
-    if (!selfWorkspaceId) return ids;
     for (const [cid, members] of Object.entries(channelMembers)) {
       if (members.some((m) => m.workspaceId === selfWorkspaceId)) ids.add(cid);
     }

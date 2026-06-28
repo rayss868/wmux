@@ -941,7 +941,10 @@ export class ChannelService {
           continue;
         }
         const paneId = typeof mn.paneId === 'string' ? mn.paneId : '';
-        const key = `${mn.workspaceId} ${paneId}`;
+        // Collision-free dedup key: JSON-encode the (workspaceId, paneId) pair so
+        // no separator-substring ambiguity can fold two distinct targets onto one
+        // key and silently drop the later mention (review-team: codex+GLM).
+        const key = JSON.stringify([mn.workspaceId, paneId]);
         if (mentionedKeys.has(key)) continue;
         mentionedKeys.add(key);
         mentions.push({
@@ -1069,17 +1072,23 @@ export class ChannelService {
       }> = [];
       for (const m of msgs) {
         if (m.seq > params.uptoSeq) continue;
-        const entry = (m.recipientSnapshot ?? []).find(
-          (r) => r.workspaceId === params.verifiedWorkspaceId,
-        );
-        if (entry && entry.status === 'pending') {
-          flips.push({
-            entry,
-            prevEntryStatus: entry.status,
-            prevLastAttemptAt: entry.lastAttemptAt,
-            msg: m,
-            prevMsgStatus: m.deliveryStatus,
-          });
+        // A workspace may have MULTIPLE member rows in one channel (several
+        // agents from the same workspace each join with a distinct memberId), so
+        // the frozen recipientSnapshot can carry more than one entry for this
+        // workspaceId. The ack is workspace-scoped (the renderer never identifies
+        // a memberId), so flip EVERY pending row for this workspace — a `find()`
+        // would leave the siblings permanently 'pending', and a repeat ack would
+        // keep re-finding the first, already-delivered row (Codex review).
+        for (const entry of m.recipientSnapshot ?? []) {
+          if (entry.workspaceId === params.verifiedWorkspaceId && entry.status === 'pending') {
+            flips.push({
+              entry,
+              prevEntryStatus: entry.status,
+              prevLastAttemptAt: entry.lastAttemptAt,
+              msg: m,
+              prevMsgStatus: m.deliveryStatus,
+            });
+          }
         }
       }
       const now = this.now();

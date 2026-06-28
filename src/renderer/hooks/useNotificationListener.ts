@@ -575,21 +575,28 @@ export function useNotificationListener() {
     // the push would land before onUpdate is registered. Retry briefly on an
     // empty/failed snapshot to ride out a small handler-registration race.
     let snapAttempts = 0;
+    let snapTimer: ReturnType<typeof setTimeout> | null = null;
+    let snapCancelled = false;
     const seedPaneLabels = (): void => {
       const p = window.electronAPI.metadata.snapshot?.();
       if (!p) return;
       void p.then((entries) => {
+        // The retry loop outlives a fast unmount/remount otherwise — guard the
+        // store write and the reschedule so a disposed listener can't mutate
+        // state or keep polling (CodeRabbit review).
+        if (snapCancelled) return;
         if (entries.length > 0) {
           const s = useStore.getState();
           for (const e of entries) s.setPaneLabel(e.paneId, e.label);
         } else if (snapAttempts < 5) {
           snapAttempts += 1;
-          setTimeout(seedPaneLabels, 300);
+          snapTimer = setTimeout(seedPaneLabels, 300);
         }
       }).catch(() => {
+        if (snapCancelled) return;
         if (snapAttempts < 5) {
           snapAttempts += 1;
-          setTimeout(seedPaneLabels, 300);
+          snapTimer = setTimeout(seedPaneLabels, 300);
         }
       });
     };
@@ -644,6 +651,9 @@ export function useNotificationListener() {
       for (const t of Object.values(soundThrottlersRef.current)) t.cancel();
       // Cancel any pending flash→glow decay timeouts.
       for (const t of ringTimersRef.current.values()) clearTimeout(t);
+      // Stop the pane-label snapshot retry loop so it can't fire after unmount.
+      snapCancelled = true;
+      if (snapTimer) clearTimeout(snapTimer);
       ringTimersRef.current.clear();
     };
   }, [flashFrameThrottler]);

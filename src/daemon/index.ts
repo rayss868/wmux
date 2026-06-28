@@ -1532,7 +1532,15 @@ function registerRpcHandlers(
       };
     }
     const sinceSeq = typeof params['sinceSeq'] === 'number' ? params['sinceSeq'] : undefined;
-    const limit = typeof params['limit'] === 'number' ? params['limit'] : undefined;
+    // Normalize limit to a finite non-negative integer before it reaches
+    // getMessages — a NaN/Infinity/negative/fractional value would otherwise
+    // produce a nonsensical tail slice (CodeRabbit review). Invalid ⇒ undefined
+    // (no cap), the documented renderer default.
+    const rawLimit = params['limit'];
+    const limit =
+      typeof rawLimit === 'number' && Number.isInteger(rawLimit) && rawLimit >= 0
+        ? rawLimit
+        : undefined;
     return { ok: true, messages: channelService.getMessages(channelId, sinceSeq, verifiedWorkspaceId, limit) };
   });
 
@@ -1646,7 +1654,13 @@ function registerRpcHandlers(
 
   pipeServer.onRpc('a2a.channel.invite', async (params) => {
     const p = params as unknown as import('./channels/ChannelService').InviteChannelParams;
-    if (!p.channelId || !p.invitedMember || !p.invitedMember.workspaceId || !p.verifiedWorkspaceId) {
+    if (
+      !p.channelId ||
+      !p.invitedMember ||
+      !p.invitedMember.workspaceId ||
+      !p.invitedMember.memberId ||
+      !p.verifiedWorkspaceId
+    ) {
       return {
         ok: false,
         error: {

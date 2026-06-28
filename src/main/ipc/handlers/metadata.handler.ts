@@ -122,7 +122,10 @@ export function registerMetadataHandlers(
   ipcMain.removeHandler(IPC.METADATA_SNAPSHOT);
   ipcMain.handle(IPC.METADATA_SNAPSHOT, wrapHandler(IPC.METADATA_SNAPSHOT, async () => {
     return metadataStore.snapshot().entries
-      .filter((e) => typeof e.metadata.label === 'string')
+      // Match the live relay (src/main/index.ts): seed only NON-EMPTY labels, else
+      // a cleared ('') label would be re-applied from the restart snapshot and
+      // resurrect a label the user removed (CodeRabbit review).
+      .filter((e) => typeof e.metadata.label === 'string' && (e.metadata.label as string).length > 0)
       .map((e) => ({ paneId: e.paneId, label: e.metadata.label as string }));
   }));
 

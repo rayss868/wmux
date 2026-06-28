@@ -330,9 +330,11 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
     'Invite ANOTHER workspace/agent to a channel you belong to. This is the only way to add someone to a private channel (you cannot self-join one). Any member may invite; the invited workspace gains the channel history and live messages. Use channel_join to add YOURSELF to a public channel instead.',
     {
       channel_id: z.string().describe('Target channel id.'),
-      invited_workspace_id: z.string().describe('Workspace id of the agent/workspace to add.'),
-      member_id: memberIdSchema,
-      member_name: memberNameSchema,
+      invited_workspace_id: z.string().describe('Workspace id of the agent/workspace to add (the invitee, not you).'),
+      member_id: z
+        .string()
+        .describe('Member id for the INVITED workspace within the channel (e.g. "lead", "backend") — identifies the invitee, not the caller.'),
+      member_name: z.string().describe('Display name for the INVITED member shown in the channel UI — the invitee, not the caller.'),
       include_history: z
         .boolean()
         .optional()

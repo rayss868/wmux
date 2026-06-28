@@ -35,7 +35,7 @@
 
 import type { ChannelMessage } from '../../shared/channels';
 import type { Task, Message, Part, Artifact, TaskState, PaneLeaf } from '../../shared/types';
-import { resolvePaneAddress } from './a2aAddressing';
+import { resolveSenderPaneAddress } from './a2aAddressing';
 
 /** Dependencies injected so the routing logic stays a pure, unit-testable
  *  function (no store / window coupling). The hook wires these to the real
@@ -119,12 +119,20 @@ export function routeChannelMentionToInbox(
     let toPaneId: string | undefined;
     let toSurfaceId: string | undefined;
     let toPtyId: string | undefined;
-    if (mn.paneId) {
-      const r = resolvePaneAddress(selfLeaves, mn.paneId, '');
-      if (!('error' in r) && (!mn.ptyId || r.ptyId === mn.ptyId)) {
-        toPaneId = r.paneId;
-        toSurfaceId = r.surfaceId;
-        toPtyId = r.ptyId; // snapshot for restart fail-closed at flush time (codex R5)
+    if (mn.paneId && mn.ptyId) {
+      // Resolve by the route-time ptyId snapshot, NOT paneId+active-surface: a
+      // pane can hold several terminal surfaces and resolvePaneAddress(paneId-only)
+      // would pick the ACTIVE one, missing the originally-mentioned agent. Pin the
+      // pane target ONLY when that exact pty is still live in the SAME pane. A
+      // paneId WITHOUT a ptyId (legacy/human mention), a pty that's gone, or a
+      // successor agent now holding the pane (restart) all stay ws-level — a live
+      // sibling still picks it up via role:agent query and we never deliver to the
+      // wrong occupant (CodeRabbit review).
+      const addr = resolveSenderPaneAddress(selfLeaves, mn.ptyId);
+      if (addr && addr.paneId === mn.paneId) {
+        toPaneId = addr.paneId;
+        toSurfaceId = addr.surfaceId;
+        toPtyId = addr.ptyId; // snapshot for restart fail-closed at flush time (codex R5)
       }
     }
 
