@@ -560,6 +560,11 @@ describe('ChannelService', () => {
       // The emitted channel.message event carries the same validated set.
       const evt = emit.mock.calls.at(-1)?.[0];
       expect(evt?.message.mentions).toEqual([{ workspaceId: 'ws-2', name: 'Bob' }]);
+      // A2: the non-member mention is reported back to the sender (not silently
+      // dropped). The deduped member mention (ws-2 dup) is NOT a drop.
+      expect(post.droppedMentions).toEqual([
+        { workspaceId: 'ws-ghost', name: 'Ghost', reason: 'not_a_member' },
+      ]);
     });
 
     it('omits the mentions field entirely when none are valid (no empty array)', async () => {
@@ -581,6 +586,37 @@ describe('ChannelService', () => {
       expect(post.ok).toBe(true);
       if (!post.ok) throw new Error('post failed');
       expect(post.message.mentions).toBeUndefined();
+      // A2: even when NO mention is valid, the sender still gets feedback.
+      expect(post.droppedMentions).toEqual([
+        { workspaceId: 'ws-ghost', name: 'Ghost', reason: 'not_a_member' },
+      ]);
+    });
+
+    it('returns no droppedMentions when every mention is a member (clean post)', async () => {
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('create failed');
+      const joined = await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      if (!joined.ok) throw new Error('join failed');
+      const post = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'hi @Bob',
+        verifiedWorkspaceId: 'ws-1',
+        mentions: [{ workspaceId: 'ws-2', name: 'Bob' }],
+      });
+      expect(post.ok).toBe(true);
+      if (!post.ok) throw new Error('post failed');
+      expect(post.droppedMentions).toBeUndefined();
     });
 
     it('mentions two panes in the same workspace (split) without merging; preserves paneId/ptyId', async () => {

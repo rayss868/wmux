@@ -158,6 +158,19 @@ export interface ChannelMention {
 }
 
 /**
+ * A requested @mention that could NOT be routed because its target workspace is
+ * not a member of the channel. `ChannelService.post` returns these to the sender
+ * so a mis-targeted mention is visible feedback, not a silent drop (the dominant
+ * A2A failure mode). `reason` is an enum so future drop causes (e.g. archived,
+ * rate-limited) extend it without breaking callers.
+ */
+export interface ChannelDroppedMention {
+  workspaceId: string;
+  name?: string;
+  reason: 'not_a_member';
+}
+
+/**
  * Per-recipient delivery outcome. Stored alongside the message in
  * the `recipientSnapshot` field. Required by plan KTD3: the
  * recipient set is frozen at critical-section entry.

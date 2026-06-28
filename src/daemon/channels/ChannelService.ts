@@ -29,6 +29,7 @@ import {
   CHANNEL_TOPIC_MAX,
   isValidChannelName,
   type Channel,
+  type ChannelDroppedMention,
   type ChannelMember,
   type ChannelMention,
   type ChannelMessage,
@@ -751,6 +752,12 @@ export class ChannelService {
   async post(params: PostMessageParams): Promise<Result<{
     message: ChannelMessage;
     idempotent?: boolean;
+    /** @mentions whose target workspace is NOT a member of the channel. They
+     *  were dropped (you cannot ping a workspace that isn't in the room).
+     *  Returned so the SENDER gets explicit feedback instead of a silent drop —
+     *  the dominant failure mode found in A2A dogfooding was silent mis-route.
+     *  Present only on a fresh (non-idempotent) post with ≥1 dropped mention. */
+    droppedMentions?: ChannelDroppedMention[];
   }>> {
     return this.withChannelLock(params.channelId, async () => {
       // Sender-pin gate (R5). Must run BEFORE any state read or
@@ -877,9 +884,27 @@ export class ChannelService {
       // and re-checks ptyId liveness (fail-closed) before pinning the a2a task.
       const mentionedKeys = new Set<string>();
       const mentions: ChannelMention[] = [];
+      const droppedMentions: ChannelDroppedMention[] = [];
+      const droppedWorkspaces = new Set<string>();
       for (const mn of params.mentions ?? []) {
         if (!mn || typeof mn.workspaceId !== 'string') continue;
-        if (!members.some((m) => m.workspaceId === mn.workspaceId)) continue;
+        if (!members.some((m) => m.workspaceId === mn.workspaceId)) {
+          // Was a SILENT drop. Record it (deduped per workspace) so the post
+          // result tells the SENDER the mention didn't land — you cannot ping a
+          // workspace that isn't in the room. Silent mis-route was the dominant
+          // failure mode in A2A dogfooding.
+          if (!droppedWorkspaces.has(mn.workspaceId)) {
+            droppedWorkspaces.add(mn.workspaceId);
+            droppedMentions.push({
+              workspaceId: mn.workspaceId,
+              reason: 'not_a_member',
+              ...(typeof mn.name === 'string' && mn.name.length > 0
+                ? { name: mn.name.slice(0, 80) }
+                : {}),
+            });
+          }
+          continue;
+        }
         const paneId = typeof mn.paneId === 'string' ? mn.paneId : '';
         const key = `${mn.workspaceId} ${paneId}`;
         if (mentionedKeys.has(key)) continue;
@@ -957,7 +982,11 @@ export class ChannelService {
         // the persisted recipientSnapshot.
         console.error('[ChannelService] emit failed:', err);
       }
-      return { ok: true, message };
+      return {
+        ok: true,
+        message,
+        ...(droppedMentions.length > 0 ? { droppedMentions } : {}),
+      };
     });
   }
 
