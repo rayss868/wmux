@@ -1,6 +1,6 @@
 // ─── Channel tools for the bundled MCP server ───────────────────────────
 //
-// Eight standard MCP tools that expose the `a2a.channel.*` pipe RPC surface to
+// Nine standard MCP tools that expose the `a2a.channel.*` pipe RPC surface to
 // first-party MCP clients (Claude Code, Codex CLI). Each tool is a thin
 // pass-through over `sendRpc` plus a per-call workspaceId resolved by the
 // caller (index.ts injects `resolveWorkspaceId` so tests can stub it
@@ -107,7 +107,7 @@ async function callChannelRpc(
   }
 }
 
-/** Register the eight standard channel tools on the given MCP server. The
+/** Register the nine standard channel tools on the given MCP server. The
  *  parent module injects `resolveWorkspaceId` so workspace identity follows
  *  the same verification rules as the rest of the bundled server (verified
  *  PID-map hit first, env-hint fallback on miss). */
@@ -350,6 +350,27 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
           memberName: member_name,
         },
         includeHistory: include_history !== false,
+      });
+    },
+  );
+
+  // ── channel_get_members ───────────────────────────────────────────
+  // The roster read: who is in a channel. Pairs with channel_invite (know who
+  // is already a member before adding) and channel_read (attribute messages).
+  // Wraps the existing a2a.channel.getMembers RPC; a private channel you are not
+  // a member of returns an empty list (its membership is never leaked).
+  server.tool(
+    'channel_get_members',
+    'List the members of a channel you can see. Returns each member\'s workspaceId, memberId, joinedAt, and history floor. A private channel you are not a member of returns an empty list (membership is not leaked to non-members).',
+    {
+      channel_id: z.string().describe('Target channel id.'),
+    },
+    async ({ channel_id }) => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      return callChannelRpc('a2a.channel.getMembers' as RpcMethod, {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+        channelId: channel_id,
       });
     },
   );

@@ -78,6 +78,7 @@ const channelArchive = tools.get('channel_archive');
 const channelList = tools.get('channel_list');
 const channelRead = tools.get('channel_read');
 const channelInvite = tools.get('channel_invite');
+const channelGetMembers = tools.get('channel_get_members');
 
 if (
   !channelCreate ||
@@ -87,7 +88,8 @@ if (
   !channelArchive ||
   !channelList ||
   !channelRead ||
-  !channelInvite
+  !channelInvite ||
+  !channelGetMembers
 ) {
   throw new Error('channel tools failed to register');
 }
@@ -97,10 +99,10 @@ beforeEach(() => {
 });
 
 describe('channel_* tools: registration', () => {
-  it('registers all eight standard tools', () => {
-    // channel_read exposes message history (the pull half of the attention
-    // model); channel_invite adds another workspace (the only path into a
-    // private channel).
+  it('registers all nine standard tools', () => {
+    // channel_read exposes message history; channel_invite adds another
+    // workspace (the only path into a private channel); channel_get_members
+    // exposes the roster (who is in the channel).
     expect(channelCreate).toBeDefined();
     expect(channelPost).toBeDefined();
     expect(channelJoin).toBeDefined();
@@ -109,6 +111,7 @@ describe('channel_* tools: registration', () => {
     expect(channelList).toBeDefined();
     expect(channelRead).toBeDefined();
     expect(channelInvite).toBeDefined();
+    expect(channelGetMembers).toBeDefined();
   });
 
   it('does not register a channel_history tool (history is exposed via channel_read)', () => {
@@ -471,6 +474,25 @@ describe('channel_invite', () => {
     });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('NOT_AUTHORIZED');
+  });
+});
+
+describe('channel_get_members', () => {
+  it('forwards channelId + workspaceId + verifiedWorkspaceId to a2a.channel.getMembers', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, members: [] });
+    const res = await channelGetMembers({ channel_id: 'ch-1' });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.getMembers', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      channelId: 'ch-1',
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('passes through the typed RPC envelope (members list)', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, members: [{ workspaceId: 'ws-1', memberId: 'lead' }] });
+    const res = await channelGetMembers({ channel_id: 'ch-1' });
+    expect(res.content[0].text).toContain('lead');
   });
 });
 
