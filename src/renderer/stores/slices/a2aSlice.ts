@@ -243,8 +243,14 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
       // Incremental cursor (A9): return only tasks updated AFTER the given
       // ISO-8601 timestamp, so a poller can fetch just what changed instead of
       // re-pulling the whole list. ISO-8601 strings sort lexicographically =
-      // chronologically (same format from isoNow()), so a string compare is the
-      // cursor. updatedAt is bumped on every status change / artifact add.
+      // chronologically (both sides canonical UTC: stored via isoNow(), the
+      // cursor normalized at the RPC entry), so a string compare is the cursor.
+      // updatedAt is bumped on every status change / artifact add.
+      // LIMITATION (ms precision + strictly-after): two updates within the SAME
+      // millisecond share an updatedAt, so a poller that cursors on the first
+      // would miss the second. Accepted over the alternative (`>=` re-returns the
+      // same timestamp every poll); revisit with a monotonic tie-break if rapid
+      // same-ms transitions ever need exact incremental coverage.
       if (filters?.updatedSince && !(task.metadata.updatedAt > filters.updatedSince)) {
         return false;
       }

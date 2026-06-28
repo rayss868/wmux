@@ -1727,7 +1727,21 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!workspaceId) return { error: 'a2a.task.query: missing "workspaceId". Ensure WMUX_WORKSPACE_ID is set.' };
     const status = typeof params.status === 'string' ? params.status as TaskState : undefined;
     const role = typeof params.role === 'string' ? params.role as 'user' | 'agent' : undefined;
-    const updatedSince = typeof params.updatedSince === 'string' ? params.updatedSince : undefined;
+    // Normalize the incremental cursor to canonical UTC ISO (new Date().toISOString())
+    // so the lexicographic compare in queryTasks is sound regardless of the caller's
+    // format. Without this, an offset cursor ("...+09:00") or a different ms precision
+    // ("...:00Z" vs "...:00.000Z") silently mis-compares → missed/duplicate tasks. An
+    // unparseable (or empty) cursor is rejected rather than silently treated as "no
+    // filter". (Review A9 P2/P3.)
+    let updatedSince: string | undefined;
+    if (params.updatedSince !== undefined) {
+      const raw = typeof params.updatedSince === 'string' ? params.updatedSince : '';
+      const ms = Date.parse(raw);
+      if (Number.isNaN(ms)) {
+        return { error: 'a2a.task.query: updatedSince must be a valid ISO-8601 timestamp' };
+      }
+      updatedSince = new Date(ms).toISOString();
+    }
     const tasks = store.queryTasks(workspaceId, { status, role, updatedSince });
     return { workspaceId, tasks };
   }
