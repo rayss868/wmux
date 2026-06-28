@@ -61,6 +61,50 @@ describe('a2aSlice — cancelTask permissions', () => {
   });
 });
 
+describe('a2aSlice — createA2aTask idempotency (A3: no completed-task resurrection)', () => {
+  it('does not overwrite an existing task when re-created with the same id', () => {
+    const store = createTestStore();
+    const id = 'chmention-ch1-7'; // deterministic dedup key (channel-mention)
+    store.getState().createA2aTask({
+      id,
+      title: 'mention',
+      from: { workspaceId: 'ws-a', name: 'A' },
+      to: { workspaceId: 'ws-b', name: 'B' },
+      history: [makeMessage('hi')],
+      artifacts: [],
+    });
+    // Drive it to a terminal state.
+    store.getState().updateTaskStatus(id, 'working', 'ws-b');
+    store.getState().updateTaskStatus(id, 'completed', 'ws-b');
+    expect(store.getState().a2aTasks[id].status.state).toBe('completed');
+    // Re-delivery (reload / autoresponse re-flush) re-creates the SAME id. It
+    // must NOT resurrect the completed task back to 'submitted'.
+    const returned = store.getState().createA2aTask({
+      id,
+      title: 'mention (redelivered)',
+      from: { workspaceId: 'ws-a', name: 'A' },
+      to: { workspaceId: 'ws-b', name: 'B' },
+      history: [makeMessage('hi again')],
+      artifacts: [],
+    });
+    expect(returned).toBe(id);
+    expect(store.getState().a2aTasks[id].status.state).toBe('completed'); // preserved
+    expect(store.getState().a2aTasks[id].metadata.title).toBe('mention'); // not overwritten
+  });
+
+  it('still creates a fresh submitted task when the id is new', () => {
+    const store = createTestStore();
+    const id = store.getState().createA2aTask({
+      title: 'fresh',
+      from: { workspaceId: 'ws-a', name: 'A' },
+      to: { workspaceId: 'ws-b', name: 'B' },
+      history: [makeMessage('x')],
+      artifacts: [],
+    });
+    expect(store.getState().a2aTasks[id].status.state).toBe('submitted');
+  });
+});
+
 describe('a2aSlice — gcTerminalTasks hard cap (issue #99)', () => {
   // Mirrors the GC_MAX_TASKS constant in a2aSlice.ts (not exported).
   const GC_MAX_TASKS = 500;

@@ -114,6 +114,13 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     const id = input.id ?? generateId('task');
     const now = isoNow();
     set((state: StoreState) => {
+      // Idempotent create (A3 — completed-task resurrection). A deterministic id
+      // (channel-mention uses `chmention-<channelId>-<seq>`) is a dedup key: a
+      // re-delivery (reload, or an autoresponse flush re-firing) calls this again
+      // with the SAME id. Overwriting would reset an already working/completed
+      // task back to 'submitted' — the agent re-does finished work. If the id is
+      // already present, keep the existing task (and its state) untouched.
+      if (input.id && state.a2aTasks[input.id]) return;
       state.a2aTasks[id] = {
         kind: 'task',
         id,

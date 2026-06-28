@@ -872,10 +872,12 @@ server.tool(
 // 5. a2a_task_update — Update task status
 server.tool(
   'a2a_task_update',
-  'Update a task\'s status. Only the receiver can change to working/completed/failed/input-required. Optionally attach artifacts on completion.',
+  'Update a task\'s status. Only the receiver workspace can change it. Transitions follow a state machine — you cannot jump straight from submitted to completed: take submitted -> working FIRST, then working -> completed/failed/input-required. Terminal states (completed/failed/canceled) are final and reject any further update (no resurrection). A rejected transition returns an error listing the allowed next states. Optionally attach artifacts on completion.',
   {
     task_id: z.string().describe('Task ID to update'),
-    status: z.enum(['working', 'completed', 'failed', 'input-required']).describe('New status'),
+    status: z
+      .enum(['working', 'completed', 'failed', 'input-required'])
+      .describe('New status. Allowed transitions: submitted->working; working->completed|failed|input-required; input-required->working. A fresh (submitted) task must go to working before it can complete.'),
     message: z.string().optional().describe('Optional status message'),
     artifact_name: z.string().optional().describe('Artifact name (for completed tasks)'),
     artifact_data: z.record(z.string(), z.unknown()).optional().describe('Artifact data payload'),
