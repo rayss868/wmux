@@ -154,6 +154,7 @@ function CreateChannelModal({
   const [name, setName] = useState('');
   const [visibility] = useState<ChannelVisibility>('public');
   const [submitAttempted, setSubmitAttempted] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   // Viewport-fixed position anchored to the "+" button. `fixed` (not `absolute`)
   // is required: ChannelDock wraps the panel in an `overflow-y-auto` box, which
@@ -211,12 +212,19 @@ function CreateChannelModal({
 
   const doSubmit = useCallback(async () => {
     setSubmitAttempted(true);
+    setSubmitError(null);
     if (!field.valid) return;
     // The panel-level `handleCreate` is async (it round-trips to the daemon via
     // `createChannelDaemon`); we await so the modal stays open on failure and
     // only closes on confirmed success.
     const ok = await onCreate({ name: field.canonical, visibility });
-    if (ok) onClose();
+    if (ok) {
+      onClose();
+    } else {
+      // Don't fail silently — the daemon rejected it (most often the name is
+      // already taken). Surface it so the user knows the click did something.
+      setSubmitError('Could not create the channel — that name may already be taken.');
+    }
   }, [field.canonical, field.valid, onCreate, onClose, visibility]);
 
   const handleSubmit = useCallback(
@@ -266,7 +274,10 @@ function CreateChannelModal({
             }`}
             placeholder="release-notes"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (submitError) setSubmitError(null);
+            }}
             onKeyDown={handleKeyDown}
             maxLength={CHANNEL_NAME_MAX + 16}
             aria-invalid={showInlineError || undefined}
@@ -285,6 +296,16 @@ function CreateChannelModal({
             role="alert"
           >
             {errorMessage}
+          </div>
+        )}
+
+        {submitError && !showInlineError && (
+          <div
+            data-create-channel-submit-error
+            className="text-[var(--accent-red)] text-[10px]"
+            role="alert"
+          >
+            {submitError}
           </div>
         )}
 
