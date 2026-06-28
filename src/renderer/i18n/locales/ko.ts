@@ -589,6 +589,7 @@ export const ko = {
   'channels.empty': '아직 채널이 없습니다 — + 버튼으로 새로 만드세요.',
   'channels.emptyCompany': '채널은 회사 범위입니다 — 회사를 시작해 사용하세요.',
   'channels.emptyMessages': '아직 메시지가 없습니다 — 첫 메시지를 남겨보세요.',
+  'channels.loadEarlier': '이전 불러오기',
   'channels.archivedReadOnly': '보관된 채널은 읽기 전용입니다.',
   'channels.closeTooltip': '채널 닫기',
   'channels.newChannelTooltip': '새 채널',

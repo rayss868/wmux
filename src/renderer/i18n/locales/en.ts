@@ -661,6 +661,7 @@ export const en = {
   'channels.empty': 'No channels yet — click + to create one.',
   'channels.emptyCompany': 'Channels are company-scoped — start a company to use them.',
   'channels.emptyMessages': 'No messages yet — be the first to post.',
+  'channels.loadEarlier': 'Load earlier',
   'channels.archivedReadOnly': 'Archived channels are read-only.',
   'channels.closeTooltip': 'Close channel',
   'channels.newChannelTooltip': 'New channel',

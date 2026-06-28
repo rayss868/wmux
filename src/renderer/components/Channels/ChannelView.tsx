@@ -40,6 +40,12 @@ import { ChannelMembersControl } from './ChannelMembers';
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 const EMPTY_MEMBERS: ChannelMember[] = [];
 
+// P3b — scrollback window. Render only the most recent N messages so a long
+// channel doesn't mount thousands of rows; a "load earlier" affordance grows
+// the window by another page. N is generous (most channels never hit it) so the
+// common case renders the whole history exactly as before.
+export const SCROLLBACK_PAGE = 200;
+
 // ─── Pure helpers (exported for tests) ───────────────────────────────────
 
 /** A message is visible to a viewer iff its `seq` is at or above the
@@ -272,6 +278,13 @@ export function ChannelViewContent({
     () => sortMessagesBySeq(messages).filter((m) => isMessageVisibleToViewer(m, viewer)),
     [messages, viewer],
   );
+  // P3b: render only the most recent `shownCount`; "load earlier" grows it.
+  const [shownCount, setShownCount] = useState(SCROLLBACK_PAGE);
+  const windowed = useMemo(
+    () => (visible.length > shownCount ? visible.slice(visible.length - shownCount) : visible),
+    [visible, shownCount],
+  );
+  const hiddenEarlier = visible.length - windowed.length;
 
   return (
     <div
@@ -358,7 +371,19 @@ export function ChannelViewContent({
             {t('channels.emptyMessages') || 'No messages yet — be the first to post.'}
           </div>
         ) : (
-          visible.map((m) => {
+          <>
+            {hiddenEarlier > 0 && (
+              <button
+                type="button"
+                data-channels-load-earlier
+                onClick={() => setShownCount((c) => c + SCROLLBACK_PAGE)}
+                className={`w-full py-1 text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
+                {...tokenAttrs('textMuted', 'text')}
+              >
+                {t('channels.loadEarlier') || 'Load earlier'} ({hiddenEarlier})
+              </button>
+            )}
+            {windowed.map((m) => {
             const myStatus = viewerDeliveryStatus(m, viewer?.memberId ?? null);
             const mentionsMe =
               !!viewer && !!m.mentions?.some((mn) => mn.workspaceId === viewer.workspaceId);
@@ -409,7 +434,8 @@ export function ChannelViewContent({
                 )}
               </div>
             );
-          })
+            })}
+          </>
         )}
       </div>
 

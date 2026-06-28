@@ -28,6 +28,7 @@ import {
   viewerDeliveryStatus,
   renderMessageText,
   renderMessageBody,
+  SCROLLBACK_PAGE,
 } from '../ChannelView';
 
 // ─── Test fixtures ──────────────────────────────────────────────────────
@@ -297,6 +298,29 @@ describe('ChannelViewContent', () => {
     expect(html).toContain('data-channel-view-empty');
     expect(html).toContain('data-channel-view-messages');
     expect(html).toContain('data-message-count="0"');
+  });
+
+  it('windows the list to the most recent page and offers "load earlier" (P3b)', () => {
+    const messages = Array.from({ length: SCROLLBACK_PAGE + 1 }, (_, i) =>
+      makeMessage('ch-1', i + 1, { text: `m${i + 1}` }),
+    );
+    const html = renderView({ viewer: makeMember({ memberId: 'm-1' }), messages });
+    // The container still reports the TOTAL visible count.
+    expect(html).toContain(`data-message-count="${SCROLLBACK_PAGE + 1}"`);
+    // Only the most recent page of rows renders.
+    expect((html.match(/data-channel-message="true"/g) || []).length).toBe(SCROLLBACK_PAGE);
+    // The load-earlier affordance shows the hidden count (1).
+    expect(html).toContain('data-channels-load-earlier');
+    // Oldest (m1) is windowed out; newest (m201) is shown.
+    expect(html).not.toContain('>m1<');
+    expect(html).toContain('>m201<');
+  });
+
+  it('does not render the load-earlier affordance when under the window (P3b)', () => {
+    const messages = Array.from({ length: 3 }, (_, i) => makeMessage('ch-1', i + 1, { text: `m${i + 1}` }));
+    const html = renderView({ viewer: makeMember({ memberId: 'm-1' }), messages });
+    expect(html).not.toContain('data-channels-load-earlier');
+    expect((html.match(/data-channel-message="true"/g) || []).length).toBe(3);
   });
 
   it('renders messages in seq order', () => {
