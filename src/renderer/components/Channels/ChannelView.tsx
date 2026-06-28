@@ -652,13 +652,17 @@ export function ChannelView(): React.ReactElement | null {
       workspaceId: selfWs,
       apply: useStore.getState().hydrateChannelMessages,
       isCurrent: () => !disposed,
-    }).then(() => {
+    }).then((loaded) => {
       // A1: opening the channel = receiving its messages. Ack up to the latest
       // seq so the SENDER's deliveryStatus flips 'pending' → 'delivered'. Routed
       // through the renderer-trusted local path (pinned, pipe-unreachable) — a
       // no-PTY renderer can't pass the pipe's senderPtyId pin. Best-effort: a
       // failed ack must not affect the view; the next open re-acks (no-op repeat).
-      if (disposed || nextSeq <= 1) return;
+      // Skip when nothing actually loaded (review A1 P3) so a blank/failed fetch
+      // doesn't mark messages received. NOTE: the flip is persisted on the daemon
+      // and visible to the sender's NEXT poll/reopen (agents poll getMessages, so
+      // they see it); live push to an already-open sender view is a follow-up.
+      if (disposed || !loaded || nextSeq <= 1) return;
       void bridge
         .mutateLocal('a2a.channel.ack', {
           channelId: activeChannelId,
