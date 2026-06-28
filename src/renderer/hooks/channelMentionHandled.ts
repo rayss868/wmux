@@ -19,9 +19,11 @@
 // runs in the renderer. Bounded FIFO so it can't grow without limit.
 
 const STORAGE_KEY = 'wmux.channelMentionHandled.v1';
-/** Keep the most recent N routed ids. Channel-mention ids are small; 2000 is
- *  far more than any realistic in-ring replay window, and FIFO eviction keeps
- *  the footprint flat. */
+/** Keep the most recent N routed ids. This MUST stay well above the daemon
+ *  EventBus ring size (1024, the max channel.message events a boot can replay)
+ *  — if an id is FIFO-evicted here while its channel.message is still in the
+ *  ring, a boot replay would resurrect it. 2000 > 1024 with margin; revisit if
+ *  the ring grows. */
 const CAP = 2000;
 
 let loaded = false;
@@ -34,8 +36,16 @@ function ensureLoaded(): void {
   try {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
     const parsed: unknown = raw ? JSON.parse(raw) : [];
-    order = Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+    const filtered = Array.isArray(parsed)
+      ? parsed.filter((x): x is string => typeof x === 'string')
+      : [];
+    // Dedup on load: external corruption could leave duplicate ids, and the FIFO
+    // evict (delete from `seen` on splice) would wrongly forget a still-present id.
+    order = [...new Set(filtered)];
   } catch {
+    // Parse failure loses the whole history → every in-ring mention re-routes.
+    // Warn (don't silently swallow) so a resurrection spike is traceable.
+    console.warn('[channelMentionHandled] failed to parse persisted set; starting empty');
     order = [];
   }
   seen = new Set(order);
@@ -46,8 +56,10 @@ function persist(): void {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(order));
     }
-  } catch {
-    /* best-effort — a quota/serialization failure must not break routing */
+  } catch (err) {
+    // best-effort, but NOT silent: a quota/serialization failure means the
+    // in-memory mark didn't reach disk → that mention can resurrect on reload.
+    console.warn('[channelMentionHandled] persist failed (handled set may not survive reload):', err);
   }
 }
 

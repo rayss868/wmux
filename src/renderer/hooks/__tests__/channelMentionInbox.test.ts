@@ -146,6 +146,28 @@ describe('routeChannelMentionToInbox', () => {
     expect(created).toHaveLength(1); // still exactly one task ever created
   });
 
+  it('A3 restart: a pane-level mention handled before a full restart is not re-routed', () => {
+    // Regression for the GLM P1: the durable handled key must use the mention's
+    // TARGETED pane (mn.paneId), not the resolved toPaneId. A full restart keeps
+    // the same paneId but a new ptyId, so toPaneId falls back to ws-level — if the
+    // key followed toPaneId it would flip pane→ws and miss the recorded entry.
+    const { deps, created } = makeDeps();
+    const msg = makeMessage({
+      mentions: [{ workspaceId: 'ws-me', paneId: 'pane-A', ptyId: 'pty-A', name: 'claude' }],
+    });
+    // Session 1: pane-A live with the matching pty → routed to the pane.
+    expect(
+      routeChannelMentionToInbox(msg, 'ws-me', [leaf('pane-A', [surface('surf-A', 'pty-A')])], deps),
+    ).toEqual([channelMentionTaskId('ch-1', 5, 'pane-A')]);
+    expect(created).toHaveLength(1);
+    // FULL RESTART: empty store (getTask undefined), pane-A alive but a NEW pty
+    // (snapshot mismatch → resolves ws-level). Still recognized as handled.
+    expect(
+      routeChannelMentionToInbox(msg, 'ws-me', [leaf('pane-A', [surface('surf-A', 'pty-NEW')])], deps),
+    ).toEqual([]);
+    expect(created).toHaveLength(1);
+  });
+
   it('pins to.paneId when the mention resolves to a live pane (ptyId snapshot matches)', () => {
     const { deps, created, published } = makeDeps();
     const leaves = [leaf('pane-A', [surface('surf-A', 'pty-A')])];

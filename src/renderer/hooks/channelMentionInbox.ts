@@ -129,6 +129,15 @@ export function routeChannelMentionToInbox(
     }
 
     const taskId = channelMentionTaskId(message.channelId, message.seq, toPaneId);
+    // Durable-dedup key (A3) keyed on the mention's TARGETED pane (mn.paneId),
+    // NOT the resolved toPaneId. toPaneId falls back to undefined when the pane's
+    // ptyId snapshot no longer matches (fail-closed) — which is exactly what a
+    // FULL APP RESTART causes (same paneId, new ptyId). If the persisted key used
+    // toPaneId it would flip pane→ws across a restart and miss the recorded entry
+    // → resurrection (GLM review P1). mn.paneId comes from the message itself, so
+    // it's identical on every replay regardless of local pane liveness, while
+    // still namespacing two agents mentioned in ONE post (distinct mn.paneId).
+    const handledKey = channelMentionTaskId(message.channelId, message.seq, mn.paneId);
     // Idempotent: a re-delivered event (resync replay / overlapping poll) must
     // not mint a second task or re-emit the pointer; and two mentions that
     // resolve to the SAME target (e.g. both fell back to ws-level) collapse here.
@@ -138,7 +147,7 @@ export function routeChannelMentionToInbox(
     // one (isHandled, persisted). The persisted check is what stops a reload's
     // boot-replay from resurrecting a completed mention task (A3): after a reload
     // the store is empty so getTask misses, but isHandled still remembers.
-    if (deps.getTask(taskId) || deps.isHandled(taskId)) continue;
+    if (deps.getTask(taskId) || deps.isHandled(handledKey)) continue;
 
     const parts: Part[] = [{ kind: 'text', text: message.text }];
     const history: Message[] = [
@@ -174,8 +183,9 @@ export function routeChannelMentionToInbox(
       // ordering rule as the a2a.task.send path).
       deps.publish(message.workspaceId, selfWorkspaceId, taskId, 'submitted', 'created');
       // Persist that we routed this mention so a later reload's boot-replay
-      // skips it (A3 — survives the empty-store window).
-      deps.markHandled(taskId);
+      // skips it (A3 — survives the empty-store window). Keyed on the targeted
+      // pane (handledKey), stable across a full restart's ptyId change.
+      deps.markHandled(handledKey);
       created.push(taskId);
     } catch {
       // Best-effort: never let inbox routing break channel message dispatch.
