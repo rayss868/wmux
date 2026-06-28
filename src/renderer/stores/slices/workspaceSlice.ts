@@ -1,13 +1,13 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, TERMINAL_STATES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
 import { resetInspectState } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
-import { publishWorkspaceMetadataChanged } from '../../events/publisher';
+import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 
 /** Collect all leaf panes from a pane tree */
 function collectLeafPanes(pane: Pane): PaneLeaf[] {
@@ -190,39 +190,48 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     }),
 
     // NOTE: PTY cleanup is the caller's responsibility (see Sidebar.handleClose, useKeyboard Ctrl+Shift+W)
-    removeWorkspace: (id) => set((state: StoreState) => {
-      if (state.workspaces.length <= 1) return;
-      const idx = state.workspaces.findIndex((w: Workspace) => w.id === id);
-      if (idx === -1) return;
+    removeWorkspace: (id) => {
       // A8: this workspace hosts the receiver side of any task delegated TO it.
       // It's going away, so fail its in-flight (non-terminal) received tasks —
       // otherwise the sender sees them stuck 'working' forever (silent break).
-      // After this the break is VISIBLE: the sender's a2a_task_query reflects
-      // 'failed' with a reason. (A proactive EventBus push to the sender is a
-      // follow-up; the state transition is the substance.)
-      const closedAt = new Date().toISOString();
-      for (const task of Object.values(state.a2aTasks ?? {})) {
-        if (
-          task.metadata.to.workspaceId === id &&
-          task.status.state !== 'completed' &&
-          task.status.state !== 'failed' &&
-          task.status.state !== 'canceled'
-        ) {
-          task.status = {
-            state: 'failed',
-            message: {
-              kind: 'message',
-              messageId: `wsclose-${task.id}`,
-              role: 'agent',
-              parts: [
-                { kind: 'text', text: 'Receiver workspace closed before completing this task.' },
-              ],
-            },
-            timestamp: closedAt,
-          };
-          task.metadata.updatedAt = closedAt;
+      // Collect the failed (id, from, to) inside the transaction, then emit the
+      // a2a.task pointer AFTER it (review A8 P1) so a CROSS-process sender
+      // (LanLink / separate window / durable inbox) also learns, not just
+      // same-process queryTasks pollers.
+      const failed: { id: string; from: string; to: string }[] = [];
+      set((state: StoreState) => {
+        if (state.workspaces.length <= 1) return;
+        const idx = state.workspaces.findIndex((w: Workspace) => w.id === id);
+        if (idx === -1) return;
+        const closedAt = new Date().toISOString();
+        for (const task of Object.values(state.a2aTasks ?? {})) {
+          if (
+            task.metadata.to.workspaceId === id &&
+            !(TERMINAL_STATES as readonly string[]).includes(task.status.state)
+          ) {
+            // Intentional teardown FORCE-fail: bypasses validateTransition (which
+            // forbids submitted/input-required → failed) because the receiver is
+            // gone — any non-terminal received task can no longer make progress.
+            task.status = {
+              state: 'failed',
+              message: {
+                kind: 'message',
+                messageId: `wsclose-${task.id}`,
+                role: 'agent', // synthetic teardown notice (no 'system' role in the A2A schema)
+                parts: [
+                  { kind: 'text', text: 'Receiver workspace closed before completing this task.' },
+                ],
+              },
+              timestamp: closedAt,
+            };
+            task.metadata.updatedAt = closedAt;
+            failed.push({
+              id: task.id,
+              from: task.metadata.from.workspaceId,
+              to: task.metadata.to.workspaceId,
+            });
+          }
         }
-      }
       // Drop ring state for every leaf pane in the removed workspace. closePane
       // covers the user-driven path; this mirrors the same invariant for
       // workspace-level deletion (Sidebar X, Ctrl+Shift+W, SettingsPanel reset)
@@ -244,7 +253,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // already tears inspect down on a switch; mirror that here so killing/closing
       // the workspace while inspecting can't leave a stale overlay dangling.
       if (state.inspectModeActive) resetInspectState(state);
-    }),
+      });
+      // Same funnel as the normal status path (publishA2aTask) so the failure is
+      // visible cross-process, not only to same-process queryTasks (review A8 P1).
+      for (const f of failed) publishA2aTask(f.from, f.to, f.id, 'failed', 'updated');
+    },
 
     setActiveWorkspace: (id) => set((state: StoreState) => {
       if (!state.workspaces.some((w: Workspace) => w.id === id)) return;
