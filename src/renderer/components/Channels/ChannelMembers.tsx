@@ -157,7 +157,6 @@ export function ChannelMembersView({
                     {m.memberId !== selfMemberId && (
                       <span className="text-[var(--text-muted)]"> · {m.memberId}</span>
                     )}
-                    {self && <span className="text-[var(--accent-blue)]"> ({t('channels.you') || 'you'})</span>}
                   </span>
                   {self && (
                     <button
