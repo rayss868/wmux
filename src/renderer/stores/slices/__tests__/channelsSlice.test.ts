@@ -286,6 +286,27 @@ describe('channelsSlice — appendMessageFromEvent', () => {
     expect(store.getState().channelUnread['ch-1']).toBe(1);
   });
 
+  it('A6 self-mute: a workspace does not unread/mention-badge its OWN posts', () => {
+    const store = createTestStore();
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel(),
+    });
+    // self = ws-1 (not viewing ch-1). An MCP/agent post from ws-1 has no
+    // optimistic row, so without the self guard it would unread-badge itself.
+    store.setState((s) => ({ ...s, activeWorkspaceId: 'ws-1' }) as TestState);
+    store.getState().appendMessageFromEvent(
+      makeMessage('ch-1', 1, { workspaceId: 'ws-1', mentions: [{ workspaceId: 'ws-1', name: 'me' }] }),
+    );
+    expect(store.getState().channelUnread['ch-1'] ?? 0).toBe(0);
+    expect(store.getState().channelMentions['ch-1'] ?? 0).toBe(0);
+    // Another workspace's post on the same (inactive) channel still bumps.
+    store.getState().appendMessageFromEvent(makeMessage('ch-1', 2, { workspaceId: 'ws-other' }));
+    expect(store.getState().channelUnread['ch-1']).toBe(1);
+  });
+
   it('does NOT bump unread when the channel is active', () => {
     const store = createTestStore();
     store.getState().createChannelOptimistic({

@@ -426,14 +426,18 @@ export const createChannelsSlice: StateCreator<
         next[idx] = message;
         state.channelMessages[channelId] = next;
       }
-      if (isNew && state.activeChannelId !== channelId) {
+      // `self` = the company CEO workspace when set, else the active workspace —
+      // mirrors ChannelView/Composer identity resolution.
+      const selfWs = state.company?.ceoWorkspaceId ?? state.activeWorkspaceId;
+      // A6 self-mute: a workspace's OWN posts must never badge it as unread /
+      // mention. The optimistic append already deduped renderer-composer posts,
+      // but an MCP/agent post has NO optimistic row, so without this guard an
+      // agent posting via the API would see its own message as unread noise.
+      if (isNew && state.activeChannelId !== channelId && message.workspaceId !== selfWs) {
         state.channelUnread[channelId] =
           (state.channelUnread[channelId] ?? 0) + 1;
         // A message that @-mentions this renderer's own workspace bumps the
         // mention counter too (the dock then shows a stronger red @ badge).
-        // `self` = the company CEO workspace when set, else the active
-        // workspace — mirrors ChannelView/Composer identity resolution.
-        const selfWs = state.company?.ceoWorkspaceId ?? state.activeWorkspaceId;
         if (selfWs && message.mentions?.some((mn) => mn.workspaceId === selfWs)) {
           state.channelMentions[channelId] =
             (state.channelMentions[channelId] ?? 0) + 1;
