@@ -316,6 +316,13 @@ describe('ChannelViewContent', () => {
     expect(html).toContain('>m201<');
   });
 
+  it('renders the search toggle but no search input until opened (P3c)', () => {
+    const html = renderView({ viewer: makeMember({ memberId: 'm-1' }), messages: [makeMessage('ch-1', 1)] });
+    expect(html).toContain('data-channel-search-toggle');
+    // The input is behind the toggle (useState) — absent in the static render.
+    expect(html).not.toContain('data-channel-search="true"');
+  });
+
   it('does not render the load-earlier affordance when under the window (P3b)', () => {
     const messages = Array.from({ length: 3 }, (_, i) => makeMessage('ch-1', i + 1, { text: `m${i + 1}` }));
     const html = renderView({ viewer: makeMember({ memberId: 'm-1' }), messages });

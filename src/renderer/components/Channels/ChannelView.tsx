@@ -285,6 +285,17 @@ export function ChannelViewContent({
     [visible, shownCount],
   );
   const hiddenEarlier = visible.length - windowed.length;
+  // P3c: in-channel message search. Searches ALL viewer-visible messages (not
+  // just the scrollback window) so old context is findable; an active query
+  // bypasses the window and shows every match.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const trimmedQuery = query.trim().toLowerCase();
+  const matched = useMemo(
+    () => (trimmedQuery ? visible.filter((m) => m.text.toLowerCase().includes(trimmedQuery)) : null),
+    [visible, trimmedQuery],
+  );
+  const rendered = matched ?? windowed;
 
   return (
     <div
@@ -319,6 +330,26 @@ export function ChannelViewContent({
           )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            type="button"
+            aria-label={t('channels.searchTooltip') || 'Search messages'}
+            title={t('channels.searchTooltip') || 'Search messages'}
+            aria-expanded={searchOpen}
+            onClick={() => {
+              const next = !searchOpen;
+              setSearchOpen(next);
+              if (!next) setQuery('');
+            }}
+            className={`flex items-center justify-center w-5 h-5 rounded transition-colors duration-150 ${FOCUS_RING} ${
+              searchOpen
+                ? 'text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.6)]'
+                : 'text-[var(--text-subtle)] hover:text-[var(--text-sub)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
+            }`}
+            data-channel-search-toggle
+            {...tokenAttrs('textSub', 'text')}
+          >
+            <span aria-hidden="true" className="text-[11px]">🔍</span>
+          </button>
           {membersSlot}
           {onArchive && channel.status !== 'archived' && (
             <button
@@ -356,23 +387,55 @@ export function ChannelViewContent({
         </div>
       </div>
 
+      {/* Search bar (P3c) — revealed by the header search toggle. Filters the
+            whole visible history, not just the scrollback window. */}
+      {searchOpen && (
+        <div
+          className="px-4 py-1 border-b border-[var(--bg-surface)] shrink-0"
+          style={{ borderColor: 'var(--border-soft)' }}
+          {...tokenAttrs('bgSurface', 'border')}
+        >
+          <input
+            type="text"
+            autoFocus
+            data-channel-search
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('channels.searchPlaceholder') || 'Search messages…'}
+            aria-label={t('channels.searchPlaceholder') || 'Search messages'}
+            className={`w-full bg-[var(--bg-base)] text-[var(--text-main)] text-[11px] font-mono px-2 py-1 rounded border border-[var(--bg-surface)] outline-none ${FOCUS_RING}`}
+            {...tokenAttrs('bgBase', 'bg')}
+          />
+        </div>
+      )}
+
       {/* Message list — scrollable. Empty-state copy when the channel
             has nothing visible to the viewer yet. */}
       <div
         className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2"
         data-channel-view-messages
       >
-        {visible.length === 0 ? (
-          <div
-            data-channel-view-empty
-            className="text-[11px] font-mono text-[var(--text-muted)] text-center py-8"
-            {...tokenAttrs('textMuted', 'text')}
-          >
-            {t('channels.emptyMessages') || 'No messages yet — be the first to post.'}
-          </div>
+        {rendered.length === 0 ? (
+          matched !== null ? (
+            <div
+              data-channel-search-empty
+              className="text-[11px] font-mono text-[var(--text-muted)] text-center py-8"
+              {...tokenAttrs('textMuted', 'text')}
+            >
+              {t('channels.searchEmpty') || 'No messages match your search.'}
+            </div>
+          ) : (
+            <div
+              data-channel-view-empty
+              className="text-[11px] font-mono text-[var(--text-muted)] text-center py-8"
+              {...tokenAttrs('textMuted', 'text')}
+            >
+              {t('channels.emptyMessages') || 'No messages yet — be the first to post.'}
+            </div>
+          )
         ) : (
           <>
-            {hiddenEarlier > 0 && (
+            {matched === null && hiddenEarlier > 0 && (
               <button
                 type="button"
                 data-channels-load-earlier
@@ -383,7 +446,7 @@ export function ChannelViewContent({
                 {t('channels.loadEarlier') || 'Load earlier'} ({hiddenEarlier})
               </button>
             )}
-            {windowed.map((m) => {
+            {rendered.map((m) => {
             const myStatus = viewerDeliveryStatus(m, viewer?.memberId ?? null);
             const mentionsMe =
               !!viewer && !!m.mentions?.some((mn) => mn.workspaceId === viewer.workspaceId);
