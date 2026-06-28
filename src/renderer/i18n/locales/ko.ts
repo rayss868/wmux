@@ -570,6 +570,8 @@ export const ko = {
   'channels.dockTitle': '채널',
   'channels.dockCollapse': '채널 접기',
   'channels.archived': '보관됨',
+  'channels.discover': '둘러보기',
+  'channels.join': '참여',
   'channels.archiveTooltip': '채널 보관 (읽기 전용, 되돌릴 수 없음)',
   'channels.archiveConfirm': '보관 확정 — 읽기 전용, 되돌릴 수 없음',
   'channels.members': '멤버',

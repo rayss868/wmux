@@ -642,6 +642,8 @@ export const en = {
   'channels.dockTitle': 'Channels',
   'channels.dockCollapse': 'Collapse channels',
   'channels.archived': 'archived',
+  'channels.discover': 'Discover',
+  'channels.join': 'Join',
   'channels.archiveTooltip': 'Archive channel (read-only, one-way)',
   'channels.archiveConfirm': 'Confirm archive — read-only, one-way',
   'channels.members': 'Members',

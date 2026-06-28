@@ -66,21 +66,43 @@ import { useT } from '../../hooks/useT';
 
 // ─── Grouping / aggregation helpers (pure, exported for unit tests) ──────────
 
-/** Pure grouping helper. Sorted by name (active) or archivedAt
- *  descending (archived). */
-export function groupChannels(channels: Channel[]): {
+/** Pure grouping helper. Sorted by name (active / discoverable) or
+ *  archivedAt descending (archived).
+ *
+ *  `isMember` (optional) splits non-archived channels into "joined" (active)
+ *  vs "joinable" (discoverable): a public channel the caller is NOT a member
+ *  of goes to `discoverable` so the panel can surface a Join affordance
+ *  instead of mixing it into the member list. A private channel the caller
+ *  isn't in is omitted (it isn't readable, so we never leak it into a group).
+ *  When `isMember` is omitted, every non-archived channel stays in `active`
+ *  — the pre-discovery behaviour, so existing callers/tests are unaffected. */
+export function groupChannels(
+  channels: Channel[],
+  isMember?: (channel: Channel) => boolean,
+): {
   active: Channel[];
   archived: Channel[];
+  discoverable: Channel[];
 } {
   const active: Channel[] = [];
   const archived: Channel[] = [];
+  const discoverable: Channel[] = [];
   for (const c of channels) {
-    if (c.status === 'archived') archived.push(c);
-    else active.push(c);
+    if (c.status === 'archived') {
+      archived.push(c);
+      continue;
+    }
+    if (isMember && !isMember(c)) {
+      if (c.visibility === 'public') discoverable.push(c);
+      // private non-member → omit (unreadable; never leak into a group)
+      continue;
+    }
+    active.push(c);
   }
   active.sort((a, b) => a.name.localeCompare(b.name));
   archived.sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0));
-  return { active, archived };
+  discoverable.sort((a, b) => a.name.localeCompare(b.name));
+  return { active, archived, discoverable };
 }
 
 /** Aggregated unread count across every channel. Mirrors the slice's
@@ -280,10 +302,17 @@ export interface ChannelsPanelViewProps {
   channelMentions: Record<string, number>;
   activeChannelId: string | null;
   company: Company | null;
+  /** Channel ids the current (self) workspace is a member of. When provided,
+   *  the panel splits non-member public channels into a "Discover" group with
+   *  a Join affordance. Omit (undefined) to keep the flat member-less list. */
+  memberChannelIds?: Set<string>;
   /** Translates `channels.*` keys; defaults to identity if omitted so
    *  tests can pass a stub. */
   t?: (key: string) => string;
   onSelect: (channelId: string) => void;
+  /** Join a discoverable (public, not-yet-joined) channel as the self
+   *  workspace. Only wired when membership info is available. */
+  onJoinDiscoverable?: (channelId: string) => void;
   onCreate: (params: {
     name: string;
     visibility: ChannelVisibility;
@@ -304,8 +333,10 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
     channelMentions,
     activeChannelId,
     company,
+    memberChannelIds,
     onSelect,
     onCreate,
+    onJoinDiscoverable,
     onCollapse,
     collapseDir = 'right',
   } = props;
@@ -313,11 +344,19 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
 
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [discoverExpanded, setDiscoverExpanded] = useState(false);
 
   const channelList = useMemo(() => Object.values(channels), [channels]);
-  const { active, archived } = useMemo(
-    () => groupChannels(channelList),
-    [channelList],
+  const isMember = useMemo(
+    () =>
+      memberChannelIds
+        ? (ch: Channel): boolean => memberChannelIds.has(ch.id)
+        : undefined,
+    [memberChannelIds],
+  );
+  const { active, archived, discoverable } = useMemo(
+    () => groupChannels(channelList, isMember),
+    [channelList, isMember],
   );
   const totalUnread = useMemo(
     () => sumUnread(channelUnread),
@@ -419,6 +458,66 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
             ))}
           </div>
 
+          {/* Discover group — public channels the self workspace hasn't
+                joined yet. Collapsible (like archived), each row previews on
+                name-click and joins via the Join button. Only renders when
+                membership info is available (onJoinDiscoverable wired). */}
+          {discoverable.length > 0 && (
+            <div className="mt-1" data-channels-discover-group>
+              <button
+                type="button"
+                className={`w-full flex items-center gap-1 px-4 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+                onClick={() => setDiscoverExpanded((v) => !v)}
+                aria-expanded={discoverExpanded}
+                data-channels-discover-toggle
+                {...tokenAttrs('textMuted', 'text')}
+              >
+                <span
+                  className={`transition-transform ${discoverExpanded ? 'rotate-90' : ''}`}
+                  aria-hidden="true"
+                >
+                  <IconChevron size={9} />
+                </span>
+                <span>
+                  {t('channels.discover') || 'Discover'} ({discoverable.length})
+                </span>
+              </button>
+              {discoverExpanded && (
+                <div className="space-y-0.5">
+                  {discoverable.map((ch) => (
+                    <div
+                      key={ch.id}
+                      className="flex items-center gap-1 px-4 py-0.5"
+                      data-channels-discover-item
+                      data-channel-id={ch.id}
+                    >
+                      <button
+                        type="button"
+                        className={`flex-1 min-w-0 text-left truncate text-[11px] font-mono text-[var(--text-subtle)] hover:text-[var(--text-main)] transition-colors ${FOCUS_RING}`}
+                        onClick={() => onSelect(ch.id)}
+                        title={`#${ch.name}`}
+                      >
+                        #{ch.name}
+                      </button>
+                      {onJoinDiscoverable && (
+                        <button
+                          type="button"
+                          className={`shrink-0 px-1.5 py-0.5 text-[10px] rounded text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors ${FOCUS_RING}`}
+                          onClick={() => onJoinDiscoverable(ch.id)}
+                          data-channels-discover-join
+                          aria-label={`${t('channels.join') || 'Join'} #${ch.name}`}
+                          {...tokenAttrs('success', 'accent')}
+                        >
+                          {t('channels.join') || 'Join'}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Archived group — collapsible disclosure, collapsed by
                 default. Sort is `archivedAt` descending (most recently
                 archived first). */}
@@ -476,8 +575,12 @@ export function ChannelsPanel(): React.ReactElement {
   // the active workspace stands in as the creator identity so the `+` button
   // works without one (mirrors useChannelsHydration's identity resolution).
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const workspaces = useStore((s) => s.workspaces);
+  const channelMembers = useStore((s) => s.channelMembers);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const createChannelDaemon = useStore((s) => s.createChannelDaemon);
+  const joinChannelDaemon = useStore((s) => s.joinChannelDaemon);
+  const pushToast = useStore((s) => s.pushToast);
   // Dock host wiring: the panel's collapse affordance folds the whole dock
   // away (the panel is the dock's only host — the old separate dock header
   // was removed to drop the duplicate title). The chevron mirrors the dock's
@@ -485,6 +588,53 @@ export function ChannelsPanel(): React.ReactElement {
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const t = useT();
+
+  // Self workspace = CEO ws under Company mode, else the active workspace
+  // (mirrors handleCreate / ChannelMembersControl identity resolution).
+  const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId ?? null;
+
+  // Channel ids the self workspace is a member of — drives the joined vs
+  // discoverable split in the view. O(channels) but the catalog is small.
+  const memberChannelIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!selfWorkspaceId) return ids;
+    for (const [cid, members] of Object.entries(channelMembers)) {
+      if (members.some((m) => m.workspaceId === selfWorkspaceId)) ids.add(cid);
+    }
+    return ids;
+  }, [channelMembers, selfWorkspaceId]);
+
+  const handleJoinDiscoverable = useCallback(
+    (channelId: string) => {
+      if (!selfWorkspaceId) return;
+      const label =
+        workspaces.find((w) => w.id === selfWorkspaceId)?.name ?? selfWorkspaceId;
+      const channelName = channels[channelId]?.name ?? channelId;
+      void joinChannelDaemon(
+        channelId,
+        { workspaceId: selfWorkspaceId, memberId: 'local-ui', memberName: label },
+        selfWorkspaceId,
+      ).then((result) => {
+        if (result.ok) {
+          pushToast({
+            level: 'info',
+            message: t('channels.joinedToast', { workspace: label, channel: channelName }),
+          });
+        } else if (result.error.message.includes('DUPLICATE')) {
+          pushToast({
+            level: 'info',
+            message: t('channels.alreadyMemberToast', { workspace: label, channel: channelName }),
+          });
+        } else {
+          pushToast({
+            level: 'error',
+            message: t('channels.joinFailedToast', { workspace: label }),
+          });
+        }
+      });
+    },
+    [selfWorkspaceId, workspaces, channels, joinChannelDaemon, pushToast, t],
+  );
 
   const handleCreate = useCallback(
     async (params: { name: string; visibility: ChannelVisibility }) => {
@@ -543,8 +693,10 @@ export function ChannelsPanel(): React.ReactElement {
       channelMentions={channelMentions}
       activeChannelId={activeChannelId}
       company={company}
+      memberChannelIds={memberChannelIds}
       onSelect={setActiveChannel}
       onCreate={handleCreate}
+      onJoinDiscoverable={handleJoinDiscoverable}
       onCollapse={() => setChannelDockVisible(false)}
       collapseDir={sidebarPosition !== 'right' ? 'right' : 'left'}
       t={t}
