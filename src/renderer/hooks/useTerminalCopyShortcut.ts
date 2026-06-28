@@ -62,11 +62,13 @@ function readActiveElementInfo(active: Element | null): ActiveElementInfo | null
  * shortcut just never reaches it.
  *
  * This hook installs ONE document-level capture-phase keydown listener that, on
- * Ctrl+C, looks for a terminal holding a non-empty xterm selection and copies it
- * — but YIELDS (does nothing, leaving every existing path intact) when:
+ * Ctrl+C, looks for a VISIBLE terminal holding a non-empty xterm selection and
+ * copies it — but YIELDS (does nothing, leaving every existing path intact) when:
+ *   • the keydown is an OS auto-repeat tick (a held Ctrl+C copies once),
  *   • focus is on a terminal's own helper textarea (xterm handles copy/SIGINT),
  *   • focus is on an editable element with its own selection (composer copy),
- *   • no terminal holds a selection (SIGINT `^C` must still fire).
+ *   • no VISIBLE terminal holds a selection (SIGINT `^C` must still fire) — an
+ *     offscreen/unmounted terminal's stale selection is never a copy candidate.
  * The yield/act decision is the pure, fully-tested `resolveCopyTarget`; this
  * wrapper only feeds it the live DOM and acts on the verdict.
  *
@@ -84,6 +86,9 @@ export function useTerminalCopyShortcut(): void {
       // keeps it working under a Hangul / non-Latin IME.
       if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
       if (e.key !== 'c' && e.code !== 'KeyC') return;
+      // Ignore OS key auto-repeat: a held Ctrl+C must copy / toast / consume the
+      // event at most once, not fire on every repeat tick.
+      if (e.repeat) return;
 
       // Snapshot every live terminal's current selection. getSelection() is
       // wrapped per-terminal so a mid-teardown (disposed) terminal can't throw
@@ -91,6 +96,20 @@ export function useTerminalCopyShortcut(): void {
       const selections: TerminalSelectionSnapshot[] = [];
       for (const [ptyId, terminal] of terminalRegistry) {
         try {
+          // Only VISIBLE terminals are copy candidates. A workspace/tab switch
+          // can leave a terminal mounted-but-offscreen in the registry while it
+          // still holds an old xterm selection; copying that stale, unseen
+          // selection (clobbering the clipboard + toasting) is the consensus P2
+          // bug. checkVisibility() is exact on Chromium (display:none /
+          // visibility:hidden / disconnected / details-closed all count as
+          // hidden); offsetParent is the fallback where it is unavailable.
+          const el = terminal.element;
+          const visible =
+            !!el &&
+            (typeof el.checkVisibility === 'function'
+              ? el.checkVisibility()
+              : el.offsetParent !== null);
+          if (!visible) continue;
           selections.push({ ptyId, selection: terminal.getSelection() });
         } catch {
           // disposed / not-yet-ready terminal — skip it

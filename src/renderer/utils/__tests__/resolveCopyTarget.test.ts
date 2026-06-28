@@ -182,6 +182,24 @@ describe('resolveCopyTarget — copy branches', () => {
     ).toEqual({ ptyId: 'pty-solo', selection: 'lone' });
   });
 
+  it('returns the lone selected terminal when the active pane resolves but holds no selection', () => {
+    // GLM-flagged gap: activePtyId DOES resolve, but that terminal is not among
+    // the ones holding a selection, while exactly one OTHER terminal is. The
+    // active-pane preference finds no candidate, yet the single selected
+    // terminal is unambiguous, so it must be returned rather than yielding.
+    // (Visibility filtering is the hook's job; at the pure layer one candidate
+    // still wins.)
+    expect(
+      resolveCopyTarget(
+        input({
+          selections: [{ ptyId: 'pty-other', selection: 'only one' }],
+          activePtyId: 'pty-active',
+          activeElement: activeEl({ isEditable: true, hasOwnSelection: false }),
+        }),
+      ),
+    ).toEqual({ ptyId: 'pty-other', selection: 'only one' });
+  });
+
   it('returns the only selected terminal even when other terminals exist but are empty', () => {
     expect(
       resolveCopyTarget(
