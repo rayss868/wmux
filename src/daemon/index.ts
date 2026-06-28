@@ -1555,6 +1555,20 @@ function registerRpcHandlers(
     return { ok: true, members: channelService.getMembers(channelId, verifiedWorkspaceId) };
   });
 
+  pipeServer.onRpc('a2a.channel.ack', async (params) => {
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    const uptoSeq = typeof params['uptoSeq'] === 'number' ? params['uptoSeq'] : 0;
+    if (!channelId) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
+    }
+    if (!verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    return channelService.ack({ channelId, verifiedWorkspaceId, uptoSeq });
+  });
+
   pipeServer.onRpc('a2a.channel.create', async (params) => {
     const p = params as unknown as import('./channels/ChannelService').CreateChannelParams;
     if (!p.name || !p.visibility || !p.createdBy) {

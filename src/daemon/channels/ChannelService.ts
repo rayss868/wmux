@@ -1031,6 +1031,51 @@ export class ChannelService {
     });
   }
 
+  /**
+   * Receipt acknowledgement (A1 — make deliveryStatus real). A member confirms
+   * it has RECEIVED messages up to `uptoSeq` (the renderer calls this when it
+   * loads a channel; read === received). For each such message, the caller's
+   * entry in the frozen `recipientSnapshot` flips `pending → delivered`, and the
+   * message's own `deliveryStatus` flips to `delivered` once ANY recipient has
+   * (matching `DeliveryResult.ok` = "at least one delivered"). Before this,
+   * `deliveryStatus` was vestigially stuck at `pending` (the ChannelDelivery
+   * transport seam was never wired) so success/failure was indistinguishable.
+   * Persists only when something actually changed (a repeat ack is a no-op).
+   */
+  async ack(params: {
+    channelId: string;
+    verifiedWorkspaceId: string;
+    uptoSeq: number;
+  }): Promise<Result<{ acked: number }>> {
+    return this.withChannelLock(params.channelId, async () => {
+      const channel = this.state.channels.find((c) => c.id === params.channelId);
+      // Symmetric existence-hiding with get/getMessages: a non-member of a
+      // private channel sees CHANNEL_NOT_FOUND, never its existence.
+      if (!channel || !this.isVisibleTo(channel, params.verifiedWorkspaceId)) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
+      }
+      const msgs = this.state.messages[params.channelId] ?? [];
+      let acked = 0;
+      for (const m of msgs) {
+        if (m.seq > params.uptoSeq) continue;
+        const entry = (m.recipientSnapshot ?? []).find(
+          (r) => r.workspaceId === params.verifiedWorkspaceId,
+        );
+        if (entry && entry.status === 'pending') {
+          entry.status = 'delivered';
+          entry.lastAttemptAt = this.now();
+          // ≥1 recipient delivered ⇒ the message is delivered.
+          if (m.deliveryStatus !== 'delivered') m.deliveryStatus = 'delivered';
+          acked++;
+        }
+      }
+      if (acked > 0 && !this.saveOrFail()) {
+        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
+      }
+      return { ok: true, acked };
+    });
+  }
+
   // ── Internals ──────────────────────────────────────────────────────
 
   /**

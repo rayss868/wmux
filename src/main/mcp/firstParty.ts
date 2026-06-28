@@ -141,6 +141,7 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'a2a.channel.leave',
   'a2a.channel.post',
   'a2a.channel.invite',
+  'a2a.channel.ack',
   // company mode (all wmux.internal — undeclarable, hence the need for this list)
   'company.a2a.whoami',
   'company.a2a.send',

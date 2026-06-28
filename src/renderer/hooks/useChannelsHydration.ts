@@ -199,6 +199,18 @@ export async function loadChannelHistory(deps: ChannelHistoryDeps): Promise<numb
   if (!Array.isArray(raw)) return 0;
   const messages = raw as ChannelMessage[];
   apply(channelId, messages);
+  // A1: confirm receipt (read === received) so the SENDER's deliveryStatus flips
+  // 'pending' → 'delivered'. Best-effort + fire-and-forget — a failed ack must
+  // not affect the history load, and the next open re-acks (the daemon ignores a
+  // no-op repeat). uptoSeq = the latest seq (nextSeq - 1).
+  if (nextSeq > 1) {
+    void rpc('a2a.channel.ack', {
+      channelId,
+      workspaceId,
+      verifiedWorkspaceId: workspaceId,
+      uptoSeq: nextSeq - 1,
+    }).catch(() => undefined);
+  }
   return messages.length;
 }
 

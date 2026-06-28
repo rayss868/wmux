@@ -1819,5 +1819,67 @@ describe('D5 caller-identity server-pin', () => {
   });
 });
 
+describe('ack (A1: delivery receipt makes deliveryStatus real)', () => {
+  it('flips the caller recipient + the message to delivered; a repeat ack is a no-op', async () => {
+    const { svc } = makeService();
+    const created = await svc.create({
+      name: 'general',
+      visibility: 'public',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!created.ok) throw new Error('create failed');
+    const chId = created.channel.id;
+    const joined = await svc.join({
+      channelId: chId,
+      member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+      verifiedWorkspaceId: 'ws-2',
+    });
+    if (!joined.ok) throw new Error('join failed');
+    const post = await svc.post({
+      channelId: chId,
+      sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      text: 'hi',
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!post.ok) throw new Error('post failed');
+    expect(post.message.deliveryStatus).toBe('pending'); // nobody received it yet
+    const seq = post.message.seq;
+
+    const ack1 = await svc.ack({ channelId: chId, verifiedWorkspaceId: 'ws-2', uptoSeq: seq });
+    expect(ack1.ok).toBe(true);
+    if (!ack1.ok) throw new Error('ack1 failed');
+    expect(ack1.acked).toBe(1);
+
+    const m = svc.getMessages(chId, 0, 'ws-1').find((x) => x.seq === seq);
+    expect(m?.deliveryStatus).toBe('delivered');
+    expect(m?.recipientSnapshot?.find((r) => r.workspaceId === 'ws-2')?.status).toBe('delivered');
+
+    const ack2 = await svc.ack({ channelId: chId, verifiedWorkspaceId: 'ws-2', uptoSeq: seq });
+    expect(ack2.ok).toBe(true);
+    if (!ack2.ok) throw new Error('ack2 failed');
+    expect(ack2.acked).toBe(0); // already delivered → no change
+  });
+
+  it('a non-member ack on a private channel returns CHANNEL_NOT_FOUND (existence hidden)', async () => {
+    const { svc } = makeService();
+    const created = await svc.create({
+      name: 'priv',
+      visibility: 'private',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!created.ok) throw new Error('create failed');
+    const ack = await svc.ack({
+      channelId: created.channel.id,
+      verifiedWorkspaceId: 'ws-stranger',
+      uptoSeq: 99,
+    });
+    expect(ack.ok).toBe(false);
+    if (ack.ok) throw new Error('expected CHANNEL_NOT_FOUND');
+    expect(ack.error.code).toBe('CHANNEL_NOT_FOUND');
+  });
+});
+
 // Keep the imports referenced for type-checking the test file in isolation.
 void ({} as ChannelMessage);
