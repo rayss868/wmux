@@ -1734,13 +1734,18 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // unparseable (or empty) cursor is rejected rather than silently treated as "no
     // filter". (Review A9 P2/P3.)
     let updatedSince: string | undefined;
-    if (params.updatedSince !== undefined) {
-      const raw = typeof params.updatedSince === 'string' ? params.updatedSince : '';
-      const ms = Date.parse(raw);
-      if (Number.isNaN(ms)) {
-        return { error: 'a2a.task.query: updatedSince must be a valid ISO-8601 timestamp' };
+    {
+      const raw = typeof params.updatedSince === 'string' ? params.updatedSince.trim() : '';
+      // Empty/whitespace = "no lower bound" = no filter (return all) — matches
+      // the pre-cursor behavior + the common `updatedSince: cursor || ''` first-poll
+      // idiom (review U1 P2). Only a NON-empty, unparseable cursor is an error.
+      if (raw) {
+        const ms = Date.parse(raw);
+        if (Number.isNaN(ms)) {
+          return { error: 'a2a.task.query: updatedSince must be a parseable ISO-8601 timestamp' };
+        }
+        updatedSince = new Date(ms).toISOString();
       }
-      updatedSince = new Date(ms).toISOString();
     }
     const tasks = store.queryTasks(workspaceId, { status, role, updatedSince });
     return { workspaceId, tasks };

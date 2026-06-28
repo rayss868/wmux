@@ -196,6 +196,45 @@ describe('ChannelsPanelView — create-channel modal (jsdom)', () => {
     expect(btn.disabled).toBe(false); // valid → enabled
   });
 
+  it('guards the in-flight create — a second submit while creating does not double-create', () => {
+    let resolveCreate: (v: boolean) => void = () => undefined;
+    const onCreate = vi.fn(() => new Promise<boolean>((r) => {
+      resolveCreate = r;
+    }));
+    act(() => {
+      root.render(
+        createElement(ChannelsPanelView, {
+          channels: {},
+          channelUnread: {},
+          channelMentions: {},
+          activeChannelId: null,
+          company: null,
+          onSelect: () => undefined,
+          onCreate,
+        }),
+      );
+    });
+    click(must('[data-channels-new]', 'new-channel button'));
+    const input = must('[data-create-channel-name]', 'name input') as HTMLInputElement;
+    const setVal = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')?.set;
+    act(() => {
+      setVal?.call(input, 'release-notes');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    // First submit starts the (pending) create → creating=true.
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    // Second submit while the first is still in-flight must be a no-op.
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    act(() => {
+      resolveCreate(false); // settle the pending promise so the modal cleans up
+    });
+  });
+
   it('does NOT submit on Enter while an IME composition is active', () => {
     const onCreate = vi.fn(() => true);
     act(() => {
