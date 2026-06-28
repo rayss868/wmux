@@ -667,6 +667,7 @@ export const en = {
   'channels.searchEmpty': 'No messages match your search.',
   'channels.archivedReadOnly': 'Archived channels are read-only.',
   'channels.closeTooltip': 'Close channel',
+  'channels.closeViewTooltip': 'Close conversation (channel stays in your list)',
   'channels.newChannelTooltip': 'New channel',
   'channels.composerPlaceholder': 'Type a message…',
   'channels.composerAriaLabel': 'Compose channel message',

@@ -25,7 +25,7 @@ import { loadChannelHistory } from '../../hooks/useChannelsHydration';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
-import { IconX, IconArchive, IconCheck } from '../icons';
+import { IconX, IconArchive, IconCheck, IconChevron } from '../icons';
 import { Composer } from './Composer';
 import { ChannelMembersControl } from './ChannelMembers';
 
@@ -246,7 +246,12 @@ export interface ChannelViewContentProps {
   channel: Channel;
   messages: ChannelMessage[];
   viewer: ChannelMember | null;
+  /** Close the conversation VIEW only — deselect the active channel. The channel
+   *  stays in the dock and you remain a member. */
   onClose: () => void;
+  /** Leave the channel (X button) — removes your membership, then closes the
+   *  view. Absent → no leave affordance (e.g. archived channels). */
+  onLeave?: () => void;
   /** Archive the channel (one-way). Provided only when the viewer may archive
    *  it (the creator). Absent → no archive affordance is rendered. */
   onArchive?: () => void;
@@ -265,6 +270,7 @@ export function ChannelViewContent({
   messages,
   viewer,
   onClose,
+  onLeave,
   onArchive,
   composerSlot,
   membersSlot,
@@ -373,17 +379,37 @@ export function ChannelViewContent({
               {archiveArmed ? <IconCheck size={11} /> : <IconArchive size={11} />}
             </button>
           )}
+          {/* Close the conversation VIEW only — the channel stays in the dock and
+                you remain a member. Distinct from the X (leave) below. */}
           <button
             type="button"
-            aria-label={t('channels.closeTooltip') || 'Close channel'}
-            title={t('channels.closeTooltip') || 'Close channel'}
+            aria-label={t('channels.closeViewTooltip') || 'Close conversation (channel stays)'}
+            title={t('channels.closeViewTooltip') || 'Close conversation (channel stays)'}
             onClick={onClose}
-            className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--accent-red)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+            className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--text-sub)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
             data-channel-view-close
             {...tokenAttrs('textSub', 'text')}
           >
-            <IconX size={11} />
+            <span className="rotate-90" aria-hidden="true">
+              <IconChevron size={11} />
+            </span>
           </button>
+          {/* X = LEAVE the channel (removes your membership, then closes the
+                view). Destructive but recoverable for public channels (rejoin
+                from Discover). */}
+          {onLeave && (
+            <button
+              type="button"
+              aria-label={t('channels.leaveChannel') || 'Leave channel'}
+              title={t('channels.leaveChannel') || 'Leave channel'}
+              onClick={onLeave}
+              className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--accent-red)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+              data-channel-view-leave
+              {...tokenAttrs('textSub', 'text')}
+            >
+              <IconX size={11} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -539,12 +565,33 @@ export function ChannelView(): React.ReactElement | null {
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const pushToast = useStore((s) => s.pushToast);
   const archiveChannelDaemon = useStore((s) => s.archiveChannelDaemon);
+  const leaveChannelDaemon = useStore((s) => s.leaveChannelDaemon);
 
+  // Close the conversation view only (deselect) — the channel stays + you stay a member.
   const handleClose = useCallback(() => setActiveChannel(null), [setActiveChannel]);
 
   // The renderer's "self" workspace — same expression as `viewer` below (the
   // company CEO when set, else the active workspace).
   const selfWs = company?.ceoWorkspaceId ?? activeWorkspaceId ?? '';
+  // The X = LEAVE the channel (removes this workspace's UI membership), then
+  // close the view. Only offered when self is actually a member — a public
+  // channel you're previewing but haven't joined shows no leave affordance.
+  const selfIsMember = !!selfWs && members.some((m) => m.workspaceId === selfWs);
+  const handleLeave = useCallback(() => {
+    if (!activeChannelId || !selfWs) return;
+    // memberId 'local-ui' is the human/GUI member id (one per workspace).
+    void leaveChannelDaemon(activeChannelId, 'local-ui', selfWs).then((res) => {
+      if (res.ok) {
+        setActiveChannel(null);
+        pushToast({
+          level: 'info',
+          message: t('channels.leftToast', { channel: channel?.name ?? activeChannelId }),
+        });
+      } else {
+        pushToast({ level: 'error', message: t('channels.leaveFailedToast') || res.error.message });
+      }
+    });
+  }, [activeChannelId, selfWs, leaveChannelDaemon, setActiveChannel, pushToast, t, channel?.name]);
   // Archive is creator-only (the daemon also enforces this). Offer the affordance
   // only when this workspace created the channel, so a non-creator never sees a
   // button that would just toast NOT_AUTHORIZED.
@@ -629,6 +676,7 @@ export function ChannelView(): React.ReactElement | null {
         messages={messages}
         viewer={viewer}
         onClose={handleClose}
+        onLeave={selfIsMember ? handleLeave : undefined}
         onArchive={canArchive ? handleArchive : undefined}
         t={t}
         membersSlot={<ChannelMembersControl channel={channel} />}

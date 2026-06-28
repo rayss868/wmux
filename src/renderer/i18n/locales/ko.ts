@@ -595,6 +595,7 @@ export const ko = {
   'channels.searchEmpty': '검색과 일치하는 메시지가 없습니다.',
   'channels.archivedReadOnly': '보관된 채널은 읽기 전용입니다.',
   'channels.closeTooltip': '채널 닫기',
+  'channels.closeViewTooltip': '대화 닫기 (채널은 목록에 남음)',
   'channels.newChannelTooltip': '새 채널',
   'channels.composerPlaceholder': '메시지를 입력하세요…',
   'channels.composerAriaLabel': '채널 메시지 작성',

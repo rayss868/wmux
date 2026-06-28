@@ -265,6 +265,7 @@ function renderView(args: {
   messages?: ChannelMessage[];
   viewer?: ChannelMember | null;
   onClose?: () => void;
+  onLeave?: () => void;
   onArchive?: () => void;
   composerSlot?: React.ReactNode;
 } = {}): string {
@@ -274,6 +275,7 @@ function renderView(args: {
       messages: args.messages ?? [],
       viewer: args.viewer === undefined ? null : args.viewer,
       onClose: args.onClose ?? (() => undefined),
+      onLeave: args.onLeave,
       onArchive: args.onArchive,
       composerSlot: args.composerSlot ?? <div data-fake-composer />,
     }),
@@ -443,14 +445,18 @@ describe('ChannelViewContent', () => {
     expect(html).toContain('composer-here');
   });
 
-  it('exposes a close affordance that calls onClose', () => {
-    // The close button has data-channel-view-close; we assert the
-    // attribute is present (the actual click handler cannot fire
-    // under renderToStaticMarkup, so we verify the wiring contract
-    // by passing an onClose spy and checking the markup exposes
-    // the close target).
+  it('exposes a close-view affordance (data-channel-view-close) for onClose', () => {
+    // Close-view button = deselect the conversation, channel stays. Present
+    // regardless of membership.
     const html = renderView();
     expect(html).toContain('data-channel-view-close');
+  });
+
+  it('shows the leave (X) affordance only when onLeave is provided', () => {
+    // X = leave the channel. The container passes onLeave only when self is a
+    // member; a public channel you are merely previewing has no leave button.
+    expect(renderView({ onLeave: () => undefined })).toContain('data-channel-view-leave');
+    expect(renderView()).not.toContain('data-channel-view-leave');
   });
 
   it('contains no literal hex colors in the rendered view (theme tokens only)', () => {
