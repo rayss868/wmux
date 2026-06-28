@@ -575,6 +575,7 @@ export const ko = {
   'channels.archiveTooltip': '채널 보관 (읽기 전용, 되돌릴 수 없음)',
   'channels.archiveConfirm': '보관 확정 — 읽기 전용, 되돌릴 수 없음',
   'channels.members': '멤버',
+  'channels.membershipNote': '멤버 워크스페이스에 속한 에이전트는 모두 읽고 쓸 수 있습니다.',
   'channels.you': '나',
   'channels.noMembers': '아직 멤버가 없습니다.',
   'channels.leaveChannel': '채널 나가기',

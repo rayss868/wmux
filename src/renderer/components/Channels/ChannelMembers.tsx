@@ -106,6 +106,18 @@ export function ChannelMembersView({
             {t('channels.members') || 'Members'} ({members.length})
           </div>
 
+          {/* P2: clarify the membership model — it is per-workspace, not
+                per-agent (the office-hours mental-model fix). Any agent in a
+                member workspace can read + post; the roster lists agents only
+                for attribution. */}
+          <div
+            className="px-3 pb-1 text-[9px] font-mono leading-snug text-[var(--text-muted)]"
+            data-channel-members-note
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {t('channels.membershipNote') || 'Anyone in a member workspace can read and post.'}
+          </div>
+
           {members.length === 0 ? (
             <div className="px-3 py-1.5 text-[10px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
               {t('channels.noMembers') || 'No members yet.'}
@@ -122,7 +134,13 @@ export function ChannelMembersView({
                 >
                   <span className="truncate flex-1 min-w-0 text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')} title={`${workspaceLabel(m.workspaceId)} · ${m.memberId}`}>
                     {workspaceLabel(m.workspaceId)}
-                    <span className="text-[var(--text-muted)]"> · {m.memberId}</span>
+                    {/* P2: show the agent id only for real agents. Human/GUI
+                          members all share the UI member id (selfMemberId), an
+                          internal token — suppress it so the roster reads as
+                          agents + workspaces, not internal ids. */}
+                    {m.memberId !== selfMemberId && (
+                      <span className="text-[var(--text-muted)]"> · {m.memberId}</span>
+                    )}
                     {self && <span className="text-[var(--accent-blue)]"> ({t('channels.you') || 'you'})</span>}
                   </span>
                   {self && (

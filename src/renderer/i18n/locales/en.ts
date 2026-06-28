@@ -647,6 +647,7 @@ export const en = {
   'channels.archiveTooltip': 'Archive channel (read-only, one-way)',
   'channels.archiveConfirm': 'Confirm archive — read-only, one-way',
   'channels.members': 'Members',
+  'channels.membershipNote': 'Anyone in a member workspace can read and post.',
   'channels.you': 'you',
   'channels.noMembers': 'No members yet.',
   'channels.leaveChannel': 'Leave channel',
