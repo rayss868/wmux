@@ -209,18 +209,38 @@ function CreateChannelModal({
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  const doSubmit = useCallback(async () => {
+    setSubmitAttempted(true);
+    if (!field.valid) return;
+    // The panel-level `handleCreate` is async (it round-trips to the daemon via
+    // `createChannelDaemon`); we await so the modal stays open on failure and
+    // only closes on confirmed success.
+    const ok = await onCreate({ name: field.canonical, visibility });
+    if (ok) onClose();
+  }, [field.canonical, field.valid, onCreate, onClose, visibility]);
+
   const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
+    (e: React.FormEvent) => {
       e.preventDefault();
-      setSubmitAttempted(true);
-      if (!field.valid) return;
-      // The panel-level `handleCreate` is async (it round-trips to
-      // the daemon via `createChannelDaemon`); we await so the modal
-      // stays open on failure and only closes on confirmed success.
-      const ok = await onCreate({ name: field.canonical, visibility });
-      if (ok) onClose();
+      void doSubmit();
     },
-    [field.canonical, field.valid, onCreate, onClose, visibility],
+    [doSubmit],
+  );
+
+  // Enter-to-create. The native form submit doesn't reliably reach this modal
+  // (the app's global capture-phase key handler + the focused pane), so submit
+  // explicitly on Enter and stop the keystroke from leaking to the terminal.
+  // `isComposing` guard: don't fire mid-Hangul/IME composition (Enter there
+  // commits the composition, it is not a submit).
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+        e.preventDefault();
+        e.stopPropagation();
+        void doSubmit();
+      }
+    },
+    [doSubmit],
   );
 
   return (
@@ -247,6 +267,7 @@ function CreateChannelModal({
             placeholder="release-notes"
             value={name}
             onChange={(e) => setName(e.target.value)}
+            onKeyDown={handleKeyDown}
             maxLength={CHANNEL_NAME_MAX + 16}
             aria-invalid={showInlineError || undefined}
           />

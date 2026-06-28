@@ -142,7 +142,7 @@ describe('ChannelsPanelView — discovery group (jsdom)', () => {
   });
 });
 
-describe('ChannelsPanelView — create-channel modal positioning (jsdom)', () => {
+describe('ChannelsPanelView — create-channel modal (jsdom)', () => {
   it('opens as a viewport-fixed popover (not absolute) so the dock overflow cannot clip it', () => {
     mount();
     click(must('[data-channels-new]', 'new-channel button'));
@@ -152,5 +152,62 @@ describe('ChannelsPanelView — create-channel modal positioning (jsdom)', () =>
     // makes it `fixed` (escapes every overflow ancestor), anchored to the "+".
     expect(modal.className).toContain('fixed');
     expect(modal.className).not.toContain('absolute');
+  });
+
+  it('creates the channel on Enter in the name input (no Create-button click needed)', () => {
+    const onCreate = vi.fn(() => true);
+    act(() => {
+      root.render(
+        createElement(ChannelsPanelView, {
+          channels: {},
+          channelUnread: {},
+          channelMentions: {},
+          activeChannelId: null,
+          company: null,
+          onSelect: () => undefined,
+          onCreate,
+        }),
+      );
+    });
+    click(must('[data-channels-new]', 'new-channel button'));
+    const input = must('[data-create-channel-name]', 'name input') as HTMLInputElement;
+    const setVal = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')?.set;
+    act(() => {
+      setVal?.call(input, 'release-notes');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onCreate).toHaveBeenCalledWith({ name: 'release-notes', visibility: 'public' });
+  });
+
+  it('does NOT submit on Enter while an IME composition is active', () => {
+    const onCreate = vi.fn(() => true);
+    act(() => {
+      root.render(
+        createElement(ChannelsPanelView, {
+          channels: {},
+          channelUnread: {},
+          channelMentions: {},
+          activeChannelId: null,
+          company: null,
+          onSelect: () => undefined,
+          onCreate,
+        }),
+      );
+    });
+    click(must('[data-channels-new]', 'new-channel button'));
+    const input = must('[data-create-channel-name]', 'name input') as HTMLInputElement;
+    const setVal = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')?.set;
+    act(() => {
+      setVal?.call(input, 'release-notes');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    // Enter that COMMITS an IME composition must not create the channel.
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }));
+    });
+    expect(onCreate).not.toHaveBeenCalled();
   });
 });
