@@ -38,6 +38,22 @@ import { IconX } from '../icons';
  *  workspace. Mirrors the value the composer + create path already send. */
 const UI_MEMBER_ID = 'local-ui';
 
+/** The roster shows conversational PARTICIPANTS, not the channel's human owner.
+ *  The creating workspace is auto-added as a UI member on create (KTD10), but it
+ *  is the OWNER (channel.createdBy) and keeps full access — it is not a
+ *  participant. Exclude that one owner + UI-member entry so a freshly created
+ *  channel reads as 0 members and you populate it by inviting agents. Agents
+ *  (non-UI memberIds) — INCLUDING agents that live in the owner's own workspace
+ *  — are kept; only the owner's human placeholder is dropped. */
+export function rosterParticipants(
+  members: ChannelMember[],
+  ownerWorkspaceId: string | undefined,
+): ChannelMember[] {
+  return members.filter(
+    (m) => !(m.workspaceId === ownerWorkspaceId && m.memberId === UI_MEMBER_ID),
+  );
+}
+
 export interface JoinableWorkspace {
   id: string;
   name: string;
@@ -212,6 +228,10 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
   const selfIsMember =
     !!selfWorkspaceId && members.some((m) => m.workspaceId === selfWorkspaceId);
 
+  // Roster = conversational PARTICIPANTS (agents), not the human who created the
+  // channel (see rosterParticipants).
+  const rosterMembers = rosterParticipants(members, channel.createdBy);
+
   // What the picker offers (P1b):
   //  - a MEMBER may add any non-member workspace (invite — works for private too)
   //  - a NON-member may only self-join, so offer just their own workspace
@@ -273,7 +293,7 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
 
   return (
     <ChannelMembersView
-      members={members}
+      members={rosterMembers}
       workspaceLabel={workspaceLabel}
       selfWorkspaceId={selfWorkspaceId}
       selfMemberId={UI_MEMBER_ID}
