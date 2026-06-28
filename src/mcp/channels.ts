@@ -1,6 +1,6 @@
 // ─── Channel tools for the bundled MCP server ───────────────────────────
 //
-// Six standard MCP tools that expose the `a2a.channel.*` pipe RPC surface to
+// Seven standard MCP tools that expose the `a2a.channel.*` pipe RPC surface to
 // first-party MCP clients (Claude Code, Codex CLI). Each tool is a thin
 // pass-through over `sendRpc` plus a per-call workspaceId resolved by the
 // caller (index.ts injects `resolveWorkspaceId` so tests can stub it
@@ -17,7 +17,8 @@
 //    inspect the code rather than parse the message string.
 //  - The `a2a.channel.send` capability is enforced upstream in RpcRouter
 //    via methodCapabilityMap.ts. The MCP tool layer does not re-check it.
-//  - `channel.history` is intentionally deferred per plan Scope Boundaries.
+//  - `channel_read` exposes message history (the pull half of the attention
+//    model), bounded to the most recent N to protect the agent's context.
 //
 // Plan reference: U5 (a2a-channels first-party MCP allowlist + tools).
 
@@ -106,7 +107,7 @@ async function callChannelRpc(
   }
 }
 
-/** Register the six standard channel tools on the given MCP server. The
+/** Register the seven standard channel tools on the given MCP server. The
  *  parent module injects `resolveWorkspaceId` so workspace identity follows
  *  the same verification rules as the rest of the bundled server (verified
  *  PID-map hit first, env-hint fallback on miss). */
@@ -272,6 +273,50 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         channelId: channel_id,
         archivedBy: workspaceId,
       });
+    },
+  );
+
+  // ── channel_read ──────────────────────────────────────────────────
+  // The pull half of the channel attention model: agents are pushed only
+  // on @-mention, but can PULL recent history on demand here. `limit`
+  // defaults to a small N at this tool layer (NOT in the daemon) to protect
+  // the agent's context window — reading a busy channel is a token cost.
+  server.tool(
+    'channel_read',
+    'Read recent messages from a channel you can see (public, or private if you are a member). ' +
+      'Returns the most recent `limit` messages (default 50, newest last); use `since_seq` to page ' +
+      'forward from a known seq. Reading consumes your context window, so prefer a small `limit` and ' +
+      'read deliberately. A private channel you are not a member of returns an empty list; a missing ' +
+      'channel returns an error.',
+    {
+      channel_id: z.string().describe('Target channel id.'),
+      since_seq: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          'Return messages with seq >= since_seq (forward pagination). When combined with limit, the ' +
+            'floor is applied first, then the most recent `limit` of the remainder.',
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe('Max messages to return, taken from the newest end. Defaults to 50 to protect your context window.'),
+    },
+    async ({ channel_id, since_seq, limit }) => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      const params: Record<string, unknown> = {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+        channelId: channel_id,
+        limit: limit ?? 50,
+      };
+      if (since_seq !== undefined) params['sinceSeq'] = since_seq;
+      return callChannelRpc('a2a.channel.getMessages' as RpcMethod, params);
     },
   );
 }

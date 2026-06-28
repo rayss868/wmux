@@ -76,6 +76,7 @@ const channelJoin = tools.get('channel_join');
 const channelLeave = tools.get('channel_leave');
 const channelArchive = tools.get('channel_archive');
 const channelList = tools.get('channel_list');
+const channelRead = tools.get('channel_read');
 
 if (
   !channelCreate ||
@@ -83,7 +84,8 @@ if (
   !channelJoin ||
   !channelLeave ||
   !channelArchive ||
-  !channelList
+  !channelList ||
+  !channelRead
 ) {
   throw new Error('channel tools failed to register');
 }
@@ -93,18 +95,19 @@ beforeEach(() => {
 });
 
 describe('channel_* tools: registration', () => {
-  it('registers all six standard tools', () => {
-    // The MCP server is the standard channel surface (channel.history is
-    // intentionally deferred per plan Scope Boundaries).
+  it('registers all seven standard tools', () => {
+    // channel_read exposes message history (the pull half of the attention
+    // model); it replaces the previously-deferred channel.history.
     expect(channelCreate).toBeDefined();
     expect(channelPost).toBeDefined();
     expect(channelJoin).toBeDefined();
     expect(channelLeave).toBeDefined();
     expect(channelArchive).toBeDefined();
     expect(channelList).toBeDefined();
+    expect(channelRead).toBeDefined();
   });
 
-  it('does not register a channel_history tool (deferred per plan)', () => {
+  it('does not register a channel_history tool (history is exposed via channel_read)', () => {
     expect(tools.get('channel_history')).toBeUndefined();
   });
 });
@@ -127,6 +130,42 @@ describe('channel_list', () => {
     });
     const res = await channelList({});
     expect(res.content[0].text).toContain('ch-1');
+  });
+});
+
+describe('channel_read', () => {
+  it('forwards channel_id + default limit (50) and no sinceSeq when since_seq omitted', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, messages: [] });
+    const res = await channelRead({ channel_id: 'ch-123' });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.getMessages', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      channelId: 'ch-123',
+      limit: 50,
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('forwards since_seq and an explicit limit when provided', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, messages: [] });
+    await channelRead({ channel_id: 'ch-123', since_seq: 42, limit: 10 });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.getMessages', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      channelId: 'ch-123',
+      limit: 10,
+      sinceSeq: 42,
+    });
+  });
+
+  it('surfaces a daemon error envelope as isError', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: false,
+      error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel: ch-x' },
+    });
+    const res = await channelRead({ channel_id: 'ch-x' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('CHANNEL_NOT_FOUND');
   });
 });
 

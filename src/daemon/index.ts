@@ -1532,7 +1532,8 @@ function registerRpcHandlers(
       };
     }
     const sinceSeq = typeof params['sinceSeq'] === 'number' ? params['sinceSeq'] : undefined;
-    return { ok: true, messages: channelService.getMessages(channelId, sinceSeq, verifiedWorkspaceId) };
+    const limit = typeof params['limit'] === 'number' ? params['limit'] : undefined;
+    return { ok: true, messages: channelService.getMessages(channelId, sinceSeq, verifiedWorkspaceId, limit) };
   });
 
   pipeServer.onRpc('a2a.channel.getMembers', async (params) => {

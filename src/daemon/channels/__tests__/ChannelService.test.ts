@@ -963,6 +963,35 @@ describe('ChannelService', () => {
       // Stranger — sees the message because the channel is public.
       expect(svc.getMessages(pub.channel.id, undefined, 'ws-9')).toHaveLength(1);
     });
+
+    it('getMessages tail-limits to the most recent N (and undefined limit = full history, no regression)', async () => {
+      const { svc } = makeService();
+      const pub = await svc.create({
+        name: 'busy',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!pub.ok) throw new Error('expected create ok');
+      for (let i = 1; i <= 5; i++) {
+        await svc.post({
+          channelId: pub.channel.id,
+          sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+          text: `msg-${i}`,
+          verifiedWorkspaceId: 'ws-1',
+        });
+      }
+      // Regression guard: omitting limit returns the FULL history (the human
+      // ChannelView relies on this — the default-50 lives in the MCP tool, not here).
+      expect(svc.getMessages(pub.channel.id, undefined, 'ws-1')).toHaveLength(5);
+      // Tail-limit returns the most recent N, in seq order.
+      expect(svc.getMessages(pub.channel.id, undefined, 'ws-1', 2).map((m) => m.seq)).toEqual([4, 5]);
+      // limit >= length returns everything; limit 0 returns nothing.
+      expect(svc.getMessages(pub.channel.id, undefined, 'ws-1', 100)).toHaveLength(5);
+      expect(svc.getMessages(pub.channel.id, undefined, 'ws-1', 0)).toEqual([]);
+      // sinceSeq floor applies first, then the tail-limit on the remainder.
+      expect(svc.getMessages(pub.channel.id, 3, 'ws-1', 1).map((m) => m.seq)).toEqual([5]);
+    });
   });
 
   describe('#288: join visibility gate (fail-closed private join)', () => {

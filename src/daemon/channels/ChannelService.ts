@@ -316,8 +316,20 @@ export class ChannelService {
    *
    * The seq-floor is `Math.max(sinceSeq ?? 0, viewer.historyFromSeq)`
    * so a caller can still page with `sinceSeq` on top of the floor.
+   *
+   * `limit` (optional) caps the result to the most recent `limit` messages
+   * AFTER the seq-floor is applied (tail slice). It exists to protect an
+   * agent caller's context window: an MCP `channel_read` defaults it to a
+   * small N, while the renderer omits it (undefined = no cap = full history,
+   * the pre-existing behaviour — do NOT default it here or the human
+   * ChannelView would silently truncate).
    */
-  getMessages(channelId: string, sinceSeq: number | undefined, verifiedWorkspaceId: string): ChannelMessage[] {
+  getMessages(
+    channelId: string,
+    sinceSeq: number | undefined,
+    verifiedWorkspaceId: string,
+    limit?: number,
+  ): ChannelMessage[] {
     const channel = this.state.channels.find((c) => c.id === channelId);
     if (!channel) return [];
     if (!this.isVisibleTo(channel, verifiedWorkspaceId)) return [];
@@ -338,7 +350,14 @@ export class ChannelService {
       }
       floor = Math.max(floor, viewer.historyFromSeq);
     }
-    return all.filter((m) => m.seq >= floor);
+    const filtered = all.filter((m) => m.seq >= floor);
+    // Tail-slice to the most recent `limit` when a cap is requested.
+    // `Math.max(0, …)` keeps limit=0 → [] and limit>length → full list
+    // correct (a bare `.slice(-0)` would return the whole array).
+    if (limit !== undefined && limit >= 0) {
+      return filtered.slice(Math.max(0, filtered.length - limit));
+    }
+    return filtered;
   }
 
   /** Per-channel visibility rule. A channel is visible to the caller
