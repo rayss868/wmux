@@ -363,7 +363,9 @@ export function registerPaneRpc(
     // violation; the catch below wraps with the RPC-method prefix.
     const patch: Partial<PaneMetadata> = {};
     if (params['label'] !== undefined) patch.label = params['label'] as string;
-    if (params['role'] !== undefined) patch.role = params['role'] as string;
+    // P2: `role` deprecated — no longer written from the RPC. Legacy role in
+    // metadata.json is read-only (dead); MetadataStore keeps the field handling
+    // for backward-compat reads of pre-P2 data.
     if (params['status'] !== undefined) patch.status = params['status'] as string;
     if (params['custom'] !== undefined) patch.custom = params['custom'] as Record<string, string>;
 
@@ -373,6 +375,17 @@ export function registerPaneRpc(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`pane.setMetadata: ${msg}`);
+    }
+
+    // P2 (review fix): the deprecated `role` is dropped above. A legacy role-only
+    // call — especially with mergeMode 'replace' — would otherwise hand an EMPTY
+    // patch to a replace, which MetadataStore treats as a full wipe of the pane's
+    // existing label/status/custom. When role was sent and nothing supported
+    // remains, no-op and return the current state rather than destroying metadata
+    // over a dead field. (An intentional empty replace — no role — still clears.)
+    if (params['role'] !== undefined && Object.keys(patch).length === 0) {
+      const current = store.get(target.paneId);
+      return { ok: true, paneId: target.paneId, metadata: current.metadata, version: current.version };
     }
 
     let result;

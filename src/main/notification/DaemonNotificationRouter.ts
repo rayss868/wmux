@@ -405,6 +405,10 @@ export class DaemonNotificationRouter {
           ptyId: payload.sessionId,
           agentStatus: ev.status,
           agentName: ev.agent,
+          // P2: carry the slug (daemon-mode path — the packaged production path)
+          // so the renderer builds the pane auto-name `(<agent>)` suffix. ev.agent
+          // is the display name; mirrors the PTYBridge local-mode broadcast.
+          agentSlug: agentDisplayToSlug(ev.agent) ?? null,
         });
         // Cache the agent display name for any subsequent OSC 133
         // command_end on this PTY. Daemon mode has no direct equivalent
@@ -514,7 +518,11 @@ export class DaemonNotificationRouter {
         broadcastMetadataUpdate(this.getWindow(), {
           ptyId: payload.sessionId,
           agentStatus: 'running',
-          ...(payload.agentName ? { agentName: payload.agentName } : {}),
+          // P2: include the slug alongside the gated name (daemon-mode running
+          // broadcast) so the auto-name suffix fills as soon as the name does.
+          ...(payload.agentName
+            ? { agentName: payload.agentName, agentSlug: agentDisplayToSlug(payload.agentName) ?? null }
+            : {}),
         });
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:active error:', err);

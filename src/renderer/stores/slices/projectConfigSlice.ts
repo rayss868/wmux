@@ -13,7 +13,7 @@
 
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createLeafPane, generateId, type Pane, type PaneBranch, type Workspace } from '../../../shared/types';
+import { createLeafPane, assignPaneOrdinals, generateId, type Pane, type PaneBranch, type Workspace } from '../../../shared/types';
 import type { ProjectConfigState, WmuxProjectLayoutNode } from '../../../shared/wmuxProjectConfig';
 
 /** Per-pane bootstrap payload recorded at layout-apply time. `cwd` is already
@@ -175,6 +175,8 @@ export const createProjectConfigSlice: StateCreator<
       disposedPtyIds = collectPtyIds(ws.rootPane);
       const seeds: Record<string, ProjectPaneSeed> = {};
       const newRoot = buildTree(layout, project.root as string, seeds);
+      // P2: full-tree replace → number leaves fresh 1..n (parallels applyLayoutTemplate).
+      ws.nextPaneOrdinal = assignPaneOrdinals(newRoot, 1);
       ws.rootPane = newRoot;
       ws.activePaneId = firstLeafId(newRoot);
       for (const [paneId, seed] of Object.entries(seeds)) {

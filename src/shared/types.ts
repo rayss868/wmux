@@ -15,6 +15,10 @@ import type {
   InboxMessage as _InboxMessage,
 } from '../company/types';
 import { MAX_INBOX_SIZE as _MAX_INBOX_SIZE } from '../company/types';
+// Type-only import (erased at build). AgentSlug is canonically declared in
+// ./events; the reverse type-only edge (events → types) makes this a type-level
+// cycle, which TypeScript resolves without any runtime import.
+import type { AgentSlug } from './events';
 
 // Re-export for backward compatibility
 export type AgentPreset = _AgentPreset;
@@ -55,6 +59,16 @@ export interface PaneLeaf {
   surfaces: Surface[];
   activeSurfaceId: string;
   metadata?: PaneMetadata;
+  /**
+   * P2 — per-workspace, monotonically-assigned pane number used to build a
+   * stable unique auto display name `w<wsOrdinal>-<ordinal>(<agent>)`. Layout
+   * state (NOT MetadataStore): it persists via the `...pane` spread in
+   * cloneWithScrollback/buildSessionData and is untouched by onPaneDeleted, so
+   * a closed pane's number is never recycled. Optional only for backward-compat
+   * with pre-P2 sessions — loadSession backfills any missing values, and every
+   * live construction path assigns one via `assignPaneOrdinals`.
+   */
+  ordinal?: number;
 }
 
 // === Pane Metadata: optional descriptive labels for external tooling ===
@@ -127,6 +141,24 @@ export interface Workspace {
   profile?: WorkspaceProfile;
   companyRole?: 'ceo' | 'lead' | 'member';
   companyDeptName?: string;
+  /**
+   * P2 — stable workspace number for the `w<wsOrdinal>` prefix of pane auto
+   * names. Allocated from the global high-water `nextWorkspaceOrdinal` at
+   * creation and never changed by reorder/rename, so the coordinate is stable
+   * even as the sidebar order or display `name` change. Independent from
+   * `name` (the editable "Workspace N"/"Backend" label). Optional only for
+   * pre-P2 session backward-compat — loadSession backfills it.
+   */
+  wsOrdinal?: number;
+  /**
+   * P2 — per-workspace high-water counter for `PaneLeaf.ordinal`. A new pane
+   * (split) takes this value, then it increments; closing a pane never
+   * decrements it, so ordinals are never recycled. Persisted on the workspace
+   * (auto via the `...ws` spread in buildSessionData) and recomputed as
+   * `max(leaf.ordinal)+1` on load for resilience. Optional only for pre-P2
+   * backward-compat.
+   */
+  nextPaneOrdinal?: number;
 }
 
 // === Cross-Pane Search (T-A) ===
@@ -260,6 +292,16 @@ export interface MetadataUpdatePayload {
   // applying any active-pane update to workspace metadata (it is not workspace
   // state). Never persisted.
   activity?: string;
+  // P2 — pane label relay. MetadataStore's `pane.metadata.changed` is teed to
+  // the renderer as a paneId-only update (no ptyId/workspaceId);
+  // useNotificationListener routes on `paneId` and writes ONLY the per-pane
+  // label mirror, so these never leak into workspace metadata.
+  paneId?: string;
+  paneLabel?: string;
+  // P2 — agent slug ('claude'/'codex'/…), computed in main next to agentName so
+  // the renderer can build a pane's `(<agent>)` auto-name suffix without
+  // importing the main-only display→slug map.
+  agentSlug?: AgentSlug | null;
 }
 
 // === Status indicator colors ===
@@ -384,6 +426,9 @@ export const DEFAULT_PREFIX_CONFIG: PrefixConfig = {
 export interface SessionData {
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  /** P2 — persisted global high-water for Workspace.wsOrdinal (stable
+   *  workspace numbers across restart). Optional for pre-P2 sessions. */
+  nextWorkspaceOrdinal?: number;
   sidebarVisible: boolean;
   /** Right-side channel dock visibility. Optional for backward-compat with
    *  pre-dock sessions (defaults to false on load). */
@@ -711,23 +756,54 @@ export function createSurface(ptyId: string, shell: string, cwd: string): Surfac
   };
 }
 
-export function createLeafPane(surface?: Surface): PaneLeaf {
+export function createLeafPane(surface?: Surface, ordinal?: number): PaneLeaf {
   const surfaces = surface ? [surface] : [];
   return {
     id: generateId('pane'),
     type: 'leaf',
     surfaces,
     activeSurfaceId: surfaces[0]?.id || '',
+    // P2: single-leaf direct callers (e.g. splitPane) pass an explicit ordinal
+    // from the workspace high-water counter; multi-leaf factory callers omit it
+    // and rely on a post-construction `assignPaneOrdinals` DFS renumber.
+    ...(ordinal !== undefined ? { ordinal } : {}),
   };
 }
 
-export function createWorkspace(name: string): Workspace {
+/**
+ * P2 — assign a per-workspace `ordinal` to every leaf in a pane tree in DFS
+ * order (matches getLeafPanes/collectLeafPanes traversal), starting at `start`.
+ * Returns the next free ordinal — the workspace's new `nextPaneOrdinal`
+ * high-water mark. Mutates the tree in place; callers pass a freshly built or
+ * cloned tree. This is the single allocation primitive for every multi-leaf
+ * construction path (createWorkspace, presets, layout templates, duplicate,
+ * hydration backfill), so adding a leaf-construction site never needs to thread
+ * a counter through the factory — it renumbers at the workspace boundary.
+ */
+export function assignPaneOrdinals(root: Pane, start: number): number {
+  let n = start;
+  const walk = (p: Pane): void => {
+    if (p.type === 'leaf') {
+      p.ordinal = n;
+      n += 1;
+    } else {
+      for (const child of p.children) walk(child);
+    }
+  };
+  walk(root);
+  return n;
+}
+
+export function createWorkspace(name: string, wsOrdinal = 1): Workspace {
   const rootPane = createLeafPane();
+  const nextPaneOrdinal = assignPaneOrdinals(rootPane, 1);
   return {
     id: generateId('ws'),
     name,
     rootPane,
     activePaneId: rootPane.id,
+    wsOrdinal,
+    nextPaneOrdinal,
   };
 }
 
@@ -757,12 +833,17 @@ export function clonePaneTreeFresh(pane: Pane): Pane {
     });
     // Preserve which surface was active by POSITION, since ids changed.
     const activeIdx = pane.surfaces.findIndex((s) => s.id === pane.activeSurfaceId);
+    // P2 (checklist G): do NOT carry `metadata` onto the clone. The clone is a
+    // new paneId, so a copied `label` would be an orphan that round-trips to
+    // session.json (a second persist path competing with MetadataStore) and
+    // shadows the fresh auto name. `ordinal` is intentionally omitted too —
+    // duplicateWorkspace renumbers the whole clone via assignPaneOrdinals so the
+    // duplicate gets a fresh 1..n sequence rather than the source's numbers.
     return {
       id: generateId('pane'),
       type: 'leaf',
       surfaces,
       activeSurfaceId: surfaces[activeIdx >= 0 ? activeIdx : 0]?.id ?? '',
-      ...(pane.metadata ? { metadata: { ...pane.metadata } } : {}),
     };
   }
   return {

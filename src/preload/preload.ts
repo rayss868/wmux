@@ -198,12 +198,21 @@ const electronAPI = {
     // progress) flow through this one shape. Renderer routes by ptyId
     // (preferred) or workspaceId (for surface-less updates like
     // meta.setStatus on the active workspace).
-    onUpdate: (callback: (payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string }) =>
+    onUpdate: (callback: (payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string; paneId?: string; paneLabel?: string; agentSlug?: string | null }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string; paneId?: string; paneLabel?: string; agentSlug?: string | null }) =>
         callback(payload);
       ipcRenderer.on(IPC.METADATA_UPDATE, listener);
       return () => { ipcRenderer.removeListener(IPC.METADATA_UPDATE, listener); };
     },
+    // P2 bootstrap: one-shot pull of all current pane labels (paneId → label)
+    // so the renderer's volatile mirror is seeded on mount after a restart
+    // (MetadataStore.hydrate emits no events).
+    snapshot: () =>
+      ipcRenderer.invoke(IPC.METADATA_SNAPSHOT) as Promise<Array<{ paneId: string; label: string }>>,
+    // P2 GUI pane rename. Routes through MetadataStore (the sole label authority)
+    // so the change persists + relays back to every renderer via METADATA_UPDATE.
+    setLabel: (paneId: string, workspaceId: string, label: string) =>
+      ipcRenderer.invoke(IPC.METADATA_SET, paneId, workspaceId, label) as Promise<{ ok: boolean }>,
     // gate로 확정된 agentName을 main 캐시에서 pull. running 수신 시 agentName이
     // 비어 있으면 호출해, 매핑 준비 전에 놓친 1회성 session:agent emit을 메운다.
     resolveAgent: (ptyId: string) =>

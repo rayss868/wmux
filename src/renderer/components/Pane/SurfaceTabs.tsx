@@ -7,6 +7,8 @@ import {
   buildPaneMarkdown,
 } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
+import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
+import { findPane } from '../../../shared/paneUtils';
 
 /** B8: dot color for a completed/awaiting surface tab. */
 function statusDotColor(status: AgentStatus): string {
@@ -45,6 +47,14 @@ export default function SurfaceTabs({
   // active surface's completion is conveyed by the pane border blink instead.
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
+  // P2: pane-level identity + rename (distinct from the per-surface tab rename
+  // below). The pane's display name is its user label (paneLabel mirror) or the
+  // stable auto coordinate `w<ws>-<pane>(<agent>)`.
+  const paneLabelMap = useStore((s) => s.paneLabel);
+  const surfaceAgent = useStore((s) => s.surfaceAgent);
+  const [paneEditing, setPaneEditing] = useState(false);
+  const [paneEditName, setPaneEditName] = useState('');
+  const paneInputRef = useRef<HTMLInputElement>(null);
 
   // Double-click a tab to rename it (a free-text "mark" so a powershell is
   // easier to recognise). Edits surface.title directly — nothing auto-updates
@@ -72,6 +82,37 @@ export default function SurfaceTabs({
     const trimmed = editName.trim();
     if (trimmed) updateSurfaceTitle(surfaceId, trimmed);
     setEditingId(null);
+  };
+
+  useEffect(() => {
+    if (paneEditing) {
+      paneInputRef.current?.focus();
+      paneInputRef.current?.select();
+    }
+  }, [paneEditing]);
+
+  // P2: resolve this pane's display name. Ordinals are layout state (find the
+  // leaf in the workspace tree); the agent slug names the suffix off the active
+  // surface; the user label (if any) overrides the auto coordinate.
+  const leaf = findPane(workspace.rootPane, paneId);
+  const paneOrdinal = leaf && leaf.type === 'leaf' ? (leaf.ordinal ?? 0) : 0;
+  const activeSurface = surfaces.find((s) => s.id === activeSurfaceId) ?? surfaces[0];
+  const activeSlug = activeSurface?.ptyId ? surfaceAgent[activeSurface.ptyId]?.slug : undefined;
+  const paneAutoName = computePaneAutoName(workspace.wsOrdinal ?? 0, paneOrdinal, activeSlug);
+  const paneDisplay = paneDisplayName(paneLabelMap[paneId], paneAutoName);
+
+  const startPaneRename = () => {
+    // Suppress the rename a double-click triggers right after a tab drag.
+    if (Date.now() - dragStartTimeRef.current < 300) return;
+    setPaneEditName(paneLabelMap[paneId] ?? '');
+    setPaneEditing(true);
+  };
+  const commitPaneRename = () => {
+    // Empty clears the custom label (reverts to the auto name). The renderer is
+    // not the label authority — route through MetadataStore so the change
+    // persists (metadata.json) and relays back via pane.metadata.changed.
+    void window.electronAPI.metadata.setLabel(paneId, workspace.id, paneEditName.trim());
+    setPaneEditing(false);
   };
 
   // Always render the strip — even for a single surface — so the X button is
@@ -109,6 +150,38 @@ export default function SurfaceTabs({
 
   return (
     <div className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-7 overflow-x-auto" {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
+      {/* P2 — pane identity + double-click rename. A distinct element/handler
+          from the surface tabs (different store: pane label via MetadataStore vs
+          surface.title), so the two renames never collide. */}
+      {paneEditing ? (
+        <input
+          ref={paneInputRef}
+          data-pane-label-input
+          className="bg-[var(--bg-base)] text-[var(--text-main)] text-[10px] font-mono px-1 py-0 mx-1 rounded border border-[var(--accent)] outline-none max-w-[150px] shrink-0"
+          value={paneEditName}
+          maxLength={64}
+          placeholder={paneAutoName}
+          onChange={(e) => setPaneEditName(e.target.value)}
+          onBlur={commitPaneRename}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitPaneRename();
+            else if (e.key === 'Escape') setPaneEditing(false);
+            e.stopPropagation();
+          }}
+          onClick={(e) => e.stopPropagation()}
+          {...tokenAttrs('accent', 'border')}
+        />
+      ) : (
+        <span
+          data-pane-label
+          className="shrink-0 px-2 h-full flex items-center text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-sub)] border-r border-[var(--bg-surface)] cursor-pointer select-none truncate max-w-[170px]"
+          onDoubleClick={startPaneRename}
+          title={paneDisplay}
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          {paneDisplay}
+        </span>
+      )}
       {surfaces.map((s) => (
         <div
           key={s.id}

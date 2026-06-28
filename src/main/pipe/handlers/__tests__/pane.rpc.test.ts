@@ -326,7 +326,9 @@ describe('pane.rpc — metadata', () => {
       const entry = store.get('pane-x');
       expect(entry.version).toBe(1);
       expect(entry.metadata.label).toBe('Backend');
-      expect(entry.metadata.role).toBe('service');
+      // P2: `role` is deprecated — the RPC drops it from the patch, so a sent
+      // role never reaches the store (label/status/custom are unaffected).
+      expect(entry.metadata.role).toBeUndefined();
     });
 
     it('honors merge=false (mergeMode=replace) when caller passes it (paneId path)', async () => {
@@ -732,15 +734,19 @@ describe('pane.rpc — metadata', () => {
       expect(clearCall[2]).toEqual({ workspaceId: 'ws-caller' });
     });
 
-    it('1.2 — rejects role exceeding 64 chars', async () => {
-      const router = setupRouter();
+    it('1.2 — ignores a deprecated `role` field (no validation, never stored)', async () => {
+      const { router, store } = setupWithStore();
       const res = await router.dispatch({
         id: 'rpc-fix-4',
         method: 'pane.setMetadata',
-        params: { role: 'r'.repeat(65) },
+        params: { paneId: 'pane-x', workspaceId: 'ws-1', label: 'Keep', role: 'r'.repeat(65) },
       });
-      expect(res.ok).toBe(false);
-      if (!res.ok) expect(res.error).toMatch(/role/);
+      // P2: role is deprecated — the RPC drops it before the store sees it, so an
+      // oversized role is silently ignored (not rejected) and never persists.
+      expect(res.ok).toBe(true);
+      const entry = store.get('pane-x');
+      expect(entry.metadata.label).toBe('Keep');
+      expect(entry.metadata.role).toBeUndefined();
     });
 
     it('1.3 — rejects empty custom key', async () => {

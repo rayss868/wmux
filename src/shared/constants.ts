@@ -43,6 +43,11 @@ export const IPC = {
   TERMINAL_TITLE_CHANGED: 'terminal:title-changed',
   METADATA_UPDATE: 'metadata:update',
   METADATA_REQUEST: 'metadata:request',
+  // P2 — one-shot renderer→main pull of all current pane labels (paneId → label)
+  // to seed the volatile paneLabel mirror on mount (hydrate emits no events).
+  METADATA_SNAPSHOT: 'metadata:snapshot',
+  // P2 — renderer GUI pane rename → MetadataStore.set (the only non-MCP writer).
+  METADATA_SET: 'metadata:set',
   // Phase 3: RPC bridge (Main ↔ Renderer)
   RPC_COMMAND: 'rpc:command',
   RPC_RESPONSE: 'rpc:response',

@@ -398,6 +398,9 @@ export class PTYBridge {
           ptyId,
           agentStatus: status,
           agentName: agentEvent.agent,
+          // P2: carry the slug so the renderer builds the `(<agent>)` auto-name
+          // suffix without importing the main-only display→slug map.
+          agentSlug: agentDisplayToSlug(agentEvent.agent) ?? null,
         });
 
         if (status === 'waiting' || status === 'complete' || status === 'awaiting_input') {
@@ -464,6 +467,9 @@ export class PTYBridge {
           ptyId,
           agentStatus: 'running',
           agentName: lastAgent,
+          // P2: slug alongside the periodic 'running' name ('' when no agent is
+          // detected yet → agentDisplayToSlug returns undefined → null).
+          agentSlug: agentDisplayToSlug(lastAgent) ?? null,
         });
         agentDetector.resetEmissionState();
       } catch (err) {

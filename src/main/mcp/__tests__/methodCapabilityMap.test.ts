@@ -96,11 +96,14 @@ describe('methodCapabilityMap risk class wiring', () => {
 });
 
 describe('methodCapabilityMap path extractor behavior', () => {
-  it('pane.setMetadata extracts label/role/status + custom.* paths', () => {
+  it('pane.setMetadata extracts label/status + custom.* paths (role deprecated)', () => {
     const ext = METHOD_CAPABILITY['pane.setMetadata'].pathFromParams;
     if (typeof ext !== 'function') throw new Error('expected function');
     expect(ext({ label: 'foo' })).toEqual(['label']);
-    expect(ext({ label: 'a', role: 'b', status: 'c' })).toEqual(['label', 'role', 'status']);
+    // P2: `role` is deprecated and no longer a settable field, so it is not a
+    // capability path for setMetadata (clearMetadata still lists it — clear
+    // wipes any legacy role).
+    expect(ext({ label: 'a', role: 'b', status: 'c' })).toEqual(['label', 'status']);
     expect(ext({ custom: { dashboard: 'on', counter: '42' } })).toEqual([
       'custom.dashboard',
       'custom.counter',

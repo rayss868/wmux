@@ -161,8 +161,16 @@ function dumpScrollbackBuffersSync(): Map<string, boolean> {
 function cloneWithScrollback(pane: Pane, dumped: Map<string, boolean>): Pane {
   const daemonMode = isDaemonModeActive();
   if (pane.type === 'leaf') {
+    // P2 (checklist G): drop `metadata` from the persisted snapshot. Pane labels
+    // live in MetadataStore (metadata.json) as the single source of truth; the
+    // `...pane` spread would otherwise round-trip a stale `label` into
+    // session.json, a second persist path that drifts from the store. `ordinal`
+    // (a sibling field) is intentionally preserved — it IS layout state and must
+    // persist here so pane numbers survive restart.
+    const leafRest = { ...pane };
+    delete leafRest.metadata;
     return {
-      ...pane,
+      ...leafRest,
       surfaces: pane.surfaces.map((s) => ({
         ...s,
         scrollbackFile: dumped.has(s.id) ? s.id : (daemonMode ? undefined : s.scrollbackFile),
@@ -185,6 +193,9 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
       rootPane: cloneWithScrollback(ws.rootPane, dumped),
     })),
     activeWorkspaceId: state.activeWorkspaceId,
+    // P2: persist the global workspace-ordinal high-water so wsOrdinals are
+    // never recycled across restarts (loadSession reads it back + backfills).
+    nextWorkspaceOrdinal: state.nextWorkspaceOrdinal,
     sidebarVisible: state.sidebarVisible,
     channelDockVisible: state.channelDockVisible,
     sidebarMode: state.sidebarMode,

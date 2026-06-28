@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, PaneBranch, Workspace, AgentStatus } from '../../../shared/types';
+import type { AgentSlug } from '../../../shared/events';
 import {
   createLeafPane,
   generateId,
@@ -85,9 +86,16 @@ export interface PaneSlice {
   // can host >1 agent (gaps 1/3/8). Populated from METADATA_UPDATE in
   // useNotificationListener; cleared when the owning surface/pane closes.
   // Transient — never persisted (buildSessionData allowlist excludes it).
-  surfaceAgent: Record<string, { name: string; status: AgentStatus }>;
-  setSurfaceAgent: (ptyId: string, name: string | undefined, status: AgentStatus | undefined) => void;
+  surfaceAgent: Record<string, { name: string; status: AgentStatus; slug?: AgentSlug }>;
+  setSurfaceAgent: (ptyId: string, name: string | undefined, status: AgentStatus | undefined, slug?: AgentSlug) => void;
   clearSurfaceAgent: (ptyId: string) => void;
+  // P2 — per-pane user label (rename) mirror, keyed by paneId. Volatile and
+  // never persisted (buildSessionData allowlist excludes it; MetadataStore /
+  // metadata.json is the durable source). Fed by the pane.metadata.changed
+  // relay (METADATA_UPDATE.paneLabel) + a one-shot boot snapshot. The pane's
+  // displayName = paneLabel[paneId] ?? autoName.
+  paneLabel: Record<string, string>;
+  setPaneLabel: (paneId: string, label: string | undefined) => void;
   // X1: per-surface listening ports keyed by ptyId. Main emits ports per PTY
   // (PID-tree scoped); the workspace-level sidebar value is the UNION over
   // the workspace's surfaces, computed at write time in
@@ -182,7 +190,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
   surfaceAgent: {},
 
-  setSurfaceAgent: (ptyId, name, status) => set((state: StoreState) => {
+  setSurfaceAgent: (ptyId, name, status, slug) => set((state: StoreState) => {
     if (!ptyId) return;
     const existing = state.surfaceAgent[ptyId];
     // Never overwrite a known agent name with an empty one. PTYBridge's
@@ -191,15 +199,33 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // already-detected name. If no name is known yet, there is nothing to stamp.
     const resolvedName = name && name.length > 0 ? name : existing?.name;
     if (!resolvedName) return;
+    // P2: same retention rule for the slug — a status-only update keeps the
+    // previously-detected slug so the `(<agent>)` auto-name suffix is stable.
+    const resolvedSlug = slug ?? existing?.slug;
     state.surfaceAgent[ptyId] = {
       name: resolvedName,
       status: status ?? existing?.status ?? 'running',
+      ...(resolvedSlug ? { slug: resolvedSlug } : {}),
     };
   }),
 
   clearSurfaceAgent: (ptyId) => set((state: StoreState) => {
     if (!ptyId) return;
     delete state.surfaceAgent[ptyId];
+  }),
+
+  paneLabel: {},
+
+  setPaneLabel: (paneId, label) => set((state: StoreState) => {
+    if (!paneId) return;
+    const trimmed = label?.trim();
+    if (trimmed && trimmed.length > 0) {
+      state.paneLabel[paneId] = trimmed;
+    } else {
+      // Empty/whitespace/undefined clears the entry (rename-to-empty, clear,
+      // or the onPaneDeleted tombstone relayed as paneLabel='').
+      delete state.paneLabel[paneId];
+    }
   }),
 
   surfacePorts: {},
@@ -265,7 +291,16 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
           ? srcSurface.cwd
           : undefined;
 
-      const newPane = createLeafPane();
+      // P2: assign the next monotonic per-workspace ordinal from the high-water
+      // counter so a re-split after a close never recycles a number (the
+      // ★critical stability property). Fallback (a pre-P2 ws not yet backfilled
+      // by loadSession) derives the high-water from live leaves WITHOUT
+      // renumbering the existing tree, so live panes keep their names.
+      const paneOrdinal =
+        ws.nextPaneOrdinal ??
+        (getLeafPanes(ws.rootPane).reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0) + 1);
+      const newPane = createLeafPane(undefined, paneOrdinal);
+      ws.nextPaneOrdinal = paneOrdinal + 1;
       // `position` drives 4-way directional split from Ctrl+Shift+Arrow:
       // 'before' puts the new pane left/up of the target, 'after' (default)
       // right/down. Left/Up → before, Right/Down → after.
@@ -366,6 +401,10 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // other is closeSurface) — clear it here too so a closed pane's last
       // activity string can't linger on a re-used ptyId.
       for (const leaf of getLeafPanes(parent.children[idx])) {
+        // P2: drop the closed pane's label mirror immediately. The main-side
+        // onPaneDeleted relay also clears it, but this keeps the renderer
+        // consistent without waiting for the round-trip.
+        delete state.paneLabel[leaf.id];
         for (const s of leaf.surfaces) {
           if (s.ptyId) {
             delete state.surfaceAgent[s.ptyId];

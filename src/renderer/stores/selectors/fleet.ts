@@ -21,6 +21,10 @@ export interface FleetPane {
   agentStatus: AgentStatus;
   /** Only populated for the workspace's ACTIVE pane — see status fidelity note. */
   agentName?: string;
+  /** P2 — the user's pane rename (paneLabel mirror), if any. The card's
+   *  displayName prefers this so a rename shows in the cockpit too; undefined
+   *  falls back to agentName/title. */
+  paneLabel?: string;
   cwd?: string;
   title: string;
   surfaceType: 'terminal' | 'browser' | 'editor';
@@ -38,7 +42,11 @@ export interface FleetPane {
 
 /** Minimal store surface the selector reads — keeps the fixture trivial and the
  *  subscription narrow (the FleetView memoizes on exactly these fields). */
-export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentStatus' | 'surfaceActivity'>;
+export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentStatus' | 'surfaceActivity'> & {
+  /** P2 — pane rename mirror. Optional so existing fixtures stay terse; the
+   *  live FleetView always passes the real map. */
+  paneLabel?: StoreState['paneLabel'];
+};
 
 // Priority of each status for "which one wants the user most". Lower = more
 // urgent. Drives both the per-leaf attention scan (a background tab can be
@@ -95,6 +103,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         ptyId,
         agentStatus: status,
         agentName: isActivePane ? wsMeta?.agentName : undefined,
+        paneLabel: state.paneLabel?.[leaf.id],
         cwd: surf?.cwd,
         title: surf?.title ?? '',
         surfaceType: surf?.surfaceType ?? 'terminal',

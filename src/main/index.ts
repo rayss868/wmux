@@ -71,6 +71,7 @@ import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
 import { sessionManager, registerSessionHandlers } from './ipc/handlers/session.handler';
 import { eventBus } from './events/EventBus';
+import { broadcastMetadataUpdate } from './ipc/handlers/metadata.handler';
 import { initLogSink, logLine } from './util/logSink';
 
 markBoot('imports-done');
@@ -1145,6 +1146,25 @@ app.on('ready', async () => {
     sessionManager.saveMetadataSync(shape);
   });
 
+  // P2 — push hydrated pane labels to the renderer. In daemon mode this hydrate
+  // lands AFTER the renderer has mounted (its mount-time `metadata.snapshot`
+  // pull therefore sees an empty store), so re-broadcast each persisted label
+  // through the existing METADATA_UPDATE relay — the renderer's onUpdate handler
+  // seeds its volatile paneLabel mirror, re-displaying renames after restart.
+  // The renderer is already loaded + listening by now (boot order verified); a
+  // did-finish-load fallback re-pushes for the rare hydrate-before-mount boot.
+  const pushHydratedPaneLabels = (): void => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    for (const entry of metadataStore.snapshot().entries) {
+      const label = entry.metadata.label;
+      if (typeof label === 'string' && label.length > 0) {
+        broadcastMetadataUpdate(mainWindow, { paneId: entry.paneId, paneLabel: label });
+      }
+    }
+  };
+  pushHydratedPaneLabels();
+  mainWindow.webContents.once('did-finish-load', pushHydratedPaneLabels);
+
   // Final-review follow-up (P0-1): wire pane lifecycle into MetadataStore.
   //
   // Without this subscriber, `MetadataStore.onPaneDeleted()` had no
@@ -1173,6 +1193,20 @@ app.on('ready', async () => {
       // signal must never propagate an error back to the emitter.
       console.error('[Main] metadataStore.onPaneDeleted failed:', err);
     }
+  });
+
+  // P2 — pane label relay. MetadataStore emits `pane.metadata.changed` only on
+  // the in-process EventBus; tee it onto the existing METADATA_UPDATE IPC as a
+  // paneId-only payload so the renderer's volatile paneLabel mirror tracks
+  // renames/clears. An empty/absent label (rename-to-empty, clear, or the
+  // onPaneDeleted tombstone) sends '' so the mirror entry is dropped.
+  eventBus.subscribe((event) => {
+    if (event.type !== 'pane.metadata.changed') return;
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    broadcastMetadataUpdate(mainWindow, {
+      paneId: event.paneId,
+      paneLabel: event.metadata.label ?? '',
+    });
   });
 
   // Write auth token BEFORE starting pipe server — prevents race where

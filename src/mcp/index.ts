@@ -664,23 +664,23 @@ server.tool(
 
 server.tool(
   'pane_set_metadata',
-  'Attach descriptive metadata (label/role/status + custom k/v) to a leaf pane in the calling workspace. The custom map is deep-merged when mergeMode="merge" (the default), so cooperating tools can each write their own keys without clobbering. Use mergeMode="replace" to overwrite the entire metadata object, or "replaceShared" (v2.9.0+) to overwrite label/role/status while preserving another tool\'s custom keys verbatim. Pass expectedVersion (v2.9.0+) for optimistic concurrency — the call fails with VERSION_CONFLICT if the pane has been updated since you last read it. Omit paneId to target the active pane in the calling workspace.',
+  'Attach descriptive metadata (label/status + custom k/v) to a leaf pane in the calling workspace. The custom map is deep-merged when mergeMode="merge" (the default), so cooperating tools can each write their own keys without clobbering. Use mergeMode="replace" to overwrite the entire metadata object, or "replaceShared" (v2.9.0+) to overwrite label/status while preserving another tool\'s custom keys verbatim. Pass expectedVersion (v2.9.0+) for optimistic concurrency — the call fails with VERSION_CONFLICT if the pane has been updated since you last read it. Omit paneId to target the active pane in the calling workspace.',
   {
     paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace.'),
     label: z.string().max(64).optional().describe('Short human label, e.g. "Backend".'),
-    role: z.string().max(64).optional().describe('Free-form role tag, e.g. "service" or "test-runner".'),
+    // P2: `role` is deprecated — pane identity is the auto name + user label now.
+    // Removed from the input schema; any legacy role is read-only (dead-read).
     status: z.string().max(128).optional().describe('Current status, e.g. "running-tests".'),
     custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when mergeMode="merge". Recommended convention: namespace your keys with a tool prefix (e.g. "orchestrator.taskId", "qa.status") to avoid semantic collisions with other cooperating tools.'),
     merge: z.boolean().optional().describe('Legacy v2.8.x flag; prefer mergeMode. true → merge, false → replace. When both `merge` and `mergeMode` are provided, `mergeMode` wins.'),
-    mergeMode: z.enum(['merge', 'replace', 'replaceShared']).optional().describe('Explicit merge semantics (v2.9.0+). "merge" patches and deep-merges custom (default). "replace" wipes the metadata object and writes only the provided fields. "replaceShared" overwrites label/role/status but preserves another tool\'s custom keys. Overrides legacy `merge` boolean when both are provided.'),
+    mergeMode: z.enum(['merge', 'replace', 'replaceShared']).optional().describe('Explicit merge semantics (v2.9.0+). "merge" patches and deep-merges custom (default). "replace" wipes the metadata object and writes only the provided fields. "replaceShared" overwrites label/status but preserves another tool\'s custom keys. Overrides legacy `merge` boolean when both are provided.'),
     expectedVersion: z.number().int().nonnegative().optional().describe('Optimistic concurrency guard (v2.9.0+). If the pane\'s current metadata version differs, the call fails with VERSION_CONFLICT and does not mutate. Read the current version from pane_get_metadata or pane_list. Omit for unconditional writes (legacy v2.8.x behavior). expectedVersion: 0 is the correct guard for a pane that has never been written; it succeeds iff no concurrent writer has set anything on this pane yet (useful for "claim a fresh pane" patterns).'),
   },
-  async ({ paneId, label, role, status, custom, merge, mergeMode, expectedVersion }) => {
+  async ({ paneId, label, status, custom, merge, mergeMode, expectedVersion }) => {
     const workspaceId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId };
     if (paneId !== undefined) params['paneId'] = paneId;
     if (label !== undefined) params['label'] = label;
-    if (role !== undefined) params['role'] = role;
     if (status !== undefined) params['status'] = status;
     if (custom !== undefined) params['custom'] = custom;
     if (merge !== undefined) params['merge'] = merge;

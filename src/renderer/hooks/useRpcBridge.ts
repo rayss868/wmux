@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
+import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill, Task } from '../../shared/types';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
@@ -959,18 +960,22 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // and ptyId → paneId map for result tagging.
     const ptyToPaneId = new Map<string, string>();
     const ptyToSurfaceId = new Map<string, string>();
-    const ptyToPaneLabel = new Map<string, string | undefined>();
+    // P2: per-surface display name = pane rename ?? auto name `w<ws>-<pane>(<agent>)`.
+    // The renderer is authoritative for labels (paneLabel mirror) and ordinals
+    // (layout state), so compute the resolved name here and ship it — the daemon
+    // paneLabel is ignored. Each surface's own agent slug names its suffix.
+    const ptyToPaneLabel = new Map<string, string>();
+    const wsOrdinal = ws.wsOrdinal ?? 0;
     const leaves = findLeafPanes(ws.rootPane);
     for (const leaf of leaves) {
-      // PR #16 may add `metadata.label` to PaneLeaf — read defensively so we
-      // neither depend on the field's existence nor throw if it's missing.
-      const leafMeta = (leaf as PaneLeaf & { metadata?: { label?: string } }).metadata;
-      const leafLabel = leafMeta?.label;
+      const leafLabel = store.paneLabel[leaf.id];
+      const paneOrdinal = leaf.ordinal ?? 0;
       for (const s of leaf.surfaces) {
         if (s.ptyId) {
           ptyToPaneId.set(s.ptyId, leaf.id);
           ptyToSurfaceId.set(s.ptyId, s.id);
-          ptyToPaneLabel.set(s.ptyId, leafLabel);
+          const autoName = computePaneAutoName(wsOrdinal, paneOrdinal, store.surfaceAgent[s.ptyId]?.slug);
+          ptyToPaneLabel.set(s.ptyId, paneDisplayName(leafLabel, autoName));
         }
       }
     }

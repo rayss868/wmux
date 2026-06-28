@@ -114,7 +114,7 @@ export function resolveRequiredCapability(
 function pathsFromSetMetadata(params: Record<string, unknown>): string[] | undefined {
   const paths: string[] = [];
   if (typeof params.label === 'string') paths.push('label');
-  if (typeof params.role === 'string') paths.push('role');
+  // P2: `role` is no longer a settable field (deprecated) — not advertised here.
   if (typeof params.status === 'string') paths.push('status');
   if (params.custom && typeof params.custom === 'object' && !Array.isArray(params.custom)) {
     for (const key of Object.keys(params.custom as Record<string, unknown>)) {

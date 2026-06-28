@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../stores';
 import type { AgentStatus, NotificationType, Pane, Workspace } from '../../shared/types';
+import type { AgentSlug } from '../../shared/events';
 import { playNotificationSound } from './useNotificationSound';
 import { createThrottler, type Throttler } from '../utils/createThrottler';
 import {
@@ -440,7 +441,16 @@ export function useNotificationListener() {
       // workspace metadata — pull it OUT here, alongside ptyId, so it can never
       // flow into `...rest` and get written into updateWorkspaceMetadata by
       // applyToWorkspace's spread.
-      const { ptyId, workspaceId: payloadWsId, activity, ...rest } = payload;
+      const { ptyId, workspaceId: payloadWsId, activity, paneId, paneLabel, agentSlug, ...rest } = payload;
+
+      // P2 (checklist D): a paneId-only payload is the pane-label relay from
+      // MetadataStore. Route it to the per-pane label mirror and return so
+      // paneId/paneLabel never reach applyToWorkspace (whose spread would
+      // mis-record them onto the active workspace's metadata).
+      if (paneId !== undefined) {
+        state.setPaneLabel(paneId, typeof paneLabel === 'string' ? paneLabel : undefined);
+        return;
+      }
 
       // X1: workspace metadata is one record per workspace, but context
       // updates arrive per-PTY. Two rules keep multi-pane workspaces from
@@ -480,11 +490,13 @@ export function useNotificationListener() {
         // individually. setSurfaceAgent keeps an already-known name when only a
         // status arrives, and ignores empty names (the 'running' broadcast may
         // carry agentName='' before a gate matches).
-        if (typeof rest.agentName === 'string' || typeof rest.agentStatus === 'string') {
+        const slugArg = typeof agentSlug === 'string' ? (agentSlug as AgentSlug) : undefined;
+        if (typeof rest.agentName === 'string' || typeof rest.agentStatus === 'string' || slugArg) {
           state.setSurfaceAgent(
             ptyId,
             typeof rest.agentName === 'string' ? rest.agentName : undefined,
             typeof rest.agentStatus === 'string' ? (rest.agentStatus as AgentStatus) : undefined,
+            slugArg,
           );
         }
         // Fleet View per-pane activity line: store the (already main-side
@@ -549,6 +561,39 @@ export function useNotificationListener() {
         applyToWorkspace(targetWsId, false);
       }
     });
+
+    // P2 bootstrap (checklist C): seed the paneLabel mirror from the MetadataStore
+    // snapshot so a restart re-displays existing renames (hydrate emits no events).
+    // Early boot can hand back an empty list or reject (the snapshot IPC handler is
+    // registered slightly after the renderer mounts), so retry a few times —
+    // otherwise a persisted rename silently fails to re-display until its next live
+    // change. Once a non-empty snapshot lands we stop; a genuinely label-less
+    // session simply exhausts the short retry budget (≈1.5s of light polling).
+    // Primary seeding is the main-side push after hydrate (index.ts) — it covers
+    // the daemon-mode case where the store hydrates after the renderer mounts.
+    // This pull is the complement: it covers a hydrate-BEFORE-mount boot, where
+    // the push would land before onUpdate is registered. Retry briefly on an
+    // empty/failed snapshot to ride out a small handler-registration race.
+    let snapAttempts = 0;
+    const seedPaneLabels = (): void => {
+      const p = window.electronAPI.metadata.snapshot?.();
+      if (!p) return;
+      void p.then((entries) => {
+        if (entries.length > 0) {
+          const s = useStore.getState();
+          for (const e of entries) s.setPaneLabel(e.paneId, e.label);
+        } else if (snapAttempts < 5) {
+          snapAttempts += 1;
+          setTimeout(seedPaneLabels, 300);
+        }
+      }).catch(() => {
+        if (snapAttempts < 5) {
+          snapAttempts += 1;
+          setTimeout(seedPaneLabels, 300);
+        }
+      });
+    };
+    seedPaneLabels();
 
     const unsubGitBranch = window.electronAPI.notification.onGitBranchChanged((ptyId, branch) => {
       const state = useStore.getState();

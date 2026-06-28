@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, clonePaneTreeFresh, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
@@ -35,6 +35,9 @@ function nextCopyName(base: string, existing: string[]): string {
 export interface WorkspaceSlice {
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  /** P2 — global high-water for stable Workspace.wsOrdinal allocation. Never
+   *  decremented; persisted in SessionData so numbers survive restart. */
+  nextWorkspaceOrdinal: number;
   addWorkspace: (name?: string) => void;
   addWorkspaceWithPreset: (presetId: string, name?: string) => void;
   /**
@@ -81,10 +84,11 @@ export interface WorkspaceSlice {
 }
 
 export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], WorkspaceSlice> = (set) => {
-  const initial = createWorkspace('Workspace 1');
+  const initial = createWorkspace('Workspace 1', 1);
   return {
     workspaces: [initial],
     activeWorkspaceId: initial.id,
+    nextWorkspaceOrdinal: 2,
 
     addWorkspace: (name) => set((state: StoreState) => {
       let wsName = name;
@@ -101,7 +105,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         while (usedNumbers.has(n)) n++;
         wsName = `Workspace ${n}`;
       }
-      const ws = createWorkspace(wsName);
+      const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
+      const ws = createWorkspace(wsName, wsOrdinal);
+      state.nextWorkspaceOrdinal = wsOrdinal + 1;
       state.workspaces.push(ws);
       state.activeWorkspaceId = ws.id;
     }),
@@ -127,12 +133,17 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
 
       const rootPane = preset.createRootPane();
       const leaves = collectLeafPanes(rootPane);
+      const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
       const ws: Workspace = {
         id: generateId('ws'),
         name: wsName,
         rootPane,
         activePaneId: leaves[0]?.id || rootPane.id,
+        wsOrdinal,
+        // P2: number the preset's leaves fresh 1..n.
+        nextPaneOrdinal: assignPaneOrdinals(rootPane, 1),
       };
+      state.nextWorkspaceOrdinal = wsOrdinal + 1;
       state.workspaces.push(ws);
       state.activeWorkspaceId = ws.id;
     }),
@@ -159,13 +170,20 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         ? normalizeWorkspaceProfile({ ...src.profile, env: src.profile.env ? { ...src.profile.env } : undefined }, { dropSecretKeys: true })
         : undefined;
 
+      const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
       const ws: Workspace = {
         id: generateId('ws'),
         name: nextCopyName(src.name, state.workspaces.map((w: Workspace) => w.name)),
         rootPane,
         activePaneId,
+        wsOrdinal,
+        // P2: the clone gets a FRESH 1..n pane sequence (clonePaneTreeFresh
+        // intentionally drops source ordinals), so the duplicate's names don't
+        // alias the source's.
+        nextPaneOrdinal: assignPaneOrdinals(rootPane, 1),
         ...(profile ? { profile } : {}),
       };
+      state.nextWorkspaceOrdinal = wsOrdinal + 1;
       // Insert right after the source for intuitive placement, then activate.
       state.workspaces.splice(idx + 1, 0, ws);
       state.activeWorkspaceId = ws.id;
@@ -371,6 +389,39 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.workspaces = data.workspaces;
       state.activeWorkspaceId = data.activeWorkspaceId;
       state.sidebarVisible = data.sidebarVisible;
+
+      // ── P2 hydration backfill (checklist F) ──────────────────────────────
+      // Pre-P2 sessions (and any drift) lack ordinals. Assign them here,
+      // atomically within this same `set`, so the first split/duplicate after
+      // load observes correct high-water counters and pane names stay stable.
+      //
+      // Pane ordinals: backfill a tree missing any leaf ordinal via DFS;
+      // otherwise recompute the per-ws high-water from live leaves so a saved
+      // nextPaneOrdinal can never sit below the actual max (which would recycle
+      // a number on the next split).
+      for (const ws of state.workspaces) {
+        const wsLeaves = collectLeafPanes(ws.rootPane);
+        const missingOrdinal = wsLeaves.some((l) => typeof l.ordinal !== 'number');
+        if (missingOrdinal) {
+          ws.nextPaneOrdinal = assignPaneOrdinals(ws.rootPane, 1);
+        } else {
+          const maxLeaf = wsLeaves.reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0);
+          ws.nextPaneOrdinal = Math.max(ws.nextPaneOrdinal ?? 0, maxLeaf + 1);
+        }
+      }
+      // Workspace ordinals: honor existing wsOrdinals, assign any missing past
+      // the high-water, then persist the advanced global counter.
+      let nextWs = data.nextWorkspaceOrdinal ?? 1;
+      for (const ws of state.workspaces) {
+        if (typeof ws.wsOrdinal === 'number') nextWs = Math.max(nextWs, ws.wsOrdinal + 1);
+      }
+      for (const ws of state.workspaces) {
+        if (typeof ws.wsOrdinal !== 'number') {
+          ws.wsOrdinal = nextWs;
+          nextWs += 1;
+        }
+      }
+      state.nextWorkspaceOrdinal = nextWs;
 
       // Restore user preferences. Migrate legacy 37-field customThemeColors
       // shape to the new 10-token + xtermPaletteId form (idempotent).
