@@ -90,6 +90,19 @@ export function useTerminalCopyShortcut(): void {
       // event at most once, not fire on every repeat tick.
       if (e.repeat) return;
 
+      // Yield to a genuine NATIVE selection of non-terminal DOM text (a channel
+      // message body, the read-only editor <pre>, the roster, markdown). xterm
+      // runs the WebGL renderer, so a terminal's own selection is canvas-drawn
+      // and NEVER appears in window.getSelection(); therefore any non-empty
+      // native selection is non-terminal text whose native copy must win.
+      // Without this, a leftover xterm selection (auto-copy-on-select leaves the
+      // highlight in place) makes Ctrl+C copy stale terminal text AND
+      // preventDefault the real copy — silent wrong-clipboard in the very dock
+      // this feature serves. The input/textarea selectionStart path below still
+      // matters: those internal selections are NOT reflected here.
+      const nativeSel = window.getSelection();
+      if (nativeSel && !nativeSel.isCollapsed && nativeSel.toString().length > 0) return;
+
       // Snapshot every live terminal's current selection. getSelection() is
       // wrapped per-terminal so a mid-teardown (disposed) terminal can't throw
       // and kill the whole shortcut.

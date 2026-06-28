@@ -145,6 +145,29 @@ describe('useTerminalCopyShortcut — DOM glue', () => {
     expect(ev.defaultPrevented).toBe(true);
   });
 
+  it('yields to a NATIVE selection of non-terminal text — no stale-terminal copy, native copy preserved [P1 review]', () => {
+    // User drag-selected a channel message (native DOM selection) while a
+    // terminal still holds a leftover xterm selection. The hook must yield so
+    // the message's native copy wins — it must NOT copy the stale terminal text
+    // nor preventDefault. (xterm's WebGL selection never appears in
+    // window.getSelection(), so a non-empty native selection is non-terminal.)
+    addTerminal('pty-term', 'stale terminal selection', true);
+    mocks.activePtyId = 'pty-term';
+    focusComposer();
+    const realGetSelection = window.getSelection;
+    window.getSelection = (() => ({
+      isCollapsed: false,
+      toString: () => 'a selected channel message',
+    })) as typeof window.getSelection;
+    try {
+      const ev = pressCtrlC();
+      expect(mocks.copySelectionWithFeedback).not.toHaveBeenCalled();
+      expect(ev.defaultPrevented).toBe(false);
+    } finally {
+      window.getSelection = realGetSelection;
+    }
+  });
+
   it('does NOT copy a HIDDEN terminal’s stale selection (visibility gate) [consensus P2]', () => {
     // The terminal is mounted in the registry but offscreen (tab/workspace
     // switch). Its old selection must not be copied; with no visible candidate
