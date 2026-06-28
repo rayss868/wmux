@@ -293,29 +293,38 @@ export function ComposerContent({
       if (dropdownOpen) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
+          e.stopPropagation();
           setActiveIdx((i) => (i + 1) % matches.length);
           return;
         }
         if (e.key === 'ArrowUp') {
           e.preventDefault();
+          e.stopPropagation();
           setActiveIdx((i) => (i - 1 + matches.length) % matches.length);
           return;
         }
-        // Enter or Tab commits the highlighted mention instead of submitting.
-        if (e.key === 'Enter' || e.key === 'Tab') {
+        // Enter (without Shift) or Tab commits the highlighted mention. Shift+Enter
+        // falls through to insert a newline. Skip during IME composition (that Enter
+        // commits the Hangul/IME composition, not the mention).
+        if (((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') && !e.nativeEvent.isComposing) {
           e.preventDefault();
+          e.stopPropagation();
           applyMention(matches[activeIdx] ?? matches[0]);
           return;
         }
         if (e.key === 'Escape') {
           e.preventDefault();
+          e.stopPropagation();
           setToken(null);
           return;
         }
       }
-      // Enter submits; Shift+Enter inserts a newline.
-      if (e.key === 'Enter' && !e.shiftKey) {
+      // Enter submits; Shift+Enter inserts a newline. Skip during IME composition
+      // (Enter that commits a Hangul/IME composition must not send), and
+      // stopPropagation so the keystroke does not leak to the focused terminal.
+      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault();
+        e.stopPropagation();
         if (canSend) {
           void handleSubmit(e as unknown as FormEvent);
         }
