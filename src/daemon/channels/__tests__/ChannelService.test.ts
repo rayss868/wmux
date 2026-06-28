@@ -13,6 +13,7 @@ import type {
   ChannelMessage,
   ChannelState,
 } from '../../../shared/channels';
+import { CHANNEL_MENTIONS_MAX } from '../../../shared/channels';
 
 /** In-memory fake of ChannelStateWriter. Returns whatever the test sets
  *  via `failNext`; defaults to success. Captures every `saveImmediate`
@@ -617,6 +618,67 @@ describe('ChannelService', () => {
       expect(post.ok).toBe(true);
       if (!post.ok) throw new Error('post failed');
       expect(post.droppedMentions).toBeUndefined();
+    });
+
+    it('replays droppedMentions on an idempotent retry (same client_msg_id)', async () => {
+      // Review P1: a retry after a missed first response must still tell the
+      // sender the mention was dropped — not a silent drop on the replay.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('create failed');
+      const args = {
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'see @Ghost',
+        verifiedWorkspaceId: 'ws-1',
+        clientMsgId: 'k1',
+        mentions: [{ workspaceId: 'ws-ghost', name: 'Ghost' }],
+      };
+      const post1 = await svc.post({ ...args });
+      expect(post1.ok).toBe(true);
+      if (!post1.ok) throw new Error('post1 failed');
+      expect(post1.droppedMentions).toEqual([
+        { workspaceId: 'ws-ghost', name: 'Ghost', reason: 'not_a_member' },
+      ]);
+      const post2 = await svc.post({ ...args }); // same clientMsgId → idempotent
+      expect(post2.ok).toBe(true);
+      if (!post2.ok) throw new Error('post2 failed');
+      expect(post2.idempotent).toBe(true);
+      expect(post2.droppedMentions).toEqual([
+        { workspaceId: 'ws-ghost', name: 'Ghost', reason: 'not_a_member' },
+      ]);
+    });
+
+    it('rejects a post with more than CHANNEL_MENTIONS_MAX mentions', async () => {
+      // Review P2: cap mentions to bound O(mentions x members) under the lock
+      // and the droppedMentions response size.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('create failed');
+      const tooMany = Array.from({ length: CHANNEL_MENTIONS_MAX + 1 }, (_, i) => ({
+        workspaceId: `ws-${i}`,
+        name: `w${i}`,
+      }));
+      const post = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'spam',
+        verifiedWorkspaceId: 'ws-1',
+        mentions: tooMany,
+      });
+      expect(post.ok).toBe(false);
+      if (post.ok) throw new Error('expected rejection');
+      expect(post.error.code).toBe('CHANNEL_MENTIONS_TOO_MANY');
     });
 
     it('mentions two panes in the same workspace (split) without merging; preserves paneId/ptyId', async () => {

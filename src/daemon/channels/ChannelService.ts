@@ -23,6 +23,7 @@ import {
   canonicalizeChannelName,
   CHANNEL_BODY_MAX,
   CHANNEL_DATA_MAX,
+  CHANNEL_MENTIONS_MAX,
   CHANNEL_IDEMPOTENCY_CAP,
   CHANNEL_MAX_COUNT,
   CHANNEL_MAX_MEMBERS,
@@ -83,7 +84,11 @@ export type ChannelErrorCode =
   | 'CHANNEL_DATA_TOO_LARGE'
   /** Per-company channel count over `CHANNEL_MAX_COUNT` or per-channel
    *  member count over `CHANNEL_MAX_MEMBERS`. Enforced in `create`. */
-  | 'CHANNEL_LIMIT_REACHED';
+  | 'CHANNEL_LIMIT_REACHED'
+  /** A single post requested more than `CHANNEL_MENTIONS_MAX` @mentions.
+   *  Bounds the O(mentions x members) validation done under the channel lock
+   *  and the size of the `droppedMentions` feedback echoed back to the sender. */
+  | 'CHANNEL_MENTIONS_TOO_MANY';
 
 export interface ChannelError {
   code: ChannelErrorCode;
@@ -230,6 +235,10 @@ export type EmptyResult = Result<void>;
 interface IdempotencyEntry {
   seq: number;
   lastUsedAt: number;
+  /** droppedMentions computed on the ORIGINAL post, so a retry with the same
+   *  clientMsgId gets the same sender feedback instead of a silent drop on the
+   *  replay (in-memory only — not persisted across a daemon restart). */
+  droppedMentions?: ChannelDroppedMention[];
 }
 
 export class ChannelService {
@@ -793,7 +802,17 @@ export class ChannelService {
             (m) => m.seq === existing.seq,
           );
           if (original) {
-            return { ok: true, message: original, idempotent: true };
+            // Replay the original drop feedback too (review P1) — otherwise a
+            // retry after a missed first response (the moment feedback matters
+            // most) would silently lose the dropped-mention report.
+            return {
+              ok: true,
+              message: original,
+              idempotent: true,
+              ...(existing.droppedMentions && existing.droppedMentions.length > 0
+                ? { droppedMentions: existing.droppedMentions }
+                : {}),
+            };
           }
           // Cache points at a seq that no longer exists (e.g. message was
           // pruned by empty-channel reaper). Fall through to a fresh post.
@@ -861,6 +880,19 @@ export class ChannelService {
             },
           };
         }
+      }
+      // Mention count cap (review P2). Reject BEFORE allocating a seq so an
+      // abusive post consumes no idempotency slot. Bounds both the
+      // O(mentions x members) validation below (run under the channel lock) and
+      // the droppedMentions array echoed back in the response.
+      if ((params.mentions?.length ?? 0) > CHANNEL_MENTIONS_MAX) {
+        return {
+          ok: false,
+          error: {
+            code: 'CHANNEL_MENTIONS_TOO_MANY',
+            message: `Post exceeds ${CHANNEL_MENTIONS_MAX} mentions`,
+          },
+        };
       }
       // Freeze the recipient snapshot at critical-section entry (plan KTD3).
       // We deliberately do NOT re-read members after this point; a concurrent
@@ -937,7 +969,11 @@ export class ChannelService {
       // Update idempotency cache.
       if (params.clientMsgId) {
         const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
-        channelIdMap.set(params.clientMsgId, { seq, lastUsedAt: now });
+        channelIdMap.set(params.clientMsgId, {
+          seq,
+          lastUsedAt: now,
+          ...(droppedMentions.length > 0 ? { droppedMentions } : {}),
+        });
         // LRU eviction down to CHANNEL_IDEMPOTENCY_CAP.
         if (channelIdMap.size > CHANNEL_IDEMPOTENCY_CAP) {
           this.evictOldest(channelIdMap, channelIdMap.size - CHANNEL_IDEMPOTENCY_CAP);

@@ -287,6 +287,13 @@ export const CHANNEL_BODY_MAX = 8192;
  *  obvious oversize payloads without deep object walks. */
 export const CHANNEL_DATA_MAX = 4096;
 
+/** Max @mentions per post. Bounds the O(mentions x members) validation done
+ *  inside the per-channel lock AND the size of the `droppedMentions` feedback
+ *  echoed back to the sender, so a single member can't wedge a channel with a
+ *  giant mention list. Enforced in `ChannelService.post` →
+ *  `CHANNEL_MENTIONS_TOO_MANY`. 64 is far above any real ping fan-out. */
+export const CHANNEL_MENTIONS_MAX = 64;
+
 /** Per-company channel cap. A company with N departments and
  *  cross-cutting workflows typically needs ~tens of channels;
  *  1000 leaves headroom for orgs that are channel-heavy without

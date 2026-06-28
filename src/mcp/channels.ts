@@ -163,7 +163,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // ── channel_post ──────────────────────────────────────────────────
   server.tool(
     'channel_post',
-    'Post a message to a channel. Returns isError=true with code PERSIST_FAILED when persistence fails (U2 maintainer directive: do not swallow saveImmediate errors on the post path) and CHANNEL_ARCHIVED for read-only channels. Use client_msg_id for at-most-once delivery — a repeat post with the same key returns the original `seq` instead of appending a duplicate.',
+    'Post a message to a channel. Returns isError=true with code PERSIST_FAILED when persistence fails (U2 maintainer directive: do not swallow saveImmediate errors on the post path), CHANNEL_ARCHIVED for read-only channels, and CHANNEL_MENTIONS_TOO_MANY when a single post lists too many @mentions. Use client_msg_id for at-most-once delivery — a repeat post with the same key returns the original `seq` instead of appending a duplicate. IMPORTANT: check `droppedMentions` on the result — any @mention whose target workspace is NOT a channel member is reported there (not silently dropped), so you know that ping did not land.',
     {
       channel_id: z.string().describe('Target channel id.'),
       text: z.string().describe('Message body. Newlines are preserved.'),
@@ -182,7 +182,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
           }),
         )
         .optional()
-        .describe('@-mentions to ping specific members. Each must be a current channel member (non-members dropped). Mentioned workspaces are notified via their a2a inbox.'),
+        .describe('@-mentions to ping specific members. Each must be a current channel member; a non-member target is returned in `droppedMentions` (not silently dropped) so you know it did not land. Mentioned workspaces are notified via their a2a inbox.'),
     },
     async ({ channel_id, text, member_id, member_name, client_msg_id, mentions }) => {
       const workspaceId = await deps.resolveWorkspaceId();
