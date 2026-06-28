@@ -1727,7 +1727,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!workspaceId) return { error: 'a2a.task.query: missing "workspaceId". Ensure WMUX_WORKSPACE_ID is set.' };
     const status = typeof params.status === 'string' ? params.status as TaskState : undefined;
     const role = typeof params.role === 'string' ? params.role as 'user' | 'agent' : undefined;
-    const tasks = store.queryTasks(workspaceId, { status, role });
+    const updatedSince = typeof params.updatedSince === 'string' ? params.updatedSince : undefined;
+    const tasks = store.queryTasks(workspaceId, { status, role, updatedSince });
     return { workspaceId, tasks };
   }
 

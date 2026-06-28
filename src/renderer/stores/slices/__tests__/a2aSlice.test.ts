@@ -105,6 +105,30 @@ describe('a2aSlice — createA2aTask idempotency (A3: no completed-task resurrec
   });
 });
 
+describe('a2aSlice — queryTasks updatedSince cursor (A9: incremental polling)', () => {
+  it('returns only tasks updated strictly after the cursor; no cursor = all', () => {
+    const store = createTestStore();
+    const id = store.getState().createA2aTask({
+      title: 't',
+      from: { workspaceId: 'ws-a', name: 'A' },
+      to: { workspaceId: 'ws-b', name: 'B' },
+      history: [makeMessage('x')],
+      artifacts: [],
+    });
+    const all = store.getState().queryTasks('ws-a', {});
+    expect(all.map((t) => t.id)).toContain(id); // back-compat: no cursor → included
+    // A cursor far in the past → the task is newer → included.
+    expect(
+      store.getState().queryTasks('ws-a', { updatedSince: '2000-01-01T00:00:00.000Z' }).map((t) => t.id),
+    ).toContain(id);
+    // A cursor in the future → nothing is newer → excluded.
+    expect(store.getState().queryTasks('ws-a', { updatedSince: '2999-01-01T00:00:00.000Z' })).toHaveLength(0);
+    // Cursor exactly at the task's updatedAt → strictly-after means excluded.
+    const at = store.getState().a2aTasks[id].metadata.updatedAt;
+    expect(store.getState().queryTasks('ws-a', { updatedSince: at })).toHaveLength(0);
+  });
+});
+
 describe('a2aSlice — gcTerminalTasks hard cap (issue #99)', () => {
   // Mirrors the GC_MAX_TASKS constant in a2aSlice.ts (not exported).
   const GC_MAX_TASKS = 500;

@@ -858,14 +858,15 @@ server.tool('a2a_task_send', 'Alias for send_message.', sendMessageParams, sendM
 // 4. a2a_task_query — Query tasks by status/role
 server.tool(
   'a2a_task_query',
-  'Query tasks assigned to you or sent by you. Filter by status and role.',
+  'Query tasks assigned to you or sent by you. Filter by status and role. For incremental polling, pass updated_since (an ISO-8601 timestamp, e.g. a previous result\'s metadata.updatedAt) to get only tasks changed after that instant — cheaper than re-pulling the whole list each poll.',
   {
     status: z.enum(['submitted', 'working', 'input-required', 'completed', 'failed', 'canceled']).optional().describe('Filter by task status'),
     role: z.enum(['user', 'agent']).optional().describe('Filter: "user" = tasks you sent, "agent" = tasks assigned to you'),
+    updated_since: z.string().optional().describe('ISO-8601 timestamp; return only tasks whose metadata.updatedAt is strictly later (incremental cursor for polling).'),
   },
-  async ({ status, role }) => {
+  async ({ status, role, updated_since }) => {
     const wsId = await requireWorkspaceId();
-    return callRpc('a2a.task.query', { workspaceId: wsId, status, role });
+    return callRpc('a2a.task.query', { workspaceId: wsId, status, role, updatedSince: updated_since });
   },
 );
 

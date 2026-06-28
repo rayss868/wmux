@@ -60,7 +60,10 @@ export interface A2aSlice {
   updateTaskStatus: (taskId: string, state: TaskState, callerWorkspaceId: string, callerAddr?: PaneAddress | null, statusMessage?: Message) => { ok: boolean; error?: string };
   addTaskArtifact: (taskId: string, artifact: Artifact) => void;
   cancelTask: (taskId: string, callerWorkspaceId: string) => { ok: boolean; error?: string };
-  queryTasks: (workspaceId: string, filters?: { status?: TaskState; role?: 'user' | 'agent' }) => Task[];
+  queryTasks: (
+    workspaceId: string,
+    filters?: { status?: TaskState; role?: 'user' | 'agent'; updatedSince?: string },
+  ) => Task[];
   getTask: (taskId: string) => Task | undefined;
   setAgentSkills: (workspaceId: string, skills: AgentSkill[]) => void;
   getAgentSkills: (workspaceId: string) => AgentSkill[] | null;
@@ -236,6 +239,15 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
 
       // Status filter
       if (filters?.status && task.status.state !== filters.status) return false;
+
+      // Incremental cursor (A9): return only tasks updated AFTER the given
+      // ISO-8601 timestamp, so a poller can fetch just what changed instead of
+      // re-pulling the whole list. ISO-8601 strings sort lexicographically =
+      // chronologically (same format from isoNow()), so a string compare is the
+      // cursor. updatedAt is bumped on every status change / artifact add.
+      if (filters?.updatedSince && !(task.metadata.updatedAt > filters.updatedSince)) {
+        return false;
+      }
 
       return true;
     });
