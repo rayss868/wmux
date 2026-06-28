@@ -156,6 +156,7 @@ function CreateChannelModal({
   const [visibility] = useState<ChannelVisibility>('public');
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   // Viewport-fixed position anchored to the "+" button. `fixed` (not `absolute`)
   // is required: ChannelDock wraps the panel in an `overflow-y-auto` box, which
@@ -214,19 +215,26 @@ function CreateChannelModal({
   const doSubmit = useCallback(async () => {
     setSubmitAttempted(true);
     setSubmitError(null);
-    if (!field.valid) return;
-    // The panel-level `handleCreate` is async (it round-trips to the daemon via
-    // `createChannelDaemon`); we await so the modal stays open on failure and
-    // only closes on confirmed success.
-    const ok = await onCreate({ name: field.canonical, visibility });
-    if (ok) {
-      onClose();
-    } else {
-      // Don't fail silently — the daemon rejected it (most often the name is
-      // already taken). Surface it so the user knows the click did something.
-      setSubmitError('Could not create the channel — that name may already be taken.');
+    // In-flight guard: the create round-trips to the daemon; a second submit
+    // (double-click / repeat Enter) before it resolves would create a duplicate.
+    if (!field.valid || creating) return;
+    setCreating(true);
+    try {
+      // The panel-level `handleCreate` is async (it round-trips to the daemon
+      // via `createChannelDaemon`); we await so the modal stays open on failure
+      // and only closes on confirmed success.
+      const ok = await onCreate({ name: field.canonical, visibility });
+      if (ok) {
+        onClose();
+      } else {
+        // Don't fail silently — the daemon rejected it (most often the name is
+        // already taken). Surface it so the user knows the click did something.
+        setSubmitError('Could not create the channel — that name may already be taken.');
+      }
+    } finally {
+      setCreating(false);
     }
-  }, [field.canonical, field.valid, onCreate, onClose, visibility]);
+  }, [field.canonical, field.valid, onCreate, onClose, visibility, creating]);
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
@@ -321,10 +329,10 @@ function CreateChannelModal({
           <button
             type="submit"
             data-create-channel-submit
-            className={`px-2 py-0.5 text-[11px] rounded bg-[var(--accent-green)] text-[var(--bg-base)] hover:opacity-90 transition-opacity ${FOCUS_RING}`}
-            disabled={!field.valid && submitAttempted}
+            className={`px-2 py-0.5 text-[11px] rounded bg-[var(--accent-green)] text-[var(--bg-base)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${FOCUS_RING}`}
+            disabled={!field.valid || creating}
           >
-            Create
+            {creating ? 'Creating…' : 'Create'}
           </button>
         </div>
       </form>

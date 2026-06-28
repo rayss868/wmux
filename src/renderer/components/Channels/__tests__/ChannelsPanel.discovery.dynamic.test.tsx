@@ -182,6 +182,20 @@ describe('ChannelsPanelView — create-channel modal (jsdom)', () => {
     expect(onCreate).toHaveBeenCalledWith({ name: 'release-notes', visibility: 'public' });
   });
 
+  it('disables Create until the name is valid (not only after a failed submit)', () => {
+    mount();
+    click(must('[data-channels-new]', 'new-channel button'));
+    const btn = must('[data-create-channel-submit]', 'create button') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true); // empty name → invalid → disabled up front
+    const input = must('[data-create-channel-name]', 'name input') as HTMLInputElement;
+    const setVal = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')?.set;
+    act(() => {
+      setVal?.call(input, 'release-notes');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(btn.disabled).toBe(false); // valid → enabled
+  });
+
   it('does NOT submit on Enter while an IME composition is active', () => {
     const onCreate = vi.fn(() => true);
     act(() => {
