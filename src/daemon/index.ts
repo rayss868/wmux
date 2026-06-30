@@ -12,7 +12,7 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope } from './channels';
+import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope } from './channels';
 import { DEFAULT_COMPANY_ID } from '../shared/channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
@@ -1672,6 +1672,26 @@ function registerRpcHandlers(
     return channelService.invite(p);
   });
 
+  // a2a.channel.kick — eject another member. HUMANS-ONLY: this handler lives on
+  // the DAEMON pipe (both renderer and pipe callers ultimately land here), but the
+  // MAIN-process pipe router (a2a.channel.rpc.ts) deliberately does NOT register
+  // 'a2a.channel.kick', so no MCP/agent client can reach it — only the renderer-only
+  // channels:mutate-local IPC forwards it. See KickChannelParams for the rationale.
+  pipeServer.onRpc('a2a.channel.kick', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').KickChannelParams;
+    if (!p.channelId || !p.targetWorkspaceId || !p.targetMemberId || !p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message:
+            'channelId, targetWorkspaceId, targetMemberId, and a server-resolved verifiedWorkspaceId are required',
+        },
+      };
+    }
+    return channelService.kick(p);
+  });
+
   // daemon.shutdown — gracefully terminate the daemon process. A2 makes
   // this RPC awaitable: the handler runs the full shutdown body (dumps,
   // state save, dispose) before returning, then defers the pipe stop and
@@ -2304,9 +2324,16 @@ async function main(): Promise<void> {
       // which the main-side consumer never matched, silently dropping
       // every channel.message fan-out (plan R2).
       try {
-        pipeServer.broadcast(wrapChannelMessageEnvelope(event));
+        if (event.type === 'channel.catalog') {
+          // A1 — catalog/membership lifecycle rides the same bridge as a posted
+          // message; the main-side DaemonClient switch routes each by `type`.
+          pipeServer.broadcast(wrapChannelCatalogEnvelope(event));
+        } else {
+          pipeServer.broadcast(wrapChannelMessageEnvelope(event));
+        }
       } catch (err) {
-        log('warn', `channel emit failed for ${event.channelId}#${event.seq}:`, err);
+        const ref = event.type === 'channel.catalog' ? event.channelId : `${event.channelId}#${event.seq}`;
+        log('warn', `channel emit failed for ${ref}:`, err);
       }
     },
   });

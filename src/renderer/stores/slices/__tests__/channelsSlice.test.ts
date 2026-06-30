@@ -428,6 +428,22 @@ describe('channelsSlice — hydrateChannelMessages (P0)', () => {
     expect(list.find((m) => m.seq === 2)?.text).toBe('live');
   });
 
+  it('A8: adopts the persisted delivered status over a stale live pending row', () => {
+    const store = createTestStore();
+    // The live row is 'pending' (ack emits no event, so the live row never
+    // advances on its own).
+    store.getState().appendMessageFromEvent(makeMessage('ch-1', 2, { text: 'live', deliveryStatus: 'pending' }));
+    // Re-hydrate from persisted history where the recipient already acked.
+    store.getState().hydrateChannelMessages('ch-1', [
+      makeMessage('ch-1', 2, { text: 'hist', deliveryStatus: 'delivered' }),
+    ]);
+    const row = store.getState().channelMessages['ch-1'].find((m) => m.seq === 2);
+    // The live row otherwise wins (text stays 'live'), but the higher-information
+    // delivered status is adopted — reopening no longer shows a stuck 'pending'.
+    expect(row?.text).toBe('live');
+    expect(row?.deliveryStatus).toBe('delivered');
+  });
+
   it('does NOT bump channelUnread (loading history is not new unread)', () => {
     const store = createTestStore();
     // ch-1 is not the active channel, so a live append WOULD bump unread.
@@ -524,6 +540,22 @@ describe('channelsSlice — setChannels (refresh path)', () => {
     // Members replaced wholesale.
     expect(s.channelMembers['ch-2']).toHaveLength(1);
   });
+
+  it('A19: drops the message cache for channels no longer in the catalog', () => {
+    const store = createTestStore();
+    store.getState().setChannels(
+      [makeChannel({ id: 'ch-1' }), makeChannel({ id: 'ch-2' })],
+      {},
+    );
+    store.getState().appendMessageFromEvent(makeMessage('ch-1', 1));
+    store.getState().appendMessageFromEvent(makeMessage('ch-2', 1));
+    expect(store.getState().channelMessages['ch-2']).toHaveLength(1);
+    // Refresh with only ch-1 — ch-2 fell out of the catalog (archived out of
+    // view / removed), so its cache must be dropped, not leaked.
+    store.getState().setChannels([makeChannel({ id: 'ch-1' })], {});
+    expect(store.getState().channelMessages['ch-1']).toHaveLength(1);
+    expect(store.getState().channelMessages['ch-2']).toBeUndefined();
+  });
 });
 
 describe('channelsSlice — leaveChannelOptimistic', () => {
@@ -538,12 +570,30 @@ describe('channelsSlice — leaveChannelOptimistic', () => {
     store.getState().joinChannelOptimistic('ch-1', { ...sender, memberId: 'm-2' }, 'ws-2');
     expect(store.getState().channelMembers['ch-1']).toHaveLength(2);
 
-    store.getState().leaveChannelOptimistic('ch-1', 'm-2');
+    store.getState().leaveChannelOptimistic('ch-1', 'm-2', 'ws-2');
 
     expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
     // Channel still exists; the 7-day empty-channel reaper (KTD8)
     // will purge it if no one rejoins.
     expect(store.getState().channels['ch-1']).toBeDefined();
+  });
+
+  it('A7: removes only the caller row, not a sibling workspace sharing the memberId', () => {
+    const store = createTestStore();
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender, // (ws-1, m-1)
+      channel: makeChannel(),
+    });
+    // A second workspace reuses the SAME memberId (the local-ui roster pattern).
+    store.getState().joinChannelOptimistic('ch-1', { ...sender, workspaceId: 'ws-2' }, 'ws-2');
+    expect(store.getState().channelMembers['ch-1']).toHaveLength(2);
+    // ws-2 leaves; the same-memberId ws-1 row MUST survive (composite key).
+    store.getState().leaveChannelOptimistic('ch-1', 'm-1', 'ws-2');
+    const remaining = store.getState().channelMembers['ch-1'];
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].workspaceId).toBe('ws-1');
   });
 });
 
@@ -885,6 +935,72 @@ describe('channelsSlice — leaveChannelDaemon (membership, self-only)', () => {
   });
 });
 
+describe('channelsSlice — kickChannelDaemon (membership, humans-only eject)', () => {
+  it('on RPC success: calls a2a.channel.kick with target + caller params and removes the member', async () => {
+    const { calls } = withChannelsRpc(async () => ({ ok: true }));
+    try {
+      const store = createTestStore();
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1' }),
+      });
+      expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+
+      // kickChannelDaemon(channelId, targetMemberId, targetWorkspaceId, callerWorkspaceId).
+      // The human caller (ws-ceo) ejects a DIFFERENT member (ws-1, m-1).
+      const res = await store.getState().kickChannelDaemon('ch-1', 'm-1', 'ws-1', 'ws-ceo');
+      expect(res.ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].method).toBe('a2a.channel.kick');
+      expect(calls[0].params).toMatchObject({
+        channelId: 'ch-1',
+        targetWorkspaceId: 'ws-1',
+        targetMemberId: 'm-1',
+        verifiedWorkspaceId: 'ws-ceo', // the human caller, NOT the target
+      });
+      expect(store.getState().channelMembers['ch-1']).toHaveLength(0);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('on failure: returns the error and leaves membership untouched (no optimistic removal)', async () => {
+    withChannelsRpc(async () => ({ ok: false, error: { code: 'NOT_A_MEMBER', message: 'not a member' } }));
+    try {
+      const store = createTestStore();
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1' }),
+      });
+      const res = await store.getState().kickChannelDaemon('ch-1', 'm-1', 'ws-1', 'ws-ceo');
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error.code).toBe('NOT_A_MEMBER');
+      expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('bridge missing: returns UNKNOWN without mutating state', async () => {
+    clearChannelsRpc();
+    const store = createTestStore();
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel({ id: 'ch-1' }),
+    });
+    const res = await store.getState().kickChannelDaemon('ch-1', 'm-1', 'ws-1', 'ws-ceo');
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('UNKNOWN');
+    expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+  });
+});
+
 describe('channelsSlice — archiveChannelDaemon (lifecycle, creator-only)', () => {
   it('on RPC success: calls a2a.channel.archive and marks the channel archived', async () => {
     const { calls } = withChannelsRpc(async () => ({ ok: true })); // daemon returns EmptyResult
@@ -932,10 +1048,10 @@ describe('channelsSlice — archiveChannelDaemon (lifecycle, creator-only)', () 
       const res = await store.getState().archiveChannelDaemon('ch-1', 'ws-other');
       expect(res.ok).toBe(false);
       if (!res.ok) {
-        // NOT_AUTHORIZED isn't in the renderer's known-code union → bucketed to
-        // UNKNOWN, with the daemon code preserved in the message.
-        expect(res.error.code).toBe('UNKNOWN');
-        expect(res.error.message).toContain('NOT_AUTHORIZED');
+        // NOT_AUTHORIZED is now a known code (B5 added it to the union) → it is
+        // surfaced directly instead of being bucketed to UNKNOWN.
+        expect(res.error.code).toBe('NOT_AUTHORIZED');
+        expect(res.error.message).toContain('archive');
       }
       // No optimistic flip on failure.
       expect(store.getState().channels['ch-1'].status).toBe('active');

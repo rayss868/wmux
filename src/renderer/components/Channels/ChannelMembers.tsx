@@ -32,27 +32,11 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
-import { IconX } from '../icons';
+import { IconX, IconUsers } from '../icons';
 
 /** Stable UI member id — the human/GUI participates as one member per
  *  workspace. Mirrors the value the composer + create path already send. */
 const UI_MEMBER_ID = 'local-ui';
-
-/** The roster shows conversational PARTICIPANTS, not the channel's human owner.
- *  The creating workspace is auto-added as a UI member on create (KTD10), but it
- *  is the OWNER (channel.createdBy) and keeps full access — it is not a
- *  participant. Exclude that one owner + UI-member entry so a freshly created
- *  channel reads as 0 members and you populate it by inviting agents. Agents
- *  (non-UI memberIds) — INCLUDING agents that live in the owner's own workspace
- *  — are kept; only the owner's human placeholder is dropped. */
-export function rosterParticipants(
-  members: ChannelMember[],
-  ownerWorkspaceId: string | undefined,
-): ChannelMember[] {
-  return members.filter(
-    (m) => !(m.workspaceId === ownerWorkspaceId && m.memberId === UI_MEMBER_ID),
-  );
-}
 
 export interface JoinableWorkspace {
   id: string;
@@ -73,11 +57,15 @@ export interface ChannelMembersViewProps {
   canJoin: boolean;
   onJoin: (workspaceId: string) => void;
   onLeave: (memberId: string, workspaceId: string) => void;
+  /** Eject ANOTHER member (humans-only). Shown on NON-self rows only when
+   *  provided (a resolvable human identity + non-archived channel). Absent →
+   *  no kick affordance (e.g. no self workspace, or an archived channel). */
+  onKick?: (memberId: string, workspaceId: string) => void;
   t?: (key: string) => string;
 }
 
 /** Header control: a member-count button that opens a roster popover with
- *  per-row self-leave and a public-channel "+ member" picker. */
+ *  per-row self-leave, humans-only kick of other members, and a "+ member" picker. */
 export function ChannelMembersView({
   members,
   workspaceLabel,
@@ -87,6 +75,7 @@ export function ChannelMembersView({
   canJoin,
   onJoin,
   onLeave,
+  onKick,
   t: tProp,
 }: ChannelMembersViewProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -107,7 +96,7 @@ export function ChannelMembersView({
         className={`flex items-center gap-1 px-1.5 h-5 rounded text-[10px] font-mono text-[var(--text-subtle)] hover:text-[var(--text-sub)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
         {...tokenAttrs('textSub', 'text')}
       >
-        <span aria-hidden="true">👥</span>
+        <IconUsers size={11} />
         <span data-channel-members-count>{members.length}</span>
       </button>
 
@@ -158,7 +147,7 @@ export function ChannelMembersView({
                       <span className="text-[var(--text-muted)]"> · {m.memberId}</span>
                     )}
                   </span>
-                  {self && (
+                  {self ? (
                     <button
                       type="button"
                       data-channel-member-leave
@@ -170,6 +159,20 @@ export function ChannelMembersView({
                     >
                       <IconX size={10} />
                     </button>
+                  ) : (
+                    onKick && (
+                      <button
+                        type="button"
+                        data-channel-member-kick
+                        aria-label={t('channels.removeMember') || 'Remove from channel'}
+                        title={t('channels.removeMember') || 'Remove from channel'}
+                        onClick={() => onKick(m.memberId, m.workspaceId)}
+                        className={`flex items-center justify-center w-4 h-4 rounded text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors ${FOCUS_RING}`}
+                        {...tokenAttrs('textSub', 'text')}
+                      >
+                        <IconX size={10} />
+                      </button>
+                    )
                   )}
                 </div>
               );
@@ -226,41 +229,59 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
 
   const selfIsMember =
     !!selfWorkspaceId && members.some((m) => m.workspaceId === selfWorkspaceId);
+  // Company CEO (only when Company mode is active) may moderate without being a
+  // member — mirrors the daemon kick() CEO override (B5). In the default build
+  // `company` is undefined, so this is always false and kick is membership-gated.
+  const isCeo =
+    !!company?.ceoWorkspaceId && company.ceoWorkspaceId === selfWorkspaceId;
 
-  // Roster = conversational PARTICIPANTS (agents), not the human who created the
-  // channel (see rosterParticipants).
-  const rosterMembers = rosterParticipants(members, channel.createdBy);
+  // Operator model: the roster shows ALL members, every workspace treated the
+  // same — there is no privileged "owner" in the panel. Previously the creating
+  // workspace's human placeholder was hidden, so a channel you own read as "0
+  // members" (which a user reads as "wmux mis-recognized my workspace"). It is
+  // now just another member row. Agents render as per-member rows for attribution.
+  const rosterMembers = members;
 
-  // What the picker offers (P1b):
-  //  - a MEMBER may add any non-member workspace (invite — works for private too)
-  //  - a NON-member may only self-join, so offer just their own workspace
-  const joinableWorkspaces: JoinableWorkspace[] = (
-    selfIsMember
-      ? workspaces.filter((w) => !members.some((m) => m.workspaceId === w.id))
-      : workspaces.filter(
-          (w) => w.id === selfWorkspaceId && !members.some((m) => m.workspaceId === w.id),
-        )
-  ).map((w) => ({ id: w.id, name: w.name }));
+  // The human GUI operates EVERY local workspace, so the picker offers every
+  // workspace that is not already a member — not just the active one. The old
+  // "a non-member may only self-join" rule is an AGENT constraint (an agent can't
+  // act for a sibling workspace); the first-party GUI can, and the daemon trusts
+  // the renderer-supplied workspaceId across the process boundary.
+  const joinableWorkspaces: JoinableWorkspace[] = workspaces
+    .filter((w) => !members.some((m) => m.workspaceId === w.id))
+    .map((w) => ({ id: w.id, name: w.name }));
 
-  // Show the picker for any non-archived channel with a resolvable self ws.
-  // A private channel is only ever visible to its members, so if this popover
-  // is open on one, the self ws is already a member → invite is valid (P1b).
-  const canJoin = channel.status !== 'archived' && !!selfWorkspaceId;
+  // Show the picker only when the self ws can actually act on the channel: a
+  // public channel anyone can self-join, but a private channel can only be
+  // invited into by a current member (the daemon gates invite on the inviter
+  // being a member). Without the membership clause, a private-channel preview
+  // from a NON-member ws (the multi-workspace subscription path documented in
+  // ChannelView) would show a dead picker that only toasts NOT_AUTHORIZED.
+  const canJoin =
+    channel.status !== 'archived' &&
+    !!selfWorkspaceId &&
+    (channel.visibility === 'public' || selfIsMember);
 
   const handleJoin = (workspaceId: string): void => {
     const label = workspaceLabel(workspaceId);
-    // Self-join (add your OWN ws to a public channel) vs invite (a member adds
-    // ANOTHER ws — the only path into a private channel). The daemon enforces
-    // the inviter-is-member gate for invite either way.
-    const isSelf = workspaceId === selfWorkspaceId;
+    // Route by the channel's visibility, not by whether the target is the active
+    // workspace:
+    //   - public: the target SELF-JOINS. joinChannelDaemon pins membership to the
+    //     supplied workspaceId, and a public channel is joinable by any workspace,
+    //     so the GUI can drop any local workspace in — even one that is not the
+    //     active workspace and not yet a member.
+    //   - private: the target is INVITED by the active workspace. A private
+    //     channel is only visible to its members, so this popover being open
+    //     proves the active (self) workspace is a member and may invite — the one
+    //     path a non-member workspace gets into a private channel.
     const action =
-      isSelf || !selfWorkspaceId
+      channel.visibility === 'public'
         ? useStore
             .getState()
             .joinChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, workspaceId)
         : useStore
             .getState()
-            .inviteChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, selfWorkspaceId);
+            .inviteChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, selfWorkspaceId ?? workspaceId);
     void action.then((result) => {
       if (result.ok) {
         pushToast({ level: 'info', message: t('channels.joinedToast', { workspace: label, channel: channel.name }) });
@@ -290,6 +311,32 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
       });
   };
 
+  // Eject ANOTHER member (HUMANS-ONLY). selfWorkspaceId is the verified human
+  // attribution; the daemon kick() rides the renderer-only path, so this is a
+  // first-party-GUI action no agent can perform. Only show the affordance when
+  // the actor can actually kick — the daemon gates kick() on the caller being a
+  // member (or the company CEO), so a non-member would only get NOT_AUTHORIZED.
+  // Now that the roster reveals every member (incl. other workspaces), gating on
+  // membership keeps the popover from sprouting dead kick buttons.
+  const canKick = (selfIsMember || isCeo) && channel.status !== 'archived';
+  const handleKick = (memberId: string, workspaceId: string): void => {
+    if (!selfWorkspaceId) return;
+    const label = workspaceLabel(workspaceId);
+    void useStore
+      .getState()
+      .kickChannelDaemon(channel.id, memberId, workspaceId, selfWorkspaceId)
+      .then((result) => {
+        if (result.ok) {
+          pushToast({
+            level: 'info',
+            message: t('channels.removedToast', { workspace: label, channel: channel.name }),
+          });
+        } else {
+          pushToast({ level: 'error', message: t('channels.removeFailedToast', { workspace: label }) });
+        }
+      });
+  };
+
   return (
     <ChannelMembersView
       members={rosterMembers}
@@ -300,6 +347,7 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
       canJoin={canJoin}
       onJoin={handleJoin}
       onLeave={handleLeave}
+      onKick={canKick ? handleKick : undefined}
       t={t}
     />
   );

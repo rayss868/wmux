@@ -586,6 +586,9 @@ export const ko = {
   'channels.joinFailedToast': '{workspace} 추가에 실패했습니다',
   'channels.leftToast': '#{channel}에서 나갔습니다',
   'channels.leaveFailedToast': '채널 나가기에 실패했습니다',
+  'channels.removeMember': '채널에서 내보내기',
+  'channels.removedToast': '{workspace}을(를) #{channel}에서 내보냈습니다',
+  'channels.removeFailedToast': '{workspace} 내보내기에 실패했습니다',
   'channels.empty': '아직 채널이 없습니다 — + 버튼으로 새로 만드세요.',
   'channels.emptyCompany': '채널은 회사 범위입니다 — 회사를 시작해 사용하세요.',
   'channels.emptyMessages': '아직 메시지가 없습니다 — 첫 메시지를 남겨보세요.',
@@ -603,4 +606,5 @@ export const ko = {
   'channels.composerAriaLabel': '채널 메시지 작성',
   'channels.sendTooltip': '보내기',
   'channels.postFailed': '게시 실패',
+  'channels.mentionDropped': '이 @멘션은 전달되지 않았습니다(채널 멤버 아님): {names}',
 } as const;

@@ -11,8 +11,8 @@
 // (methodCapabilityMap.ts).
 //
 // D5 — caller-identity server-pin. The daemon trusts `verifiedWorkspaceId`
-// for every authz gate (post: sender===verified; archive: createdBy/CEO;
-// reads: membership/visibility). That field MUST NOT be a client-supplied
+// for every authz gate (post: sender===verified; reads: membership/
+// visibility). That field MUST NOT be a client-supplied
 // value, or a forger sets sender.workspaceId AND verifiedWorkspaceId to a
 // victim's (public) ws-id and sails through. So here, BEFORE forwarding to
 // the daemon, we OVERWRITE verifiedWorkspaceId with a value resolved from a
@@ -21,15 +21,23 @@
 // workspace via the renderer (`input.findOwnerWorkspace`), exactly as
 // `a2a.resolve.identity` does (a2a.rpc.ts).
 //
-// Mutating methods (create/archive/join/leave/post) REQUIRE a resolvable
+// Mutating methods (create/join/leave/post/invite) REQUIRE a resolvable
 // senderPtyId and fail closed without one — so a renderer composer / headless
-// caller with no PTY cannot mutate (it is read-only). Read methods accept a
+// caller with no PTY cannot mutate (it is read-only). (archive + kick are
+// humans-only and not registered here at all — see the NOTE in the registrar.) Read methods accept a
 // no-PTY caller and fall back to the caller-supplied scope: the renderer is
 // trusted by the process boundary, and this is the documented same-user
 // residual (a same-user process can already read every workspace's token —
-// see plans/trust-root-security-epic-plan.md F1). The genuine, unforgeable
-// improvement is that the verified-senderPtyId path no longer rides the
-// spoofable WMUX_WORKSPACE_ID env hint.
+// see plans/trust-root-security-epic-plan.md F1). NOTE (audit B1 — naming
+// honesty): `senderPtyId` arrives in the request PARAMS and is NOT bound to the
+// pipe connection's PID, so a same-user pipe client can forge it (a victim's
+// live ptyId is enumerable via a2a.discover). Treat the resulting
+// `verifiedWorkspaceId` as ADVISORY attribution under the #113 same-user ceiling
+// — NOT an unforgeable cross-user boundary. The only real improvement over the
+// old path is that it no longer rides the spoofable WMUX_WORKSPACE_ID env hint;
+// a true fix derives identity from the connection peer PID
+// (GetNamedPipeClientProcessId) — see plans/channels-fix-plan-2026-06-29.md
+// strategy track (B1/B2/B3).
 //
 // Handlers MUST NOT emit events themselves; `channel.message` emission is
 // owned by ChannelService inside its per-channel critical section (plan KTD3),
@@ -126,9 +134,17 @@ export function registerA2aChannelRpc(
 
   // Mutating — capability 'a2a.channel.send' (verifiable caller required)
   router.register('a2a.channel.create', (p) => forward('a2a.channel.create', p, true));
-  router.register('a2a.channel.archive', (p) => forward('a2a.channel.archive', p, true));
   router.register('a2a.channel.join', (p) => forward('a2a.channel.join', p, true));
   router.register('a2a.channel.leave', (p) => forward('a2a.channel.leave', p, true));
   router.register('a2a.channel.post', (p) => forward('a2a.channel.post', p, true));
   router.register('a2a.channel.invite', (p) => forward('a2a.channel.invite', p, true));
+
+  // NOTE: a2a.channel.archive and a2a.channel.kick are intentionally NOT registered
+  // here. BOTH are HUMANS-ONLY actions (product decision): archiving tears a channel
+  // down for EVERYONE, kicking ejects another member. Same-machine agent identity is
+  // forgeable (#113, accepted ceiling), so an agent-reachable archive/kick would let
+  // any member-workspace agent destroy a channel or eject anyone. Like ack, they ride
+  // the renderer-only channels:mutate-local path (channelLocal.handler) — a first-party
+  // GUI surface reachable only across the Electron process boundary and unreachable
+  // from the pipe/MCP. Registering either here would silently re-open that hole.
 }

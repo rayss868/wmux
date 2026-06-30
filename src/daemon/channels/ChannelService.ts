@@ -27,6 +27,7 @@ import {
   CHANNEL_IDEMPOTENCY_CAP,
   CHANNEL_MAX_COUNT,
   CHANNEL_MAX_MEMBERS,
+  CHANNEL_MESSAGES_MAX,
   CHANNEL_TOPIC_MAX,
   isValidChannelName,
   type Channel,
@@ -58,8 +59,34 @@ export interface ChannelMessageEvent {
   workspaceId: string;
 }
 
-/** Shape of the `emit` callback injected by the daemon. */
-export type ChannelServiceEmit = (event: ChannelMessageEvent) => void;
+/**
+ * A2A channels catalog/membership lifecycle event (A1). Unlike
+ * ChannelMessageEvent (a posted message), this signals that a channel's CATALOG
+ * row or MEMBERSHIP changed (create/archive/join/leave/kick/invite) so other
+ * renderers re-sync their mirror instead of going silently stale. It is a
+ * SIGNAL — the receiver re-hydrates the channel by id; no row is embedded, so
+ * the daemon stays authoritative and a removed member that re-fetches finds the
+ * channel gone and drops it. The wiring layer projects this to the EventBus
+ * `channel.catalog` (DaemonNotificationRouter), scoped per-recipient by
+ * events.poll exactly like channel.message.
+ */
+export interface ChannelCatalogEvent {
+  type: 'channel.catalog';
+  channelId: string;
+  /** The workspace that performed the mutation (becomes the base workspaceId). */
+  actorWorkspaceId: string;
+  /** Every workspace that must re-sync: the post-change member set PLUS any
+   *  workspace removed by this change (so a kicked/left member also drops the
+   *  channel from its mirror). */
+  recipientWorkspaceIds: string[];
+  /** What changed — advisory only; the receiver re-hydrates regardless. */
+  reason: 'created' | 'archived' | 'membership';
+}
+
+/** Shape of the `emit` callback injected by the daemon. Carries either a posted
+ *  message (channel.message) or a catalog/membership lifecycle signal
+ *  (channel.catalog). */
+export type ChannelServiceEmit = (event: ChannelMessageEvent | ChannelCatalogEvent) => void;
 
 /** Typed error codes surfaced from the service to the caller. */
 export type ChannelErrorCode =
@@ -174,6 +201,29 @@ export interface LeaveChannelParams {
   verifiedWorkspaceId: string;
 }
 
+export interface KickChannelParams {
+  channelId: string;
+  /** The workspace being EJECTED. Unlike leave() — which self-pins so a caller
+   *  can only remove ITSELF — kick() removes a DIFFERENT, caller-supplied member.
+   *  This is the one membership removal that is not self-pinned. */
+  targetWorkspaceId: string;
+  /** The specific member row to eject. A workspace may hold several member rows
+   *  (one per agent), so kick removes the exact (targetWorkspaceId, targetMemberId)
+   *  row — mirrors leave()'s precise (workspace, member) match. */
+  targetMemberId: string;
+  /** Server-resolved workspace of the HUMAN performing the kick, recorded for
+   *  attribution. NOTE: kick has NO ChannelService-level authz gate beyond
+   *  channel/member existence — the daemon cannot tell a renderer call from a
+   *  pipe call, so it does not try. The "humans only" policy is enforced one
+   *  layer up by TRANSPORT: kick rides ONLY the renderer-only
+   *  `channels:mutate-local` IPC (pipe-unreachable) and is deliberately NOT
+   *  registered on the `a2a.channel.*` pipe router, so no MCP/agent caller can
+   *  reach this method (mirrors the `a2a.channel.ack` precedent). Reaching the
+   *  daemon control pipe directly is the documented same-user residual (F1),
+   *  identical to every other channel mutation. */
+  verifiedWorkspaceId: string;
+}
+
 export interface InviteChannelParams {
   channelId: string;
   /** The workspace/agent being ADDED. Unlike join(), the invitee is NOT the
@@ -281,8 +331,15 @@ export class ChannelService {
     // (an LRU map for O(1) lookup + O(n) eviction only on overflow).
     for (const [channelId, clientMap] of Object.entries(this.state.idempotency)) {
       const inner = new Map<string, IdempotencyEntry>();
-      for (const [clientMsgId, seq] of Object.entries(clientMap)) {
-        inner.set(clientMsgId, { seq, lastUsedAt: ++this.hydrationSeq });
+      for (const [key, seq] of Object.entries(clientMap)) {
+        // A11 (codex+GLM): only hydrate composite-format keys (JSON
+        // [workspaceId, clientMsgId]). A pre-upgrade `channels.json` stored bare
+        // `clientMsgId` keys that can't be migrated (no sender was recorded); the
+        // post path now looks up the composite key and would miss them anyway, so
+        // skip them rather than seed dead LRU slots. Worst case is one duplicate
+        // on a cross-restart retry of a single pre-upgrade post.
+        if (!key.startsWith('[')) continue;
+        inner.set(key, { seq, lastUsedAt: ++this.hydrationSeq });
       }
       this.idempotency.set(channelId, inner);
     }
@@ -509,6 +566,17 @@ export class ChannelService {
         delete this.state.idempotency[channel.id];
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel create' } };
       }
+      // A1: catalog changed (created) — fan out to the initial member set so
+      // their sidebars show the new channel without a manual refresh.
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        // A1 (codex+GLM P2): a public channel is discoverable by EVERY workspace
+        // (list() shows it to all), so broadcast its creation with the '*'
+        // sentinel; a private channel notifies only its initial members.
+        channel.visibility === 'public' ? ['*'] : initialMembers.map((m) => m.workspaceId),
+        'created',
+      );
       return { ok: true, channel };
     });
   }
@@ -517,8 +585,16 @@ export class ChannelService {
    * Archive a channel. Sets `status: 'archived'` and `archivedAt`.
    * Members retain history access (KTD-G). Subsequent `post` calls
    * return `CHANNEL_ARCHIVED`. `CHANNEL_NOT_FOUND` if the id is unknown;
-   * `NOT_AUTHORIZED` if the verified caller is neither the creator nor
-   * the company CEO; `PERSIST_FAILED` if the writer cannot save.
+   * `NOT_AUTHORIZED` if the verified caller is not a member (or the company
+   * CEO); `PERSIST_FAILED` if the writer cannot save.
+   *
+   * Authz mirrors kick(): a member (or the CEO) may archive. There is no
+   * privileged "creator" — `createdBy` is metadata (audit trail) only, never an
+   * authz input. Like kick, archive is HUMANS-ONLY at the TRANSPORT layer
+   * (renderer-only `channels:mutate-local`; deliberately absent from the
+   * `a2a.channel.*` pipe router), so no agent/MCP caller can reach it — a
+   * same-machine agent identity is forgeable (#113), so an agent-reachable
+   * archive would let any member-workspace agent tear a channel down for everyone.
    */
   async archive(params: ArchiveChannelParams): Promise<EmptyResult> {
     return this.withChannelLock(params.channelId, async () => {
@@ -526,17 +602,19 @@ export class ChannelService {
       if (!channel) {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
       }
-      // Authz gate (KTD-F): caller must be the creator OR the company CEO.
-      // Both checks use `verifiedWorkspaceId` (server-resolved) — the
-      // client-supplied `archivedBy` is recorded as metadata only, never
-      // trusted for the gate.
+      // Authz: caller must be a current member OR the company CEO (mirrors
+      // kick()). `verifiedWorkspaceId` is server-resolved; the client-supplied
+      // `archivedBy` is recorded as metadata only, never trusted for the gate.
       const isCeo = this.ceoWorkspaceId !== undefined && this.ceoWorkspaceId === params.verifiedWorkspaceId;
-      if (channel.createdBy !== params.verifiedWorkspaceId && !isCeo) {
+      const isMember = (this.state.members[channel.id] ?? []).some(
+        (m) => m.workspaceId === params.verifiedWorkspaceId,
+      );
+      if (!isMember && !isCeo) {
         return {
           ok: false,
           error: {
             code: 'NOT_AUTHORIZED',
-            message: 'Only the channel creator or the company CEO may archive this channel',
+            message: 'Only a member or the company CEO may archive this channel',
           },
         };
       }
@@ -551,6 +629,14 @@ export class ChannelService {
         delete channel.archivedBy;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel archive' } };
       }
+      // A1: catalog changed (archived) — fan out to current members so other
+      // renderers flip to read-only instead of offering a post that will fail.
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        (this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
+        'archived',
+      );
       return { ok: true };
     });
   }
@@ -587,6 +673,13 @@ export class ChannelService {
       if (!this.isVisibleTo(channel, params.verifiedWorkspaceId)) {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
       }
+      // A10: reject join on a read-only (archived) channel — mirrors invite()'s
+      // and kick()'s archived gate. Without this, join was the one membership
+      // mutation that ignored lifecycle, letting a caller be added to a frozen
+      // channel and slip past the read-only contract.
+      if (channel.status === 'archived') {
+        return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot join an archived channel' } };
+      }
       const members = this.state.members[channel.id] ?? [];
       // Reject duplicate membership (keyed on the server-resolved workspace).
       if (members.some((m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.member.memberId)) {
@@ -621,6 +714,14 @@ export class ChannelService {
         channel.emptySince = previousEmptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel join' } };
       }
+      // A1: membership changed (join) — fan out to the post-join member set
+      // (includes the new member) so every roster + sidebar re-syncs.
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        members.map((m) => m.workspaceId),
+        'membership',
+      );
       return { ok: true };
     });
   }
@@ -662,6 +763,96 @@ export class ChannelService {
         if (members.length === 1) delete channel.emptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel leave' } };
       }
+      // A1: membership changed (leave) — fan out to the remaining members AND
+      // the workspace that just left (so its own mirror drops the channel).
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        [...members.map((m) => m.workspaceId), removed.workspaceId],
+        'membership',
+      );
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Eject ANOTHER member from a channel (humans-only — see KickChannelParams).
+   * The mirror of leave(): leave() self-pins so a caller can only remove ITSELF;
+   * kick() removes the caller-supplied (targetWorkspaceId, targetMemberId) row.
+   *
+   * Authz is NOT gated in this method — the daemon cannot distinguish a renderer
+   * call from a pipe call, so the "humans only" boundary lives in the TRANSPORT
+   * layer (renderer-only `channels:mutate-local` IPC + deliberately absent from
+   * the `a2a.channel.*` pipe router, mirroring `a2a.channel.ack`). Within the
+   * daemon we only enforce existence: `CHANNEL_NOT_FOUND` for an unknown id,
+   * `NOT_A_MEMBER` when the target row is absent, `PERSIST_FAILED` on a writer
+   * failure (rolled back). The last member removed stamps `emptySince` so the
+   * empty-channel reaper prunes the row after the TTL — identical to leave().
+   */
+  async kick(params: KickChannelParams): Promise<EmptyResult> {
+    return this.withChannelLock(params.channelId, async () => {
+      const channel = this.state.channels.find((c) => c.id === params.channelId);
+      if (!channel) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
+      }
+      // Reject membership mutation on a read-only (archived) channel — mirrors
+      // invite()'s archived gate. kick is the eject-mirror of invite (managing
+      // OTHERS' membership), so it must honor the same read-only contract: a
+      // roster click that races a concurrent archive, or stale renderer state,
+      // must not slip a removal past the lifecycle (review-team: codex P2). The
+      // UI's `canKick` gate is local-only and therefore not authoritative.
+      if (channel.status === 'archived') {
+        return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot kick from an archived channel' } };
+      }
+      const members = this.state.members[channel.id] ?? [];
+      // B5: the actor must be a current member OR the company CEO (mirrors
+      // archive()'s CEO override — GLM flagged kick had no override, so a
+      // non-member CEO moderating a channel would be wrongly blocked). A
+      // non-member non-CEO must not eject members. The humans-only TRANSPORT
+      // boundary already blocks agents from reaching kick; this closes the "any
+      // member-less caller can kick" hole within that boundary (audit SE-B5c:
+      // kick had zero actor gate).
+      const kickIsCeo =
+        this.ceoWorkspaceId !== undefined && this.ceoWorkspaceId === params.verifiedWorkspaceId;
+      if (!kickIsCeo && !members.some((m) => m.workspaceId === params.verifiedWorkspaceId)) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: 'Only a member or the company CEO may kick from this channel',
+          },
+        };
+      }
+      const idx = members.findIndex(
+        // Target match (NOT self-pinned, unlike leave) — eject the exact
+        // (targetWorkspaceId, targetMemberId) row the human picked in the roster.
+        (m) => m.workspaceId === params.targetWorkspaceId && m.memberId === params.targetMemberId,
+      );
+      if (idx < 0) {
+        return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Target is not a member' } };
+      }
+      // Snapshot the removed member so we can put them back on rollback (mirrors leave).
+      const removed = members[idx];
+      members.splice(idx, 1);
+      // If the channel is now empty, stamp `emptySince` (plan KTD8) — same as leave.
+      if (members.length === 0 && channel.emptySince === undefined) {
+        channel.emptySince = this.now();
+      }
+      this.state.members[channel.id] = members;
+      if (!this.saveOrFail()) {
+        // Roll back: re-insert at the original index, clear the emptySince we set.
+        members.splice(idx, 0, removed);
+        if (members.length === 1) delete channel.emptySince;
+        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel kick' } };
+      }
+      // A1: membership changed (kick) — fan out to the remaining members AND the
+      // ejected workspace (so the kicked member's mirror drops the channel).
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        [...members.map((m) => m.workspaceId), removed.workspaceId],
+        'membership',
+      );
       return { ok: true };
     });
   }
@@ -732,6 +923,15 @@ export class ChannelService {
         channel.emptySince = previousEmptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel invite' } };
       }
+      // A1: membership changed (invite) — fan out to the post-invite member set
+      // (includes the invitee) so the invited workspace's mirror picks up the
+      // channel and the existing members' rosters re-sync.
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        members.map((m) => m.workspaceId),
+        'membership',
+      );
       return { ok: true };
     });
   }
@@ -793,7 +993,10 @@ export class ChannelService {
       // on the same channel see consistent state.
       if (params.clientMsgId) {
         const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
-        const existing = channelIdMap.get(params.clientMsgId);
+        // A11: sender-scoped key so a predictable clientMsgId can't collide
+        // across senders (pre-seed suppression / wrong-sender replay).
+        const idemKey = idempotencyKey(params.sender.workspaceId, params.clientMsgId);
+        const existing = channelIdMap.get(idemKey);
         if (existing) {
           // Refresh LRU timestamp on hit.
           existing.lastUsedAt = this.now();
@@ -975,7 +1178,8 @@ export class ChannelService {
       // Update idempotency cache.
       if (params.clientMsgId) {
         const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
-        channelIdMap.set(params.clientMsgId, {
+        const idemKey = idempotencyKey(params.sender.workspaceId, params.clientMsgId);
+        channelIdMap.set(idemKey, {
           seq,
           lastUsedAt: now,
           // Store a COPY so a same-process caller mutating the returned array
@@ -999,7 +1203,16 @@ export class ChannelService {
         if (msgs) msgs.pop();
         if (params.clientMsgId) {
           const channelIdMap = this.idempotency.get(channel.id);
-          if (channelIdMap) channelIdMap.delete(params.clientMsgId);
+          if (channelIdMap) {
+            channelIdMap.delete(idempotencyKey(params.sender.workspaceId, params.clientMsgId));
+            // Rebuild the persisted snapshot from the reverted map — `state.idempotency`
+            // was already overwritten with the new key above, so without this the
+            // NEXT successful save would flush an orphaned composite key for a
+            // message that never existed (CodeRabbit).
+            this.state.idempotency[channel.id] = Object.fromEntries(
+              Array.from(channelIdMap.entries()).map(([k, v]) => [k, v.seq]),
+            );
+          }
         }
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist post' } };
       }
@@ -1025,6 +1238,43 @@ export class ChannelService {
         // post. The next tryDeliver cycle (U3.5 wiring) re-fans-out from
         // the persisted recipientSnapshot.
         console.error('[ChannelService] emit failed:', err);
+      }
+      // A2: tail-evict the per-channel history above CHANNEL_MESSAGES_MAX. Done
+      // AFTER the successful persist above (pre-persist would lose evicted rows on
+      // a rollback), then flushed immediately (below) so a restart before the next
+      // post can't rehydrate the oversized history above the cap (CodeRabbit).
+      // Bounds the unbounded-growth DoS the audit found: saveImmediate
+      // re-serializes the WHOLE state per post, so an uncapped history makes every
+      // post O(total history). The idempotency map's pointer to an evicted seq is
+      // already handled — the post path falls through to a fresh post (see above).
+      const msgs2 = this.state.messages[channel.id];
+      if (msgs2 && msgs2.length > CHANNEL_MESSAGES_MAX) {
+        const trimmed = msgs2.slice(msgs2.length - CHANNEL_MESSAGES_MAX);
+        this.state.messages[channel.id] = trimmed;
+        // A2 (GLM P3): drop idempotency entries pointing at now-evicted seqs so
+        // dead pointers don't occupy LRU slots forever (the post path already
+        // falls through to a fresh post when an entry's seq is gone). Keep the
+        // in-memory map and the persisted shape in sync.
+        const minSeq = trimmed.length > 0 ? trimmed[0].seq : 0;
+        const idemMap = this.idempotency.get(channel.id);
+        if (idemMap) {
+          let pruned = false;
+          for (const [k, v] of idemMap) {
+            if (v.seq < minSeq) {
+              idemMap.delete(k);
+              pruned = true;
+            }
+          }
+          if (pruned) {
+            this.state.idempotency[channel.id] = Object.fromEntries(
+              Array.from(idemMap.entries()).map(([k, v]) => [k, v.seq]),
+            );
+          }
+        }
+        // Persist the trim now so the durable cap stays bounded even if the daemon
+        // restarts before the next post. Best-effort: on failure the in-memory copy
+        // is still trimmed and the next post's saveOrFail re-flushes (CodeRabbit).
+        void this.saveOrFail();
       }
       return {
         ok: true,
@@ -1156,6 +1406,30 @@ export class ChannelService {
     }
   }
 
+  /**
+   * Emit a channel.catalog lifecycle signal (A1) after a successful catalog or
+   * membership mutation. Best-effort — a throwing emit must not roll back the
+   * mutation (mirrors post()'s emit contract). The recipient set is deduped.
+   */
+  private emitCatalog(
+    channelId: string,
+    actorWorkspaceId: string,
+    recipientWorkspaceIds: string[],
+    reason: ChannelCatalogEvent['reason'],
+  ): void {
+    try {
+      this.emit({
+        type: 'channel.catalog',
+        channelId,
+        actorWorkspaceId,
+        recipientWorkspaceIds: [...new Set(recipientWorkspaceIds)],
+        reason,
+      });
+    } catch (err) {
+      console.error('[ChannelService] catalog emit failed:', err);
+    }
+  }
+
   /** Save the current state via the writer. Returns true on success. */
   private saveOrFail(): boolean {
     return this.writer.saveImmediate(this.state);
@@ -1186,4 +1460,16 @@ export function sanitizePostText(text: string): string {
   // hot path.
   // eslint-disable-next-line no-control-regex
   return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim();
+}
+
+/**
+ * A11: sender-scoped idempotency key. Keying only by clientMsgId let a
+ * predictable id collide ACROSS senders — an attacker could pre-seed a key to
+ * suppress another sender's post, or a retry could return the wrong sender's
+ * message. JSON-encode the (workspaceId, clientMsgId) pair (collision-free,
+ * same rationale as the mention dedup key). The persisted shape keys by this
+ * composite string too, so hydration round-trips unchanged.
+ */
+function idempotencyKey(workspaceId: string, clientMsgId: string): string {
+  return JSON.stringify([workspaceId, clientMsgId]);
 }
