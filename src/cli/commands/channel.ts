@@ -1,0 +1,346 @@
+// ─── `wmux channel` — the universal agent surface for Channels v2 ─────────
+//
+// Any shell-capable agent running inside a wmux pane (Codex, OpenCode,
+// Hermes, a bash loop…) participates in channels through these subcommands —
+// no MCP client required. This file is deliberately the onboarding doc: an
+// agent that can read `wmux channel --help` can be a channel member.
+//
+// Transport: the DAEMON control pipe, directly (`sendDaemonRequest`) — NOT
+// the main-process pipe. Rationale (design doc "두 RPC 표면과 신뢰 모델"):
+// the daemon owns channel state and survives the GUI, so `wmux channel`
+// keeps working headless (GUI closed, reboot-recovery window) — which is the
+// money-demo path. Identity: we attach `senderPtyId` and the daemon stamps
+// `verifiedWorkspaceId` server-side from its OWN session record
+// (channelCallerIdentity.ts) — the CLI never claims a workspace.
+//
+// senderPtyId resolution ladder:
+//   1. verified PID-map walk via the MAIN pipe (resolveSelfContext, X4) —
+//      strongest, but needs the GUI alive;
+//   2. env WMUX_PTY_ID — stamped into the pane env at spawn by the daemon
+//      session itself; survives headless. Same-user forgeable (#113 ceiling,
+//      accepted): the daemon still derives the WORKSPACE from its own record.
+// Outside a wmux pane both fail → mutations fail closed (NOT_AUTHORIZED).
+
+import { sendRequest, sendDaemonRequest } from '../client';
+import { parseFlag, hasFlag } from '../utils';
+import { resolveSelfContext, getParentPidDefault } from '../identity';
+import type { RpcMethod, RpcResponse } from '../../shared/rpc';
+import { ENV_KEYS } from '../../shared/constants';
+
+export const CHANNEL_HELP = `
+wmux channel — durable agent messaging (Channels v2)
+
+  You are (probably) an agent in a wmux pane. Teammates post messages to
+  channels; you read them, reply, and ACK what you consumed. While you have
+  unread mentions you will be re-nudged — ack is what makes it stop.
+
+  wmux channel unread [--member <id>]
+      Your per-channel unread + mention counts. Cheap; call when nudged.
+  wmux channel read <channel> [--since <seq>] [--limit <n>]
+      Print messages (oldest first). <channel> is an id (ch-…) or a name.
+  wmux channel post <channel> <text…> [--member <id>] [--name <display>]
+      Post a message. Your workspace identity is stamped server-side.
+  wmux channel ack <channel> <uptoSeq|all> [--member <id>]
+      Mark messages ≤ uptoSeq consumed ('all' = everything currently there).
+      Advance-only; clears unread; stops re-nudges.
+  wmux channel join <channel> [--member <id>] [--name <display>]
+      Join a public channel as <member>.
+  wmux channel list
+      Channels visible to your workspace.
+
+  --member defaults to $WMUX_MEMBER_ID, then "agent". Use a stable, short
+  id (e.g. "codex") so humans can tell agents apart in the roster.
+  --json on any subcommand prints the raw RPC payload.
+
+  Typical loop when nudged: unread → read → do the work → post → ack.
+`;
+
+interface ChannelCallOpts {
+  /** Require a resolvable pane identity before issuing the call. */
+  mutating: boolean;
+}
+
+/** senderPtyId ladder: verified walk (main pipe) → pane env → ''. */
+async function resolveSenderPtyId(): Promise<string> {
+  try {
+    const ctx = await resolveSelfContext({
+      sendRequest,
+      env: process.env,
+      ppid: process.ppid,
+      getParentPid: getParentPidDefault,
+    });
+    if (ctx.ptyId) return ctx.ptyId;
+  } catch {
+    // main pipe down (headless) — fall through to the env hint
+  }
+  const envPty = process.env[ENV_KEYS.PTY_ID];
+  return typeof envPty === 'string' && envPty.trim().length > 0 ? envPty.trim() : '';
+}
+
+/**
+ * Issue one channel RPC on the daemon pipe with senderPtyId attached, and
+ * unwrap the two-layer envelope (pipe RpcResponse → ChannelService Result).
+ * Exits the process with a readable error on either layer's failure.
+ */
+async function callChannel(
+  method: RpcMethod,
+  params: Record<string, unknown>,
+  opts: ChannelCallOpts,
+): Promise<Record<string, unknown>> {
+  const senderPtyId = await resolveSenderPtyId();
+  if (!senderPtyId && opts.mutating) {
+    console.error(
+      'Error: not inside a wmux pane (no resolvable pane identity — PID walk missed and WMUX_PTY_ID is unset).\n' +
+        'Channel mutations are fail-closed without one. Run this from a shell inside a wmux pane.',
+    );
+    process.exit(1);
+  }
+  let response: RpcResponse;
+  try {
+    response = await sendDaemonRequest(method, {
+      ...params,
+      ...(senderPtyId ? { senderPtyId } : {}),
+    });
+  } catch (err) {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  if (!response.ok) {
+    console.error(`Error: ${response.error}`);
+    process.exit(1);
+  }
+  const result = response.result as Record<string, unknown> | null;
+  if (result !== null && typeof result === 'object' && result['ok'] === false) {
+    const err = result['error'] as { code?: string; message?: string } | undefined;
+    console.error(`Error [${err?.code ?? 'UNKNOWN'}]: ${err?.message ?? 'channel call failed'}`);
+    process.exit(1);
+  }
+  return result ?? {};
+}
+
+/** `<channel>` accepts a channel id (ch-…) or a name; names resolve via list. */
+async function resolveChannelId(ref: string): Promise<string> {
+  if (ref.startsWith('ch-')) return ref;
+  const result = await callChannel('a2a.channel.list' as RpcMethod, {}, { mutating: false });
+  const channels = (result['channels'] as Array<{ id?: string; name?: string; status?: string }> | undefined) ?? [];
+  const matches = channels.filter((c) => c.name === ref);
+  if (matches.length === 1 && typeof matches[0].id === 'string') return matches[0].id;
+  if (matches.length > 1) {
+    console.error(`Error: channel name "${ref}" is ambiguous (${matches.length} matches) — use the channel id.`);
+    process.exit(1);
+  }
+  console.error(
+    `Error: no visible channel named "${ref}". Run \`wmux channel list\` to see what your workspace can reach.`,
+  );
+  process.exit(1);
+}
+
+function memberIdFrom(args: string[]): string {
+  return parseFlag(args, '--member') ?? process.env['WMUX_MEMBER_ID'] ?? 'agent';
+}
+
+/**
+ * Strip the channel option flags (and their values) so the remainder is pure
+ * positional payload — mirrors input.ts stripInputFlags. Without this a flag
+ * VALUE (`--since 3`) would be mistaken for a positional (`read 3 …`), and a
+ * post body containing a token that starts with `-` would be silently eaten.
+ */
+const VALUE_FLAGS = new Set(['--member', '--name', '--since', '--limit']);
+function positionalsOf(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (VALUE_FLAGS.has(a)) {
+      i++; // skip the flag's value
+      continue;
+    }
+    if (a === '--json') continue;
+    out.push(a);
+  }
+  return out;
+}
+
+const fmtMsg = (m: { seq?: number; memberName?: string; memberId?: string; text?: string }): string =>
+  `[seq ${m.seq}] ${m.memberName ?? m.memberId ?? '?'}: ${m.text ?? ''}`;
+
+export async function handleChannel(sub: string | undefined, args: string[], jsonMode: boolean): Promise<void> {
+  switch (sub) {
+    case 'unread': {
+      const memberId = parseFlag(args, '--member');
+      const result = await callChannel(
+        'a2a.channel.unread' as RpcMethod,
+        { ...(memberId !== undefined ? { memberId } : {}) },
+        { mutating: false },
+      );
+      const entries =
+        (result['entries'] as Array<{
+          channelId: string;
+          name: string;
+          memberId: string;
+          lastReadSeq: number;
+          headSeq: number;
+          unread: number;
+          mentionUnread: number;
+          trimmedBeforeCursor: number;
+        }> | undefined) ?? [];
+      if (jsonMode) {
+        console.log(JSON.stringify(entries, null, 2));
+        return;
+      }
+      const owed = entries.filter((e) => e.unread > 0 || e.trimmedBeforeCursor > 0);
+      if (owed.length === 0) {
+        console.log('No unread channel messages.');
+        return;
+      }
+      for (const e of owed) {
+        const trimmed = e.trimmedBeforeCursor > 0 ? `  [WARNING: ${e.trimmedBeforeCursor} message(s) trimmed before you read them]` : '';
+        console.log(
+          `#${e.name} (${e.channelId}) member=${e.memberId}: ${e.unread} unread` +
+            (e.mentionUnread > 0 ? ` (${e.mentionUnread} mention you)` : '') +
+            ` — read: wmux channel read ${e.channelId} --since ${e.lastReadSeq + 1}${trimmed}`,
+        );
+      }
+      return;
+    }
+
+    case 'read': {
+      const [ref] = positionalsOf(args);
+      if (!ref) {
+        console.error('Usage: wmux channel read <channel> [--since <seq>] [--limit <n>]');
+        process.exit(1);
+      }
+      const channelId = await resolveChannelId(ref);
+      const since = parseFlag(args, '--since');
+      const limit = parseFlag(args, '--limit');
+      const params: Record<string, unknown> = { channelId };
+      if (since !== undefined) params['sinceSeq'] = Number(since);
+      params['limit'] = limit !== undefined ? Number(limit) : 50;
+      const result = await callChannel('a2a.channel.getMessages' as RpcMethod, params, { mutating: false });
+      const messages = (result['messages'] as Array<{ seq: number; memberName?: string; memberId?: string; text?: string }> | undefined) ?? [];
+      if (jsonMode) {
+        console.log(JSON.stringify(messages, null, 2));
+        return;
+      }
+      if (messages.length === 0) {
+        console.log('(no messages)');
+        return;
+      }
+      for (const m of messages) console.log(fmtMsg(m));
+      const last = messages[messages.length - 1];
+      console.log(`(consumed? then: wmux channel ack ${channelId} ${last.seq})`);
+      return;
+    }
+
+    case 'post': {
+      const [ref, ...textParts] = positionalsOf(args);
+      const text = textParts.join(' ');
+      if (!ref || !text) {
+        console.error('Usage: wmux channel post <channel> <text…> [--member <id>] [--name <display>]');
+        process.exit(1);
+      }
+      const channelId = await resolveChannelId(ref);
+      const memberId = memberIdFrom(args);
+      const memberName = parseFlag(args, '--name') ?? memberId;
+      const result = await callChannel(
+        'a2a.channel.post' as RpcMethod,
+        {
+          channelId,
+          text,
+          // sender.workspaceId is deliberately ABSENT — the daemon backfills
+          // it from the server-side stamp (channelCallerIdentity.ts).
+          sender: { memberId, memberName },
+        },
+        { mutating: true },
+      );
+      if (jsonMode) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      const message = result['message'] as { seq?: number } | undefined;
+      console.log(`Posted to ${channelId} as ${memberId} (seq ${message?.seq ?? '?'}).`);
+      const dropped = result['droppedMentions'] as Array<{ workspaceId: string }> | undefined;
+      if (dropped && dropped.length > 0) {
+        console.log(`WARNING: ${dropped.length} @mention(s) did NOT land (target not a channel member): ${dropped.map((d) => d.workspaceId).join(', ')}`);
+      }
+      return;
+    }
+
+    case 'ack': {
+      const [ref, uptoRaw] = positionalsOf(args);
+      if (!ref || !uptoRaw) {
+        console.error("Usage: wmux channel ack <channel> <uptoSeq|all> [--member <id>]");
+        process.exit(1);
+      }
+      const channelId = await resolveChannelId(ref);
+      // 'all' = everything currently in the channel; the daemon clamps to head.
+      const uptoSeq = uptoRaw === 'all' ? Number.MAX_SAFE_INTEGER : Number(uptoRaw);
+      if (!Number.isFinite(uptoSeq) || uptoSeq < 0) {
+        console.error(`Error: uptoSeq must be a non-negative number or 'all' (got "${uptoRaw}").`);
+        process.exit(1);
+      }
+      const memberId = memberIdFrom(args);
+      const result = await callChannel(
+        'a2a.channel.ack' as RpcMethod,
+        { channelId, uptoSeq, memberId },
+        { mutating: true },
+      );
+      if (jsonMode) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Acked ${channelId} up to seq ${result['lastReadSeq'] ?? uptoSeq} as ${memberId}.`);
+      return;
+    }
+
+    case 'join': {
+      const [ref] = positionalsOf(args);
+      if (!ref) {
+        console.error('Usage: wmux channel join <channel> [--member <id>] [--name <display>]');
+        process.exit(1);
+      }
+      const channelId = await resolveChannelId(ref);
+      const memberId = memberIdFrom(args);
+      const memberName = parseFlag(args, '--name') ?? memberId;
+      const result = await callChannel(
+        'a2a.channel.join' as RpcMethod,
+        { channelId, member: { memberId, memberName } },
+        { mutating: true },
+      );
+      if (jsonMode) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Joined ${channelId} as ${memberId}. New messages from now count as your unread.`);
+      return;
+    }
+
+    case 'list': {
+      const result = await callChannel('a2a.channel.list' as RpcMethod, {}, { mutating: false });
+      const channels = (result['channels'] as Array<{ id?: string; name?: string; visibility?: string; status?: string }> | undefined) ?? [];
+      if (jsonMode) {
+        console.log(JSON.stringify(channels, null, 2));
+        return;
+      }
+      if (channels.length === 0) {
+        console.log('No channels visible to this workspace.');
+        return;
+      }
+      for (const c of channels) {
+        console.log(`#${c.name}  ${c.id}  (${c.visibility ?? '?'}${c.status === 'archived' ? ', archived' : ''})`);
+      }
+      return;
+    }
+
+    case 'help':
+    case undefined: {
+      console.log(CHANNEL_HELP.trim());
+      return;
+    }
+
+    default: {
+      console.error(`Unknown channel subcommand: "${sub}".`);
+      console.log(CHANNEL_HELP.trim());
+      process.exit(1);
+    }
+  }
+}
