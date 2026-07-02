@@ -1539,9 +1539,15 @@ function registerRpcHandlers(
   // that supplies only `senderPtyId` gets a SERVER-side stamp resolved from
   // the daemon's own session record (env WMUX_WORKSPACE_ID, persisted at
   // spawn by main). See channelCallerIdentity.ts for the acceptance rules.
+  // LIVE sessions only (attached/detached): the manager retains dead
+  // tombstones for hours (dead-TTL) and suspended records across restarts,
+  // and a pane that no longer has a usable PTY child cannot legitimately be
+  // the caller — a stale senderPtyId must fail closed exactly like an
+  // unknown one (CodeRabbit review). Uses the manager's canonical live
+  // filter rather than re-implementing state checks here.
   const resolveSessionWorkspace = (sessionId: string): string => {
-    const env = sessionManager.getSession(sessionId)?.meta.env;
-    const ws = env?.[ENV_KEYS.WORKSPACE_ID];
+    const meta = sessionManager.listLiveSessions().find((m) => m.id === sessionId);
+    const ws = meta?.env?.[ENV_KEYS.WORKSPACE_ID];
     return typeof ws === 'string' && ws.trim().length > 0 ? ws.trim() : '';
   };
   const stampCaller = (
@@ -1655,8 +1661,11 @@ function registerRpcHandlers(
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
     const rawUpto = params['uptoSeq'];
-    // Guard NaN/Infinity/negative (review A1 P3) — uptoSeq is a monotonic seq floor.
-    const uptoSeq = typeof rawUpto === 'number' && Number.isFinite(rawUpto) && rawUpto >= 0 ? rawUpto : 0;
+    // Guard NaN/Infinity/negative/fractional (review A1 P3 + CodeRabbit) —
+    // uptoSeq is a monotonic seq floor and the cursor it advances persists,
+    // so only whole seq values may reach ChannelService.ack. Invalid ⇒ 0
+    // (a no-op ack: the cursor never moves backwards).
+    const uptoSeq = typeof rawUpto === 'number' && Number.isSafeInteger(rawUpto) && rawUpto >= 0 ? rawUpto : 0;
     // Channels v2: optional member narrowing (agent path). Absent = whole-ws ack.
     const memberId = typeof params['memberId'] === 'string' && params['memberId'].length > 0 ? params['memberId'] : undefined;
     if (!channelId) {
@@ -2631,6 +2640,12 @@ async function main(): Promise<void> {
         // must never spend nudges on it.
         deferred: sessionManager.getSession(meta.id)?.deferred === true,
       })),
+    // Contract: this MAY throw (a pane can die between target selection and
+    // the write; writing a destroyed PTY stream throws synchronously). Do
+    // NOT swallow here — the worker catches the throw itself, treats it as
+    // failed delivery, and PRESERVES the nudge budget for a retry (G5:
+    // never spend nudges into a void). Its timer entry points are also
+    // guarded, so a throw can never escape into the event loop.
     write: (sessionId, data) => {
       sessionManager.getSession(sessionId)?.ptyProcess.write(data);
     },

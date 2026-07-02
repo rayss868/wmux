@@ -120,7 +120,7 @@ export class ChannelWakeWorker {
 
   start(): void {
     if (this.interval) return;
-    this.interval = setInterval(() => this.tickOnce(), WAKE_TICK_MS);
+    this.interval = setInterval(() => this.safeTick(), WAKE_TICK_MS);
     this.interval.unref?.();
   }
 
@@ -147,9 +147,24 @@ export class ChannelWakeWorker {
     if (this.kickTimer) return;
     this.kickTimer = setTimeout(() => {
       this.kickTimer = null;
-      this.tickOnce();
+      this.safeTick();
     }, 1_000);
     this.kickTimer.unref?.();
+  }
+
+  /**
+   * Every scheduled entry point goes through here: a sweep runs on a bare
+   * timer, so ANY dep throw (a PTY write racing session death, corrupted
+   * channel state) would otherwise become an uncaught exception and take
+   * the whole daemon down. The worker is an accelerator — it is never
+   * allowed to be the thing that kills the process (CodeRabbit review).
+   */
+  private safeTick(): void {
+    try {
+      this.tickOnce();
+    } catch (err) {
+      this.deps.log('warn', `[wake] sweep failed (skipping this tick): ${String(err)}`);
+    }
   }
 
   /** One sweep over every member workspace. Public for tests + the kick path. */
@@ -205,7 +220,9 @@ export class ChannelWakeWorker {
         if (!target) continue; // ambiguity / no live pane / claude-only → polling fallback
         if (this.deps.now() - target.lastActivityMs < WAKE_QUIET_MS) continue; // busy — retry next tick
 
-        this.inject(target.id, entry);
+        // A failed write must not burn the nudge budget (G5 spirit: never
+        // spend nudges into a void) — retry on a later tick instead.
+        if (!this.inject(target.id, entry)) continue;
 
         if (wantMention) {
           state.mentionNudges += 1;
@@ -218,14 +235,24 @@ export class ChannelWakeWorker {
     }
   }
 
-  /** F2: text first, Enter as a SEPARATE write after a short delay. */
-  private inject(sessionId: string, entry: WakeUnreadEntry): void {
+  /**
+   * F2: text first, Enter as a SEPARATE write after a short delay.
+   * Returns false when the text write throws (the session died between
+   * target selection and the write — a PTY write to a destroyed stream
+   * throws synchronously); the caller then keeps the nudge budget intact.
+   */
+  private inject(sessionId: string, entry: WakeUnreadEntry): boolean {
     const mention = entry.mentionUnread > 0 ? ` (${entry.mentionUnread} mention you)` : '';
     const line = sanitizeLine(
       `[wmux] #${entry.name}: ${entry.unread} unread${mention} — run: wmux channel read ${entry.channelId} --since ${entry.lastReadSeq + 1}`,
     );
     this.deps.log('info', `[wake] nudging ${sessionId} for ${entry.channelId}#${entry.memberId} (${entry.unread} unread)`);
-    this.deps.write(sessionId, line);
+    try {
+      this.deps.write(sessionId, line);
+    } catch (err) {
+      this.deps.log('warn', `[wake] nudge write to ${sessionId} failed (session died mid-race?): ${String(err)}`);
+      return false;
+    }
     const t = setTimeout(() => {
       this.pendingEnter.delete(t);
       try {
@@ -237,6 +264,7 @@ export class ChannelWakeWorker {
     }, this.deps.enterDelayMs ?? ENTER_DELAY_MS);
     t.unref?.();
     this.pendingEnter.add(t);
+    return true;
   }
 }
 

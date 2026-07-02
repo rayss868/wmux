@@ -10,6 +10,7 @@ import {
   MENTION_NUDGE_CAP,
   MENTION_NUDGE_BACKOFF_MS,
   WAKE_QUIET_MS,
+  WAKE_TICK_MS,
   type WakeUnreadEntry,
   type WakeSessionView,
 } from '../channelWakeWorker';
@@ -42,24 +43,32 @@ interface Harness {
   worker: ChannelWakeWorker;
   writes: Array<{ sessionId: string; data: string }>;
   broadcasts: Array<Record<string, unknown>>;
+  logs: string[];
   setEntries(e: WakeUnreadEntry[]): void;
   setSessions(s: WakeSessionView[]): void;
   setNow(ms: number): void;
+  /** Non-null ⇒ the next write() calls throw it (dead-PTY simulation). */
+  setWriteError(err: Error | null): void;
 }
 
 function makeHarness(): Harness {
   let entries: WakeUnreadEntry[] = [];
   let sessions: WakeSessionView[] = [];
   let nowMs = 1_000_000;
+  let writeError: Error | null = null;
   const writes: Array<{ sessionId: string; data: string }> = [];
   const broadcasts: Array<Record<string, unknown>> = [];
+  const logs: string[] = [];
   const worker = new ChannelWakeWorker({
     memberWorkspaces: () => ['ws-b'],
     unreadFor: () => entries,
     listLiveSessions: () => sessions,
-    write: (sessionId, data) => writes.push({ sessionId, data }),
+    write: (sessionId, data) => {
+      if (writeError) throw writeError;
+      writes.push({ sessionId, data });
+    },
     broadcast: (event) => broadcasts.push(event),
-    log: () => {},
+    log: (_level, message) => logs.push(message),
     now: () => nowMs,
     enterDelayMs: 1,
   });
@@ -67,9 +76,11 @@ function makeHarness(): Harness {
     worker,
     writes,
     broadcasts,
+    logs,
     setEntries: (e) => (entries = e),
     setSessions: (s) => (sessions = s),
     setNow: (ms) => (nowMs = ms),
+    setWriteError: (err) => (writeError = err),
   };
 }
 
@@ -173,6 +184,65 @@ describe('ChannelWakeWorker — re-nudge policy', () => {
     h.worker.tickOnce();
     h.worker.tickOnce();
     expect(h.writes.filter((w) => w.data !== '\r')).toHaveLength(2);
+  });
+});
+
+describe('ChannelWakeWorker — crash safety (an accelerator must never kill the daemon)', () => {
+  it('a PTY write that throws is contained and does NOT burn the nudge budget', () => {
+    const h = makeHarness();
+    h.setEntries([entry({ mentionUnread: 1 })]);
+    h.setSessions([session({})]);
+    // The pane dies between target selection and the write: node-pty throws
+    // synchronously on a destroyed stream.
+    h.setWriteError(new Error('write EPIPE'));
+    expect(() => h.worker.tickOnce()).not.toThrow();
+    expect(h.writes).toHaveLength(0);
+    expect(h.logs.some((l) => l.includes('nudge write') && l.includes('failed'))).toBe(true);
+    // Budget preserved (G5: never spend nudges into a void) — the very next
+    // tick retries and the nudge lands.
+    h.setWriteError(null);
+    h.worker.tickOnce();
+    expect(h.writes.filter((w) => w.data !== '\r')).toHaveLength(1);
+  });
+
+  it('a throwing dep inside a scheduled sweep never escapes the timer', () => {
+    const logs: string[] = [];
+    const worker = new ChannelWakeWorker({
+      memberWorkspaces: () => {
+        throw new Error('state corrupted');
+      },
+      unreadFor: () => [],
+      listLiveSessions: () => [],
+      write: () => undefined,
+      broadcast: () => undefined,
+      log: (_level, message) => logs.push(message),
+      now: () => 0,
+    });
+    worker.start();
+    // A bare setInterval callback that throws = uncaught exception = daemon
+    // down. safeTick must swallow + log instead.
+    expect(() => vi.advanceTimersByTime(WAKE_TICK_MS + 1)).not.toThrow();
+    expect(logs.some((l) => l.includes('sweep failed'))).toBe(true);
+    worker.stop();
+  });
+
+  it('the post fast-path kick is guarded the same way', () => {
+    const logs: string[] = [];
+    const worker = new ChannelWakeWorker({
+      memberWorkspaces: () => {
+        throw new Error('state corrupted');
+      },
+      unreadFor: () => [],
+      listLiveSessions: () => [],
+      write: () => undefined,
+      broadcast: () => undefined,
+      log: (_level, message) => logs.push(message),
+      now: () => 0,
+    });
+    worker.notifyChannelActivity();
+    expect(() => vi.advanceTimersByTime(1_500)).not.toThrow();
+    expect(logs.some((l) => l.includes('sweep failed'))).toBe(true);
+    worker.stop();
   });
 });
 

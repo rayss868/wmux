@@ -938,6 +938,13 @@ export class ChannelService {
         memberId: invitee.memberId,
         joinedAt: now,
         historyFromSeq,
+        // v2 cursor — seed like join() (Codex review P1): the invitee may SEE
+        // history but owes unread only from the invite onward. Without this
+        // the row had NO cursor and unreadFor's missing-cursor fallback pinned
+        // it to the LIVE head on every query — messages posted after the
+        // invite looked pre-consumed, the wake worker never fired for invited
+        // members, and the load-time backfill cemented the loss on restart.
+        lastReadSeq: channel.nextSeq - 1,
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
@@ -1197,6 +1204,19 @@ export class ChannelService {
         ...(mentions.length > 0 ? { mentions } : {}),
       };
       (this.state.messages[channel.id] ??= []).push(message);
+      // Channels v2 (Codex review): a poster has, by definition, seen the
+      // channel up to its own message. When the sender's row was fully
+      // caught up before this post, ride the cursor over the new seq —
+      // roster badges stay honest ("behind" never counts your own reply)
+      // and `read --since` doesn't replay your own words. A sender with
+      // OLDER unread keeps its cursor: the backlog is still owed
+      // (unreadFor additionally exempts self-authored messages, so even
+      // that sender is never re-nudged about itself).
+      const senderRow = members.find(
+        (m) => m.workspaceId === params.sender.workspaceId && m.memberId === params.sender.memberId,
+      );
+      const senderRowRode = senderRow !== undefined && senderRow.lastReadSeq === seq - 1;
+      if (senderRow && senderRowRode) senderRow.lastReadSeq = seq;
       // Update idempotency cache.
       if (params.clientMsgId) {
         const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
@@ -1219,10 +1239,12 @@ export class ChannelService {
         );
       }
       if (!this.saveOrFail()) {
-        // Roll back: un-bump nextSeq, pop the message, drop idempotency entry.
+        // Roll back: un-bump nextSeq, pop the message, drop idempotency entry,
+        // and un-ride the sender cursor.
         channel.nextSeq--;
         const msgs = this.state.messages[channel.id];
         if (msgs) msgs.pop();
+        if (senderRow && senderRowRode) senderRow.lastReadSeq = seq - 1;
         if (params.clientMsgId) {
           const channelIdMap = this.idempotency.get(channel.id);
           if (channelIdMap) {
@@ -1478,6 +1500,12 @@ export class ChannelService {
         let mentionUnread = 0;
         for (const m of msgs) {
           if (m.seq <= cursor || m.seq < visibleFloor) continue;
+          // Self-authored messages are never owed (Codex review): a reply
+          // must not turn into the replier's own unread — the wake worker
+          // would nudge the pane about the message it just sent. Keyed on
+          // the full row identity (workspaceId AND memberId) so a same-ws
+          // SIBLING agent still owes it (same-ws A2A stays a conversation).
+          if (m.workspaceId === row.workspaceId && m.memberId === row.memberId) continue;
           unread += 1;
           const mentioned = (m.mentions ?? []).some(
             (men) =>

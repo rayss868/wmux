@@ -22,7 +22,7 @@
 // Outside a wmux pane both fail → mutations fail closed (NOT_AUTHORIZED).
 
 import { sendRequest, sendDaemonRequest } from '../client';
-import { parseFlag, hasFlag } from '../utils';
+import { parseFlag } from '../utils';
 import { resolveSelfContext, getParentPidDefault } from '../identity';
 import type { RpcMethod, RpcResponse } from '../../shared/rpc';
 import { ENV_KEYS } from '../../shared/constants';
@@ -48,8 +48,11 @@ wmux channel — durable agent messaging (Channels v2)
   wmux channel list
       Channels visible to your workspace.
 
-  --member defaults to $WMUX_MEMBER_ID, then "agent". Use a stable, short
-  id (e.g. "codex") so humans can tell agents apart in the roster.
+  --member is your member id in the channel. Defaults to $WMUX_MEMBER_ID;
+  post/ack without it resolve your workspace's SINGLE member row in that
+  channel (two+ rows → pass --member; never guessed). join defaults to
+  "agent" — pick a stable, short id (e.g. "codex") so humans can tell
+  agents apart in the roster.
   --json on any subcommand prints the raw RPC payload.
 
   Typical loop when nudged: unread → read → do the work → post → ack.
@@ -77,6 +80,19 @@ async function resolveSenderPtyId(): Promise<string> {
   return typeof envPty === 'string' && envPty.trim().length > 0 ? envPty.trim() : '';
 }
 
+function exitNoPaneIdentity(): never {
+  console.error(
+    'Error: not inside a wmux pane (no resolvable pane identity — PID walk missed and WMUX_PTY_ID is unset).\n' +
+      'Channel mutations are fail-closed without one. Run this from a shell inside a wmux pane.',
+  );
+  process.exit(1);
+}
+
+/** Mutations fail closed BEFORE any RPC (including helper lookups). */
+async function requirePaneIdentityOrExit(): Promise<void> {
+  if (!(await resolveSenderPtyId())) exitNoPaneIdentity();
+}
+
 /**
  * Issue one channel RPC on the daemon pipe with senderPtyId attached, and
  * unwrap the two-layer envelope (pipe RpcResponse → ChannelService Result).
@@ -88,13 +104,7 @@ async function callChannel(
   opts: ChannelCallOpts,
 ): Promise<Record<string, unknown>> {
   const senderPtyId = await resolveSenderPtyId();
-  if (!senderPtyId && opts.mutating) {
-    console.error(
-      'Error: not inside a wmux pane (no resolvable pane identity — PID walk missed and WMUX_PTY_ID is unset).\n' +
-        'Channel mutations are fail-closed without one. Run this from a shell inside a wmux pane.',
-    );
-    process.exit(1);
-  }
+  if (!senderPtyId && opts.mutating) exitNoPaneIdentity();
   let response: RpcResponse;
   try {
     response = await sendDaemonRequest(method, {
@@ -137,6 +147,31 @@ async function resolveChannelId(ref: string): Promise<string> {
 
 function memberIdFrom(args: string[]): string {
   return parseFlag(args, '--member') ?? process.env['WMUX_MEMBER_ID'] ?? 'agent';
+}
+
+/**
+ * Which member row is THIS caller in <channelId>? Explicit `--member` (or
+ * $WMUX_MEMBER_ID) wins; otherwise resolve from the caller's own unread
+ * entries — server-filtered to the verified workspace, so the rows ARE the
+ * identities this caller can legitimately act as. Wake-worker discipline:
+ * never guess. A made-up default ("agent") used to no-op the ack against the
+ * REAL row (codex/opencode/…) while printing success, leaving the wake
+ * worker re-nudging forever (Codex review). Two+ rows without an explicit
+ * choice is an error; zero rows returns undefined (let the daemon speak).
+ */
+async function resolveOwnMemberId(channelId: string, args: string[]): Promise<string | undefined> {
+  const explicit = parseFlag(args, '--member') ?? process.env['WMUX_MEMBER_ID'];
+  if (explicit !== undefined && explicit.length > 0) return explicit;
+  const result = await callChannel('a2a.channel.unread' as RpcMethod, {}, { mutating: false });
+  const entries = (result['entries'] as Array<{ channelId: string; memberId: string }> | undefined) ?? [];
+  const ids = Array.from(new Set(entries.filter((e) => e.channelId === channelId).map((e) => e.memberId)));
+  if (ids.length > 1) {
+    console.error(
+      `Error: your workspace has ${ids.length} member identities in this channel (${ids.join(', ')}) — pass --member <id> so the right cursor moves.`,
+    );
+    process.exit(1);
+  }
+  return ids[0];
 }
 
 /**
@@ -238,8 +273,13 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         console.error('Usage: wmux channel post <channel> <text…> [--member <id>] [--name <display>]');
         process.exit(1);
       }
+      await requirePaneIdentityOrExit();
       const channelId = await resolveChannelId(ref);
-      const memberId = memberIdFrom(args);
+      // Post AS the row you actually occupy: an invented default would
+      // misattribute the message in the roster AND defeat the self-unread
+      // exemption (your own post would nudge you). Zero rows falls back to
+      // the legacy default and lets the daemon's NOT_A_MEMBER speak.
+      const memberId = (await resolveOwnMemberId(channelId, args)) ?? memberIdFrom(args);
       const memberName = parseFlag(args, '--name') ?? memberId;
       const result = await callChannel(
         'a2a.channel.post' as RpcMethod,
@@ -271,6 +311,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         console.error("Usage: wmux channel ack <channel> <uptoSeq|all> [--member <id>]");
         process.exit(1);
       }
+      await requirePaneIdentityOrExit();
       const channelId = await resolveChannelId(ref);
       // 'all' = everything currently in the channel; the daemon clamps to head.
       const uptoSeq = uptoRaw === 'all' ? Number.MAX_SAFE_INTEGER : Number(uptoRaw);
@@ -278,17 +319,20 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         console.error(`Error: uptoSeq must be a non-negative number or 'all' (got "${uptoRaw}").`);
         process.exit(1);
       }
-      const memberId = memberIdFrom(args);
+      // Which cursor moves? Resolve MY row — never a made-up default (see
+      // resolveOwnMemberId). undefined (not a member) sends no memberId so
+      // the daemon answers honestly instead of no-opping a phantom row.
+      const memberId = await resolveOwnMemberId(channelId, args);
       const result = await callChannel(
         'a2a.channel.ack' as RpcMethod,
-        { channelId, uptoSeq, memberId },
+        { channelId, uptoSeq, ...(memberId !== undefined ? { memberId } : {}) },
         { mutating: true },
       );
       if (jsonMode) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
-      console.log(`Acked ${channelId} up to seq ${result['lastReadSeq'] ?? uptoSeq} as ${memberId}.`);
+      console.log(`Acked ${channelId} up to seq ${result['lastReadSeq'] ?? uptoSeq} as ${memberId ?? 'this workspace'}.`);
       return;
     }
 

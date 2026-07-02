@@ -35,7 +35,6 @@ const selfContext = resolveSelfContext as unknown as ReturnType<typeof vi.fn>;
 const ORIGINAL_ENV_PTY = process.env.WMUX_PTY_ID;
 const ORIGINAL_ENV_MEMBER = process.env.WMUX_MEMBER_ID;
 
-let exitSpy: ReturnType<typeof vi.spyOn>;
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errSpy: ReturnType<typeof vi.spyOn>;
 
@@ -54,11 +53,11 @@ beforeEach(() => {
   delete process.env.WMUX_PTY_ID;
   delete process.env.WMUX_MEMBER_ID;
   selfContext.mockResolvedValue({ ptyId: 'pty-self', workspaceId: 'ws-self' });
-  exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+  vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
     throw new ExitCalled(code);
   }) as never);
-  logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-  errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 const okEnvelope = (result: unknown) => ({ id: 'x', ok: true as const, result });
@@ -113,6 +112,44 @@ describe('wmux channel — transport + identity', () => {
     });
   });
 
+  it('ack without --member resolves the caller\'s SINGLE row from unread (no "agent" guess)', async () => {
+    const row = { channelId: 'ch-1', name: 'g', memberId: 'codex', lastReadSeq: 2, headSeq: 9, unread: 7, mentionUnread: 0, trimmedBeforeCursor: 0 };
+    daemonRpc
+      .mockResolvedValueOnce(okEnvelope({ ok: true, entries: [row] }))
+      .mockResolvedValueOnce(okEnvelope({ ok: true, acked: 1, lastReadSeq: 9 }));
+    await handleChannel('ack', ['ch-1', 'all'], false);
+    expect(daemonRpc).toHaveBeenNthCalledWith(1, 'a2a.channel.unread', { senderPtyId: 'pty-self' });
+    expect(daemonRpc).toHaveBeenNthCalledWith(2, 'a2a.channel.ack', {
+      channelId: 'ch-1',
+      uptoSeq: Number.MAX_SAFE_INTEGER,
+      memberId: 'codex',
+      senderPtyId: 'pty-self',
+    });
+  });
+
+  it('ack without --member on a MULTI-row workspace fails loudly (never guesses a cursor)', async () => {
+    const mk = (memberId: string) => ({ channelId: 'ch-1', name: 'g', memberId, lastReadSeq: 0, headSeq: 3, unread: 3, mentionUnread: 0, trimmedBeforeCursor: 0 });
+    daemonRpc.mockResolvedValueOnce(okEnvelope({ ok: true, entries: [mk('codex'), mk('opencode')] }));
+    await expect(handleChannel('ack', ['ch-1', 'all'], false)).rejects.toThrow(ExitCalled);
+    // Only the unread lookup ran — the ack RPC never fired.
+    expect(daemonRpc).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toContain('--member');
+  });
+
+  it('post without --member posts AS the resolved row (self-unread exemption depends on it)', async () => {
+    const row = { channelId: 'ch-1', name: 'g', memberId: 'codex', lastReadSeq: 2, headSeq: 2, unread: 0, mentionUnread: 0, trimmedBeforeCursor: 0 };
+    daemonRpc
+      .mockResolvedValueOnce(okEnvelope({ ok: true, entries: [row] }))
+      .mockResolvedValueOnce(okEnvelope({ ok: true, message: { seq: 3 } }));
+    await handleChannel('post', ['ch-1', 'hi'], false);
+    expect(daemonRpc).toHaveBeenNthCalledWith(2, 'a2a.channel.post', {
+      channelId: 'ch-1',
+      text: 'hi',
+      sender: { memberId: 'codex', memberName: 'codex' },
+      senderPtyId: 'pty-self',
+    });
+  });
+
   it('read resolves a channel NAME to its id via a2a.channel.list', async () => {
     daemonRpc
       .mockResolvedValueOnce(okEnvelope({ ok: true, channels: [{ id: 'ch-9', name: 'general', visibility: 'public' }] }))
@@ -151,7 +188,8 @@ describe('wmux channel — failure surfaces', () => {
     daemonRpc.mockResolvedValue(
       okEnvelope({ ok: false, error: { code: 'NOT_A_MEMBER', message: 'Not a channel member' } }),
     );
-    await expect(handleChannel('post', ['ch-1', 'hi'], false)).rejects.toThrow(ExitCalled);
+    // Explicit --member skips row resolution, so the post RPC itself errors.
+    await expect(handleChannel('post', ['ch-1', 'hi', '--member', 'codex'], false)).rejects.toThrow(ExitCalled);
     expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toContain('NOT_A_MEMBER');
   });
 

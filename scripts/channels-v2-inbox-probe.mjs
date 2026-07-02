@@ -118,11 +118,17 @@ function rpc(socket, method, params, authToken, timeoutMs = 30_000) {
   });
 }
 
-/** Attach to a session's dedicated pipe and stream its PTY output. */
-function tapSessionStream(sessionId, authToken) {
+/**
+ * Attach to a session's dedicated pipe and stream its PTY output.
+ * On POSIX the daemon derives the socket path from ITS home — which the
+ * probe overrides to the isolated testHome — so the tap must resolve
+ * against testHome too, not the probe's own os.homedir() (CodeRabbit
+ * review; Windows named pipes live in a global namespace and don't care).
+ */
+function tapSessionStream(sessionId, authToken, homeDir) {
   const pipeName = process.platform === 'win32'
     ? `\\\\.\\pipe\\wmux-session-${sessionId}`
-    : path.join(os.homedir(), `.wmux-session-${sessionId}.sock`);
+    : path.join(homeDir, `.wmux-session-${sessionId}.sock`);
   const chunks = [];
   return new Promise((resolve, reject) => {
     const s = net.createConnection(pipeName, () => {
@@ -139,6 +145,19 @@ function tapSessionStream(sessionId, authToken) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Live handles for crash-path cleanup: a thrown RPC timeout or respawn
+// failure must not leak a RUNNING daemon or open pipes (CodeRabbit review).
+// The happy path tears these down in-line; the main().catch handler sweeps
+// whatever is still live. The temp home is deliberately KEPT on crash —
+// it holds the daemon's channels.json/sessions state, i.e. the postmortem.
+const live = { daemon: null, sock: null, tapB: null, home: null };
+function cleanupLive() {
+  try { live.tapB?.close(); } catch { /* ignore */ }
+  try { live.sock?.destroy(); } catch { /* ignore */ }
+  try { live.daemon?.kill('SIGKILL'); } catch { /* ignore */ }
+  live.tapB = live.sock = live.daemon = null;
+}
+
 async function main() {
   if (!fs.existsSync(DAEMON_BUNDLE)) {
     console.error(`Daemon bundle missing: ${DAEMON_BUNDLE}\nRun: npm run build:daemon`);
@@ -149,6 +168,7 @@ async function main() {
   const testHome = path.join(os.tmpdir(), `wmux-${tag}`);
   const wmuxDir = path.join(testHome, '.wmux');
   fs.mkdirSync(wmuxDir, { recursive: true });
+  live.home = testHome;
   const pipeName = makePipeName(tag);
   const authToken = randomUUID();
   writeConfig(wmuxDir, pipeName, authToken);
@@ -171,9 +191,9 @@ async function main() {
 
   console.log(`channels-v2-inbox-probe — home=${testHome}`);
   const d1Log = [];
-  let daemon = spawnDaemon(testHome, d1Log);
+  let daemon = (live.daemon = spawnDaemon(testHome, d1Log));
   let resolved = await waitForPipeFile(wmuxDir);
-  let sock = await connectSocket(resolved);
+  let sock = (live.sock = await connectSocket(resolved));
 
   // Two live "agent panes": A (sender) and B (the nudge target). Interactive
   // shells — they idle at a prompt, which is exactly the wake worker's
@@ -187,7 +207,7 @@ async function main() {
 
   // P5 needs the session pipe live — attach B and tap its stream.
   await rpc(sock, 'daemon.attachSession', { id: SESS_B }, authToken);
-  const tapB = await tapSessionStream(SESS_B, authToken);
+  const tapB = (live.tapB = await tapSessionStream(SESS_B, authToken, testHome));
 
   // --- P1: stamped create (senderPtyId only) ---
   const created = await rpc(sock, 'a2a.channel.create', {
@@ -235,6 +255,14 @@ async function main() {
     posted?.ok === true && entryB?.unread === 1 && entryB?.mentionUnread === 1,
     `entry=${JSON.stringify(entryB ?? null)}`);
 
+  // --- P4b: the POSTER owes nothing about its own message (self-exemption +
+  // caught-up cursor ride — Codex review) ---
+  const unreadA = await rpc(sock, 'a2a.channel.unread', { senderPtyId: SESS_A }, authToken);
+  const entryA = (unreadA?.entries ?? []).find((e) => e.channelId === channelId);
+  check('P4b poster owes nothing about its own post (cursor rode over it)',
+    entryA != null && entryA.unread === 0 && entryA.lastReadSeq === 1,
+    `entry=${JSON.stringify(entryA ?? null)}`);
+
   // --- P5: wake worker injects the nudge into B's PTY ---
   // Quiet gate = 10s of output silence; tick = 15s (post fast-path kicks a
   // sweep 1s after the post but the fresh prompt keeps the pane "active"
@@ -280,15 +308,15 @@ async function main() {
   // connect while the new listener comes up.
   try { fs.unlinkSync(path.join(wmuxDir, 'daemon-pipe')); } catch { /* ignore */ }
   const d2Log = [];
-  daemon = spawnDaemon(testHome, d2Log);
+  daemon = live.daemon = spawnDaemon(testHome, d2Log);
   resolved = await waitForPipeFile(wmuxDir);
-  sock = null;
+  sock = live.sock = null;
   {
     const deadline = Date.now() + 10_000;
     let lastErr = null;
     while (Date.now() < deadline && !sock) {
       try {
-        sock = await connectSocket(resolved);
+        sock = live.sock = await connectSocket(resolved);
       } catch (err) {
         lastErr = err;
         await sleep(300);
@@ -310,9 +338,8 @@ async function main() {
     persistedCursor === (entryB?.headSeq ?? 1) && entryB3?.unread === 0,
     `disk=${persistedCursor} respawned=${JSON.stringify(entryB3 ?? unread3)}`);
 
-  // Teardown.
-  try { sock.destroy(); } catch { /* ignore */ }
-  try { daemon.kill('SIGKILL'); } catch { /* ignore */ }
+  // Teardown (happy path also removes the temp home).
+  cleanupLive();
   await sleep(300);
   try { fs.rmSync(testHome, { recursive: true, force: true }); } catch { /* ignore */ }
 
@@ -323,5 +350,7 @@ async function main() {
 
 main().catch((err) => {
   console.error('probe crashed:', err);
+  cleanupLive();
+  if (live.home) console.error(`temp home kept for postmortem: ${live.home}`);
   process.exit(1);
 });
