@@ -24,6 +24,11 @@ export {
 
 export { ChannelStateWriter } from './ChannelStateWriter';
 export {
+  stampChannelCaller,
+  type CallerFieldSpec,
+  type ResolveSessionWorkspace,
+} from './channelCallerIdentity';
+export {
   wrapChannelMessageEnvelope,
   wrapChannelCatalogEnvelope,
   type ChannelMessageDaemonEvent,

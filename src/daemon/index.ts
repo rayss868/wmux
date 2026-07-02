@@ -12,7 +12,7 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope } from './channels';
+import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec } from './channels';
 import { DEFAULT_COMPANY_ID } from '../shared/channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
@@ -26,7 +26,7 @@ import { initDaemonLogSink } from './util/logSink';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
-import { DAEMON_EXIT_ALREADY_RUNNING } from '../shared/constants';
+import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
@@ -1530,7 +1530,29 @@ function registerRpcHandlers(
   // covers the daemon transport, and finer-grained plugin permission will
   // land in the follow-up PR that introduces the permission enforcer for
   // method dispatch (mcp-plugin-spec).
-  pipeServer.onRpc('a2a.channel.list', async (params) => {
+  //
+  // Channels v2 Step 0 — daemon-side caller stamping. Every handler below
+  // (EXCEPT archive/kick, which stay humans-only: their honest reachable
+  // surface remains the renderer-local mutate path) first runs
+  // `stampChannelCaller`: a pre-stamped `verifiedWorkspaceId` is trusted
+  // verbatim (main D5 / renderer paths, unchanged), and a headless caller
+  // that supplies only `senderPtyId` gets a SERVER-side stamp resolved from
+  // the daemon's own session record (env WMUX_WORKSPACE_ID, persisted at
+  // spawn by main). See channelCallerIdentity.ts for the acceptance rules.
+  const resolveSessionWorkspace = (sessionId: string): string => {
+    const env = sessionManager.getSession(sessionId)?.meta.env;
+    const ws = env?.[ENV_KEYS.WORKSPACE_ID];
+    return typeof ws === 'string' && ws.trim().length > 0 ? ws.trim() : '';
+  };
+  const stampCaller = (
+    rawParams: Record<string, unknown>,
+    callerField: CallerFieldSpec,
+  ): ReturnType<typeof stampChannelCaller> => stampChannelCaller(resolveSessionWorkspace, rawParams, callerField);
+
+  pipeServer.onRpc('a2a.channel.list', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
     if (!verifiedWorkspaceId) {
@@ -1545,7 +1567,10 @@ function registerRpcHandlers(
     return { ok: true, channels: channelService.list(verifiedWorkspaceId) };
   });
 
-  pipeServer.onRpc('a2a.channel.get', async (params) => {
+  pipeServer.onRpc('a2a.channel.get', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
@@ -1568,7 +1593,10 @@ function registerRpcHandlers(
     return { ok: true, channel };
   });
 
-  pipeServer.onRpc('a2a.channel.getMessages', async (params) => {
+  pipeServer.onRpc('a2a.channel.getMessages', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
@@ -1597,7 +1625,10 @@ function registerRpcHandlers(
     return { ok: true, messages: channelService.getMessages(channelId, sinceSeq, verifiedWorkspaceId, limit) };
   });
 
-  pipeServer.onRpc('a2a.channel.getMembers', async (params) => {
+  pipeServer.onRpc('a2a.channel.getMembers', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
@@ -1616,7 +1647,10 @@ function registerRpcHandlers(
     return { ok: true, members: channelService.getMembers(channelId, verifiedWorkspaceId) };
   });
 
-  pipeServer.onRpc('a2a.channel.ack', async (params) => {
+  pipeServer.onRpc('a2a.channel.ack', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
@@ -1632,8 +1666,10 @@ function registerRpcHandlers(
     return channelService.ack({ channelId, verifiedWorkspaceId, uptoSeq });
   });
 
-  pipeServer.onRpc('a2a.channel.create', async (params) => {
-    const p = params as unknown as import('./channels/ChannelService').CreateChannelParams;
+  pipeServer.onRpc('a2a.channel.create', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'ref', key: 'createdBy' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params as unknown as import('./channels/ChannelService').CreateChannelParams;
     if (!p.name || !p.visibility || !p.createdBy) {
       return { ok: false, error: { code: 'INVALID_NAME', message: 'name, visibility, and createdBy are required' } };
     }
@@ -1652,6 +1688,10 @@ function registerRpcHandlers(
     return channelService.create(p);
   });
 
+  // NOTE (Channels v2 Step 0): archive is deliberately NOT run through
+  // `stampCaller` — archive/kick are HUMANS-ONLY (renderer-local mutate path,
+  // which pre-stamps verifiedWorkspaceId). Stamping here would hand every
+  // pane agent an honest daemon-pipe route to a destructive humans-only op.
   pipeServer.onRpc('a2a.channel.archive', async (params) => {
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const archivedBy = typeof params['archivedBy'] === 'string' ? params['archivedBy'] : '';
@@ -1669,8 +1709,10 @@ function registerRpcHandlers(
     return channelService.archive({ channelId, archivedBy, verifiedWorkspaceId });
   });
 
-  pipeServer.onRpc('a2a.channel.join', async (params) => {
-    const p = params as unknown as import('./channels/ChannelService').JoinChannelParams;
+  pipeServer.onRpc('a2a.channel.join', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'ref', key: 'member' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params as unknown as import('./channels/ChannelService').JoinChannelParams;
     if (!p.channelId || !p.member || !p.verifiedWorkspaceId) {
       return {
         ok: false,
@@ -1680,8 +1722,10 @@ function registerRpcHandlers(
     return channelService.join(p);
   });
 
-  pipeServer.onRpc('a2a.channel.leave', async (params) => {
-    const p = params as unknown as import('./channels/ChannelService').LeaveChannelParams;
+  pipeServer.onRpc('a2a.channel.leave', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'flat', key: 'workspaceId' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params as unknown as import('./channels/ChannelService').LeaveChannelParams;
     if (!p.channelId || !p.workspaceId || !p.memberId || !p.verifiedWorkspaceId) {
       return {
         ok: false,
@@ -1691,8 +1735,10 @@ function registerRpcHandlers(
     return channelService.leave(p);
   });
 
-  pipeServer.onRpc('a2a.channel.post', async (params) => {
-    const p = params as unknown as import('./channels/ChannelService').PostMessageParams;
+  pipeServer.onRpc('a2a.channel.post', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'ref', key: 'sender' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params as unknown as import('./channels/ChannelService').PostMessageParams;
     if (!p.channelId || !p.sender || typeof p.text !== 'string' || !p.verifiedWorkspaceId) {
       return {
         ok: false,
@@ -1705,8 +1751,12 @@ function registerRpcHandlers(
     return channelService.post(p);
   });
 
-  pipeServer.onRpc('a2a.channel.invite', async (params) => {
-    const p = params as unknown as import('./channels/ChannelService').InviteChannelParams;
+  pipeServer.onRpc('a2a.channel.invite', async (rawParams) => {
+    // NOTE: `invitedMember` is a TARGET identity, never backfilled — only the
+    // INVITER's verifiedWorkspaceId is stamped here.
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params as unknown as import('./channels/ChannelService').InviteChannelParams;
     if (
       !p.channelId ||
       !p.invitedMember ||
@@ -1731,6 +1781,7 @@ function registerRpcHandlers(
   // 'a2a.channel.kick', so no MCP/agent client can reach it — only the renderer-only
   // channels:mutate-local IPC forwards it. See KickChannelParams for the rationale.
   pipeServer.onRpc('a2a.channel.kick', async (params) => {
+    // Deliberately NOT stamped (humans-only, same rationale as archive above).
     const p = params as unknown as import('./channels/ChannelService').KickChannelParams;
     if (!p.channelId || !p.targetWorkspaceId || !p.targetMemberId || !p.verifiedWorkspaceId) {
       return {
