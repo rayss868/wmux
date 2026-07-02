@@ -274,11 +274,13 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // the agent's context window — reading a busy channel is a token cost.
   server.tool(
     'channel_read',
-    'Read recent messages from a channel you can see (public, or private if you are a member). ' +
-      'Returns the most recent `limit` messages (default 50, newest last); use `since_seq` to page ' +
-      'forward from a known seq. Reading consumes your context window, so prefer a small `limit` and ' +
-      'read deliberately. A private channel you are not a member of returns an empty list; a missing ' +
-      'channel returns an error.',
+    'Read messages from a channel you can see (public, or private if you are a member). ' +
+      'With `since_seq` (pass your cursor + 1 from channel_unread) it returns the OLDEST `limit` ' +
+      'messages from that point — contiguous pages, so ack the highest seq you read and repeat ' +
+      'until fewer than `limit` return to drain safely. Without `since_seq` it returns the most ' +
+      'recent `limit` messages (display). Reading consumes your context window, so prefer a small ' +
+      '`limit`. A private channel you are not a member of returns an empty list; a missing channel ' +
+      'returns an error.',
     {
       channel_id: z.string().describe('Target channel id.'),
       since_seq: z
@@ -376,18 +378,18 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // will be re-pinged about the same messages.
   server.tool(
     'channel_ack',
-    'Acknowledge channel messages up to a seq (inclusive) as consumed. Call this after channel_read with the highest seq you processed — it advances your durable read cursor, clears your unread count, and stops re-nudges for those messages. Advance-only (acking an older seq never rewinds) and clamped to the channel head.',
+    'Acknowledge channel messages up to a seq (inclusive) as consumed. Call this after channel_read with the highest seq you actually processed (read oldest-first via since_seq and repeat until drained — do not ack past messages you have not seen). Advances your durable read cursor, clears your unread count, and stops re-nudges. Advance-only (acking an older seq never rewinds) and clamped to the channel head. Requires member_id to move a cursor; an unknown member_id is an error, and omitting it records read receipts only.',
     {
       channel_id: z.string().describe('Target channel id.'),
       upto_seq: z
         .number()
         .int()
         .min(0)
-        .describe('Highest message seq you have consumed (inclusive) — typically the last seq returned by channel_read.'),
+        .describe('Highest message seq you have consumed (inclusive) — the last seq returned by the channel_read page you just processed.'),
       member_id: z
         .string()
         .optional()
-        .describe('Narrow the ack to one of your member rows (e.g. "backend"). Omit to ack every row your workspace holds in this channel.'),
+        .describe('YOUR member row in this channel (e.g. "codex") — required to advance your cursor; an id with no row errors instead of silently no-opping. Omit = read receipts only, no cursor moves (a human-glance semantic, not consumption).'),
     },
     async ({ channel_id, upto_seq, member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();

@@ -79,8 +79,10 @@ export interface ChannelCatalogEvent {
    *  workspace removed by this change (so a kicked/left member also drops the
    *  channel from its mirror). */
   recipientWorkspaceIds: string[];
-  /** What changed — advisory only; the receiver re-hydrates regardless. */
-  reason: 'created' | 'archived' | 'membership';
+  /** What changed — advisory only; the receiver re-hydrates regardless.
+   *  'cursor' = a member's read cursor advanced (agent ack): roster "N
+   *  behind" badges hydrate from the same catalog fetch (Codex re-review). */
+  reason: 'created' | 'archived' | 'membership' | 'cursor';
 }
 
 /** Shape of the `emit` callback injected by the daemon. Carries either a posted
@@ -450,10 +452,23 @@ export class ChannelService {
       floor = Math.max(floor, viewer.historyFromSeq);
     }
     const filtered = all.filter((m) => m.seq >= floor);
-    // Tail-slice to the most recent `limit` when a cap is requested.
-    // `Math.max(0, …)` keeps limit=0 → [] and limit>length → full list
-    // correct (a bare `.slice(-0)` would return the whole array).
     if (limit !== undefined && limit >= 0) {
+      // Two paging modes (Codex re-review P1):
+      //  - sinceSeq given → the caller is CONSUMING forward from a cursor:
+      //    return the OLDEST `limit` rows at/after it. Tail-slicing here made
+      //    the unread→read→ack loop lossy past `limit` unread — the page
+      //    showed the newest rows, acking its head seq then jumped the cursor
+      //    over everything between the cursor and the page (silent loss).
+      //    Oldest-first pages are contiguous, so "ack the highest seq you
+      //    read, repeat until drained" is always safe.
+      //  - no sinceSeq → display semantics: the most recent `limit` rows.
+      // The renderer never passes `limit` (it floors sinceSeq instead —
+      // loadChannelHistory), so the split touches only the CLI/MCP consume
+      // path. `Math.max(0, …)` keeps limit=0 → [] and limit>length → full
+      // list correct (a bare `.slice(-0)` would return the whole array).
+      if (sinceSeq !== undefined) {
+        return filtered.slice(0, limit);
+      }
       return filtered.slice(Math.max(0, filtered.length - limit));
     }
     return filtered;
@@ -1345,9 +1360,10 @@ export class ChannelService {
     uptoSeq: number;
     /**
      * Channels v2: narrow the cursor advance to ONE member row (agent
-     * CLI/MCP path). Absent = advance every row of the verified workspace
-     * (renderer "human read the channel" semantics). recipientSnapshot
-     * flips stay workspace-scoped either way (legacy delivery bookkeeping).
+     * CLI/MCP path). Absent = READ RECEIPT ONLY — recipientSnapshot flips
+     * for the workspace (legacy delivery bookkeeping, the renderer's
+     * open-channel ack) but NO cursor moves: a human glancing at a channel
+     * must never mark an agent's inbox consumed (Codex re-review P1).
      */
     memberId?: string;
   }): Promise<Result<{ acked: number; lastReadSeq?: number }>> {
@@ -1395,17 +1411,38 @@ export class ChannelService {
       // Channels v2 — advance the durable per-member read cursor alongside the
       // legacy recipientSnapshot flips. Advance-only, clamped to the channel
       // head: an ack can never mark the future read nor move backwards.
-      // `memberId` narrows the ack to one member row (the agent CLI/MCP path
-      // supplies it); absent = every row of the verified workspace (the
-      // renderer's "human read the channel" semantics, unchanged).
+      //
+      // Cursor advance is MEMBER-SCOPED ONLY (Codex re-review P1): the
+      // renderer's open-channel ack carries no memberId — it is a human READ
+      // RECEIPT (deliveryStatus), never an agent's consumption claim.
+      // Advancing every workspace row on it let a human's glance clear an
+      // agent's cursor: unread hit zero, the wake worker went silent, and the
+      // agent's work was silently dropped. No memberId ⇒ receipts only.
       const cursorTarget = Math.min(params.uptoSeq, channel.nextSeq - 1);
       const cursorFlips: Array<{ row: ChannelMember; prev: number | undefined }> = [];
-      for (const row of this.state.members[params.channelId] ?? []) {
-        if (row.workspaceId !== params.verifiedWorkspaceId) continue;
-        if (params.memberId !== undefined && row.memberId !== params.memberId) continue;
-        const current = typeof row.lastReadSeq === 'number' ? row.lastReadSeq : -1;
-        if (cursorTarget > current) {
-          cursorFlips.push({ row, prev: row.lastReadSeq });
+      if (params.memberId !== undefined) {
+        const wsRows = (this.state.members[params.channelId] ?? []).filter(
+          (m) => m.workspaceId === params.verifiedWorkspaceId,
+        );
+        // A narrowed ack that matches NO row is a caller bug (stale
+        // $WMUX_MEMBER_ID, typo) — fail loudly instead of returning a
+        // success that consumed nothing while the wake worker keeps
+        // re-nudging (Codex re-review).
+        if (!wsRows.some((m) => m.memberId === params.memberId)) {
+          return {
+            ok: false,
+            error: {
+              code: 'NOT_A_MEMBER',
+              message: `No member row "${params.memberId}" for this workspace in the channel`,
+            },
+          };
+        }
+        for (const row of wsRows) {
+          if (row.memberId !== params.memberId) continue;
+          const current = typeof row.lastReadSeq === 'number' ? row.lastReadSeq : -1;
+          if (cursorTarget > current) {
+            cursorFlips.push({ row, prev: row.lastReadSeq });
+          }
         }
       }
       const now = this.now();
@@ -1432,7 +1469,27 @@ export class ChannelService {
         }
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
       }
-      return { ok: true, acked: flips.length, lastReadSeq: cursorTarget };
+      // A cursor advance changes the roster's "N behind" badges, which
+      // hydrate from the catalog — without a signal an agent's ack leaves
+      // every open roster stale until some unrelated membership event lands
+      // (Codex re-review). Reason 'cursor' is advisory; receivers re-hydrate
+      // regardless. Receipt-only acks (no cursor movement) stay silent — the
+      // renderer fires one on every channel open.
+      if (cursorFlips.length > 0) {
+        this.emitCatalog(
+          params.channelId,
+          params.verifiedWorkspaceId,
+          (this.state.members[params.channelId] ?? []).map((m) => m.workspaceId),
+          'cursor',
+        );
+      }
+      // `lastReadSeq` echoes the advanced cursor — only meaningful for a
+      // member-scoped ack (a receipt-only ack moves no cursor).
+      return {
+        ok: true,
+        acked: flips.length,
+        ...(params.memberId !== undefined ? { lastReadSeq: cursorTarget } : {}),
+      };
     });
   }
 

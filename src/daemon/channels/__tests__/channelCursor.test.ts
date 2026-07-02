@@ -33,12 +33,13 @@ function makeWriter(initial?: ChannelState) {
 }
 
 function makeService(writer = makeWriter()) {
+  const emit = vi.fn();
   const svc = new ChannelService({
     writer: writer as never,
     companyId: 'co-test',
-    emit: vi.fn(),
+    emit,
   });
-  return { svc, writer };
+  return { svc, writer, emit };
 }
 
 const A = 'ws-a';
@@ -138,7 +139,7 @@ describe('lastReadSeq cursor', () => {
     expect(svc.unreadFor(B)[0].lastReadSeq).toBe(2);
   });
 
-  it('memberId narrows the cursor advance; omitting it advances every row of the workspace', async () => {
+  it('memberId narrows the cursor advance; omitting it is a READ RECEIPT — no cursor moves', async () => {
     const { svc } = makeService();
     const channelId = await seedChannel(svc);
     // Second agent row for the same workspace B.
@@ -154,9 +155,50 @@ describe('lastReadSeq cursor', () => {
     expect(byMember['codex'].unread).toBe(0);
     expect(byMember['reviewer'].unread).toBe(1);
 
-    // Workspace-wide ack (renderer semantics) catches the sibling up.
+    // Workspace-wide ack = the renderer's open-channel receipt (a HUMAN
+    // glanced at the channel). It must NOT consume the sibling agent's
+    // inbox — before this rule a human read silently cleared agent cursors
+    // and the wake worker went quiet on unprocessed work (Codex re-review P1).
+    const receipt = await svc.ack({ channelId, verifiedWorkspaceId: B, uptoSeq: 1 });
+    expect(receipt.ok).toBe(true);
+    if (receipt.ok) expect(receipt.lastReadSeq).toBeUndefined();
+    expect(svc.unreadFor(B).find((e) => e.memberId === 'reviewer')?.unread).toBe(1);
+  });
+
+  it('a narrowed ack naming a nonexistent member row fails loudly (NOT_A_MEMBER)', async () => {
+    const { svc } = makeService();
+    const channelId = await seedChannel(svc);
+    await post(svc, channelId, A, 'pm', 'm1');
+    // Stale $WMUX_MEMBER_ID / typo: before the fix this returned ok with
+    // nothing consumed — the CLI printed success while the wake worker kept
+    // re-nudging the REAL row forever (Codex re-review).
+    const r = await svc.ack({ channelId, verifiedWorkspaceId: B, uptoSeq: 1, memberId: 'agent' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe('NOT_A_MEMBER');
+    expect(svc.unreadFor(B)[0].unread).toBe(1);
+  });
+
+  it('a cursor advance emits a channel.catalog(reason=cursor); a receipt-only ack stays silent', async () => {
+    const { svc, emit } = makeService();
+    const channelId = await seedChannel(svc);
+    await post(svc, channelId, A, 'pm', 'm1');
+    emit.mockClear();
+
+    // Receipt-only (renderer open) → no catalog chatter.
     await svc.ack({ channelId, verifiedWorkspaceId: B, uptoSeq: 1 });
-    expect(svc.unreadFor(B).every((e) => e.unread === 0)).toBe(true);
+    expect(emit.mock.calls.filter((c) => c[0]?.type === 'channel.catalog')).toHaveLength(0);
+
+    // Member ack → the roster's "N behind" badges hydrate from the catalog,
+    // so the advance must signal a re-sync (Codex re-review).
+    await svc.ack({ channelId, verifiedWorkspaceId: B, uptoSeq: 1, memberId: 'codex' });
+    const catalogs = emit.mock.calls.filter((c) => c[0]?.type === 'channel.catalog');
+    expect(catalogs).toHaveLength(1);
+    expect(catalogs[0][0]).toMatchObject({ channelId, reason: 'cursor' });
+
+    // Repeat ack (no movement) → silent again.
+    emit.mockClear();
+    await svc.ack({ channelId, verifiedWorkspaceId: B, uptoSeq: 1, memberId: 'codex' });
+    expect(emit.mock.calls.filter((c) => c[0]?.type === 'channel.catalog')).toHaveLength(0);
   });
 
   it('rolls the cursor back when persist fails', async () => {

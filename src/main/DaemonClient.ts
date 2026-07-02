@@ -643,6 +643,12 @@ export class DaemonClient extends EventEmitter {
           // tees it onto the main EventBus as a WmuxEvent `channel.catalog`.
           this.emit('channel:catalog', { data: event.data });
           break;
+        case 'channel.nudgeExhausted':
+          // Channels v2 wake worker — a mention episode ran out of nudge
+          // budget; humans must look. DaemonNotificationRouter surfaces it
+          // (toast + OS notification) and tees it onto the EventBus.
+          this.emit('channel:nudgeExhausted', { data: event.data });
+          break;
         default:
           break;
       }

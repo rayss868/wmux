@@ -37,12 +37,16 @@ wmux channel — durable agent messaging (Channels v2)
   wmux channel unread [--member <id>]
       Your per-channel unread + mention counts. Cheap; call when nudged.
   wmux channel read <channel> [--since <seq>] [--limit <n>]
-      Print messages (oldest first). <channel> is an id (ch-…) or a name.
+      Print messages, oldest first, paging forward. Without --since it
+      starts from YOUR unread cursor (when you have one member row here).
+      A full page prints a continue hint. <channel> is an id (ch-…) or name.
   wmux channel post <channel> <text…> [--member <id>] [--name <display>]
       Post a message. Your workspace identity is stamped server-side.
+      Body may contain flag-like tokens after a bare --:
+        wmux channel post dev -- try again with --limit 5
   wmux channel ack <channel> <uptoSeq|all> [--member <id>]
       Mark messages ≤ uptoSeq consumed ('all' = everything currently there).
-      Advance-only; clears unread; stops re-nudges.
+      Advance-only; clears unread; stops re-nudges. Ack only what you read.
   wmux channel join <channel> [--member <id>] [--name <display>]
       Join a public channel as <member>.
   wmux channel list
@@ -175,6 +179,36 @@ async function resolveOwnMemberId(channelId: string, args: string[]): Promise<st
 }
 
 /**
+ * Best-effort variant of the row lookup for READ-path hints: never exits,
+ * returns [] on any failure. Read output must not be killed by a failed
+ * auxiliary call after the messages already printed.
+ */
+async function quietOwnMemberRows(
+  channelId: string,
+): Promise<Array<{ memberId: string; lastReadSeq: number }>> {
+  try {
+    const senderPtyId = await resolveSenderPtyId();
+    const response = await sendDaemonRequest('a2a.channel.unread' as RpcMethod, {
+      ...(senderPtyId ? { senderPtyId } : {}),
+    });
+    if (!response.ok) return [];
+    const result = response.result as {
+      ok?: boolean;
+      entries?: Array<{ channelId?: string; memberId?: string; lastReadSeq?: number }>;
+    } | null;
+    if (!result || result.ok === false || !Array.isArray(result.entries)) return [];
+    return result.entries
+      .filter((e) => e.channelId === channelId && typeof e.memberId === 'string')
+      .map((e) => ({
+        memberId: e.memberId as string,
+        lastReadSeq: typeof e.lastReadSeq === 'number' ? e.lastReadSeq : 0,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Strip the channel option flags (and their values) so the remainder is pure
  * positional payload — mirrors input.ts stripInputFlags. Without this a flag
  * VALUE (`--since 3`) would be mistaken for a positional (`read 3 …`), and a
@@ -199,6 +233,16 @@ const fmtMsg = (m: { seq?: number; memberName?: string; memberId?: string; text?
   `[seq ${m.seq}] ${m.memberName ?? m.memberId ?? '?'}: ${m.text ?? ''}`;
 
 export async function handleChannel(sub: string | undefined, args: string[], jsonMode: boolean): Promise<void> {
+  // A bare `--` ends option parsing: everything after it is verbatim
+  // positional payload — post bodies often contain flag-like tokens
+  // (`wmux channel post dev -- try --limit 5`), and the pair-aware stripper
+  // below would otherwise eat them as channel options (Codex re-review P3).
+  // The global --json/--help flags are consumed by the CLI entry before argv
+  // reaches subcommands, so those two cannot ride a body either way.
+  const dd = args.indexOf('--');
+  const verbatim = dd === -1 ? [] : args.slice(dd + 1);
+  args = dd === -1 ? args : args.slice(0, dd);
+  const positionals = positionalsOf(args).concat(verbatim);
   switch (sub) {
     case 'unread': {
       const memberId = parseFlag(args, '--member');
@@ -239,7 +283,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
     }
 
     case 'read': {
-      const [ref] = positionalsOf(args);
+      const [ref] = positionals;
       if (!ref) {
         console.error('Usage: wmux channel read <channel> [--since <seq>] [--limit <n>]');
         process.exit(1);
@@ -247,9 +291,19 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
       const channelId = await resolveChannelId(ref);
       const since = parseFlag(args, '--since');
       const limit = parseFlag(args, '--limit');
-      const params: Record<string, unknown> = { channelId };
-      if (since !== undefined) params['sinceSeq'] = Number(since);
-      params['limit'] = limit !== undefined ? Number(limit) : 50;
+      // Consume-oriented default (Codex re-review P1): with no --since, start
+      // from YOUR cursor when this workspace has exactly one member row here.
+      // Pages are then oldest-first and contiguous, so the printed ack hint
+      // can never jump the cursor over messages you haven't seen. No single
+      // row (browsing / multi-agent workspace / not a member) → the newest-N
+      // display window, and the hints below adapt.
+      const rows = await quietOwnMemberRows(channelId);
+      let sinceUsed: number | undefined;
+      if (since !== undefined) sinceUsed = Number(since);
+      else if (rows.length === 1) sinceUsed = rows[0].lastReadSeq + 1;
+      const limitUsed = limit !== undefined ? Number(limit) : 50;
+      const params: Record<string, unknown> = { channelId, limit: limitUsed };
+      if (sinceUsed !== undefined) params['sinceSeq'] = sinceUsed;
       const result = await callChannel('a2a.channel.getMessages' as RpcMethod, params, { mutating: false });
       const messages = (result['messages'] as Array<{ seq: number; memberName?: string; memberId?: string; text?: string }> | undefined) ?? [];
       if (jsonMode) {
@@ -262,12 +316,24 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
       }
       for (const m of messages) console.log(fmtMsg(m));
       const last = messages[messages.length - 1];
-      console.log(`(consumed? then: wmux channel ack ${channelId} ${last.seq})`);
+      if (sinceUsed !== undefined && messages.length === limitUsed) {
+        console.log(`(full page — more may remain: wmux channel read ${channelId} --since ${last.seq + 1})`);
+      }
+      if (rows.length > 1 && sinceUsed === undefined) {
+        // Multi-row workspace browsing the tail: acking this page's head seq
+        // could jump a cursor over unseen middle messages — route through the
+        // per-row cursors instead of printing a lossy one-liner.
+        console.log(
+          `(this workspace has ${rows.length} member rows — run: wmux channel unread, then read --since <cursor+1> and ack --member <id>)`,
+        );
+      } else {
+        console.log(`(consumed? then: wmux channel ack ${channelId} ${last.seq})`);
+      }
       return;
     }
 
     case 'post': {
-      const [ref, ...textParts] = positionalsOf(args);
+      const [ref, ...textParts] = positionals;
       const text = textParts.join(' ');
       if (!ref || !text) {
         console.error('Usage: wmux channel post <channel> <text…> [--member <id>] [--name <display>]');
@@ -306,7 +372,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
     }
 
     case 'ack': {
-      const [ref, uptoRaw] = positionalsOf(args);
+      const [ref, uptoRaw] = positionals;
       if (!ref || !uptoRaw) {
         console.error("Usage: wmux channel ack <channel> <uptoSeq|all> [--member <id>]");
         process.exit(1);
@@ -332,12 +398,18 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         console.log(JSON.stringify(result, null, 2));
         return;
       }
-      console.log(`Acked ${channelId} up to seq ${result['lastReadSeq'] ?? uptoSeq} as ${memberId ?? 'this workspace'}.`);
+      if (memberId !== undefined) {
+        console.log(`Acked ${channelId} up to seq ${result['lastReadSeq'] ?? uptoSeq} as ${memberId}.`);
+      } else {
+        // No member row here → the daemon recorded read receipts only; there
+        // is no cursor to advance (and none was silently invented).
+        console.log(`Recorded a read receipt for ${channelId} (no member row here — no cursor advanced).`);
+      }
       return;
     }
 
     case 'join': {
-      const [ref] = positionalsOf(args);
+      const [ref] = positionals;
       if (!ref) {
         console.error('Usage: wmux channel join <channel> [--member <id>] [--name <display>]');
         process.exit(1);

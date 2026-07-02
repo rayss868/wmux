@@ -2641,15 +2641,29 @@ async function main(): Promise<void> {
         deferred: sessionManager.getSession(meta.id)?.deferred === true,
       })),
     // Contract: this MAY throw (a pane can die between target selection and
-    // the write; writing a destroyed PTY stream throws synchronously). Do
-    // NOT swallow here — the worker catches the throw itself, treats it as
-    // failed delivery, and PRESERVES the nudge budget for a retry (G5:
-    // never spend nudges into a void). Its timer entry points are also
-    // guarded, so a throw can never escape into the event loop.
+    // the write; writing a destroyed PTY stream throws synchronously — and a
+    // session GONE from the manager throws here explicitly, because a silent
+    // no-op would let inject() report success and burn the nudge budget with
+    // zero bytes delivered, Codex re-review). Do NOT swallow either case —
+    // the worker catches the throw itself, treats it as failed delivery, and
+    // PRESERVES the budget for a retry (G5: never spend nudges into a void).
+    // Its timer entry points are also guarded, so a throw can never escape
+    // into the event loop.
     write: (sessionId, data) => {
-      sessionManager.getSession(sessionId)?.ptyProcess.write(data);
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) throw new Error(`session ${sessionId} is gone`);
+      managed.ptyProcess.write(data);
     },
-    broadcast: (event) => pipeServer.broadcast(event as never),
+    // Envelope discipline (channelEventEnvelope.ts, plan R2 lesson): the
+    // control pipe carries DaemonEvent {type, sessionId, data} — a raw
+    // payload broadcast would be silently unmatched by DaemonClient's
+    // switch, which is exactly how channel.message was once lost. The
+    // worker's one broadcast today is nudge exhaustion (human handoff).
+    broadcast: (event) => {
+      if (event['type'] === 'channel.nudgeExhausted') {
+        pipeServer.broadcast({ type: 'channel.nudgeExhausted', sessionId: '', data: event });
+      }
+    },
     log: (level, message) => log(level, message),
     now: () => Date.now(),
   });

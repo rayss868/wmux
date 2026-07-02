@@ -421,7 +421,14 @@ export interface DaemonEvent {
     // `data` carries the ChannelCatalogEvent; main tees it onto the in-process
     // EventBus as a WmuxEvent `channel.catalog`, scoped per-recipient by
     // `events.poll` exactly like channel.message.
-    | 'channel.catalog';
+    | 'channel.catalog'
+    // Channels v2 wake worker — a (channel, member) mention episode ran out
+    // of nudge budget; the worker stops and HUMANS must look. `sessionId` is
+    // '' and `data` carries the flat payload (channelId, channelName,
+    // workspaceId = affected member ws, memberId, unread, mentionUnread).
+    // Main surfaces it directly (toast + OS notification) AND tees it onto
+    // the EventBus as WmuxEvent `channel.nudgeExhausted` for orchestrators.
+    | 'channel.nudgeExhausted';
   sessionId: string;
   data: unknown;
 }

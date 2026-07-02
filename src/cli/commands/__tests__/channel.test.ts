@@ -153,10 +153,12 @@ describe('wmux channel — transport + identity', () => {
   it('read resolves a channel NAME to its id via a2a.channel.list', async () => {
     daemonRpc
       .mockResolvedValueOnce(okEnvelope({ ok: true, channels: [{ id: 'ch-9', name: 'general', visibility: 'public' }] }))
+      // Quiet own-row lookup (read's cursor default + ack hint).
+      .mockResolvedValueOnce(okEnvelope({ ok: true, entries: [] }))
       .mockResolvedValueOnce(okEnvelope({ ok: true, messages: [{ seq: 1, memberName: 'pm', text: 'hi' }] }));
     await handleChannel('read', ['general'], false);
     expect(daemonRpc).toHaveBeenNthCalledWith(1, 'a2a.channel.list', { senderPtyId: 'pty-self' });
-    expect(daemonRpc).toHaveBeenNthCalledWith(2, 'a2a.channel.getMessages', {
+    expect(daemonRpc).toHaveBeenNthCalledWith(3, 'a2a.channel.getMessages', {
       channelId: 'ch-9',
       limit: 50,
       senderPtyId: 'pty-self',
@@ -171,6 +173,37 @@ describe('wmux channel — transport + identity', () => {
       channelId: 'ch-1',
       sinceSeq: 3,
       limit: 5,
+      senderPtyId: 'pty-self',
+    });
+  });
+
+  it('read without --since starts from the caller\'s OWN cursor (single row) and pages oldest-first', async () => {
+    const row = { channelId: 'ch-1', name: 'g', memberId: 'codex', lastReadSeq: 4, headSeq: 9, unread: 5, mentionUnread: 0, trimmedBeforeCursor: 0 };
+    daemonRpc
+      .mockResolvedValueOnce(okEnvelope({ ok: true, entries: [row] }))
+      .mockResolvedValueOnce(okEnvelope({ ok: true, messages: [{ seq: 5, memberName: 'pm', text: 'a' }, { seq: 6, memberName: 'pm', text: 'b' }] }));
+    await handleChannel('read', ['ch-1', '--limit', '2'], false);
+    // sinceSeq = lastReadSeq + 1: the printed ack hint can never jump the
+    // cursor over unseen messages (pages are contiguous from the cursor).
+    expect(daemonRpc).toHaveBeenNthCalledWith(2, 'a2a.channel.getMessages', {
+      channelId: 'ch-1',
+      sinceSeq: 5,
+      limit: 2,
+      senderPtyId: 'pty-self',
+    });
+    const out = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    // Full page → the continue hint points at the NEXT page.
+    expect(out).toContain('--since 7');
+    expect(out).toContain('wmux channel ack ch-1 6');
+  });
+
+  it('a bare -- ends option parsing: post bodies keep flag-like tokens (--limit 5)', async () => {
+    daemonRpc.mockResolvedValue(okEnvelope({ ok: true, message: { seq: 8 } }));
+    await handleChannel('post', ['ch-1', '--member', 'codex', '--', 'try', 'again', 'with', '--limit', '5'], false);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.channel.post', {
+      channelId: 'ch-1',
+      text: 'try again with --limit 5',
+      sender: { memberId: 'codex', memberName: 'codex' },
       senderPtyId: 'pty-self',
     });
   });

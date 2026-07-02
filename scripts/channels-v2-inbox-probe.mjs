@@ -279,6 +279,19 @@ async function main() {
   check('P5 wake worker injected the nudge line into the idle member pane', nudged,
     nudged ? undefined : `streamTail=${JSON.stringify(tapB.text().slice(-200))}`);
 
+  // --- P6a: a HUMAN-style ack (no memberId — the renderer's open-channel
+  // read receipt) must NOT consume the agent's cursor (Codex re-review P1:
+  // a human glancing at a channel used to clear agent unread and silence
+  // the wake worker on unprocessed work) ---
+  const receiptAck = await rpc(sock, 'a2a.channel.ack', {
+    channelId, uptoSeq: entryB?.headSeq ?? 1, senderPtyId: SESS_B,
+  }, authToken);
+  const unreadAfterReceipt = await rpc(sock, 'a2a.channel.unread', { senderPtyId: SESS_B }, authToken);
+  const entryBr = (unreadAfterReceipt?.entries ?? []).find((e) => e.channelId === channelId && e.memberId === 'codex');
+  check('P6a receipt-only ack (no memberId) leaves the agent cursor untouched',
+    receiptAck?.ok === true && entryBr?.unread === 1 && entryBr?.lastReadSeq === 0,
+    `after=${JSON.stringify(entryBr ?? null)}`);
+
   // --- P6: agent ack clears unread ---
   const acked = await rpc(sock, 'a2a.channel.ack', {
     channelId, uptoSeq: entryB?.headSeq ?? 1, memberId: 'codex', senderPtyId: SESS_B,
