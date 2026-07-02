@@ -18,10 +18,16 @@
  * PASS criteria:
  *   P1  suffixed daemon WRITES its token to `<home>/.wmux${SUFFIX}/daemon-auth-token`
  *   P2  ...and does NOT pollute the shared, unsuffixed `<home>/.wmux/daemon-auth-token`
- *   P3  a client reading the suffix-aware token authenticates (daemon.ping ok)
- *       — proves writer <-> reader resolve the SAME path (lockstep)
- *   P4  a WRONG token is rejected (unauthorized) — sanity
- *   P5  BACKWARD COMPAT: with NO suffix, a pre-existing `~/.wmux/daemon-auth-token`
+ *   P3  a reader resolving the token path from the daemon's OWN env (the suffix-aware
+ *       ladder — `.wmux${SUFFIX}` then legacy `.wmux`) lands on EXACTLY the path the
+ *       daemon wrote: the writer<->reader path agreement ("mismatch = brick").
+ *       NOTE: this drives the path FORMULA end-to-end against the real daemon; the
+ *       reader FUNCTIONS' own logic (readDaemonAuthToken / resolveDaemonAuthToken,
+ *       suffix-first-then-legacy) is asserted with exact paths in the vitest units
+ *       (client.daemonPipe.test.ts, DaemonPipeServer.test.ts).
+ *   P4  ...and that reader-resolved token authenticates against the live daemon
+ *   P5  a WRONG token is rejected (unauthorized) — sanity
+ *   P6  BACKWARD COMPAT: with NO suffix, a pre-existing `~/.wmux/daemon-auth-token`
  *       (as older versions wrote) is adopted and still authenticates — no stranding
  *
  * Run: npm run build:daemon && node scripts/daemon-token-path-probe.mjs
@@ -134,6 +140,28 @@ function rpc(socket, method, params, authToken, timeoutMs = 15_000) {
   });
 }
 
+// Reader-side path resolution, replicated from the shared helpers so the probe
+// EXERCISES the writer<->reader path agreement instead of hardcoding the write
+// path. Mirrors getDaemonAuthTokenPath (`${USERPROFILE||HOME}/.wmux${suffix}/
+// daemon-auth-token`) then getLegacyDaemonAuthTokenPath (`…/.wmux/…`). The daemon
+// was spawned with USERPROFILE/HOME = testHome, so a reader running in that env
+// computes exactly these candidates — driving the token READ through this ladder
+// is what proves env→path→token agreement E2E ("mismatch = brick"). Keep this in
+// lockstep with src/shared/constants.ts if the path formula changes.
+function readerResolveToken(testHome, suffix) {
+  const candidates = [
+    path.join(testHome, `.wmux${suffix ?? ''}`, 'daemon-auth-token'),
+    path.join(testHome, '.wmux', 'daemon-auth-token'), // legacy unsuffixed fallback
+  ];
+  for (const p of candidates) {
+    try {
+      const t = fs.readFileSync(p, 'utf-8').trim();
+      if (t) return { token: t, path: p };
+    } catch { /* candidate absent — try the next */ }
+  }
+  return { token: '', path: null };
+}
+
 const results = [];
 const check = (name, ok, detail) => {
   results.push({ name, ok });
@@ -168,13 +196,19 @@ async function scenarioSuffixIsolation() {
     check('P1 suffixed daemon WRITES token to the suffix-aware dir', wroteSuffixed, suffixedToken);
     check('P2 suffixed daemon does NOT pollute the shared ~/.wmux token', !fs.existsSync(legacyToken), legacyToken);
 
-    const token = fs.readFileSync(suffixedToken, 'utf-8').trim();
+    // Resolve the token the way a READER does (independent path computation from
+    // the daemon's env), NOT by hardcoding the write path — this is what actually
+    // exercises the writer<->reader agreement (GLM review).
+    const reader = readerResolveToken(testHome, suffix);
+    check('P3 a reader resolving from the daemon env lands on the daemon-written path (writer<->reader agreement)',
+      reader.path === suffixedToken, `reader-resolved=${reader.path}  daemon-wrote=${suffixedToken}`);
+
     sock = await connectSocket(resolved);
-    const good = await rpc(sock, 'daemon.ping', {}, token);
-    check('P3 client reading the suffix-aware token authenticates (lockstep)', good.ok === true, good.ok ? 'pong' : `error=${JSON.stringify(good.error)}`);
+    const good = await rpc(sock, 'daemon.ping', {}, reader.token);
+    check('P4 the reader-resolved token authenticates against the live daemon', good.ok === true, good.ok ? 'pong' : `error=${JSON.stringify(good.error)}`);
 
     const bad = await rpc(sock, 'daemon.ping', {}, 'not-the-real-token');
-    check('P4 a WRONG token is rejected (unauthorized)', bad.ok === false && String(bad.error).includes('unauthorized'), JSON.stringify(bad.error));
+    check('P5 a WRONG token is rejected (unauthorized)', bad.ok === false && String(bad.error).includes('unauthorized'), JSON.stringify(bad.error));
   } finally {
     try { sock?.destroy(); } catch { /* ignore */ }
     try { daemon.kill('SIGKILL'); } catch { /* ignore */ }
@@ -203,7 +237,7 @@ async function scenarioBackwardCompat() {
     const resolved = await waitForPipeFile(wmuxDir);
     sock = await connectSocket(resolved);
     const good = await rpc(sock, 'daemon.ping', {}, legacyToken);
-    check('P5 backward-compat: pre-existing ~/.wmux token is adopted & authenticates', good.ok === true, good.ok ? 'pong' : `error=${JSON.stringify(good.error)}`);
+    check('P6 backward-compat: pre-existing ~/.wmux token is adopted & authenticates', good.ok === true, good.ok ? 'pong' : `error=${JSON.stringify(good.error)}`);
   } finally {
     try { sock?.destroy(); } catch { /* ignore */ }
     try { daemon.kill('SIGKILL'); } catch { /* ignore */ }

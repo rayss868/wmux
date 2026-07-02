@@ -312,6 +312,17 @@ export function getWmuxHomeDir(): string {
 // launcher (main/DaemonClient.readDaemonAuthToken) and the CLI
 // (cli/client.resolveDaemonAuthToken) READ it. All three MUST call this helper
 // — if they compute different paths, nothing authenticates and wmux is bricked.
+//
+// Home source (GLM review): getWmuxHomeDir() uses USERPROFILE||HOME, like every
+// other wmux path helper (getAuthTokenPath / getTcpPortPath). Before this change
+// the daemon token used os.homedir() — the ONE outlier. Aligning it with
+// USERPROFILE||HOME is precisely what keeps the WRITER in lockstep with the
+// launcher+CLI READERS (which resolve through this helper). The daemon's OTHER
+// ~/.wmux files (config.json, daemon-pipe) still resolve via src/daemon/config.ts
+// getWmuxDir → os.homedir(); on every real platform os.homedir() === USERPROFILE
+// (Windows) / HOME (*nix) so token and config co-locate, but unifying getWmuxDir
+// onto getWmuxHomeDir so the whole daemon shares ONE home source is a separate
+// follow-up (it also touches config/pipe paths, out of scope for the auth fix).
 export function getDaemonAuthTokenPath(): string {
   return `${getWmuxHomeDir()}/daemon-auth-token`;
 }
