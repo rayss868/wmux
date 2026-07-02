@@ -1275,6 +1275,22 @@ export class ChannelService {
         }
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist post' } };
       }
+      // The cursor ride above advanced a PERSISTED member cursor — badge
+      // honesty needs the same catalog signal an explicit ack emits (Codex
+      // round-4): the channel.message event raises the head in open rosters
+      // while the cached member row's lastReadSeq stays stale, so a
+      // caught-up poster would show "1 behind" its own message until an
+      // unrelated catalog event lands. Emitted BEFORE channel.message so
+      // that event stays the LAST emit of a post (consumers are order-
+      // agnostic; tests pin the message event's tail position).
+      if (senderRowRode) {
+        this.emitCatalog(
+          channel.id,
+          params.sender.workspaceId,
+          members.map((m) => m.workspaceId),
+          'cursor',
+        );
+      }
       // Emit AFTER successful persist — the post is durable on disk by the
       // time consumers see it. A failed emit does not block the post
       // (the plan's contract is: persist-first, then notify).

@@ -255,14 +255,21 @@ describe('lastReadSeq cursor', () => {
   });
 
   it('a caught-up poster rides its cursor over its own message (never "behind" its reply)', async () => {
-    const { svc } = makeService();
+    const { svc, emit } = makeService();
     const channelId = await seedChannel(svc);
+    emit.mockClear();
     const seq = await post(svc, channelId, B, 'codex', 'my reply');
     const mine = svc.unreadFor(B, 'codex')[0];
     expect(mine.lastReadSeq).toBe(seq);
     expect(mine.unread).toBe(0);
     // The OTHER side still owes it (self-exemption is row-scoped).
     expect(svc.unreadFor(A)[0].unread).toBe(1);
+    // The ride advanced a PERSISTED cursor → same catalog signal as an ack,
+    // or open rosters would show the poster "1 behind" its own message
+    // (Codex round-4).
+    const catalogs = emit.mock.calls.filter((c) => c[0]?.type === 'channel.catalog');
+    expect(catalogs).toHaveLength(1);
+    expect(catalogs[0][0]).toMatchObject({ channelId, reason: 'cursor' });
   });
 
   it('a behind poster keeps its backlog but never owes its OWN post', async () => {

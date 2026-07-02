@@ -11,6 +11,7 @@ import {
   MENTION_NUDGE_BACKOFF_MS,
   WAKE_QUIET_MS,
   WAKE_TICK_MS,
+  EXHAUSTED_REANNOUNCE_MS,
   type WakeUnreadEntry,
   type WakeSessionView,
 } from '../channelWakeWorker';
@@ -133,7 +134,7 @@ describe('ChannelWakeWorker — injection mechanics', () => {
 });
 
 describe('ChannelWakeWorker — re-nudge policy', () => {
-  it('mention unread: re-nudges with backoff up to the cap, then broadcasts exhaustion ONCE', () => {
+  it('mention unread: re-nudges with backoff up to the cap, then hands off (once per re-announce window)', () => {
     const h = makeHarness();
     h.setEntries([entry({ mentionUnread: 1 })]);
     h.setSessions([session({})]);
@@ -147,14 +148,24 @@ describe('ChannelWakeWorker — re-nudge policy', () => {
       expect(h.writes.filter((w) => w.data !== '\r')).toHaveLength(i + 1);
       t += (MENTION_NUDGE_BACKOFF_MS[i + 1] ?? 0) + 1;
     }
-    // Budget exhausted → no more writes, one exhaustion broadcast.
-    h.setNow(t + 10_000_000);
+    // Budget exhausted → no more writes; the handoff announced ONCE (the
+    // immediate in-window re-tick inside the loop above fired it).
+    const announced = () => h.broadcasts.filter((b) => b['type'] === 'channel.nudgeExhausted');
+    expect(announced()).toHaveLength(1);
+    expect(announced()[0]).toMatchObject({ channelId: 'ch-1', workspaceId: 'ws-b', memberId: 'codex' });
+    // Ticks INSIDE the re-announce window stay silent…
+    h.setNow(t + 1_000);
     h.worker.tickOnce();
-    h.worker.tickOnce();
+    expect(announced()).toHaveLength(1);
     expect(h.writes.filter((w) => w.data !== '\r')).toHaveLength(MENTION_NUDGE_CAP);
-    const exhausted = h.broadcasts.filter((b) => b['type'] === 'channel.nudgeExhausted');
-    expect(exhausted).toHaveLength(1);
-    expect(exhausted[0]).toMatchObject({ channelId: 'ch-1', workspaceId: 'ws-b', memberId: 'codex' });
+    // …and the handoff re-announces once the window elapses: the broadcast
+    // reaches only CURRENTLY connected clients — headless it lands on
+    // nobody, so eventual delivery needs the slow cadence (Codex round-4).
+    // Ack (unread=0) still ends the episode entirely (test below).
+    h.setNow(t + 1_000 + EXHAUSTED_REANNOUNCE_MS + 1);
+    h.worker.tickOnce();
+    expect(announced()).toHaveLength(2);
+    expect(h.writes.filter((w) => w.data !== '\r')).toHaveLength(MENTION_NUDGE_CAP); // still no new nudges
   });
 
   it('ack (unread=0) resets the episode: a fresh unread gets a fresh nudge budget', () => {
@@ -299,6 +310,19 @@ describe('pickTarget — never guess', () => {
     expect(pickTarget([headless], 'ws-b', 'claude')?.id).toBe('a');
     // Fallback rule too: the only eligible pane in the workspace.
     expect(pickTarget([headless], 'ws-b', 'codex')?.id).toBe('a');
+  });
+
+  it('an attached claude MEMBER never reroutes to an unrelated pane (Codex round-4)', () => {
+    // GUI alive: claude's delivery is owned by the renderer path. With one
+    // other eligible pane around, the single-pane fallback must NOT fire
+    // for memberId "claude" — that would double-deliver into the wrong
+    // pane and burn claude's budget there.
+    const attachedClaude = session({ id: 'a', lastDetectedAgent: 'claude', attached: true });
+    const shell = session({ id: 'b', lastDetectedAgent: undefined });
+    expect(pickTarget([attachedClaude, shell], 'ws-b', 'claude')).toBeNull();
+    // …while a DIFFERENT member still falls back to that only eligible pane
+    // (it may well be where that agent actually runs, sans detection).
+    expect(pickTarget([attachedClaude, shell], 'ws-b', 'codex')?.id).toBe('b');
   });
 
   it('never targets a session from another workspace', () => {

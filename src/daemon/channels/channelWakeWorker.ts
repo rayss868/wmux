@@ -100,6 +100,16 @@ export const WAKE_QUIET_MS = 10_000;
 export const MENTION_NUDGE_BACKOFF_MS = [0, 60_000, 300_000] as const;
 /** Hard cap of mention nudges per (channel, member) episode. */
 export const MENTION_NUDGE_CAP = MENTION_NUDGE_BACKOFF_MS.length;
+/**
+ * Re-announce interval for an exhausted episode. The broadcast reaches only
+ * CURRENTLY connected clients — in the headless window there is nobody, and
+ * a once-ever announcement would be lost forever while the worker has
+ * already stopped nudging (Codex round-4). Re-announcing on a slow cadence
+ * makes the human handoff eventually-delivered (a GUI that reconnects gets
+ * it within one interval) and doubles as bounded escalation while a mention
+ * rots unanswered. Ack resets the episode and stops it.
+ */
+export const EXHAUSTED_REANNOUNCE_MS = 30 * 60_000;
 const ENTER_DELAY_MS = 150;
 const NUDGE_MAX_LEN = 220;
 
@@ -109,7 +119,8 @@ interface NudgeTrackerEntry {
   lastMentionNudgeAt: number;
   /** Head seq at the time of the last PLAIN nudge (one per head advance). */
   plainNudgedAtSeq: number;
-  exhaustedAnnounced: boolean;
+  /** Epoch ms of the last exhaustion announcement (0 = never). */
+  lastExhaustedAnnounceAt: number;
 }
 
 const keyOf = (ws: string, e: { channelId: string; memberId: string }): string =>
@@ -195,14 +206,15 @@ export class ChannelWakeWorker {
           mentionNudges: 0,
           lastMentionNudgeAt: 0,
           plainNudgedAtSeq: -1,
-          exhaustedAnnounced: false,
+          lastExhaustedAnnounceAt: 0,
         };
 
         const wantMention = entry.mentionUnread > 0;
         if (wantMention) {
           if (state.mentionNudges >= MENTION_NUDGE_CAP) {
-            if (!state.exhaustedAnnounced) {
-              state.exhaustedAnnounced = true;
+            const never = state.lastExhaustedAnnounceAt === 0;
+            if (never || this.deps.now() - state.lastExhaustedAnnounceAt >= EXHAUSTED_REANNOUNCE_MS) {
+              state.lastExhaustedAnnounceAt = this.deps.now();
               this.tracker.set(key, state);
               this.deps.log(
                 'warn',
@@ -302,6 +314,16 @@ export function pickTarget(
   const slugMatch = eligible.filter((s) => s.lastDetectedAgent === memberId);
   if (slugMatch.length === 1) return slugMatch[0];
   if (slugMatch.length > 1) return null;
+  // The member's OWN pane exists but is an ATTACHED claude pane: the
+  // renderer Stop-hook path owns that delivery — do NOT reroute the nudge
+  // to an unrelated single pane, which would double-deliver AND burn the
+  // budget in the wrong place (Codex round-4). A DEFERRED slug-match, by
+  // contrast, still falls through: nobody lives there and the one live
+  // pane may be the member's actual home (dogfood G5).
+  const ownedByRenderer = inWs.some(
+    (s) => s.lastDetectedAgent === memberId && s.lastDetectedAgent === 'claude' && s.attached === true,
+  );
+  if (ownedByRenderer) return null;
   if (eligible.length === 1) return eligible[0];
   return null;
 }
