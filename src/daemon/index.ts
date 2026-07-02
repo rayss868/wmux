@@ -17,6 +17,7 @@ import { DEFAULT_COMPANY_ID } from '../shared/channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
+import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
 import { createSnapshotRunner } from './snapshotRunner';
 import { RingBuffer } from './RingBuffer';
 import { GitContextWatcher } from '../main/pty/gitContextWatch';
@@ -31,6 +32,7 @@ import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
+import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 
 // X6 Feature ②: sessions RECOVERED this daemon boot that were running an
 // INTERACTIVE agent (non-exec, non-supervised) → ptyId → the agent slug to
@@ -200,11 +202,16 @@ function log(level: string, msg: string, ...args: unknown[]): void {
 //
 // X6 ③: with a captured resumeBinding whose cwd still matches, the rewrite
 // targets the EXACT session (`claude --resume <id>`); otherwise it falls back to
-// `--continue` (latest-in-cwd). The permission mode is deliberately NOT restored
-// here — supervised auto-run has no human in the loop, so re-granting
-// `--dangerously-skip-permissions` silently every reboot is unsafe (D6
-// fail-safe). Permission restore happens ONLY on the pill path (explicit user
-// Enter); the trust-gated supervised auto-restore is a deferred follow-up.
+// `--continue` (latest-in-cwd). Permission-mode restore (re-applying the
+// captured `--dangerously-skip-permissions` etc.) is OPT-IN via the persisted
+// `supervision.restorePermissionMode` bit (U-PERM): main sets it at CREATION
+// only when the leaf declared `unattended` AND the user gave explicit unattended
+// consent for the project (ProjectTrustRecord.unattended). The daemon honors
+// that bit verbatim here — no trust file is read at replay (Minimal design-lock
+// 2026-07-01: trust is gated at creation, consistent with how every other
+// supervised replay is unconditional post-creation). Absent/false → D6 fail-safe
+// (plain --resume/--continue, NO bypass flag). The pill path (explicit user
+// Enter) still opts in via permissionFlagFor separately.
 // X6 ③ (D5): a binding is usable for an EXACT-session resume only when its
 // origin transcript still exists. A purged id turns `--resume` into a silent
 // "No conversation found." (F8 — exit 0, so no exit-code fallback). We probe the
@@ -218,7 +225,13 @@ function bindingTranscriptLives(binding: ResumeBinding | undefined): boolean {
 }
 
 function resumeLaunchCommand(
-  session: { id: string; exec?: { command: string }; cwd: string; resumeBinding?: ResumeBinding },
+  session: {
+    id: string;
+    exec?: { command: string };
+    cwd: string;
+    resumeBinding?: ResumeBinding;
+    supervision?: { restorePermissionMode?: boolean };
+  },
   spoolBinding?: ResumeBinding,
 ): string | undefined {
   if (!session.exec) return undefined;
@@ -236,9 +249,24 @@ function resumeLaunchCommand(
   }
   // D5: drop to `--continue` when the exact transcript is gone (pass no binding).
   const usableBinding = bindingTranscriptLives(binding) ? binding : undefined;
-  const rewritten = toResumeCommand(session.exec.command, usableBinding, session.cwd);
+  // U-PERM: honor the persisted, consent-gated restore bit (set by main at
+  // creation). When ON, toResumeCommand appends the captured permission flag
+  // (e.g. --dangerously-skip-permissions) — but ONLY inside its binding+cwd-match
+  // branch, so a purged transcript (usableBinding undefined) still yields a plain
+  // --continue with no bypass (fail-safe). No trust file is read here.
+  const restorePermissionMode = session.supervision?.restorePermissionMode === true;
+  const rewritten = toResumeCommand(
+    session.exec.command,
+    usableBinding,
+    session.cwd,
+    restorePermissionMode ? { restorePermissionMode: true } : undefined,
+  );
   if (rewritten === session.exec.command) return undefined; // not a known agent launcher / already resuming
-  log('info', `X6 resume: replaying session ${session.id} as resume form in ${session.cwd}`);
+  log(
+    'info',
+    `X6 resume: replaying session ${session.id} as resume form in ${session.cwd}` +
+      (restorePermissionMode ? ' (unattended permission-mode restore ON)' : ''),
+  );
   return rewritten;
 }
 
@@ -398,31 +426,44 @@ function ingestResumeSpool(
 
 // === PID / Lock helpers ===
 
-async function isProcessRunning(pid: number): Promise<boolean> {
+/**
+ * Three-state liveness probe for the daemon lock (Defect-1 of the split-brain
+ * chain). A probe FAILURE — `tasklist` stalling under Defender/CPU/WMI load, or
+ * an exec error — is `unknown`, NEVER `dead`. The prior boolean form read that
+ * flaky failure as "process absent" (catch → false), letting a second daemon
+ * treat a LIVE daemon's lock as stale and stomp it (duplicate-daemon →
+ * session-pipe EADDRINUSE → terminal reset). Only positive confirmation of death
+ * authorizes reclaiming the lock (see lockOwnerIsReclaimable). Mirrors the
+ * launcher-side checkProcessLiveness so both processes share one contract
+ * (src/shared/processLiveness).
+ */
+async function processLiveness(pid: number): Promise<ProcessLiveness> {
   if (process.platform === 'win32') {
-    // process.kill(pid, 0) is unreliable on Windows — always succeeds for stale PIDs.
+    // process.kill(pid, 0) is unreliable on Windows — it succeeds for stale PIDs
+    // — so probe with tasklist. A thrown probe leaves stdout null → unknown.
+    let stdout: string | null = null;
     try {
       const { execFile } = require('child_process');
       const { promisify } = require('util');
       const execFileAsync = promisify(execFile);
-      const pathMod = require('path');
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const tasklist = pathMod.join(systemRoot, 'System32', 'tasklist.exe');
-      const { stdout } = await execFileAsync(
+      const tasklist = path.join(systemRoot, 'System32', 'tasklist.exe');
+      const res = await execFileAsync(
         tasklist,
         ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
         { encoding: 'utf-8', timeout: 3000, windowsHide: true },
       );
-      return (stdout as string).includes(`"${pid}"`);
+      stdout = res.stdout as string;
     } catch {
-      return false;
+      stdout = null; // timeout / exec failure → unknown (NOT dead)
     }
+    return classifyTasklistOutput(pid, stdout);
   }
   try {
     process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
+    return classifyKillOutcome(undefined);
+  } catch (err: unknown) {
+    return classifyKillOutcome((err as NodeJS.ErrnoException | undefined)?.code);
   }
 }
 
@@ -483,9 +524,13 @@ async function acquireLock(): Promise<boolean> {
       try {
         const existingPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf-8').trim(), 10);
         if (!isNaN(existingPid)) {
-          const running = await isProcessRunning(existingPid);
-          if (running) {
-            log('error', `Another daemon is already running (PID ${existingPid})`);
+          // 3-state liveness (Defect-1 fix): a probe FAILURE is `unknown`, never
+          // `dead`. The lock is reclaimable ONLY on positive confirmation of
+          // death — `alive` OR `unknown` (a flaky tasklist) means "assume a live
+          // daemon holds it, do not stomp its lock and spawn a second daemon."
+          const liveness = await processLiveness(existingPid);
+          if (!lockOwnerIsReclaimable(liveness)) {
+            log('error', `Another daemon holds the lock (PID ${existingPid}, liveness=${liveness})`);
             return false;
           }
           // tasklist says not running — but could be a tasklist failure.
@@ -690,7 +735,7 @@ async function recoverSessions(
         // Start process monitoring for the new PTY
         processMonitor.watch(recovered.id, recovered.pid, () => {
           const managed = sessionManager.getSession(recovered.id);
-          if (managed && managed.meta.state !== 'dead') {
+          if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
             managed.meta.state = 'dead';
             sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'recovery' });
           }
@@ -749,7 +794,7 @@ async function recoverSessions(
 
           processMonitor.watch(recovered.id, recovered.pid, () => {
             const managed = sessionManager.getSession(recovered.id);
-            if (managed && managed.meta.state !== 'dead') {
+            if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
               managed.meta.state = 'dead';
               sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'recovery' });
             }
@@ -792,7 +837,7 @@ async function recoverSessions(
 
         processMonitor.watch(recovered.id, recovered.pid, () => {
           const managed = sessionManager.getSession(recovered.id);
-          if (managed && managed.meta.state !== 'dead') {
+          if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
             managed.meta.state = 'dead';
             sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'recovery' });
           }
@@ -953,7 +998,7 @@ function restartSupervisedSession(
   // Same external-death safety net as the create/recovery paths.
   processMonitor.watch(recovered.id, recovered.pid, () => {
     const current = sessionManager.getSession(recovered.id);
-    if (current && current.meta.state !== 'dead') {
+    if (current && current.meta.state !== 'dead' && current.meta.state !== 'suspended') {
       current.meta.state = 'dead';
       sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'process-monitor' });
     }
@@ -1003,7 +1048,15 @@ function registerRpcHandlers(
       // a persisted 'stopped' only ever enters through recovery replay.
       exec: p.exec,
       supervision: p.supervision
-        ? { restart: p.supervision.restart, limit: p.supervision.limit, status: 'armed' }
+        ? {
+            restart: p.supervision.restart,
+            limit: p.supervision.limit,
+            status: 'armed',
+            // U-PERM: preserve the consent-gated restore bit through the create
+            // RPC — a field-by-field copy silently dropped it (tsc-invisible:
+            // the field is optional on the target).
+            ...(p.supervision.restorePermissionMode === true ? { restorePermissionMode: true } : {}),
+          }
         : undefined,
     });
     if (session.supervision) {
@@ -1019,7 +1072,7 @@ function registerRpcHandlers(
       // Process died externally — session manager's bridge exit handler
       // should already handle this via PTY onExit, but this is a safety net
       const managed = sessionManager.getSession(session.id);
-      if (managed && managed.meta.state !== 'dead') {
+      if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
         managed.meta.state = 'dead';
         sessionManager.emit('session:died', { id: session.id, exitCode: null, reason: 'process-monitor' });
       }
@@ -1832,6 +1885,125 @@ function wireEvents(
     }
   });
 
+  // session:interrupted → shutdown-kill path (reboot-reattach RCA 2026-07-02).
+  // The PTY was torn down by the OS (system shutdown/logoff), not by the user.
+  // Suspend-in-place: dump the ring buffer, persist state 'suspended' so the
+  // post-reboot recovery replays the SAME session id and the renderer's saved
+  // ptyId binding reconnects. Deliberately NOT done here (vs session:died):
+  //  - no `session.died` broadcast — a still-alive renderer must not clear its
+  //    binding during the shutdown window;
+  //  - no buffer-dump deletion — the dump IS the recovery payload;
+  //  - no supervisor restart — spawning processes during OS shutdown just
+  //    yields 0xC0000142 corpses; recovery replays supervision after reboot.
+  // Misclassification safety net: if the daemon is still alive after
+  // SHUTDOWN_KILL_RECLASSIFY_MS (cancelled shutdown / isolated conhost kill),
+  // reclassify as a genuine death and run the standard died flow.
+  //
+  // Pipe/listener cleanup IS done here (adversarial review), unlike the other
+  // died-only steps above: an isolated conhost kill (the exact case the
+  // reclassify timer exists for) leaves the daemon AND a still-connected
+  // renderer alive for up to SHUTDOWN_KILL_RECLASSIFY_MS. Without stopping the
+  // SessionPipe, its `onInput` closure keeps forwarding client keystrokes
+  // straight into the now-destroyed `ptyProcess.write()` — an unhandled
+  // socket 'error' with no listener, which the daemon's own uncaughtException
+  // handler treats as fatal after 3 repeats, killing every OTHER session as
+  // collateral. Stopping the pipe destroys the client's connection for THIS
+  // session only (the renderer's own reconnect-with-retry handles that as a
+  // transient failure) without broadcasting session.died or touching the
+  // renderer's saved binding.
+  sessionManager.on('session:interrupted', (payload: { id: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number }) => {
+    log('info', `[lifecycle] session:interrupted id=${payload.id} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} — shutdown-kill classified, suspending for recovery (reclassify in ${SHUTDOWN_KILL_RECLASSIFY_MS}ms if daemon survives)`);
+    // The PTY is gone — stop the liveness poll BEFORE it can observe the dead
+    // pid and re-emit session:died (which would resurrect the purge this fix
+    // removes). The watch closures also skip 'suspended' as defense in depth.
+    try {
+      processMonitor.unwatch(payload.id);
+    } catch (err) {
+      log('warn', `session:interrupted unwatch failed for ${payload.id}:`, err);
+    }
+    // Graceful-shutdown race (posix SIGTERM fan-out / mid-suspend deaths): the
+    // shutdown loop already stops every session's pipe (see `pipeStops` above)
+    // and is dumping every non-dead session's buffer — doing either again here
+    // would just race the same pipe/file.
+    if (shuttingDown) return;
+
+    // Remove the PTY→client data listener to prevent a leak (mirrors
+    // session:died) — the bridge is dead and will emit nothing more, but the
+    // map entry would otherwise dangle.
+    try {
+      const tracked = sessionDataListeners.get(payload.id);
+      if (tracked) {
+        tracked.bridge.removeListener('data', tracked.listener);
+        sessionDataListeners.delete(payload.id);
+      }
+    } catch (err) {
+      log('warn', `session:interrupted data-listener cleanup failed for ${payload.id}:`, err);
+    }
+
+    // Stop the SessionPipe so its onInput closure can never write another
+    // keystroke into the destroyed ptyProcess (see comment above the
+    // listener). This is the crash-prevention step.
+    try {
+      const pipe = sessionPipes.get(payload.id);
+      if (pipe) {
+        pipe.stop().catch(() => {});
+        sessionPipes.delete(payload.id);
+      }
+    } catch (err) {
+      log('warn', `session:interrupted pipe stop failed for ${payload.id}:`, err);
+    }
+
+    const managed = sessionManager.getSession(payload.id);
+    if (!managed) return;
+    try {
+      stateWriter.ensureBufferDir();
+      const dumpPath = stateWriter.getBufferDumpPath(payload.id);
+      managed.ringBuffer
+        .dumpToFile(dumpPath)
+        .then(() => {
+          managed.meta.bufferDumpPath = dumpPath;
+        })
+        .catch((err) => {
+          // Dump failed — recovery still replays via the 30s snapshot (or
+          // empty scrollback); losing scrollback beats losing the session.
+          log('warn', `session:interrupted buffer dump failed for ${payload.id}:`, err);
+        })
+        .finally(() => {
+          // Persistence anchor: the 'suspended' record MUST land before the
+          // OS kills us. saveImmediate is synchronous-atomic on the state file.
+          try {
+            stateWriter.saveImmediate(buildState(sessionManager));
+          } catch (err) {
+            log('error', `session:interrupted state save failed for ${payload.id}:`, err);
+          }
+        });
+    } catch (err) {
+      log('error', `session:interrupted suspend failed for ${payload.id}:`, err);
+    }
+
+    const timer = setTimeout(() => {
+      interruptedTimers.delete(payload.id);
+      const current = sessionManager.getSession(payload.id);
+      // Destroyed/replayed meanwhile → nothing to reclassify.
+      if (!current || current.meta.state !== 'suspended') return;
+      log('info', `[lifecycle] session:interrupted id=${payload.id} — daemon survived ${SHUTDOWN_KILL_RECLASSIFY_MS}ms, no shutdown happened → reclassifying as death`);
+      current.meta.state = 'dead';
+      sessionManager.emit('session:died', { ...payload, reason: 'interrupted-timeout' });
+      sessionManager.emit('session:stateChanged', { id: payload.id, state: 'dead' });
+    }, SHUTDOWN_KILL_RECLASSIFY_MS);
+    interruptedTimers.set(payload.id, timer);
+  });
+
+  // A pane the user closes while a reclassification is pending must not get a
+  // ghost died event 15s later.
+  sessionManager.on('session:destroyed', (payload: { id: string }) => {
+    const t = interruptedTimers.get(payload.id);
+    if (t) {
+      clearTimeout(t);
+      interruptedTimers.delete(payload.id);
+    }
+  });
+
   // session:created → save state (debounced since saveImmediate is called in RPC handler)
   sessionManager.on('session:created', () => {
     const state = buildState(sessionManager);
@@ -2109,6 +2281,12 @@ let shuttingDown = false;
 // even when the async path was interrupted mid-dump.
 let dumpsCompleted = false;
 
+// Pending shutdown-kill reclassification timers, keyed by session id (see the
+// session:interrupted listener in wireEvents). Module-level so shutdown() can
+// cancel them — a reclassify-to-dead firing mid-graceful-shutdown would race
+// the suspend loop's own state save.
+const interruptedTimers = new Map<string, NodeJS.Timeout>();
+
 async function shutdown(
   signal: string,
   sessionManager: DaemonSessionManager,
@@ -2123,6 +2301,11 @@ async function shutdown(
   if (shuttingDown) return;
   shuttingDown = true;
   log('info', `Received ${signal} — shutting down gracefully`);
+
+  // Cancel pending shutdown-kill reclassifications — the suspend loop below is
+  // now the single owner of every non-dead session's persisted state.
+  for (const t of interruptedTimers.values()) clearTimeout(t);
+  interruptedTimers.clear();
 
   // Hard timeout guard — force exit if shutdown hangs
   const shutdownTimeout = setTimeout(() => {
@@ -2294,6 +2477,13 @@ async function main(): Promise<void> {
 
   const sessionManager = new DaemonSessionManager();
   sessionManager.setConfig(config);
+  // Shutdown-kill classification (reboot-reattach RCA 2026-07-02): a PTY exit
+  // with the Windows console-teardown code, or ANY exit while our own graceful
+  // shutdown is in flight, is an involuntary kill — suspend for recovery
+  // instead of persisting a dead tombstone. See shutdownKill.ts for the RCA.
+  sessionManager.setInvoluntaryExitClassifier((exitCode) =>
+    isShutdownKillExit(exitCode, { platform: process.platform, shuttingDown }),
+  );
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event
