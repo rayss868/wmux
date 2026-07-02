@@ -2626,6 +2626,10 @@ async function main(): Promise<void> {
         // WMUX_WORKSPACE_ID into the session env at spawn; the daemon
         // persists it) — meta already carries env, no getSession round-trip.
         workspaceId: (meta.env?.[ENV_KEYS.WORKSPACE_ID] ?? '').trim(),
+        // Dogfood G5: a recovered session still in deferred-output mode is
+        // bookkept live but renders nothing and holds no agent — the worker
+        // must never spend nudges on it.
+        deferred: sessionManager.getSession(meta.id)?.deferred === true,
       })),
     write: (sessionId, data) => {
       sessionManager.getSession(sessionId)?.ptyProcess.write(data);

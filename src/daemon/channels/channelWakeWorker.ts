@@ -55,6 +55,15 @@ export interface WakeSessionView {
   lastActivityMs: number;
   /** Owning workspace ('' when the session has no binding). */
   workspaceId: string;
+  /**
+   * True for a RECOVERED session still in deferred-output mode (waiting for
+   * its first renderer resize to activate). Live dogfood 2026-07-02: after a
+   * daemon SIGKILL+respawn, such a pane is bookkept 'attached' but nothing
+   * renders and the pre-crash agent process is gone — the worker burned 2 of
+   * its 3 mention nudges into that void. A deferred pane has no agent to
+   * wake, so it is never an injection target.
+   */
+  deferred?: boolean;
 }
 
 export interface ChannelWakeWorkerDeps {
@@ -233,6 +242,8 @@ export class ChannelWakeWorker {
 
 /**
  * Injection target discipline: never guess.
+ *  0. deferred (recovered-not-yet-activated) sessions are excluded outright —
+ *     no agent lives there and nothing renders (dogfood G5 finding);
  *  1. live non-claude session whose detected agent slug === memberId;
  *  2. else the ONLY live non-claude session in the workspace;
  *  3. else null (Claude panes ride the Stop-hook path; multi-pane ambiguity
@@ -243,7 +254,7 @@ export function pickTarget(
   workspaceId: string,
   memberId: string,
 ): WakeSessionView | null {
-  const inWs = sessions.filter((s) => s.workspaceId === workspaceId);
+  const inWs = sessions.filter((s) => s.workspaceId === workspaceId && s.deferred !== true);
   const nonClaude = inWs.filter((s) => s.lastDetectedAgent !== 'claude');
   const slugMatch = nonClaude.filter((s) => s.lastDetectedAgent === memberId);
   if (slugMatch.length === 1) return slugMatch[0];

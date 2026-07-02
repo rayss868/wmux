@@ -219,4 +219,18 @@ describe('pickTarget — never guess', () => {
   it('never targets a session from another workspace', () => {
     expect(pickTarget([session({ id: 'a', workspaceId: 'ws-other' })], 'ws-b', 'codex')).toBeNull();
   });
+
+  it('never targets a deferred (recovered-not-yet-activated) session — dogfood G5', () => {
+    // After a daemon crash+respawn the recovered pane is bookkept 'attached'
+    // but renders nothing and the pre-crash agent process is gone. Live
+    // dogfood showed the worker burning mention nudges into that void.
+    expect(pickTarget([session({ id: 'a', deferred: true })], 'ws-b', 'codex')).toBeNull();
+    // …and a deferred slug-match must not shadow a live fallback either.
+    const target = pickTarget(
+      [session({ id: 'a', deferred: true, lastDetectedAgent: 'codex' }), session({ id: 'b', lastDetectedAgent: undefined })],
+      'ws-b',
+      'codex',
+    );
+    expect(target?.id).toBe('b');
+  });
 });
