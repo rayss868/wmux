@@ -12,7 +12,7 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope } from './channels';
+import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec } from './channels';
 import { DEFAULT_COMPANY_ID } from '../shared/channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
@@ -26,7 +26,7 @@ import { initDaemonLogSink } from './util/logSink';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
-import { DAEMON_EXIT_ALREADY_RUNNING } from '../shared/constants';
+import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
@@ -1530,7 +1530,35 @@ function registerRpcHandlers(
   // covers the daemon transport, and finer-grained plugin permission will
   // land in the follow-up PR that introduces the permission enforcer for
   // method dispatch (mcp-plugin-spec).
-  pipeServer.onRpc('a2a.channel.list', async (params) => {
+  //
+  // Channels v2 Step 0 — daemon-side caller stamping. Every handler below
+  // (EXCEPT archive/kick, which stay humans-only: their honest reachable
+  // surface remains the renderer-local mutate path) first runs
+  // `stampChannelCaller`: a pre-stamped `verifiedWorkspaceId` is trusted
+  // verbatim (main D5 / renderer paths, unchanged), and a headless caller
+  // that supplies only `senderPtyId` gets a SERVER-side stamp resolved from
+  // the daemon's own session record (env WMUX_WORKSPACE_ID, persisted at
+  // spawn by main). See channelCallerIdentity.ts for the acceptance rules.
+  // LIVE sessions only (attached/detached): the manager retains dead
+  // tombstones for hours (dead-TTL) and suspended records across restarts,
+  // and a pane that no longer has a usable PTY child cannot legitimately be
+  // the caller — a stale senderPtyId must fail closed exactly like an
+  // unknown one (CodeRabbit review). Uses the manager's canonical live
+  // filter rather than re-implementing state checks here.
+  const resolveSessionWorkspace = (sessionId: string): string => {
+    const meta = sessionManager.listLiveSessions().find((m) => m.id === sessionId);
+    const ws = meta?.env?.[ENV_KEYS.WORKSPACE_ID];
+    return typeof ws === 'string' && ws.trim().length > 0 ? ws.trim() : '';
+  };
+  const stampCaller = (
+    rawParams: Record<string, unknown>,
+    callerField: CallerFieldSpec,
+  ): ReturnType<typeof stampChannelCaller> => stampChannelCaller(resolveSessionWorkspace, rawParams, callerField);
+
+  pipeServer.onRpc('a2a.channel.list', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
     if (!verifiedWorkspaceId) {
@@ -1545,7 +1573,10 @@ function registerRpcHandlers(
     return { ok: true, channels: channelService.list(verifiedWorkspaceId) };
   });
 
-  pipeServer.onRpc('a2a.channel.get', async (params) => {
+  pipeServer.onRpc('a2a.channel.get', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
@@ -1568,7 +1599,10 @@ function registerRpcHandlers(
     return { ok: true, channel };
   });
 
-  pipeServer.onRpc('a2a.channel.getMessages', async (params) => {
+  pipeServer.onRpc('a2a.channel.getMessages', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
@@ -1597,7 +1631,10 @@ function registerRpcHandlers(
     return { ok: true, messages: channelService.getMessages(channelId, sinceSeq, verifiedWorkspaceId, limit) };
   });
 
-  pipeServer.onRpc('a2a.channel.getMembers', async (params) => {
+  pipeServer.onRpc('a2a.channel.getMembers', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
@@ -1616,24 +1653,50 @@ function registerRpcHandlers(
     return { ok: true, members: channelService.getMembers(channelId, verifiedWorkspaceId) };
   });
 
-  pipeServer.onRpc('a2a.channel.ack', async (params) => {
+  pipeServer.onRpc('a2a.channel.ack', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
     const rawUpto = params['uptoSeq'];
-    // Guard NaN/Infinity/negative (review A1 P3) — uptoSeq is a monotonic seq floor.
-    const uptoSeq = typeof rawUpto === 'number' && Number.isFinite(rawUpto) && rawUpto >= 0 ? rawUpto : 0;
+    // Guard NaN/Infinity/negative/fractional (review A1 P3 + CodeRabbit) —
+    // uptoSeq is a monotonic seq floor and the cursor it advances persists,
+    // so only whole seq values may reach ChannelService.ack. Invalid ⇒ 0
+    // (a no-op ack: the cursor never moves backwards).
+    const uptoSeq = typeof rawUpto === 'number' && Number.isSafeInteger(rawUpto) && rawUpto >= 0 ? rawUpto : 0;
+    // Channels v2: optional member narrowing (agent path). Absent = whole-ws ack.
+    const memberId = typeof params['memberId'] === 'string' && params['memberId'].length > 0 ? params['memberId'] : undefined;
     if (!channelId) {
       return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
     }
     if (!verifiedWorkspaceId) {
       return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
     }
-    return channelService.ack({ channelId, verifiedWorkspaceId, uptoSeq });
+    return channelService.ack({ channelId, verifiedWorkspaceId, uptoSeq, ...(memberId !== undefined ? { memberId } : {}) });
   });
 
-  pipeServer.onRpc('a2a.channel.create', async (params) => {
-    const p = params as unknown as import('./channels/ChannelService').CreateChannelParams;
+  // Channels v2 — per-member unread summary (durable-inbox read model).
+  // Read-only; the wake worker computes the same numbers in-process, this
+  // RPC is the CLI/agent surface.
+  pipeServer.onRpc('a2a.channel.unread', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    const memberId = typeof params['memberId'] === 'string' && params['memberId'].length > 0 ? params['memberId'] : undefined;
+    return { ok: true, entries: channelService.unreadFor(verifiedWorkspaceId, memberId) };
+  });
+
+  pipeServer.onRpc('a2a.channel.create', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'ref', key: 'createdBy' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params as unknown as import('./channels/ChannelService').CreateChannelParams;
     if (!p.name || !p.visibility || !p.createdBy) {
       return { ok: false, error: { code: 'INVALID_NAME', message: 'name, visibility, and createdBy are required' } };
     }
@@ -1652,6 +1715,10 @@ function registerRpcHandlers(
     return channelService.create(p);
   });
 
+  // NOTE (Channels v2 Step 0): archive is deliberately NOT run through
+  // `stampCaller` — archive/kick are HUMANS-ONLY (renderer-local mutate path,
+  // which pre-stamps verifiedWorkspaceId). Stamping here would hand every
+  // pane agent an honest daemon-pipe route to a destructive humans-only op.
   pipeServer.onRpc('a2a.channel.archive', async (params) => {
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const archivedBy = typeof params['archivedBy'] === 'string' ? params['archivedBy'] : '';
@@ -1669,8 +1736,10 @@ function registerRpcHandlers(
     return channelService.archive({ channelId, archivedBy, verifiedWorkspaceId });
   });
 
-  pipeServer.onRpc('a2a.channel.join', async (params) => {
-    const p = params as unknown as import('./channels/ChannelService').JoinChannelParams;
+  pipeServer.onRpc('a2a.channel.join', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'ref', key: 'member' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params as unknown as import('./channels/ChannelService').JoinChannelParams;
     if (!p.channelId || !p.member || !p.verifiedWorkspaceId) {
       return {
         ok: false,
@@ -1680,8 +1749,10 @@ function registerRpcHandlers(
     return channelService.join(p);
   });
 
-  pipeServer.onRpc('a2a.channel.leave', async (params) => {
-    const p = params as unknown as import('./channels/ChannelService').LeaveChannelParams;
+  pipeServer.onRpc('a2a.channel.leave', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'flat', key: 'workspaceId' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params as unknown as import('./channels/ChannelService').LeaveChannelParams;
     if (!p.channelId || !p.workspaceId || !p.memberId || !p.verifiedWorkspaceId) {
       return {
         ok: false,
@@ -1691,8 +1762,10 @@ function registerRpcHandlers(
     return channelService.leave(p);
   });
 
-  pipeServer.onRpc('a2a.channel.post', async (params) => {
-    const p = params as unknown as import('./channels/ChannelService').PostMessageParams;
+  pipeServer.onRpc('a2a.channel.post', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'ref', key: 'sender' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params as unknown as import('./channels/ChannelService').PostMessageParams;
     if (!p.channelId || !p.sender || typeof p.text !== 'string' || !p.verifiedWorkspaceId) {
       return {
         ok: false,
@@ -1705,8 +1778,12 @@ function registerRpcHandlers(
     return channelService.post(p);
   });
 
-  pipeServer.onRpc('a2a.channel.invite', async (params) => {
-    const p = params as unknown as import('./channels/ChannelService').InviteChannelParams;
+  pipeServer.onRpc('a2a.channel.invite', async (rawParams) => {
+    // NOTE: `invitedMember` is a TARGET identity, never backfilled — only the
+    // INVITER's verifiedWorkspaceId is stamped here.
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params as unknown as import('./channels/ChannelService').InviteChannelParams;
     if (
       !p.channelId ||
       !p.invitedMember ||
@@ -1731,6 +1808,7 @@ function registerRpcHandlers(
   // 'a2a.channel.kick', so no MCP/agent client can reach it — only the renderer-only
   // channels:mutate-local IPC forwards it. See KickChannelParams for the rationale.
   pipeServer.onRpc('a2a.channel.kick', async (params) => {
+    // Deliberately NOT stamped (humans-only, same rationale as archive above).
     const p = params as unknown as import('./channels/ChannelService').KickChannelParams;
     if (!p.channelId || !p.targetWorkspaceId || !p.targetMemberId || !p.verifiedWorkspaceId) {
       return {
@@ -2245,6 +2323,9 @@ let paneSupervisorRef: PaneSupervisor | null = null;
 // (close the net.Server, drop live connections, remove the firewall rules).
 let lanLinkServerRef: LanLinkServer | null = null;
 
+// Channels v2 — wake worker handle for shutdown + the emit fast path.
+let channelWakeWorkerRef: ChannelWakeWorker | null = null;
+
 // === State builder ===
 
 /** Cached boot ID — populated at startup via initBootId() */
@@ -2332,6 +2413,11 @@ async function shutdown(
 
   // Stop watchdog
   watchdog.stop();
+
+  // Channels v2 — stop the wake worker BEFORE sessions are torn down so a
+  // pending Enter timer can never write into a disposed PTY.
+  try { channelWakeWorkerRef?.stop(); } catch { /* best effort */ }
+  channelWakeWorkerRef = null;
 
   // X8: cancel pending supervised restarts FIRST — a backoff timer firing
   // mid-shutdown would spawn a fresh PTY between the buffer dump and
@@ -2520,12 +2606,78 @@ async function main(): Promise<void> {
           pipeServer.broadcast(wrapChannelCatalogEnvelope(event));
         } else {
           pipeServer.broadcast(wrapChannelMessageEnvelope(event));
+          // Channels v2 wake fast-path: a fresh post means someone may owe a
+          // read — sweep soon instead of waiting for the next 15 s tick.
+          // Correctness never depends on this (pull path owns it).
+          channelWakeWorkerRef?.notifyChannelActivity();
         }
       } catch (err) {
         const ref = event.type === 'channel.catalog' ? event.channelId : `${event.channelId}#${event.seq}`;
         log('warn', `channel emit failed for ${ref}:`, err);
       }
     },
+  });
+
+  // Channels v2 Step 3a — the wake worker (see channelWakeWorker.ts for the
+  // full strategy stack + safety rules). Adapters keep it decoupled: session
+  // views come from the manager's live list, the workspace binding is the
+  // SAME env-record read the Step 0 stamping uses, and writes go through the
+  // session's PTY exactly like client keystrokes.
+  channelWakeWorkerRef = new ChannelWakeWorker({
+    memberWorkspaces: () => channelService.memberWorkspaces(),
+    unreadFor: (ws) => channelService.unreadFor(ws),
+    listLiveSessions: () =>
+      sessionManager.listLiveSessions().map((meta) => ({
+        id: meta.id,
+        ...(meta.lastDetectedAgent !== undefined ? { lastDetectedAgent: meta.lastDetectedAgent as string } : {}),
+        // Fail SAFE on a broken/missing timestamp (GLM review): a NaN getTime()
+        // must not become 0, which reads as "quiet since the epoch" and makes
+        // the pane permanently pass the quiet gate (perpetual nudge candidate).
+        // Unknown last-activity ⇒ treat as JUST active ⇒ the quiet gate holds
+        // off — the accelerator stays silent, the pull path still owns delivery.
+        lastActivityMs: (() => {
+          const t = new Date(meta.lastActivity).getTime();
+          return Number.isFinite(t) ? t : Date.now();
+        })(),
+        // Same env-record binding the Step 0 stamping reads (main stamps
+        // WMUX_WORKSPACE_ID into the session env at spawn; the daemon
+        // persists it) — meta already carries env, no getSession round-trip.
+        workspaceId: (meta.env?.[ENV_KEYS.WORKSPACE_ID] ?? '').trim(),
+        // Dogfood G5: a recovered session still in deferred-output mode is
+        // bookkept live but renders nothing and holds no agent — the worker
+        // must never spend nudges on it.
+        deferred: sessionManager.getSession(meta.id)?.deferred === true,
+        // Attached ⇔ a renderer holds this session ⇔ the Stop-hook mention
+        // path can deliver to Claude panes. Detached (headless) Claude panes
+        // are the worker's job (Codex round-3).
+        attached: meta.state === 'attached',
+      })),
+    // Contract: this MAY throw (a pane can die between target selection and
+    // the write; writing a destroyed PTY stream throws synchronously — and a
+    // session GONE from the manager throws here explicitly, because a silent
+    // no-op would let inject() report success and burn the nudge budget with
+    // zero bytes delivered, Codex re-review). Do NOT swallow either case —
+    // the worker catches the throw itself, treats it as failed delivery, and
+    // PRESERVES the budget for a retry (G5: never spend nudges into a void).
+    // Its timer entry points are also guarded, so a throw can never escape
+    // into the event loop.
+    write: (sessionId, data) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) throw new Error(`session ${sessionId} is gone`);
+      managed.ptyProcess.write(data);
+    },
+    // Envelope discipline (channelEventEnvelope.ts, plan R2 lesson): the
+    // control pipe carries DaemonEvent {type, sessionId, data} — a raw
+    // payload broadcast would be silently unmatched by DaemonClient's
+    // switch, which is exactly how channel.message was once lost. The
+    // worker's one broadcast today is nudge exhaustion (human handoff).
+    broadcast: (event) => {
+      if (event['type'] === 'channel.nudgeExhausted') {
+        pipeServer.broadcast({ type: 'channel.nudgeExhausted', sessionId: '', data: event });
+      }
+    },
+    log: (level, message) => log(level, message),
+    now: () => Date.now(),
   });
   const processMonitor = new ProcessMonitor();
 
@@ -2786,6 +2938,9 @@ async function main(): Promise<void> {
     memory: process.memoryUsage().rss,
     uptime: Math.floor((Date.now() - startTime) / 1000),
   }));
+
+  // Channels v2 — start the wake worker sweep (15 s tick + post fast-path).
+  channelWakeWorkerRef?.start();
 
   // 8b. Reap dead sessions that exceeded their TTL (hourly)
   const reapInterval = setInterval(() => {
