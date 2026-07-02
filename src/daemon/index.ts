@@ -1657,13 +1657,31 @@ function registerRpcHandlers(
     const rawUpto = params['uptoSeq'];
     // Guard NaN/Infinity/negative (review A1 P3) — uptoSeq is a monotonic seq floor.
     const uptoSeq = typeof rawUpto === 'number' && Number.isFinite(rawUpto) && rawUpto >= 0 ? rawUpto : 0;
+    // Channels v2: optional member narrowing (agent path). Absent = whole-ws ack.
+    const memberId = typeof params['memberId'] === 'string' && params['memberId'].length > 0 ? params['memberId'] : undefined;
     if (!channelId) {
       return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
     }
     if (!verifiedWorkspaceId) {
       return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
     }
-    return channelService.ack({ channelId, verifiedWorkspaceId, uptoSeq });
+    return channelService.ack({ channelId, verifiedWorkspaceId, uptoSeq, ...(memberId !== undefined ? { memberId } : {}) });
+  });
+
+  // Channels v2 — per-member unread summary (durable-inbox read model).
+  // Read-only; the wake worker computes the same numbers in-process, this
+  // RPC is the CLI/agent surface.
+  pipeServer.onRpc('a2a.channel.unread', async (rawParams) => {
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const params = stamped.params;
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    const memberId = typeof params['memberId'] === 'string' && params['memberId'].length > 0 ? params['memberId'] : undefined;
+    return { ok: true, entries: channelService.unreadFor(verifiedWorkspaceId, memberId) };
   });
 
   pipeServer.onRpc('a2a.channel.create', async (rawParams) => {

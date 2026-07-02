@@ -220,7 +220,8 @@ export type RpcMethod =
   | 'a2a.channel.post'
   | 'a2a.channel.invite'
   | 'a2a.channel.kick'
-  | 'a2a.channel.ack';
+  | 'a2a.channel.ack'
+  | 'a2a.channel.unread';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -347,6 +348,7 @@ export const ALL_RPC_METHODS = [
   'a2a.channel.invite',
   'a2a.channel.kick',
   'a2a.channel.ack',
+  'a2a.channel.unread',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===

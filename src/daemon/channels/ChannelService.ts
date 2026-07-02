@@ -321,6 +321,20 @@ export class ChannelService {
     this.ceoWorkspaceId = deps.ceoWorkspaceId;
     this.emit = deps.emit;
     this.now = deps.now ?? (() => Date.now());
+    // Channels v2 cursor backfill — member rows persisted before the
+    // `lastReadSeq` field existed get the channel HEAD ("start reading from
+    // now"), NOT 0: a 0 default would flag the entire history unread on
+    // upgrade and trigger a re-nudge storm (design doc, spec-review issue 4).
+    // Deterministic on every construction, so a crash before the next persist
+    // simply re-derives the same values.
+    for (const channel of this.state.channels) {
+      const head = channel.nextSeq - 1;
+      for (const member of this.state.members[channel.id] ?? []) {
+        if (typeof member.lastReadSeq !== 'number' || !Number.isFinite(member.lastReadSeq)) {
+          member.lastReadSeq = head;
+        }
+      }
+    }
     // Hydrate the idempotency LRU from persisted state (R9). Without
     // this, a daemon restart loses every `clientMsgId → seq` mapping
     // and a retry after restart silently allocates a fresh seq — the
@@ -538,6 +552,9 @@ export class ChannelService {
           memberId: params.createdBy.memberId,
           joinedAt: now,
           historyFromSeq: 0,
+          // v2 cursor seeded at head (nextSeq-1 = 0 on a fresh channel):
+          // a brand-new channel starts with zero unread.
+          lastReadSeq: 0,
         },
       ];
       for (const member of params.members ?? []) {
@@ -553,6 +570,7 @@ export class ChannelService {
           memberId: member.memberId,
           joinedAt: now,
           historyFromSeq: 0,
+          lastReadSeq: 0,
         });
       }
       this.state.members[channel.id] = initialMembers;
@@ -706,6 +724,10 @@ export class ChannelService {
         memberId: params.member.memberId,
         joinedAt: now,
         historyFromSeq,
+        // v2 cursor: "start reading from now" — a joiner may SEE history
+        // (historyFromSeq) but does not owe an ack for the backlog; unread
+        // starts at 0 so the wake worker never nudge-storms a fresh member.
+        lastReadSeq: channel.nextSeq - 1,
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
@@ -1299,7 +1321,14 @@ export class ChannelService {
     channelId: string;
     verifiedWorkspaceId: string;
     uptoSeq: number;
-  }): Promise<Result<{ acked: number }>> {
+    /**
+     * Channels v2: narrow the cursor advance to ONE member row (agent
+     * CLI/MCP path). Absent = advance every row of the verified workspace
+     * (renderer "human read the channel" semantics). recipientSnapshot
+     * flips stay workspace-scoped either way (legacy delivery bookkeeping).
+     */
+    memberId?: string;
+  }): Promise<Result<{ acked: number; lastReadSeq?: number }>> {
     return this.withChannelLock(params.channelId, async () => {
       const channel = this.state.channels.find((c) => c.id === params.channelId);
       // Symmetric existence-hiding with get/getMessages: a non-member of a
@@ -1341,6 +1370,22 @@ export class ChannelService {
           }
         }
       }
+      // Channels v2 — advance the durable per-member read cursor alongside the
+      // legacy recipientSnapshot flips. Advance-only, clamped to the channel
+      // head: an ack can never mark the future read nor move backwards.
+      // `memberId` narrows the ack to one member row (the agent CLI/MCP path
+      // supplies it); absent = every row of the verified workspace (the
+      // renderer's "human read the channel" semantics, unchanged).
+      const cursorTarget = Math.min(params.uptoSeq, channel.nextSeq - 1);
+      const cursorFlips: Array<{ row: ChannelMember; prev: number | undefined }> = [];
+      for (const row of this.state.members[params.channelId] ?? []) {
+        if (row.workspaceId !== params.verifiedWorkspaceId) continue;
+        if (params.memberId !== undefined && row.memberId !== params.memberId) continue;
+        const current = typeof row.lastReadSeq === 'number' ? row.lastReadSeq : -1;
+        if (cursorTarget > current) {
+          cursorFlips.push({ row, prev: row.lastReadSeq });
+        }
+      }
       const now = this.now();
       for (const f of flips) {
         f.entry.status = 'delivered';
@@ -1350,17 +1395,101 @@ export class ChannelService {
         // per-recipient detail remains in recipientSnapshot for callers who need it).
         if (f.msg.deliveryStatus !== 'delivered') f.msg.deliveryStatus = 'delivered';
       }
-      if (flips.length > 0 && !this.saveOrFail()) {
+      for (const f of cursorFlips) {
+        f.row.lastReadSeq = cursorTarget;
+      }
+      if ((flips.length > 0 || cursorFlips.length > 0) && !this.saveOrFail()) {
         // Roll back the in-memory flips so memory ↔ disk stay consistent.
         for (const f of flips) {
           f.entry.status = f.prevEntryStatus;
           f.entry.lastAttemptAt = f.prevLastAttemptAt;
           f.msg.deliveryStatus = f.prevMsgStatus;
         }
+        for (const f of cursorFlips) {
+          f.row.lastReadSeq = f.prev;
+        }
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
       }
-      return { ok: true, acked: flips.length };
+      return { ok: true, acked: flips.length, lastReadSeq: cursorTarget };
     });
+  }
+
+  /**
+   * Channels v2 — per-member unread summary for the verified caller.
+   * `unread` counts retained messages this member may see (seq ≥
+   * historyFromSeq) beyond its cursor; `mentionUnread` narrows that to
+   * messages that @-mention the caller (workspace-level mention, or a
+   * memberId-targeted mention matching this row). `trimmedBeforeCursor`
+   * reports messages that retention removed BEFORE the member consumed
+   * them — silent loss is the one thing this subsystem must never do, so
+   * the gap is surfaced, not swallowed (design doc, spec-review issue 5).
+   * Today nothing trims the log, so it is 0; the field exists so the cap
+   * work lights it up instead of adding a new wire shape.
+   */
+  unreadFor(
+    verifiedWorkspaceId: string,
+    memberId?: string,
+  ): Array<{
+    channelId: string;
+    name: string;
+    memberId: string;
+    lastReadSeq: number;
+    headSeq: number;
+    unread: number;
+    mentionUnread: number;
+    trimmedBeforeCursor: number;
+  }> {
+    const out: Array<{
+      channelId: string;
+      name: string;
+      memberId: string;
+      lastReadSeq: number;
+      headSeq: number;
+      unread: number;
+      mentionUnread: number;
+      trimmedBeforeCursor: number;
+    }> = [];
+    for (const channel of this.state.channels) {
+      if (channel.status === 'archived') continue;
+      const rows = (this.state.members[channel.id] ?? []).filter(
+        (m) => m.workspaceId === verifiedWorkspaceId && (memberId === undefined || m.memberId === memberId),
+      );
+      if (rows.length === 0) continue;
+      const msgs = this.state.messages[channel.id] ?? [];
+      const headSeq = channel.nextSeq - 1;
+      for (const row of rows) {
+        const cursor = typeof row.lastReadSeq === 'number' ? row.lastReadSeq : headSeq;
+        const visibleFloor = row.historyFromSeq;
+        let unread = 0;
+        let mentionUnread = 0;
+        for (const m of msgs) {
+          if (m.seq <= cursor || m.seq < visibleFloor) continue;
+          unread += 1;
+          const mentioned = (m.mentions ?? []).some(
+            (men) =>
+              men.workspaceId === verifiedWorkspaceId &&
+              (men.memberId === undefined || men.memberId === row.memberId),
+          );
+          if (mentioned) mentionUnread += 1;
+        }
+        // Retained-log gap: messages between the cursor and the first retained
+        // seq were trimmed before this member read them.
+        const firstRetainedSeq = msgs.length > 0 ? msgs[0].seq : headSeq + 1;
+        const firstUnconsumed = Math.max(cursor + 1, visibleFloor);
+        const trimmedBeforeCursor = Math.max(0, firstRetainedSeq - firstUnconsumed);
+        out.push({
+          channelId: channel.id,
+          name: channel.name,
+          memberId: row.memberId,
+          lastReadSeq: cursor,
+          headSeq,
+          unread,
+          mentionUnread,
+          trimmedBeforeCursor,
+        });
+      }
+    }
+    return out;
   }
 
   // ── Internals ──────────────────────────────────────────────────────
