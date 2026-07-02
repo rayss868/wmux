@@ -12,7 +12,7 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec } from './channels';
+import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec } from './channels';
 import { DEFAULT_COMPANY_ID } from '../shared/channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
@@ -2314,6 +2314,9 @@ let paneSupervisorRef: PaneSupervisor | null = null;
 // (close the net.Server, drop live connections, remove the firewall rules).
 let lanLinkServerRef: LanLinkServer | null = null;
 
+// Channels v2 — wake worker handle for shutdown + the emit fast path.
+let channelWakeWorkerRef: ChannelWakeWorker | null = null;
+
 // === State builder ===
 
 /** Cached boot ID — populated at startup via initBootId() */
@@ -2401,6 +2404,11 @@ async function shutdown(
 
   // Stop watchdog
   watchdog.stop();
+
+  // Channels v2 — stop the wake worker BEFORE sessions are torn down so a
+  // pending Enter timer can never write into a disposed PTY.
+  try { channelWakeWorkerRef?.stop(); } catch { /* best effort */ }
+  channelWakeWorkerRef = null;
 
   // X8: cancel pending supervised restarts FIRST — a backoff timer firing
   // mid-shutdown would spawn a fresh PTY between the buffer dump and
@@ -2589,12 +2597,42 @@ async function main(): Promise<void> {
           pipeServer.broadcast(wrapChannelCatalogEnvelope(event));
         } else {
           pipeServer.broadcast(wrapChannelMessageEnvelope(event));
+          // Channels v2 wake fast-path: a fresh post means someone may owe a
+          // read — sweep soon instead of waiting for the next 15 s tick.
+          // Correctness never depends on this (pull path owns it).
+          channelWakeWorkerRef?.notifyChannelActivity();
         }
       } catch (err) {
         const ref = event.type === 'channel.catalog' ? event.channelId : `${event.channelId}#${event.seq}`;
         log('warn', `channel emit failed for ${ref}:`, err);
       }
     },
+  });
+
+  // Channels v2 Step 3a — the wake worker (see channelWakeWorker.ts for the
+  // full strategy stack + safety rules). Adapters keep it decoupled: session
+  // views come from the manager's live list, the workspace binding is the
+  // SAME env-record read the Step 0 stamping uses, and writes go through the
+  // session's PTY exactly like client keystrokes.
+  channelWakeWorkerRef = new ChannelWakeWorker({
+    memberWorkspaces: () => channelService.memberWorkspaces(),
+    unreadFor: (ws) => channelService.unreadFor(ws),
+    listLiveSessions: () =>
+      sessionManager.listLiveSessions().map((meta) => ({
+        id: meta.id,
+        ...(meta.lastDetectedAgent !== undefined ? { lastDetectedAgent: meta.lastDetectedAgent as string } : {}),
+        lastActivityMs: new Date(meta.lastActivity).getTime() || 0,
+        // Same env-record binding the Step 0 stamping reads (main stamps
+        // WMUX_WORKSPACE_ID into the session env at spawn; the daemon
+        // persists it) — meta already carries env, no getSession round-trip.
+        workspaceId: (meta.env?.[ENV_KEYS.WORKSPACE_ID] ?? '').trim(),
+      })),
+    write: (sessionId, data) => {
+      sessionManager.getSession(sessionId)?.ptyProcess.write(data);
+    },
+    broadcast: (event) => pipeServer.broadcast(event as never),
+    log: (level, message) => log(level, message),
+    now: () => Date.now(),
   });
   const processMonitor = new ProcessMonitor();
 
@@ -2855,6 +2893,9 @@ async function main(): Promise<void> {
     memory: process.memoryUsage().rss,
     uptime: Math.floor((Date.now() - startTime) / 1000),
   }));
+
+  // Channels v2 — start the wake worker sweep (15 s tick + post fast-path).
+  channelWakeWorkerRef?.start();
 
   // 8b. Reap dead sessions that exceeded their TTL (hourly)
   const reapInterval = setInterval(() => {

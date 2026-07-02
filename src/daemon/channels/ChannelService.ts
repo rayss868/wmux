@@ -1426,6 +1426,20 @@ export class ChannelService {
    * Today nothing trims the log, so it is 0; the field exists so the cap
    * work lights it up instead of adding a new wire shape.
    */
+  /**
+   * Distinct workspaces that hold ≥1 member row in any non-archived channel.
+   * The wake worker sweeps these — it must not invent recipients, only serve
+   * the membership the daemon already persists.
+   */
+  memberWorkspaces(): string[] {
+    const out = new Set<string>();
+    for (const channel of this.state.channels) {
+      if (channel.status === 'archived') continue;
+      for (const m of this.state.members[channel.id] ?? []) out.add(m.workspaceId);
+    }
+    return Array.from(out);
+  }
+
   unreadFor(
     verifiedWorkspaceId: string,
     memberId?: string,
