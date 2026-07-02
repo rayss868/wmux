@@ -2639,6 +2639,10 @@ async function main(): Promise<void> {
         // bookkept live but renders nothing and holds no agent — the worker
         // must never spend nudges on it.
         deferred: sessionManager.getSession(meta.id)?.deferred === true,
+        // Attached ⇔ a renderer holds this session ⇔ the Stop-hook mention
+        // path can deliver to Claude panes. Detached (headless) Claude panes
+        // are the worker's job (Codex round-3).
+        attached: meta.state === 'attached',
       })),
     // Contract: this MAY throw (a pane can die between target selection and
     // the write; writing a destroyed PTY stream throws synchronously — and a

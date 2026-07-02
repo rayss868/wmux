@@ -132,17 +132,25 @@ async function callChannel(
   return result ?? {};
 }
 
-/** `<channel>` accepts a channel id (ch-…) or a name; names resolve via list. */
+/**
+ * `<channel>` accepts a channel id or a name. Channel NAMES may legally
+ * start with "ch-" too (lowercase letters/digits/hyphens), so a prefix
+ * check cannot separate the two (Codex round-3: a channel named
+ * "ch-release" was unreachable by name). Resolution: exact id in the
+ * caller's visible listing wins, then exact unique name; an unmatched
+ * ch-… ref passes through so the daemon answers authoritatively.
+ */
 async function resolveChannelId(ref: string): Promise<string> {
-  if (ref.startsWith('ch-')) return ref;
   const result = await callChannel('a2a.channel.list' as RpcMethod, {}, { mutating: false });
   const channels = (result['channels'] as Array<{ id?: string; name?: string; status?: string }> | undefined) ?? [];
+  if (channels.some((c) => c.id === ref)) return ref;
   const matches = channels.filter((c) => c.name === ref);
   if (matches.length === 1 && typeof matches[0].id === 'string') return matches[0].id;
   if (matches.length > 1) {
     console.error(`Error: channel name "${ref}" is ambiguous (${matches.length} matches) — use the channel id.`);
     process.exit(1);
   }
+  if (ref.startsWith('ch-')) return ref;
   console.error(
     `Error: no visible channel named "${ref}". Run \`wmux channel list\` to see what your workspace can reach.`,
   );
@@ -319,13 +327,25 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
       if (sinceUsed !== undefined && messages.length === limitUsed) {
         console.log(`(full page — more may remain: wmux channel read ${channelId} --since ${last.seq + 1})`);
       }
-      if (rows.length > 1 && sinceUsed === undefined) {
-        // Multi-row workspace browsing the tail: acking this page's head seq
-        // could jump a cursor over unseen middle messages — route through the
-        // per-row cursors instead of printing a lossy one-liner.
-        console.log(
-          `(this workspace has ${rows.length} member rows — run: wmux channel unread, then read --since <cursor+1> and ack --member <id>)`,
-        );
+      if (rows.length > 1) {
+        // Multi-row workspace: a bare ack would hit the never-guess error, so
+        // the hint must carry the member (Codex round-3) — from an explicit
+        // --member on this read, or by mapping --since back to the ONE row
+        // whose cursor it came from (the unread output prints per-row
+        // `--since cursor+1`, so the mapping is usually exact).
+        const explicit = parseFlag(args, '--member');
+        const matched = sinceUsed !== undefined ? rows.filter((r) => r.lastReadSeq + 1 === sinceUsed) : [];
+        const hintId = explicit ?? (matched.length === 1 ? matched[0].memberId : undefined);
+        if (hintId !== undefined) {
+          console.log(`(consumed? then: wmux channel ack ${channelId} ${last.seq} --member ${hintId})`);
+        } else {
+          // No safe attribution (tail browse / ambiguous cursor match) —
+          // route through the per-row cursors instead of printing a command
+          // that either errors or jumps a cursor over unseen messages.
+          console.log(
+            `(this workspace has ${rows.length} member rows — run: wmux channel unread, then read --since <cursor+1> and ack --member <id>)`,
+          );
+        }
       } else {
         console.log(`(consumed? then: wmux channel ack ${channelId} ${last.seq})`);
       }

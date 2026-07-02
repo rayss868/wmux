@@ -260,9 +260,12 @@ describe('pickTarget — never guess', () => {
     expect(target?.id).toBe('b');
   });
 
-  it('falls back to the ONLY non-claude session when no slug matches', () => {
+  it('falls back to the ONLY eligible session when no slug matches', () => {
     const target = pickTarget(
-      [session({ id: 'a', lastDetectedAgent: 'claude' }), session({ id: 'b', lastDetectedAgent: undefined })],
+      [
+        session({ id: 'a', lastDetectedAgent: 'claude', attached: true }),
+        session({ id: 'b', lastDetectedAgent: undefined }),
+      ],
       'ws-b',
       'reviewer',
     );
@@ -279,11 +282,23 @@ describe('pickTarget — never guess', () => {
     ).toBeNull();
   });
 
-  it('returns null when the only live session is a claude pane (Stop-hook owns it)', () => {
-    expect(pickTarget([session({ id: 'a', lastDetectedAgent: 'claude' })], 'ws-b', 'codex')).toBeNull();
-    // …and a claude pane is never picked even when the memberId literally
-    // says "claude" — the generic injector must not double-nudge that path.
-    expect(pickTarget([session({ id: 'a', lastDetectedAgent: 'claude' })], 'ws-b', 'claude')).toBeNull();
+  it('an ATTACHED claude pane is never picked (the renderer Stop-hook path owns it)', () => {
+    const attachedClaude = session({ id: 'a', lastDetectedAgent: 'claude', attached: true });
+    expect(pickTarget([attachedClaude], 'ws-b', 'codex')).toBeNull();
+    // …even when the memberId literally says "claude" — the generic injector
+    // must not double-nudge a pane the renderer path already delivers to.
+    expect(pickTarget([attachedClaude], 'ws-b', 'claude')).toBeNull();
+  });
+
+  it('a DETACHED claude pane IS a target — headless has no Stop-hook path (Codex round-3)', () => {
+    // No renderer attached (the reboot-recovery / GUI-closed window): the
+    // worker is the ONLY delivery path, so a Claude-only workspace must not
+    // stay silent forever (it never even reached the exhaustion handoff —
+    // no nudge was ever spent).
+    const headless = session({ id: 'a', lastDetectedAgent: 'claude' });
+    expect(pickTarget([headless], 'ws-b', 'claude')?.id).toBe('a');
+    // Fallback rule too: the only eligible pane in the workspace.
+    expect(pickTarget([headless], 'ws-b', 'codex')?.id).toBe('a');
   });
 
   it('never targets a session from another workspace', () => {

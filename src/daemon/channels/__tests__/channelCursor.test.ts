@@ -133,9 +133,13 @@ describe('lastReadSeq cursor', () => {
     if (r1.ok) expect(r1.lastReadSeq).toBe(2);
     expect(svc.unreadFor(B)[0].unread).toBe(0);
 
-    // Regression attempt: ack(1) after cursor=2 must not move backwards.
+    // Regression attempt: ack(1) after cursor=2 must not move backwards —
+    // and the RESPONSE must echo the row's actual cursor (2), not the stale
+    // request target (1): a client trusting the echo would otherwise believe
+    // the cursor rewound and re-read from seq 2 (Codex round-3).
     const r2 = await svc.ack({ channelId, verifiedWorkspaceId: B, uptoSeq: 1, memberId: 'codex' });
     expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.lastReadSeq).toBe(2);
     expect(svc.unreadFor(B)[0].lastReadSeq).toBe(2);
   });
 

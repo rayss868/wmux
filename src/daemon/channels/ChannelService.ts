@@ -1483,12 +1483,22 @@ export class ChannelService {
           'cursor',
         );
       }
-      // `lastReadSeq` echoes the advanced cursor — only meaningful for a
-      // member-scoped ack (a receipt-only ack moves no cursor).
+      // Echo the row's ACTUAL post-ack cursor, not the clamped request
+      // target: a stale/backward ack (row already past uptoSeq) performs no
+      // flip and must not report a rewind it never did — cursors are
+      // advance-only and clients trust this echo (Codex round-3). Only
+      // meaningful for a member-scoped ack (receipt-only moves no cursor).
+      let echoedCursor: number | undefined;
+      if (params.memberId !== undefined) {
+        const row = (this.state.members[params.channelId] ?? []).find(
+          (m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.memberId,
+        );
+        echoedCursor = row && typeof row.lastReadSeq === 'number' ? row.lastReadSeq : cursorTarget;
+      }
       return {
         ok: true,
         acked: flips.length,
-        ...(params.memberId !== undefined ? { lastReadSeq: cursorTarget } : {}),
+        ...(echoedCursor !== undefined ? { lastReadSeq: echoedCursor } : {}),
       };
     });
   }

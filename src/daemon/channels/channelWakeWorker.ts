@@ -8,8 +8,13 @@
 //   [wmux] #general: 2 unread (1 mention you) — run: wmux channel read ch-… --since 5
 //
 // Wake strategy stack (design doc):
-//   - Claude panes are SKIPPED here — the existing Stop-hook mention path
-//     owns them (surfaceAgent busy check, proven in production).
+//   - ATTACHED Claude panes are SKIPPED here — the renderer's Stop-hook
+//     mention path owns them (surfaceAgent busy check, proven in
+//     production). A DETACHED Claude pane has no renderer and therefore no
+//     Stop-hook path — headless (the reboot-recovery window) it is a valid
+//     injection target like any other agent (Codex round-3: a Claude-only
+//     workspace used to stay silent forever in headless, never even
+//     reaching the exhaustion handoff because no nudge was ever spent).
 //   - Generic panes (Codex/OpenCode/…) get the PTY injection below.
 //   - Agents that poll (`wmux channel unread` in AGENTS.md) need no nudge
 //     at all — the worker is an accelerator, never a dependency.
@@ -64,6 +69,13 @@ export interface WakeSessionView {
    * wake, so it is never an injection target.
    */
   deferred?: boolean;
+  /**
+   * True when a renderer is attached to this session (GUI alive). Claude
+   * panes are excluded ONLY while attached — the renderer's Stop-hook
+   * mention path owns them there. Detached = headless: no renderer path
+   * exists, so the worker must nudge Claude panes itself (Codex round-3).
+   */
+  attached?: boolean;
 }
 
 export interface ChannelWakeWorkerDeps {
@@ -272,10 +284,13 @@ export class ChannelWakeWorker {
  * Injection target discipline: never guess.
  *  0. deferred (recovered-not-yet-activated) sessions are excluded outright —
  *     no agent lives there and nothing renders (dogfood G5 finding);
- *  1. live non-claude session whose detected agent slug === memberId;
- *  2. else the ONLY live non-claude session in the workspace;
- *  3. else null (Claude panes ride the Stop-hook path; multi-pane ambiguity
- *     falls back to polling).
+ *  1. ATTACHED claude panes are excluded — the renderer's Stop-hook mention
+ *     path owns them while a GUI is alive; a DETACHED claude pane is
+ *     eligible like any agent (headless has no other delivery path —
+ *     Codex round-3);
+ *  2. eligible session whose detected agent slug === memberId;
+ *  3. else the ONLY eligible session in the workspace;
+ *  4. else null (multi-pane ambiguity falls back to polling).
  */
 export function pickTarget(
   sessions: WakeSessionView[],
@@ -283,10 +298,10 @@ export function pickTarget(
   memberId: string,
 ): WakeSessionView | null {
   const inWs = sessions.filter((s) => s.workspaceId === workspaceId && s.deferred !== true);
-  const nonClaude = inWs.filter((s) => s.lastDetectedAgent !== 'claude');
-  const slugMatch = nonClaude.filter((s) => s.lastDetectedAgent === memberId);
+  const eligible = inWs.filter((s) => s.lastDetectedAgent !== 'claude' || s.attached !== true);
+  const slugMatch = eligible.filter((s) => s.lastDetectedAgent === memberId);
   if (slugMatch.length === 1) return slugMatch[0];
   if (slugMatch.length > 1) return null;
-  if (nonClaude.length === 1) return nonClaude[0];
+  if (eligible.length === 1) return eligible[0];
   return null;
 }
