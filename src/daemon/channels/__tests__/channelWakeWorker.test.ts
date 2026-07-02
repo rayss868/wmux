@@ -123,6 +123,18 @@ describe('ChannelWakeWorker — injection mechanics', () => {
     expect(h.writes).toHaveLength(1);
   });
 
+  it('a JUST-active pane (lastActivityMs≈now) is held off by the quiet gate — GLM fail-safe', () => {
+    // The daemon adapter seeds a broken/missing lastActivity to Date.now()
+    // rather than 0 (which would read as "quiet since the epoch" and always
+    // pass the gate). Model that here: lastActivityMs === now ⇒ gate holds.
+    const h = makeHarness();
+    h.setNow(1_000_000);
+    h.setEntries([entry({ mentionUnread: 1 })]);
+    h.setSessions([session({ lastActivityMs: 1_000_000 })]);
+    h.worker.tickOnce();
+    expect(h.writes).toHaveLength(0);
+  });
+
   it('strips control characters from the injected line', () => {
     const h = makeHarness();
     h.setEntries([entry({ name: 'gen\x1b[31meral', mentionUnread: 1 })]);

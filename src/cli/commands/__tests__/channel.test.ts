@@ -83,6 +83,16 @@ describe('wmux channel — transport + identity', () => {
     });
   });
 
+  it('unread honors $WMUX_MEMBER_ID like post/ack (GLM review — consistent member filtering)', async () => {
+    process.env.WMUX_MEMBER_ID = 'codex';
+    daemonRpc.mockResolvedValue(okEnvelope({ ok: true, entries: [] }));
+    await handleChannel('unread', [], false);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.channel.unread', {
+      memberId: 'codex',
+      senderPtyId: 'pty-self',
+    });
+  });
+
   it('post sends sender WITHOUT workspaceId (daemon backfills from its own stamp)', async () => {
     daemonRpc.mockResolvedValue(okEnvelope({ ok: true, message: { seq: 3 } }));
     await handleChannel('post', ['ch-1', 'hello', 'world', '--member', 'codex'], false);
@@ -128,6 +138,15 @@ describe('wmux channel — transport + identity', () => {
     });
   });
 
+  it('ack rejects a fractional/oversized uptoSeq before any RPC (GLM review — no silent no-op)', async () => {
+    // 1.5 would pass the daemon's isSafeInteger guard as a clamp-to-0 no-op,
+    // then echo the row's real cursor and print a false success. Reject in CLI.
+    await expect(handleChannel('ack', ['ch-1', '1.5'], false)).rejects.toThrow(ExitCalled);
+    await expect(handleChannel('ack', ['ch-1', '99999999999999999'], false)).rejects.toThrow(ExitCalled);
+    expect(daemonRpc).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toContain('whole number');
+  });
+
   it('ack without --member on a MULTI-row workspace fails loudly (never guesses a cursor)', async () => {
     const mk = (memberId: string) => ({ channelId: 'ch-1', name: 'g', memberId, lastReadSeq: 0, headSeq: 3, unread: 3, mentionUnread: 0, trimmedBeforeCursor: 0 });
     daemonRpc
@@ -152,6 +171,17 @@ describe('wmux channel — transport + identity', () => {
       sender: { memberId: 'codex', memberName: 'codex' },
       senderPtyId: 'pty-self',
     });
+  });
+
+  it('read prints NO ack hint for a non-member (rows=0) — an ack there is a no-op (GLM review)', async () => {
+    daemonRpc
+      .mockResolvedValueOnce(okEnvelope({ ok: true, channels: [] })) // ref resolution
+      .mockResolvedValueOnce(okEnvelope({ ok: true, entries: [] }))   // quietOwnMemberRows → no rows
+      .mockResolvedValueOnce(okEnvelope({ ok: true, messages: [{ seq: 5, memberName: 'pm', text: 'hi' }] }));
+    await handleChannel('read', ['ch-1'], false);
+    const out = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(out).toContain('[seq 5] pm: hi');
+    expect(out).not.toContain('wmux channel ack'); // no misleading hint for a non-member
   });
 
   it('a channel NAME starting with "ch-" still resolves via the listing (exact ids win)', async () => {

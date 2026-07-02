@@ -2630,7 +2630,15 @@ async function main(): Promise<void> {
       sessionManager.listLiveSessions().map((meta) => ({
         id: meta.id,
         ...(meta.lastDetectedAgent !== undefined ? { lastDetectedAgent: meta.lastDetectedAgent as string } : {}),
-        lastActivityMs: new Date(meta.lastActivity).getTime() || 0,
+        // Fail SAFE on a broken/missing timestamp (GLM review): a NaN getTime()
+        // must not become 0, which reads as "quiet since the epoch" and makes
+        // the pane permanently pass the quiet gate (perpetual nudge candidate).
+        // Unknown last-activity ⇒ treat as JUST active ⇒ the quiet gate holds
+        // off — the accelerator stays silent, the pull path still owns delivery.
+        lastActivityMs: (() => {
+          const t = new Date(meta.lastActivity).getTime();
+          return Number.isFinite(t) ? t : Date.now();
+        })(),
         // Same env-record binding the Step 0 stamping reads (main stamps
         // WMUX_WORKSPACE_ID into the session env at spawn; the daemon
         // persists it) — meta already carries env, no getSession round-trip.

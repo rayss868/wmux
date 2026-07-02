@@ -253,7 +253,11 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
   const positionals = positionalsOf(args).concat(verbatim);
   switch (sub) {
     case 'unread': {
-      const memberId = parseFlag(args, '--member');
+      // Same identity ladder as post/ack (GLM review): explicit --member, then
+      // $WMUX_MEMBER_ID — so a multi-agent workspace that pins its member id in
+      // the env gets a filtered summary here too, not the whole workspace's rows.
+      // Absent both = every row (the daemon's default).
+      const memberId = parseFlag(args, '--member') ?? (process.env['WMUX_MEMBER_ID'] || undefined);
       const result = await callChannel(
         'a2a.channel.unread' as RpcMethod,
         { ...(memberId !== undefined ? { memberId } : {}) },
@@ -346,9 +350,12 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
             `(this workspace has ${rows.length} member rows — run: wmux channel unread, then read --since <cursor+1> and ack --member <id>)`,
           );
         }
-      } else {
+      } else if (rows.length === 1) {
         console.log(`(consumed? then: wmux channel ack ${channelId} ${last.seq})`);
       }
+      // rows.length === 0 (not a member / browsing) prints NO ack hint (GLM
+      // review): this caller has no cursor, so an ack would be a receipt-only
+      // no-op — a hint here just invites a command that does nothing.
       return;
     }
 
@@ -397,14 +404,20 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         console.error("Usage: wmux channel ack <channel> <uptoSeq|all> [--member <id>]");
         process.exit(1);
       }
-      await requirePaneIdentityOrExit();
-      const channelId = await resolveChannelId(ref);
-      // 'all' = everything currently in the channel; the daemon clamps to head.
+      // Validate the seq BEFORE any network round-trip (fail fast on a local
+      // arg). 'all' = everything currently in the channel; the daemon clamps
+      // to head. Require a whole seq (GLM review): the daemon rejects
+      // fractional/oversized uptoSeq by clamping to 0 (a no-op), but then
+      // echoes the row's ACTUAL cursor — so `ack ch 1.5` would print
+      // "Acked … up to seq <current>" and look successful while nothing moved.
+      // MAX_SAFE_INTEGER ('all') is itself a safe integer, so the sentinel passes.
       const uptoSeq = uptoRaw === 'all' ? Number.MAX_SAFE_INTEGER : Number(uptoRaw);
-      if (!Number.isFinite(uptoSeq) || uptoSeq < 0) {
-        console.error(`Error: uptoSeq must be a non-negative number or 'all' (got "${uptoRaw}").`);
+      if (!Number.isSafeInteger(uptoSeq) || uptoSeq < 0) {
+        console.error(`Error: uptoSeq must be a non-negative whole number or 'all' (got "${uptoRaw}").`);
         process.exit(1);
       }
+      await requirePaneIdentityOrExit();
+      const channelId = await resolveChannelId(ref);
       // Which cursor moves? Resolve MY row — never a made-up default (see
       // resolveOwnMemberId). undefined (not a member) sends no memberId so
       // the daemon answers honestly instead of no-opping a phantom row.
