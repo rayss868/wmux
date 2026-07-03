@@ -66,6 +66,16 @@ describe('useTerminal blocks xterm native paste only when it races a keydown pas
     expect(cleanupIdx).toBeGreaterThan(blockerIdx);
     expect(SRC).toMatch(/container\.removeEventListener\('paste', blockNativePaste, true\)/);
   });
+
+  it('gates both the registration and the cleanup behind a macOS-only platform check', () => {
+    // 리서치 2패스 확인: Windows/Linux는 액셀러레이터가 렌더러 우선 + preventDefault로
+    // 억제되고 Electron paste role이 registerAccelerator:false라 레이스할 두 번째 네이티브
+    // writer가 없다. Linux는 X11 middle-click PRIMARY paste 오검출 위험까지 있어, 가드는
+    // macOS에서만 켜야 한다. isMac은 이 파일의 기존 관례(darwin 판별)를 그대로 쓴다.
+    expect(SRC).toMatch(/const isMac = window\.electronAPI\?\.platform === 'darwin';/);
+    expect(SRC).toMatch(/if\s*\(isMac\)\s*\{\s*container\.addEventListener\('paste', blockNativePaste, true\);\s*\}/);
+    expect(SRC).toMatch(/if\s*\(isMac\)\s*\{\s*container\.removeEventListener\('paste', blockNativePaste, true\);\s*\}/);
+  });
 });
 
 describe('windowed capture-phase blocker (DOM mechanism, mirrors the deployed logic)', () => {
@@ -134,5 +144,42 @@ describe('windowed capture-phase blocker (DOM mechanism, mirrors the deployed lo
 
     expect(childListener).toHaveBeenCalledTimes(1);
     cleanup();
+  });
+
+  it('never registers the blocker on non-macOS, so a native paste reaches xterm even mid-race', () => {
+    // 배포 로직 미러: 소스와 똑같이 window.electronAPI.platform으로 isMac을 도출한다.
+    // 비-macOS면 container 리스너를 아예 안 붙이므로, keydown 직후(레이스 창 안)라도
+    // native paste가 그대로 자식(xterm textarea)까지 도달한다. Windows/Linux엔 레이스할
+    // 두 번째 writer가 없고, Linux는 X11 middle-click PRIMARY paste 오검출 위험까지 있다.
+    const w = window as unknown as { electronAPI?: { platform?: string } };
+    const prev = w.electronAPI;
+    w.electronAPI = { platform: 'win32' }; // 비-macOS (Windows/Linux 동일 결론)
+    try {
+      const container = document.createElement('div');
+      const child = document.createElement('textarea');
+      container.appendChild(child);
+      document.body.appendChild(container);
+
+      const childListener = vi.fn();
+      child.addEventListener('paste', childListener);
+
+      let lastPasteKeydownAt = 0;
+      const blockNativePaste = (e: Event): void => {
+        if (Date.now() - lastPasteKeydownAt > NATIVE_PASTE_RACE_WINDOW_MS) return;
+        e.preventDefault();
+        e.stopPropagation();
+      };
+      const isMac = w.electronAPI?.platform === 'darwin'; // 소스와 동일한 도출식
+      if (isMac) container.addEventListener('paste', blockNativePaste, true);
+
+      lastPasteKeydownAt = Date.now(); // Ctrl+V가 방금 눌림 = 레이스 창 안
+      child.dispatchEvent(new Event('paste', { bubbles: true, cancelable: true }));
+
+      expect(isMac).toBe(false);
+      expect(childListener).toHaveBeenCalledTimes(1); // 가드가 없으니 그대로 통과
+      document.body.removeChild(container);
+    } finally {
+      w.electronAPI = prev;
+    }
   });
 });
