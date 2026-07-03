@@ -383,6 +383,30 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.unicode.activeVersion = '11';
     terminal.open(container);
 
+    // xterm 자체 네이티브 'paste' 리스너(terminal.element/textarea에 직접 붙어있음)가
+    // 아래 Cmd+V/Ctrl+V/Ctrl+Shift+V 핸들러와 겹칠 때만 캡처 단계에서 차단한다. wmux는
+    // Menu.setApplicationMenu()를 호출하지 않아 Electron 기본 메뉴가 깔리는데, macOS는
+    // Cmd+V가 NSMenu key equivalent로 처리되어 keydown의 preventDefault()로도 못 막는다
+    // — 그 결과 xterm 자체 paste 경로와 아래 커스텀 비동기 IPC 경로가 같은 pty에 동시에
+    // 써서 붙여넣기 앞부분이 유실/손상되는 레이스가 생긴다(createWindow.ts가 frame/
+    // autoHideMenuBar를 설정하지 않아 메뉴바는 Windows/Linux에서도 노출되므로 이론상
+    // 플랫폼 무관하게 방어한다). 단, 무조건 차단하면 안 된다 — 메뉴바 Edit>Paste를
+    // 마우스로 클릭하거나 VoiceOver/UI 자동화가 keydown 없이 합성 paste 이벤트만 보내는
+    // 경로는 아래 keydown 핸들러가 전혀 안 돌기 때문에 xterm 자체 파이프라인이 유일한
+    // 처리 경로다(팀 리뷰 발견: 무조건 차단하면 그 경로가 조용히 무동작해진다).
+    // 그래서 keydown 핸들러가 막 시작한 직후(NATIVE_PASTE_RACE_WINDOW_MS 이내)에만
+    // "레이스 중"으로 보고 차단하고, 그 밖의 native paste는 그대로 흘려보내 xterm 자체
+    // 처리에 맡긴다. 윈도우 크기는 이 파일의 기존 RIGHT_CLICK_PASTE_SUPPRESS_MS와 동일한
+    // 관례(최근 이벤트 판별용 300ms)를 따른다.
+    let lastPasteKeydownAt = 0;
+    const NATIVE_PASTE_RACE_WINDOW_MS = 300;
+    const blockNativePaste = (e: Event): void => {
+      if (Date.now() - lastPasteKeydownAt > NATIVE_PASTE_RACE_WINDOW_MS) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    container.addEventListener('paste', blockNativePaste, true);
+
     // Issue #167: keep the hidden IME textarea empty while idle. xterm only
     // clears it on blur, so IME-committed text accumulates there after it was
     // already sent to the PTY, and external field-replacing injectors (voice
@@ -707,6 +731,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
         e.preventDefault();
+        lastPasteKeydownAt = Date.now(); // blockNativePaste 위: 곧 같이 뜰 native paste를 레이스로 잡는다
         void (async () => {
           const text = await window.clipboardAPI.readText();
           if (text) {
@@ -747,6 +772,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // so xterm doesn't also paste via browser's native paste event)
       if (e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
         e.preventDefault();
+        lastPasteKeydownAt = Date.now(); // blockNativePaste 위 참고
         void (async () => {
           // Try text first
           const text = await window.clipboardAPI.readText();
@@ -788,6 +814,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Ctrl+Shift+V: paste fallback
       if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.code === 'KeyV')) {
         e.preventDefault();
+        lastPasteKeydownAt = Date.now(); // blockNativePaste 위 참고
         void (async () => {
           const text = await window.clipboardAPI.readText();
           if (text) {
@@ -1276,6 +1303,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     return () => {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      container.removeEventListener('paste', blockNativePaste, true);
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
       glyphRepaint.dispose();
