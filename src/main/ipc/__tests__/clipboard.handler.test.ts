@@ -178,13 +178,34 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
     expect(readText).not.toHaveBeenCalled();
   });
 
-  it('quotes the resolved path when it contains spaces (readImage convention)', async () => {
+  it('single-quotes the resolved path when it contains spaces', async () => {
     setPlatform('darwin');
     availableFormats.mockReturnValue(['text/uri-list']);
     mockResolverStdout('/Users/foo/My Folder/file.txt\n');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
-    await expect(handler({} as never)).resolves.toBe('"/Users/foo/My Folder/file.txt"');
+    await expect(handler({} as never)).resolves.toBe("'/Users/foo/My Folder/file.txt'");
+  });
+
+  it('neutralizes shell metacharacters in filenames ($, backtick, ", ;) via single-quoting', async () => {
+    // Finder 파일명은 사용자 통제 밖 입력이 셸로 들어가는 경계 — 큰따옴표는 $·백틱을
+    // 여전히 해석하므로 부족하다(CodeRabbit 지적). 단일따옴표 안은 전부 리터럴.
+    setPlatform('darwin');
+    availableFormats.mockReturnValue(['text/uri-list']);
+    mockResolverStdout('/Users/foo/we$ird `name";dir\n');
+
+    const handler = getHandler(IPC.CLIPBOARD_READ);
+    await expect(handler({} as never)).resolves.toBe(`'/Users/foo/we$ird \`name";dir'`);
+  });
+
+  it("escapes embedded single quotes with the POSIX '\\'' idiom", async () => {
+    setPlatform('darwin');
+    availableFormats.mockReturnValue(['text/uri-list']);
+    mockResolverStdout("/Users/foo/it's here\n");
+
+    const handler = getHandler(IPC.CLIPBOARD_READ);
+    // '...'가 '에서 닫히고 \' 리터럴을 잇고 다시 '로 열린다: 'it'\''s here'
+    await expect(handler({} as never)).resolves.toBe(`'/Users/foo/it'\\''s here'`);
   });
 
   it('falls back to readText when the resolver fails (non-zero exit / timeout)', async () => {

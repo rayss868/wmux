@@ -38,6 +38,17 @@ function cleanupStalePasteFiles(): void {
 const OSASCRIPT_PATH = '/usr/bin/osascript';
 const OSASCRIPT_TIMEOUT_MS = 2000;
 
+// Finder 파일명은 사용자 통제 밖 입력이 셸(pty)로 들어가는 경계다. 공백만 큰따옴표로
+// 감싸는 방식은 부족하다 — 큰따옴표 안에서도 $·백틱은 셸이 해석하고, 이름에 " 자체가
+// 있으면 인용이 깨진다(CodeRabbit 지적). POSIX 단일따옴표는 내부의 모든 문자를
+// 리터럴로 만들므로(유일한 예외인 '는 '\''로 잇는다) 안전문자 외가 하나라도 있으면
+// 단일따옴표로 감싼다. macOS 한정 분기라 대상 셸은 POSIX 계열(zsh/bash/fish)뿐이다.
+const SAFE_PATH_RE = /^[A-Za-z0-9_\-./~+@%,:=]+$/;
+function quotePathForPty(p: string): string {
+  if (SAFE_PATH_RE.test(p)) return p;
+  return `'${p.replace(/'/g, `'\\''`)}'`;
+}
+
 /**
  * 클립보드에 있는 Finder 파일/폴더의 절대 POSIX 경로를 해석한다.
  *
@@ -123,9 +134,9 @@ export function registerClipboardHandlers(): void {
       if (filePath) {
         // 이 값을 소비하는 렌더러 호출부는 전부 터미널 붙여넣기 사이트라 문자열을
         // 그대로 pty에 쓴다(Terminal.tsx handlePaste, useTerminal.ts의 Cmd+V/
-        // Ctrl+V/Ctrl+Shift+V/우클릭). 기존 readImage 규약과 동일하게 공백이 있는
-        // 경로만 큰따옴표로 감싼다(cd "a b" 대응). 파일 해석 분기에서만 감싼다.
-        return filePath.includes(' ') ? `"${filePath}"` : filePath;
+        // Ctrl+V/Ctrl+Shift+V/우클릭). 파일 해석 분기에서만 인용하며, 방식은
+        // quotePathForPty 참고(공백뿐 아니라 $·백틱·" 등도 안전해야 한다).
+        return quotePathForPty(filePath);
       }
       // 해석 실패(비파일 furl, 타임아웃, 빈 출력 등) → 아래 readText() 폴백.
     }
