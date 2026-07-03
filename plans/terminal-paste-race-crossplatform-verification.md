@@ -4,7 +4,7 @@
 
 ## 세션 시작 지시 (이 블록을 그대로 새 세션 첫 메시지로 사용)
 
-```
+```text
 plans/terminal-paste-race-crossplatform-verification.md 읽고 이어서 진행해줘.
 
 모델: 이 작업 전체를 Opus 단독으로 돌려라. CLAUDE.md의 기본 모델 전략(Scout/QA는
