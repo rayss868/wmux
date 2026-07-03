@@ -124,12 +124,14 @@ Edit>Paste 마우스 클릭, VoiceOver, UI 자동화처럼 keydown이 없는 경
 
 ## 완료 기준
 
-- [ ] A: macOS 실기기 두 시나리오 확인 완료 — **스킵(사용자 결정, 2026-07-03).**
-      이 세션을 호스팅 중인 프로덕션 `/Applications/wmux.app`(v3.12.0)이 fix
-      없는 구버전이었고, 재빌드본으로 실기기 테스트하려면 OS 레벨 키/마우스
-      자동화(osascript)나 앱 재시작이 필요해 이 세션 자체나 사용자의 다른
-      pane에 영향을 줄 리스크가 있었음. 사용자가 "지금은 스킵"을 선택 →
-      여전히 미검증 상태로 남음(아래 "잔여 리스크" 참고).
+- [x] A: macOS 실기기 두 시나리오 확인 완료 — **같은 날 오후 실측 완료
+      (2026-07-03).** 처음엔 스킵했다가(이 세션을 호스팅 중인 프로덕션 앱이
+      fix 없는 구버전 v3.12.0이라 재시작 리스크 있음), `WMUX_DATA_SUFFIX=-test`
+      내장 격리 메커니즘으로 프로덕션 옆에 테스트 인스턴스를 동시 기동하는
+      방법을 찾아 해결. 두 fix(이 브랜치 + PR #331 Finder 경로 fix) 결합
+      빌드로 사용자가 직접 확인: (1) 긴 절대경로 Cmd+V ✓, (2) 메뉴바
+      Edit>Paste 마우스 클릭 ✓, (3) Finder 폴더 Cmd+C→Cmd+V 전체 경로 ✓,
+      (4) 일반 텍스트 회귀 없음 ✓.
 - [x] B: Windows accelerator 디스패치 결론 + 근거 확보 (실측 또는 1차 자료)
 - [x] C: Linux accelerator + middle-click paste 상호작용 결론 + 근거 확보
 - [x] D: review-team 최소 2모델 교차 합의 리포트 확보 (Claude + GLM 5.2, Codex
@@ -240,8 +242,7 @@ hooks`(31 files / 368 tests) 전체 통과.
 
 ### 잔여 리스크 / 후속 권장
 
-1. **macOS 실기기 검증 여전히 미완**(Task A 스킵). 다음에 재빌드본으로 (1)
-   긴 경로 Cmd+V, (2) 메뉴바 Edit>Paste 클릭 두 시나리오 확인 필요.
+1. ~~macOS 실기기 검증 미완~~ → **완료(2026-07-03 오후).** 위 완료 기준 A 참고.
 2. Windows/Linux 결론은 1차 소스 기반으로 신뢰도가 높지만, 실제 바이너리
    라이브 테스트로 100% 확정된 것은 아님(위 "잔여 불확실성" 참고). CI에
    windows-latest/ubuntu-22.04 러너가 있으므로(`ci-cross-platform-baseline.
