@@ -36,7 +36,11 @@ class MockPty extends EventEmitter {
 
   write(_data: string): void { /* noop */ }
 
+  /** Count of resize() calls = SIGWINCH emissions, for startup-grace assertions. */
+  resizeCalls = 0;
+
   resize(cols: number, rows: number): void {
+    this.resizeCalls += 1;
     this._cols = cols;
     this._rows = rows;
   }
@@ -1028,5 +1032,72 @@ describe('DaemonSessionManager', () => {
 
       expect(() => manager.resizeSession('susp-resize', 100, 40)).toThrow(/suspended/i);
     });
+  });
+});
+
+// Root cause 2026-07-04 (deterministic repro): resizing an interactive zsh to
+// cols <= 6 crashes it with SIGBUS inside zle.so resetvideo/zrefresh — 6/6 at
+// cols 2-6, 0/6 at cols >= 7, rows irrelevant. Split/layout transitions
+// transiently compute 2-5-col geometries, which is when panes died "randomly".
+// The daemon floors every geometry at MIN_SAFE_COLS(10)/MIN_SAFE_ROWS(2) and
+// skips same-size SIGWINCHes entirely.
+describe('DaemonSessionManager — degenerate-geometry SIGBUS guard', () => {
+  let mgr: DaemonSessionManager;
+
+  beforeEach(() => {
+    mgr = new DaemonSessionManager();
+    lastMockPty = null;
+  });
+
+  afterEach(() => {
+    mgr.disposeAll();
+  });
+
+  function spawn(id = 's1', cols = 80, rows = 24): MockPty {
+    mgr.createSession({ id, cmd: 'zsh', cwd: '.', cols, rows });
+    return lastMockPty!;
+  }
+
+  it('skips the SIGWINCH when the geometry is unchanged (no-op resize)', () => {
+    const pty = spawn('s1', 80, 24);
+    mgr.resizeSession('s1', 80, 24);
+    expect(pty.resizeCalls).toBe(0);
+  });
+
+  it('floors a crash-narrow resize at the safe minimum (zsh dies at cols <= 6)', () => {
+    const pty = spawn('s1', 80, 24);
+    mgr.resizeSession('s1', 2, 24); // what a mid-split layout transient sends
+    expect(pty.resizeCalls).toBe(1);
+    expect(pty.cols).toBe(10); // floored, never 2
+    expect(mgr.getSession('s1')?.meta.cols).toBe(10);
+  });
+
+  it('floors degenerate rows too', () => {
+    const pty = spawn('s1', 80, 24);
+    mgr.resizeSession('s1', 120, 1);
+    expect(pty.rows).toBe(2);
+    expect(pty.cols).toBe(120);
+  });
+
+  it('treats repeated degenerate resizes as no-ops after the first (same clamped geometry)', () => {
+    const pty = spawn('s1', 80, 24);
+    mgr.resizeSession('s1', 2, 24);
+    mgr.resizeSession('s1', 4, 24); // clamps to the same 10x24
+    mgr.resizeSession('s1', 6, 24);
+    expect(pty.resizeCalls).toBe(1); // one SIGWINCH total
+  });
+
+  it('leaves a normal resize untouched', () => {
+    const pty = spawn('s1', 80, 24);
+    mgr.resizeSession('s1', 120, 30);
+    expect(pty.cols).toBe(120);
+    expect(pty.rows).toBe(30);
+  });
+
+  it('clamps the spawn geometry as well (spawning INTO a 2-col PTY crashes the same way)', () => {
+    const pty = spawn('s1', 2, 1);
+    expect(pty.cols).toBe(10);
+    expect(pty.rows).toBe(2);
+    expect(mgr.getSession('s1')?.meta.cols).toBe(10);
   });
 });
