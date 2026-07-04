@@ -14,6 +14,7 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import { FLUSH_DONE_MARKER } from '../daemon/SessionPipe';
+import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 import {
   dataSuffix,
@@ -691,14 +692,24 @@ export class DaemonClient extends EventEmitter {
           // the scrollback-restore-sync design — recovery cap dropped this
           // session, or it was created fresh by reconcile fallback). The
           // renderer uses this to decide whether to wipe its .txt cache.
+          // NOTE: pre-strip length on purpose — recoveredBytes answers "did
+          // the daemon have authoritative scrollback", which the renderer's
+          // reset-or-keep decision depends on, not the sanitized byte count.
           const recoveredBytes = markerIndex;
 
-          // Emit data before marker (ring buffer replay)
+          // Emit data before marker (ring buffer replay). Queries stored in
+          // the ring (DSR/CPR, DA, DECRQM, ...) are stripped first: xterm.js
+          // re-executes replayed bytes, so a stored query would fire a live
+          // auto-reply into the fresh shell's stdin — the CPR feedback storm
+          // of 2026-07-04 (see shared/replayQuerySanitizer.ts). Live bytes
+          // after the marker are never sanitized.
           if (markerIndex > 0) {
-            this.emit('session:data', {
-              sessionId,
-              data: combined.subarray(0, markerIndex),
-            });
+            const replay = stripReplayQuerySequences(
+              combined.subarray(0, markerIndex),
+            );
+            if (replay.length > 0) {
+              this.emit('session:data', { sessionId, data: replay });
+            }
           }
 
           // Fire flush-complete BEFORE the post-marker data so the
