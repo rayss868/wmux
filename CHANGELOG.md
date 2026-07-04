@@ -5,6 +5,11 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.4] — 2026-07-04
+
+### Fixed
+
+- **Dev only:** `npm start` no longer opens to a blank, flickering window on macOS. Electron loaded the renderer from `http://localhost:5173`, which macOS resolves to IPv6 (`::1`) first, while the Vite dev server listens on IPv4 (`127.0.0.1`) — so the load failed and Electron retried in a loop. The dev-server URL is now normalized to `127.0.0.1`. No effect on packaged builds.
 ## [3.12.3] — 2026-07-04
 
 ### Fixed
