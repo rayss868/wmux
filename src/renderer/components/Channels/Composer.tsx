@@ -104,10 +104,16 @@ export function buildMentionCandidates(args: {
   memberWorkspaceIds: ReadonlySet<string>;
   selfWorkspaceId: string | null;
 }): MentionCandidate[] {
-  const { workspaces, surfaceAgent, paneLabel, memberWorkspaceIds, selfWorkspaceId } = args;
+  const { workspaces, surfaceAgent, paneLabel, memberWorkspaceIds } = args;
   const out: MentionCandidate[] = [];
   for (const w of workspaces) {
-    if (w.id === selfWorkspaceId) continue; // can't ping yourself
+    // R1: same-workspace agent panes ARE valid @-mention targets now — a human
+    // can ping their own workspace's agents, and (via the MCP post path) an agent
+    // can ping a sibling pane. The old "exclude the whole self workspace" rule hid
+    // those. Self-loop protection is NOT a candidate-UX concern; it lives in the
+    // RECEIVING renderer's mention router (channelMentionInbox), which drops a
+    // mention that targets the SENDER's own pane. `selfWorkspaceId` stays in the
+    // signature for call-site compatibility and a future pane-scoped composer.
     if (!memberWorkspaceIds.has(w.id)) continue; // channel members only
     const wsOrdinal = w.wsOrdinal ?? 0;
     for (const leaf of findLeafPanes(w.rootPane)) {
