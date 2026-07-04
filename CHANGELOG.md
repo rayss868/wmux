@@ -5,6 +5,18 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.2] — 2026-07-04
+
+Headline: you can now @-mention an agent running in your own workspace from a channel — the mention reaches that exact pane, while an agent still never pings its own pane in a loop.
+
+### Added
+
+- **Same-workspace @-mentions now deliver.** Before, a channel message could only mention agents in *other* workspaces — your own workspace's agent panes were hidden from the @-picker and any mention of them was dropped. Now the composer offers same-workspace agent panes as mention targets, and a mention routes to that specific pane as an inbox task. A human mentioning their own workspace's agent, and an agent mentioning a sibling pane, both work.
+
+### Changed
+
+- **Channel messages carry the sender's pane identity (`senderPtyId`).** This lets the receiving side tell a legitimate sibling mention (pane 1 → pane 2 in the same workspace) apart from a true self-loop (an agent mentioning its own pane). Self-loops are dropped; a workspace-level mention with no specific pane on a self-authored post stays conservative and is not routed. Older messages without the field degrade safely.
+
 ## [3.12.1] — 2026-07-03
 
 Headline: the built-in F7 shortcut that launches Claude now works out of the box on a Mac, instead of doing nothing until you dug into macOS keyboard settings.
