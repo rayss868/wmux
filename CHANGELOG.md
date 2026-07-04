@@ -5,6 +5,11 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.3] — 2026-07-04
+
+### Fixed
+
+- **Splitting panes no longer randomly kills shells.** Splitting a pane (or reattaching after a reboot) could kill a pane's shell with a bus error, leaving "[process exited]" — seemingly at random. The real trigger: during a split or layout transition the pane is momentarily only a few characters wide, and resizing zsh below 7 columns crashes it outright (a macOS zsh 5.9 bug, reproduced 100%). wmux now never applies a terminal size below a safe floor (10 columns), and skips resize signals that don't change the size. Verified: the same narrow-resize test kills 5/5 shells on the old build and 0/5 on this one.
 ## [3.12.2] — 2026-07-04
 
 Headline: you can now @-mention an agent running in your own workspace from a channel — the mention reaches that exact pane, while an agent still never pings its own pane in a loop.
