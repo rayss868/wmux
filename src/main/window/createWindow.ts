@@ -26,9 +26,34 @@ const iconFile = `icon.${iconExt}`;
  * shut until the startup reconcile completes — ordering is no longer the
  * defense.
  */
+/**
+ * Normalize the Vite dev-server URL to the IPv4 loopback.
+ *
+ * electron-forge injects `MAIN_WINDOW_VITE_DEV_SERVER_URL` as
+ * `http://localhost:5173/`, but the Vite server is pinned to `127.0.0.1` (see
+ * `vite.renderer.config.ts`). On macOS `localhost` resolves to `::1` (IPv6)
+ * first, so `loadURL('http://localhost:5173')` hits ERR_CONNECTION_REFUSED and
+ * the window renders blank and flickers as Electron retries. Rewriting the
+ * loopback host to `127.0.0.1` keeps the loaded URL on the same interface the
+ * server actually listens on. Only `localhost` is rewritten (a `--host` override
+ * or a real IP is left untouched). Returns the input unchanged in production
+ * (undefined → the packaged `loadFile` path) or if the URL can't be parsed.
+ */
+export function normalizeDevServerUrl(url: string | undefined): string | undefined {
+  if (!url) return url;
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'localhost') parsed.hostname = '127.0.0.1';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 export function loadMainRenderer(mainWindow: BrowserWindow): void {
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+  const devUrl = normalizeDevServerUrl(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+  if (devUrl) {
+    mainWindow.loadURL(devUrl);
   } else {
     mainWindow.loadFile(
       path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
@@ -101,9 +126,13 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     (webPreferences as Record<string, unknown>)['webSecurity'] = true;
   });
 
-  // Block all navigations except dev server — prevents file drag opening in window
+  // Block all navigations except dev server — prevents file drag opening in
+  // window. Compare against the SAME normalized (127.0.0.1) URL the renderer was
+  // loaded from, else the dev server's own HMR/router navigations would be
+  // treated as external and blocked.
+  const devUrl = normalizeDevServerUrl(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (MAIN_WINDOW_VITE_DEV_SERVER_URL && url.startsWith(MAIN_WINDOW_VITE_DEV_SERVER_URL)) return;
+    if (devUrl && url.startsWith(devUrl)) return;
     event.preventDefault();
   });
 
