@@ -315,3 +315,13 @@ export const CHANNEL_STATE_REGISTRY: MigrationRegistry = {
   currentVersion: 1,
   steps: [],
 };
+
+/**
+ * Principal registry schema (principals.json, R2). An identity registry —
+ * same posture as the other registries: additive extensions do not bump the
+ * version, and a step is added here only when an actual row rewrite is needed.
+ */
+export const PRINCIPAL_STATE_REGISTRY: MigrationRegistry = {
+  currentVersion: 1,
+  steps: [],
+};

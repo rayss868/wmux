@@ -2180,6 +2180,127 @@ describe('ack (A1: delivery receipt makes deliveryStatus real)', () => {
     if (ack.ok) throw new Error('expected CHANNEL_NOT_FOUND');
     expect(ack.error.code).toBe('CHANNEL_NOT_FOUND');
   });
+
+  describe('purgeMembership (R2 system cleanup)', () => {
+    it('full-workspace purge: the ws rows disappear from every channel and catalog(membership) is emitted', async () => {
+      const { svc, emit } = makeService();
+      const c1 = await svc.create({
+        name: 'one',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      const c2 = await svc.create({
+        name: 'two',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!c1.ok || !c2.ok) throw new Error('create failed');
+      await svc.join({
+        channelId: c1.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'w2-1(claude)', memberName: 'w2-1(claude)', principalId: 'pane:ws-2/p1' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      await svc.join({
+        channelId: c1.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'w2-2(codex)', memberName: 'w2-2(codex)' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      await svc.join({
+        channelId: c2.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'w2-1(claude)', memberName: 'w2-1(claude)' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+
+      const purged = await svc.purgeMembership({ workspaceId: 'ws-2', verifiedWorkspaceId: 'ws-1' });
+      expect(purged.ok).toBe(true);
+      if (purged.ok) expect(purged.removed).toBe(3);
+      expect(svc.getMembers(c1.channel.id, 'ws-1').some((m) => m.workspaceId === 'ws-2')).toBe(false);
+      expect(svc.getMembers(c2.channel.id, 'ws-1').some((m) => m.workspaceId === 'ws-2')).toBe(false);
+      // The removed ws-2 is also a catalog recipient — so it drops the channel from its own mirror.
+      const evt = emit.mock.calls.at(-1)?.[0];
+      expect(evt?.type).toBe('channel.catalog');
+      if (evt?.type === 'channel.catalog') {
+        expect(evt.reason).toBe('membership');
+        expect(evt.recipientWorkspaceIds).toContain('ws-2');
+      }
+    });
+
+    it('per-pane purge (memberId given): only that row is removed and sibling pane rows remain', async () => {
+      const { svc } = makeService();
+      const c1 = await svc.create({
+        name: 'one',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!c1.ok) throw new Error('create failed');
+      await svc.join({
+        channelId: c1.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'w2-1(claude)', memberName: 'w2-1(claude)' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      await svc.join({
+        channelId: c1.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'w2-2(codex)', memberName: 'w2-2(codex)' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+
+      const purged = await svc.purgeMembership({
+        workspaceId: 'ws-2',
+        memberId: 'w2-1(claude)',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(purged.ok).toBe(true);
+      if (purged.ok) expect(purged.removed).toBe(1);
+      const remaining = svc.getMembers(c1.channel.id, 'ws-1').filter((m) => m.workspaceId === 'ws-2');
+      expect(remaining.map((m) => m.memberId)).toEqual(['w2-2(codex)']);
+    });
+
+    it('purging the last member stamps emptySince, and with no matching rows it is a no-op', async () => {
+      const now = () => 1_700_000_000_000;
+      const { svc } = makeService({ now });
+      const c1 = await svc.create({
+        name: 'one',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!c1.ok) throw new Error('create failed');
+
+      // Purge the sole member (the creator) → the channel empties and emptySince is stamped.
+      const purged = await svc.purgeMembership({ workspaceId: 'ws-1', verifiedWorkspaceId: 'ws-1' });
+      expect(purged.ok).toBe(true);
+      if (purged.ok) expect(purged.removed).toBe(1);
+      expect(svc.get(c1.channel.id, 'ws-9')?.emptySince).toBe(now());
+
+      // No matching rows → removed 0, no error (idempotent).
+      const again = await svc.purgeMembership({ workspaceId: 'ws-1', verifiedWorkspaceId: 'ws-1' });
+      expect(again.ok).toBe(true);
+      if (again.ok) expect(again.removed).toBe(0);
+    });
+
+    it('join records principalId on the member row (additive) — human/legacy rows degrade safely by absence', async () => {
+      const { svc } = makeService();
+      const c1 = await svc.create({
+        name: 'one',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!c1.ok) throw new Error('create failed');
+      await svc.join({
+        channelId: c1.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'w2-1(claude)', memberName: 'w2-1(claude)', principalId: 'pane:ws-2/p1' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      const rows = svc.getMembers(c1.channel.id, 'ws-1');
+      expect(rows.find((m) => m.memberId === 'w2-1(claude)')?.principalId).toBe('pane:ws-2/p1');
+      // The creator (human) row has no principalId — the safe-degradation shape as-is.
+      expect(rows.find((m) => m.memberId === 'm-1')?.principalId).toBeUndefined();
+    });
+  });
 });
 
 // Keep the imports referenced for type-checking the test file in isolation.

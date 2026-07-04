@@ -144,7 +144,9 @@ describe('ChannelMembers — wiring regression guard', () => {
     expect(members).toContain('data-channel-member-behind');
     expect(members).toMatch(/headSeq - m\.lastReadSeq/);
     // …only for agent rows (humans advance the ws cursor by reading the dock)…
-    expect(members).toMatch(/!self && m\.memberId !== selfMemberId/);
+    // (R2: the human check is extracted into an isHuman local — same predicate, new spelling)
+    expect(members).toMatch(/const isHuman = m\.memberId === selfMemberId/);
+    expect(members).toMatch(/!self && !isHuman/);
     // …and NEVER invented: a pre-v2 row without lastReadSeq shows no badge.
     expect(members).toMatch(/typeof m\.lastReadSeq === 'number'/);
     // Container derives the head from the loaded message tail (render-capped

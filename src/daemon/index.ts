@@ -13,6 +13,8 @@ import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec } from './channels';
+import { PrincipalService, PrincipalStateWriter } from './principals';
+import { isPrincipalUpsertInput } from '../shared/principals';
 import { DEFAULT_COMPANY_ID } from '../shared/channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
@@ -1026,6 +1028,8 @@ function registerRpcHandlers(
   paneSupervisor: PaneSupervisor,
   triggerSnapshot: () => void,
   channelService: ChannelService,
+  principalService: PrincipalService,
+  principalStateWriter: PrincipalStateWriter,
 ): void {
   // daemon.createSession
   pipeServer.onRpc('daemon.createSession', async (params) => {
@@ -1823,6 +1827,109 @@ function registerRpcHandlers(
     return channelService.kick(p);
   });
 
+  pipeServer.onRpc('a2a.channel.purgeMembership', async (params) => {
+    // R2 system cleanup — same humans-only convention as kick, reachable only
+    // via the renderer-only path (`channels:mutate-local`). Not registered on
+    // the pipe router. For the same reason as archive/kick, it does not run
+    // `stampCaller` (review C2): stamping would hand a pipe agent that only has
+    // senderPtyId an honest daemon-pipe path to a humans-only destructive op
+    // (bulk removal across all channels). Only a pre-stamped
+    // verifiedWorkspaceId (filled by the renderer) is accepted.
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : '';
+    if (!workspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'workspaceId is required' } };
+    }
+    const memberId =
+      typeof params['memberId'] === 'string' && params['memberId'].length > 0
+        ? params['memberId']
+        : undefined;
+    const principalId =
+      typeof params['principalId'] === 'string' && params['principalId'].length > 0
+        ? params['principalId']
+        : undefined;
+    return channelService.purgeMembership({
+      workspaceId,
+      verifiedWorkspaceId,
+      ...(memberId !== undefined ? { memberId } : {}),
+      ...(principalId !== undefined ? { principalId } : {}),
+    });
+  });
+
+  // ── Principal registry (R2) ─────────────────────────────────────────
+  // The three writes are renderer-only system actions: reachable only via
+  // main's `channels:mutate-local` (renderer-only IPC), and deliberately not
+  // registered on the pipe router (a2a.channel.rpc.ts) — same humans-only
+  // convention as kick (#113: same-machine agent identity is forgeable, so we
+  // do not open a path for agents to register/delete arbitrary principals).
+  // verifiedWorkspaceId is always stamped by mutateLocal, so we only check the
+  // "no anonymous mutation" posture.
+
+  pipeServer.onRpc('a2a.principal.upsert', async (rawParams) => {
+    const params = rawParams as Record<string, unknown>;
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    const record = params['record'];
+    if (!isPrincipalUpsertInput(record)) {
+      return { ok: false, error: { code: 'INVALID_PARAMS', message: 'Malformed principal record' } };
+    }
+    // Review I7 — ptyId cross-check: an upsert is not display, it changes the
+    // wake worker's PTY-write target. Using the daemon's own session records
+    // (WMUX_WORKSPACE_ID stamped by main on spawn — the same anchor
+    // stampChannelCaller uses), verify that record.ptyId really is a session of
+    // record.workspaceId. A mismatch / unresolved (dead session, env not bound)
+    // is rejected — and even on registration failure the wake worker degrades
+    // safely to the existing heuristic.
+    if (record.kind === 'pane-agent' && typeof record.ptyId === 'string' && record.ptyId.length > 0) {
+      const sessionWs = resolveSessionWorkspace(record.ptyId);
+      if (!sessionWs || sessionWs !== record.workspaceId) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: `principal ptyId does not resolve to workspace ${String(record.workspaceId)}`,
+          },
+        };
+      }
+    }
+    return { ok: true, principal: principalService.upsert(record) };
+  });
+
+  pipeServer.onRpc('a2a.principal.remove', async (rawParams) => {
+    const params = rawParams as Record<string, unknown>;
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    const principalId = typeof params['principalId'] === 'string' ? params['principalId'] : '';
+    if (!principalId) {
+      return { ok: false, error: { code: 'INVALID_PARAMS', message: 'principalId is required' } };
+    }
+    return { ok: true, removed: principalService.remove(principalId) };
+  });
+
+  pipeServer.onRpc('a2a.principal.markStaleWorkspace', async (rawParams) => {
+    const params = rawParams as Record<string, unknown>;
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : '';
+    if (!workspaceId) {
+      return { ok: false, error: { code: 'INVALID_PARAMS', message: 'workspaceId is required' } };
+    }
+    return { ok: true, changed: principalService.markStaleByWorkspace(workspaceId) };
+  });
+
   // daemon.shutdown — gracefully terminate the daemon process. A2 makes
   // this RPC awaitable: the handler runs the full shutdown body (dumps,
   // state save, dispose) before returning, then defers the pipe stop and
@@ -1837,6 +1944,7 @@ function registerRpcHandlers(
       pipeServer,
       stateWriter,
       channelStateWriter,
+      principalStateWriter,
       sessionPipes,
       processMonitor,
       watchdog,
@@ -2374,6 +2482,7 @@ async function shutdown(
   pipeServer: DaemonPipeServer,
   stateWriter: StateWriter,
   channelStateWriter: ChannelStateWriter,
+  principalStateWriter: PrincipalStateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   watchdog: Watchdog,
@@ -2492,6 +2601,7 @@ async function shutdown(
 
   stateWriter.dispose();
   channelStateWriter.dispose();
+  principalStateWriter.dispose();
 
   // Stop IPC server — skipped when the caller (e.g., daemon.shutdown RPC)
   // still needs the pipe to flush its ack.
@@ -2618,6 +2728,14 @@ async function main(): Promise<void> {
     },
   });
 
+  // Principal registry (R2). Like channels, it writes its own file
+  // (principals.json), so registry corruption does not spill into
+  // session/channel state. The constructor backfills every pane-agent to stale
+  // + seeds human:me (on restart the daemon cannot prove pane liveness, so only
+  // a renderer re-registration brings it back to live).
+  const principalStateWriter = new PrincipalStateWriter(wmuxDir);
+  const principalService = new PrincipalService({ writer: principalStateWriter });
+
   // Channels v2 Step 3a — the wake worker (see channelWakeWorker.ts for the
   // full strategy stack + safety rules). Adapters keep it decoupled: session
   // views come from the manager's live list, the workspace binding is the
@@ -2626,6 +2744,9 @@ async function main(): Promise<void> {
   channelWakeWorkerRef = new ChannelWakeWorker({
     memberWorkspaces: () => channelService.memberWorkspaces(),
     unreadFor: (ws) => channelService.unreadFor(ws),
+    // R2: member row principalId → direct LIVE ptyId lookup. A stale principal
+    // returns undefined and falls back to the existing slug heuristic.
+    livePtyIdOf: (principalId) => principalService.livePtyIdOf(principalId),
     listLiveSessions: () =>
       sessionManager.listLiveSessions().map((meta) => ({
         id: meta.id,
@@ -2834,6 +2955,8 @@ async function main(): Promise<void> {
       if (runSnapshotOnceRef) void runSnapshotOnceRef();
     },
     channelService,
+    principalService,
+    principalStateWriter,
   );
 
   // 6. Wire events
@@ -2851,12 +2974,28 @@ async function main(): Promise<void> {
     } catch (err) {
       log('error', `supervisor onSessionDied failed for ${payload.id}:`, err);
     }
+    // R2: a dead session's pane-agent principal goes stale immediately — the
+    // safety premise that keeps the wake worker from targeting a stale
+    // principal's ptyId.
+    try {
+      principalService.markStaleByPtyId(payload.id);
+    } catch (err) {
+      log('warn', `principal stale-mark failed for ${payload.id}:`, err);
+    }
   });
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
     try {
       paneSupervisor.disarm(payload.id);
     } catch (err) {
       log('warn', `supervisor disarm failed for ${payload.id}:`, err);
+    }
+    // R2: the user-closed-pane path — the renderer's purge does the canonical
+    // cleanup, but stale must still be guaranteed even in a window where the
+    // renderer is dead (headless destroy).
+    try {
+      principalService.markStaleByPtyId(payload.id);
+    } catch (err) {
+      log('warn', `principal stale-mark failed for ${payload.id}:`, err);
     }
   });
 
@@ -2883,7 +3022,7 @@ async function main(): Promise<void> {
   // SIGTERM/SIGINT/daemon.shutdown — referenced from within the
   // Watchdog tick (always runs after this point in the boot order).
   const doShutdown = (sig: string): Promise<void> =>
-    shutdown(sig, sessionManager, pipeServer, stateWriter, channelStateWriter, sessionPipes, processMonitor, watchdog);
+    shutdown(sig, sessionManager, pipeServer, stateWriter, channelStateWriter, principalStateWriter, sessionPipes, processMonitor, watchdog);
 
   // 8. Start watchdog with escalation callbacks
   watchdog.setCallbacks({

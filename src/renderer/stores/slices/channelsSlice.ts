@@ -63,6 +63,25 @@ import type {
   ChannelMessage,
   ChannelVisibility,
 } from '../../../shared/channels';
+import { panePrincipalId } from '../../../shared/principals';
+import { computePaneAutoName } from '../../utils/paneNaming';
+import { findLeafPanes } from '../../hooks/a2aAddressing';
+
+/** R2 — principal upsert debounce cache (id → last sent signature + timestamp).
+ *  Agent meta broadcasts are periodic, so when the content is unchanged the
+ *  daemon round-trip is skipped. Module-level non-reactive state — losing it on
+ *  a renderer restart is the correct behavior.
+ *
+ *  TTL (review C3): when the daemon restarts, every pane-agent in the registry
+ *  is backfilled as stale, but this renderer-side cache survives. If a
+ *  suspend→recovery reuses the same session id, the signature is identical, so
+ *  the upsert is skipped forever and the principal stays stale for good (= the
+ *  auto-name member never gets nudged). Expiring the cache by TTL makes a
+ *  periodic broadcast re-register it within at most a minute and self-heal —
+ *  the simplest form that gives the same guarantee without wiring up
+ *  daemon-reconnect detection. */
+const lastPrincipalUpsertSig = new Map<string, { sig: string; at: number }>();
+const PRINCIPAL_UPSERT_TTL_MS = 60_000;
 
 /** A19: per-channel render cap. `channelMessages` is otherwise append-only and
  *  unbounded — a busy channel would grow the store until the panel re-render +
@@ -77,6 +96,8 @@ export interface ChannelMemberAddress {
   workspaceId: string;
   memberId: string;
   memberName: string;
+  /** R2 — stable principal coordinate recorded on the member row at explicit-join time (optional). */
+  principalId?: string;
 }
 
 /** Params for `createChannelOptimistic`. The caller (sidebar/composer)
@@ -254,6 +275,29 @@ export interface ChannelsSlice {
     channelId: string,
     workspaceId: string,
   ) => Promise<ChannelActionResult<Channel>>;
+
+  // ── R2: Principal registry / system cleanup (renderer-only, fire-and-forget) ──
+  // All take the same humans-only mutateLocal path as kick. Failures are left as
+  // warn logs only: cleanup is idempotent, so it converges at the next
+  // opportunity (re-delete, daemon-restart stale backfill, TTL reaper), and
+  // there is no reason to block the UI flow.
+
+  /** On workspace/pane deletion, clean up dead member rows across all channels.
+   *  With principalId, only that pane's row (stable-coordinate match — immune to
+   *  auto name drift); with only memberId, only that row; with neither, the whole
+   *  workspace. Cleans the optimistic mirror, then calls the daemon. */
+  purgeMembershipDaemon: (target: {
+    workspaceId: string;
+    memberId?: string;
+    principalId?: string;
+  }) => Promise<void>;
+  /** At agent detection (setSurfaceAgent), register/refresh that pty's pane as a
+   *  principal. When the content is unchanged the debounce cache skips the daemon round-trip. */
+  principalRegisterPane: (ptyId: string) => Promise<void>;
+  /** Pane closed — remove the principal whose coordinate is gone from the registry. */
+  principalRemoveDaemon: (principalId: string) => Promise<void>;
+  /** Workspace deleted — mark every pane-agent principal inside it as stale. */
+  principalMarkStaleWorkspaceDaemon: (workspaceId: string) => Promise<void>;
 
   // Internal helpers — exposed on the slice so the `*Daemon` thunks
   // can call them via `get()`, and so tests can drive the bridge-
@@ -433,6 +477,10 @@ export const createChannelsSlice: StateCreator<
             memberId: member.memberId,
             joinedAt: Date.now(),
             historyFromSeq: 0,
+            // R2: carry the explicit-join's stable coordinate into the mirror too,
+            // so the roster liveness badge can be computed immediately, even before
+            // the next catalog sync.
+            ...(member.principalId ? { principalId: member.principalId } : {}),
           },
         ];
       }
@@ -579,6 +627,117 @@ export const createChannelsSlice: StateCreator<
     }),
 
   // ── *Daemon thunks (U4) — wire-path entry points ───────────────────
+
+  // ── R2: Principal registry / system cleanup implementation ────────────
+
+  purgeMembershipDaemon: async (target) => {
+    // Clean the optimistic mirror — the daemon's catalog (membership) event re-syncs the source of truth.
+    set((state: StoreState) => {
+      for (const chId of Object.keys(state.channelMembers)) {
+        state.channelMembers[chId] = (state.channelMembers[chId] ?? []).filter(
+          (m) =>
+            !(
+              m.workspaceId === target.workspaceId &&
+              (target.principalId !== undefined
+                ? m.principalId === target.principalId
+                : target.memberId === undefined || m.memberId === target.memberId)
+            ),
+        );
+      }
+    });
+    const bridge = get().channelsRpc();
+    const self = get().activeWorkspaceId || get().workspaces[0]?.id || '';
+    if (!bridge || !self) return;
+    try {
+      await bridge.mutateLocal('a2a.channel.purgeMembership', {
+        workspaceId: target.workspaceId,
+        ...(target.memberId !== undefined ? { memberId: target.memberId } : {}),
+        ...(target.principalId !== undefined ? { principalId: target.principalId } : {}),
+        verifiedWorkspaceId: self,
+      });
+    } catch (err) {
+      console.warn('[channelsSlice] purgeMembership failed:', err);
+    }
+  },
+
+  principalRegisterPane: async (ptyId) => {
+    const s = get();
+    const agent = s.surfaceAgent[ptyId];
+    if (!agent?.name) return; // pty with no identity — nothing to register
+    for (const w of s.workspaces) {
+      for (const leaf of findLeafPanes(w.rootPane)) {
+        if (!leaf.surfaces.some((sf) => sf.surfaceType !== 'browser' && sf.ptyId === ptyId)) {
+          continue;
+        }
+        const autoName = computePaneAutoName(w.wsOrdinal ?? 0, leaf.ordinal ?? 0, agent.slug);
+        const record = {
+          id: panePrincipalId(w.id, leaf.id),
+          kind: 'pane-agent' as const,
+          display: autoName,
+          // an attached claude pane is woken by the renderer hook (mention→a2a task),
+          // other agents by the wake worker's PTY nudge (architecture §4).
+          reachability: agent.slug === 'claude' ? ('renderer-hook' as const) : ('pty-nudge' as const),
+          workspaceId: w.id,
+          paneId: leaf.id,
+          ptyId,
+          memberId: autoName,
+          ...(agent.slug ? { agentSlug: agent.slug } : {}),
+        };
+        const sig = JSON.stringify(record);
+        const cached = lastPrincipalUpsertSig.get(record.id);
+        if (cached && cached.sig === sig && Date.now() - cached.at < PRINCIPAL_UPSERT_TTL_MS) {
+          return;
+        }
+        const bridge = s.channelsRpc();
+        const self = s.activeWorkspaceId || s.workspaces[0]?.id || '';
+        if (!bridge || !self) return;
+        try {
+          await bridge.mutateLocal('a2a.principal.upsert', {
+            record,
+            verifiedWorkspaceId: self,
+          });
+          lastPrincipalUpsertSig.set(record.id, { sig, at: Date.now() });
+        } catch (err) {
+          console.warn('[channelsSlice] principal upsert failed:', err);
+        }
+        return;
+      }
+    }
+  },
+
+  principalRemoveDaemon: async (principalId) => {
+    lastPrincipalUpsertSig.delete(principalId);
+    const bridge = get().channelsRpc();
+    const self = get().activeWorkspaceId || get().workspaces[0]?.id || '';
+    if (!bridge || !self) return;
+    try {
+      await bridge.mutateLocal('a2a.principal.remove', {
+        principalId,
+        verifiedWorkspaceId: self,
+      });
+    } catch (err) {
+      console.warn('[channelsSlice] principal remove failed:', err);
+    }
+  },
+
+  principalMarkStaleWorkspaceDaemon: async (workspaceId) => {
+    // Clear the debounce cache for that workspace's coordinates — so if the same
+    // coordinate reappears (rare, id reuse) it is guaranteed to be re-sent.
+    for (const id of lastPrincipalUpsertSig.keys()) {
+      if (id.startsWith(`pane:${workspaceId}/`)) lastPrincipalUpsertSig.delete(id);
+    }
+    const bridge = get().channelsRpc();
+    const self = get().activeWorkspaceId || get().workspaces[0]?.id || '';
+    if (!bridge || !self) return;
+    try {
+      await bridge.mutateLocal('a2a.principal.markStaleWorkspace', {
+        workspaceId,
+        verifiedWorkspaceId: self,
+      });
+    } catch (err) {
+      console.warn('[channelsSlice] principal markStaleWorkspace failed:', err);
+    }
+  },
 
   /** Bridge accessor. Returns the global installed by `useRpcBridge`,
    *  or `undefined` if the hook hasn't mounted yet. Mirrors

@@ -45,6 +45,10 @@ export interface WakeUnreadEntry {
   channelId: string;
   name: string;
   memberId: string;
+  /** R2 — the member row's principal stable coordinate. When present, ptyId is
+   *  looked up directly from the registry to target the exact session without
+   *  the slug heuristic. */
+  principalId?: string;
   lastReadSeq: number;
   headSeq: number;
   unread: number;
@@ -83,6 +87,10 @@ export interface ChannelWakeWorkerDeps {
   unreadFor(workspaceId: string): WakeUnreadEntry[];
   /** Live sessions only (attached/detached — a usable PTY child exists). */
   listLiveSessions(): WakeSessionView[];
+  /** R2 — principal registry lookup: returns the ptyId (session id) of a LIVE
+   *  principal only. Stale → undefined → falls back to the existing heuristic.
+   *  Optional (test / legacy-wiring compatible). */
+  livePtyIdOf?(principalId: string): string | undefined;
   /** Write raw bytes into a session's PTY stdin. */
   write(sessionId: string, data: string): void;
   /** Broadcast a daemon event (nudge exhaustion → human attention). */
@@ -240,7 +248,13 @@ export class ChannelWakeWorker {
         }
 
         sessions ??= this.deps.listLiveSessions();
-        const target = pickTarget(sessions, ws, entry.memberId);
+        const target = pickTargetWithPrincipal(
+          sessions,
+          ws,
+          entry.memberId,
+          entry.principalId,
+          this.deps.livePtyIdOf?.bind(this.deps),
+        );
         if (!target) continue; // ambiguity / no live pane / claude-only → polling fallback
         if (this.deps.now() - target.lastActivityMs < WAKE_QUIET_MS) continue; // busy — retry next tick
 
@@ -304,6 +318,41 @@ export class ChannelWakeWorker {
  *  3. else the ONLY eligible session in the workspace;
  *  4. else null (multi-pane ambiguity falls back to polling).
  */
+/**
+ * R2 — direct principal targeting. When the member row has a principalId and
+ * the registry knows a LIVE ptyId, aim straight at that session (an auto-name
+ * memberId never matches the slug heuristic, so without the principal path an
+ * R2 pane member would never get nudged). Keeps the same discipline as the
+ * existing pickTarget:
+ *   - exclude deferred sessions (G5);
+ *   - an ATTACHED claude pane → null — the renderer Stop-hook owns it. Do not
+ *     fall back to the heuristic (re-routing to the wrong single pane = double
+ *     delivery + wasted budget);
+ *   - if the session the registry points to is dead (race) or the workspace
+ *     mismatches (stale registry), do not assert — fall back to the existing
+ *     heuristic.
+ */
+export function pickTargetWithPrincipal(
+  sessions: WakeSessionView[],
+  workspaceId: string,
+  memberId: string,
+  principalId: string | undefined,
+  livePtyIdOf: ((principalId: string) => string | undefined) | undefined,
+): WakeSessionView | null {
+  if (principalId && livePtyIdOf) {
+    const ptyId = livePtyIdOf(principalId);
+    if (ptyId) {
+      const s = sessions.find((x) => x.id === ptyId && x.deferred !== true);
+      if (s && s.workspaceId === workspaceId) {
+        if (s.lastDetectedAgent === 'claude' && s.attached === true) return null;
+        return s;
+      }
+      // Session gone / workspace mismatch → heuristic fallback (never guess).
+    }
+  }
+  return pickTarget(sessions, workspaceId, memberId);
+}
+
 export function pickTarget(
   sessions: WakeSessionView[],
   workspaceId: string,

@@ -83,7 +83,7 @@ export interface WorkspaceSlice {
   clearSurfacePtyIdByPty: (ptyId: string) => void;
 }
 
-export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], WorkspaceSlice> = (set) => {
+export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], WorkspaceSlice> = (set, get) => {
   const initial = createWorkspace('Workspace 1', 1);
   return {
     workspaces: [initial],
@@ -199,6 +199,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // (LanLink / separate window / durable inbox) also learns, not just
       // same-process queryTasks pollers.
       const failed: { id: string; from: string; to: string }[] = [];
+      // R2: decide whether the removal will actually happen ahead of the
+      // transaction — the same condition as the in-set() guards (last-workspace
+      // protection, nonexistent id).
+      const willRemove =
+        get().workspaces.length > 1 && get().workspaces.some((w: Workspace) => w.id === id);
       set((state: StoreState) => {
         if (state.workspaces.length <= 1) return;
         const idx = state.workspaces.findIndex((w: Workspace) => w.id === id);
@@ -257,6 +262,17 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // Same funnel as the normal status path (publishA2aTask) so the failure is
       // visible cross-process, not only to same-process queryTasks (review A8 P1).
       for (const f of failed) publishA2aTask(f.from, f.to, f.id, 'failed', 'updated');
+      // R2: clean up the dead workspace's channel member rows + principals (a
+      // cross-cutting teardown at the same spot as the a2a force-fail).
+      // Fire-and-forget — cleanup is idempotent, and even if it fails the stale
+      // backfill / TTL reaper will converge.
+      // Optional call: the minimal test store has no channels slice (in the
+      // production store it always exists — same convention as the
+      // paneNotificationRing guard).
+      if (willRemove) {
+        void get().purgeMembershipDaemon?.({ workspaceId: id });
+        void get().principalMarkStaleWorkspaceDaemon?.(id);
+      }
     },
 
     setActiveWorkspace: (id) => set((state: StoreState) => {

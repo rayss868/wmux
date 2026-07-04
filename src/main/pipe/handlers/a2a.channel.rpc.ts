@@ -98,6 +98,47 @@ export function registerA2aChannelRpc(
       unknown
     >;
 
+    // R2 review C1: principalId is a renderer-only field — if a pipe/MCP caller
+    // asserts a principal coordinate on a member row, it could redirect the
+    // wake worker's PTY-write target to an arbitrary pane (including a sibling
+    // pane). By the same principle as verifiedWorkspaceId, strip the forgeable
+    // copy here. A legitimate principalId is carried only by the GUI join UI
+    // over the channels:mutate-local path.
+    for (const key of ['member', 'invitedMember', 'createdBy', 'sender'] as const) {
+      const ref = base[key];
+      if (ref && typeof ref === 'object' && !Array.isArray(ref)) {
+        delete (ref as Record<string, unknown>).principalId;
+      }
+    }
+    if (Array.isArray(base.members)) {
+      for (const m of base.members) {
+        if (m && typeof m === 'object' && !Array.isArray(m)) {
+          delete (m as Record<string, unknown>).principalId;
+        }
+      }
+    }
+    // R2 review C4: 'local-ui' is the GUI human's reserved identity — if a pipe
+    // path uses this label, it would be shown in the roster/transcript
+    // impersonating the human ("me"). The GUI never goes through this router
+    // (channels:mutate-local only), so a 'local-ui' over the pipe is always a
+    // spoof — reject.
+    for (const key of ['member', 'invitedMember', 'createdBy', 'sender'] as const) {
+      const ref = base[key] as Record<string, unknown> | undefined;
+      if (
+        ref &&
+        typeof ref === 'object' &&
+        (ref.memberId === 'local-ui' || ref.memberName === 'local-ui')
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: "'local-ui' is a reserved GUI identity and cannot be used from the pipe",
+          },
+        };
+      }
+    }
+
     if (ws) {
       // Verified caller: stamp the server-resolved workspace over ANY
       // client-supplied verifiedWorkspaceId (strip the forgeable copy).

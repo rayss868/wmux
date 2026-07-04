@@ -150,6 +150,8 @@ export interface SenderRef {
   workspaceId: string;
   memberId: string;
   memberName: string;
+  /** R2 — the principal stable coordinate to record on the member row (optional, additive). */
+  principalId?: string;
 }
 
 export interface CreateChannelParams {
@@ -223,6 +225,24 @@ export interface KickChannelParams {
    *  reach this method (mirrors the `a2a.channel.ack` precedent). Reaching the
    *  daemon control pipe directly is the documented same-user residual (F1),
    *  identical to every other channel mutation. */
+  verifiedWorkspaceId: string;
+}
+
+export interface PurgeMembershipParams {
+  /** The workspace to clean up — a deleted workspace or the owner of a closed pane. */
+  workspaceId: string;
+  /** When set, removes only that (workspaceId, memberId) row across all channels
+   *  (pane close). When absent, removes every row of the workspace (workspace deletion). */
+  memberId?: string;
+  /** When set, matches rows by principal stable coordinate instead of memberId —
+   *  the default for the pane-close path. memberId (auto name) may drift on agent
+   *  swap/reorder, but principalId is immutable for the pane's lifetime, so it
+   *  sweeps exactly that pane's rows. */
+  principalId?: string;
+  /** The workspace of the human/GUI that performed the cleanup — for attribution.
+   *  As with kick, there is no ChannelService-level authz gate: the "humans-only"
+   *  boundary is enforced by the TRANSPORT (renderer-only `channels:mutate-local`,
+   *  not registered on the pipe router). */
   verifiedWorkspaceId: string;
 }
 
@@ -592,6 +612,8 @@ export class ChannelService {
           joinedAt: now,
           historyFromSeq: 0,
           lastReadSeq: 0,
+          // R2: principal stable coordinate (additive).
+          ...(member.principalId ? { principalId: member.principalId } : {}),
         });
       }
       this.state.members[channel.id] = initialMembers;
@@ -749,6 +771,8 @@ export class ChannelService {
         // (historyFromSeq) but does not owe an ack for the backlog; unread
         // starts at 0 so the wake worker never nudge-storms a fresh member.
         lastReadSeq: channel.nextSeq - 1,
+        // R2: principal stable coordinate (additive, for display/routing).
+        ...(params.member.principalId ? { principalId: params.member.principalId } : {}),
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
@@ -901,6 +925,69 @@ export class ChannelService {
   }
 
   /**
+   * R2 — system cleanup that sweeps dead member rows out of every channel when
+   * a workspace/pane is deleted. Unlike leave()'s self-pinned removal, the
+   * target is a deleted coordinate so self-pin is impossible, and unlike
+   * kick() it iterates across all channels rather than one. A direct fix for
+   * the "dead workspace member lingers" problem (channel review doc §2 G1).
+   *
+   * Applies the same per-channel rules as leave(): remove rows → if it was the
+   * last member, stamp `emptySince` (makes it a reaper target) → on failure,
+   * roll back per channel → on success, emit catalog('membership') to the
+   * survivors + the removed workspace. Archived channels are cleaned too — the
+   * archive gate blocks "manipulating the roster of the living", not the
+   * lingering of dead coordinates.
+   */
+  async purgeMembership(params: PurgeMembershipParams): Promise<Result<{ removed: number }>> {
+    let removedTotal = 0;
+    // Iterate over a snapshot of channel ids — each channel's mutex is taken
+    // individually (the lock scope is per-channel so there is no global
+    // atomicity, but the cleanup is idempotent, so it converges on a re-call
+    // after a partial failure).
+    const channelIds = this.state.channels.map((c) => c.id);
+    for (const channelId of channelIds) {
+      const result = await this.withChannelLock(
+        channelId,
+        async (): Promise<{ ok: true } | { ok: false; error: ChannelError }> => {
+        const channel = this.state.channels.find((c) => c.id === channelId);
+        if (!channel) return { ok: true }; // vanished mid-iteration (e.g. reaper) — skip
+        const members = this.state.members[channel.id] ?? [];
+        const matches = (m: ChannelMember): boolean =>
+          m.workspaceId === params.workspaceId &&
+          (params.principalId !== undefined
+            ? m.principalId === params.principalId
+            : params.memberId === undefined || m.memberId === params.memberId);
+        if (!members.some(matches)) return { ok: true };
+
+        const survivors = members.filter((m) => !matches(m));
+        const removed = members.filter(matches);
+        const previousEmptySince = channel.emptySince;
+        this.state.members[channel.id] = survivors;
+        if (survivors.length === 0 && channel.emptySince === undefined) {
+          channel.emptySince = this.now();
+        }
+        if (!this.saveOrFail()) {
+          // Per-channel rollback — same symmetric recovery as leave().
+          this.state.members[channel.id] = members;
+          channel.emptySince = previousEmptySince;
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist membership purge' } };
+        }
+        removedTotal += removed.length;
+        this.emitCatalog(
+          channel.id,
+          params.verifiedWorkspaceId,
+          [...survivors.map((m) => m.workspaceId), params.workspaceId],
+          'membership',
+        );
+        return { ok: true };
+        },
+      );
+      if (!result.ok) return result;
+    }
+    return { ok: true, removed: removedTotal };
+  }
+
+  /**
    * Invite (add) ANOTHER workspace to a channel (P1b). Unlike join() — which
    * self-pins the joiner so a caller can only add ITSELF — invite() adds the
    * caller-supplied `invitedMember` workspace, gated by the INVITER being a
@@ -966,6 +1053,8 @@ export class ChannelService {
         // invite looked pre-consumed, the wake worker never fired for invited
         // members, and the load-time backfill cemented the loss on restart.
         lastReadSeq: channel.nextSeq - 1,
+        // R2: principal stable coordinate (additive).
+        ...(invitee.principalId ? { principalId: invitee.principalId } : {}),
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
@@ -1561,6 +1650,7 @@ export class ChannelService {
     channelId: string;
     name: string;
     memberId: string;
+    principalId?: string;
     lastReadSeq: number;
     headSeq: number;
     unread: number;
@@ -1571,6 +1661,7 @@ export class ChannelService {
       channelId: string;
       name: string;
       memberId: string;
+      principalId?: string;
       lastReadSeq: number;
       headSeq: number;
       unread: number;
@@ -1615,6 +1706,8 @@ export class ChannelService {
           channelId: channel.id,
           name: channel.name,
           memberId: row.memberId,
+          // R2: the wake worker's direct principal-targeting key (only when present on the row).
+          ...(row.principalId ? { principalId: row.principalId } : {}),
           lastReadSeq: cursor,
           headSeq,
           unread,
