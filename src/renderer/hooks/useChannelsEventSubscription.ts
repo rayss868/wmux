@@ -61,6 +61,10 @@ import { findLeafPanes } from './a2aAddressing';
 import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
+import {
+  createPasteGateState,
+  isMentionPasteBusy,
+} from './channelMentionPasteGate';
 import type {
   WmuxEvent,
   ChannelMessageEvent,
@@ -80,15 +84,6 @@ const EVENT_POLL_INTERVAL_MS = 1000;
  *  cycle. The daemon's POLL_DEFAULT_MAX (256) is the upper bound and
  *  is fine here too, but 64 keeps the per-poll JSON small. */
 const EVENT_POLL_MAX = 64;
-
-/** Paste is unsafe while the agent is actively producing ('running') or blocked
- *  on a confirmation prompt ('awaiting_input') — those defer to the agent's
- *  Stop. 'waiting' (turn ended, ready for input), 'complete', 'idle', and
- *  unknown are all paste-safe (deliver immediately). */
-const PASTE_UNSAFE_STATUSES: ReadonlySet<string> = new Set(['running', 'awaiting_input']);
-function isBusyStatus(status: string | undefined): boolean {
-  return status != null && PASTE_UNSAFE_STATUSES.has(status);
-}
 
 /**
  * FIX-MULTI-WS — per-`channel.message` delivery decision, extracted PURE so the
@@ -235,6 +230,10 @@ export function useChannelsEventSubscription(): void {
     // after a newer one and overwrite the sidebar/roster with stale membership.
     // Both hydrate paths bump this; only the latest run may commit (CodeRabbit).
     let catalogHydrationRun = 0;
+    // RCA 2026-07-05: grace clock for the isBusy unknown-status gate. Effect-
+    // scoped so the per-pty first-unknown timestamp survives across poll ticks
+    // (a fresh map per remount is correct — a remount re-establishes the poll).
+    const pasteGate = createPasteGateState();
 
     // Drain queued channel mentions into their target panes' PTYs. Reads live
     // store state on each call (no stale closure). Stop path pins onlyPtyId +
@@ -260,16 +259,18 @@ export function useChannelsEventSubscription(): void {
         // is attention-only and DELETES running/idle entries (paneSlice.setSurfaceAgentStatus),
         // so a running agent would read as undefined→idle and get pasted mid-turn (codex P1).
         // surfaceAgent retains the live status for the PTY's lifetime.
-        // A3: fail-CLOSED on unknown agent state. A missing surfaceAgent entry
-        // (a pty whose status broadcast hasn't landed yet, or a cleanup/reattach
-        // window) must NOT read as idle — pasting a nudge into a running agent
-        // corrupts its turn / fires an unintended submit. Treat unknown as busy
-        // and let the agent's Stop event flush the queued mention instead.
-        isBusy: (ptyId) => {
-          const status = st.surfaceAgent[ptyId]?.status;
-          if (status == null) return true;
-          return isBusyStatus(status);
-        },
+        // A3 + RCA 2026-07-05: fail-CLOSED on unknown agent state, but only for
+        // a GRACE window. A missing surfaceAgent entry (status broadcast not yet
+        // landed, or a cleanup/reattach window) must NOT immediately read as idle
+        // — pasting into a running agent corrupts its turn. BUT an agent that has
+        // been idle since its pty attached never re-emits a status pattern, so
+        // its status stays undefined forever; the old permanent fail-closed left
+        // such mentions stuck until an unrelated repaint (e.g. a pane split)
+        // finally emitted 'waiting'. A running agent broadcasts 'running' within
+        // ~1 output burst, so an unknown status that persists past the grace
+        // window is quiet/idle = paste-safe. See channelMentionPasteGate.
+        isBusy: (ptyId) =>
+          isMentionPasteBusy(st.surfaceAgent[ptyId]?.status, ptyId, Date.now(), pasteGate),
         deliverNudge: (ptyId, text) => submitBracketedPasteToPty(ptyId, text),
         markDelivered: st.markChannelMentionDelivered,
         isRateLimited: isNudgeRateLimited,
