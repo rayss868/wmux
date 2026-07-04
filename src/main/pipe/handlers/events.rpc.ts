@@ -47,10 +47,40 @@ function parseTypes(raw: unknown): WmuxEventType[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+/** Upper bound on `workspaceIds` entries. A renderer polls its own local
+ *  workspaces (single digits in practice); 64 is hygiene against a
+ *  pathological caller flooding the filter set, not a functional limit. */
+const MAX_WORKSPACE_IDS = 64;
+
+/**
+ * FIX-MULTI-WS — parse the optional `workspaceIds` union-scope param.
+ * Non-string / empty entries are dropped; the list is capped. Returns
+ * undefined when the param is absent or yields nothing, so the single
+ * `workspaceId` path stays byte-for-byte the pre-existing behavior.
+ *
+ * Security note: this does NOT widen the pipe threat model — `workspaceId`
+ * was already caller-supplied on this router (a pipe client could poll any
+ * workspace one id at a time), and the MCP layer builds its params
+ * server-side with a pinned `workspaceId` only, so an MCP client can never
+ * inject `workspaceIds`.
+ */
+function parseWorkspaceIds(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
+  for (const w of raw) {
+    if (typeof w === 'string' && w.length > 0) {
+      out.push(w);
+      if (out.length >= MAX_WORKSPACE_IDS) break;
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup): void {
   /**
    * events.poll — pull events newer than `cursor`.
-   * params: { cursor?: number, types?: WmuxEventType[], workspaceId?: string, max?: number }
+   * params: { cursor?: number, types?: WmuxEventType[], workspaceId?: string,
+   *           workspaceIds?: string[], max?: number }
    *
    * Default cursor is 0 (replay from oldest in the ring). External callers
    * SHOULD scope to their own `workspaceId` so they don't see other
@@ -64,6 +94,11 @@ export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup):
     const workspaceId = typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
       ? params['workspaceId']
       : undefined;
+    // FIX-MULTI-WS: optional union scope. A multi-workspace renderer passes
+    // every LOCAL workspace id in ONE poll so a channel.message addressed to a
+    // background workspace still reaches it (the single-workspace filter
+    // silently dropped those — delivery only worked for the active workspace).
+    const workspaceIds = parseWorkspaceIds(params['workspaceIds']);
     const max = typeof params['max'] === 'number' && Number.isFinite(params['max'])
       ? Math.max(1, Math.floor(params['max']))
       : undefined;
@@ -104,46 +139,54 @@ export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup):
     //                precondition of post), so the dual-party code path
     //                would have missed the recipient-other-than-sender case.
     //   - everything else: strict `workspaceId === caller` (unchanged).
-    const caller = workspaceId;
+    // FIX-MULTI-WS: the caller scope is a SET — the single `workspaceId` plus
+    // the optional `workspaceIds` union. `scoped === false` (empty set) keeps
+    // the exact pre-existing unscoped semantics; a single-id set is
+    // behaviorally identical to the old `caller` equality checks.
+    const callerSet = new Set<string>(workspaceIds ?? []);
+    if (workspaceId) callerSet.add(workspaceId);
+    const scoped = callerSet.size > 0;
     result.events = result.events.filter((e) => {
       if (e.type === 'a2a.task') {
-        // The `!!caller &&` clause is LOAD-BEARING — an unscoped poll
-        // (no workspaceId) must receive ZERO a2a.task events, else a bare
-        // `events.subscribe` plugin reads every pair's task.
-        return !!caller &&
-          ((e as A2aTaskEvent).from === caller || (e as A2aTaskEvent).to === caller);
+        // The `scoped &&` clause is LOAD-BEARING — an unscoped poll
+        // (no workspaceId/workspaceIds) must receive ZERO a2a.task events,
+        // else a bare `events.subscribe` plugin reads every pair's task.
+        return scoped &&
+          (callerSet.has((e as A2aTaskEvent).from) || callerSet.has((e as A2aTaskEvent).to));
       }
       if (e.type === 'channel.message') {
         // Per-recipient scoping: same load-bearing unscoped-drop as a2a.task.
         // `e.workspaceId` is the sender (base scope); every member
         // workspace appears in `recipientWorkspaceIds` so a post reaches
-        // its full set without leaking to third parties.
+        // its full set without leaking to third parties. Union scope: the
+        // event is visible when ANY caller workspace is sender or recipient.
         const ce = e as ChannelMessageEvent;
-        if (!caller) return false;
-        if (ce.workspaceId === caller) return true;
-        return ce.recipientWorkspaceIds.includes(caller);
+        if (!scoped) return false;
+        if (callerSet.has(ce.workspaceId)) return true;
+        return ce.recipientWorkspaceIds.some((r) => callerSet.has(r));
       }
       if (e.type === 'channel.catalog') {
         // A1 — same per-recipient scoping as channel.message: base workspaceId
         // is the actor; recipientWorkspaceIds is the member set + any removed ws.
         const ce = e as ChannelCatalogEvent;
-        if (!caller) return false;
+        if (!scoped) return false;
         // '*' sentinel = broadcast to every workspace. A public channel's
         // creation is discoverable by all, but the member-scoped recipient list
         // wouldn't reach non-members (codex+GLM P2), so create() emits '*' for
         // public channels.
         if (ce.recipientWorkspaceIds.includes('*')) return true;
-        if (ce.workspaceId === caller) return true;
-        return ce.recipientWorkspaceIds.includes(caller);
+        if (callerSet.has(ce.workspaceId)) return true;
+        return ce.recipientWorkspaceIds.some((r) => callerSet.has(r));
       }
       if (e.type === 'channel.nudgeExhausted') {
         // Channels v2 — same unscoped-drop discipline as the other channel.*
         // events (channel existence must not leak to a bare subscribe). Base
         // workspaceId is the affected member's workspace; only it sees the event.
-        return !!caller && e.workspaceId === caller;
+        return scoped && callerSet.has(e.workspaceId);
       }
       // every other type: strict scope, UNCHANGED from the old EventBus gate
-      return caller ? e.workspaceId === caller : true;
+      // (generalized to set membership for the union case)
+      return scoped ? callerSet.has(e.workspaceId) : true;
     });
 
     // Re-impose the caller's page size AFTER scoping (see the over-fetch note

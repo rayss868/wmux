@@ -625,3 +625,149 @@ describe('events.rpc — notifications.read opt-in gate', () => {
     }
   });
 });
+
+// ─── FIX-MULTI-WS — `workspaceIds` union scoping ─────────────────────────────
+//
+// A multi-workspace renderer polls ONCE with every LOCAL workspace id; the
+// daemon filters by set membership. The core case this exists for: a
+// channel.message whose recipients include a BACKGROUND workspace must reach
+// the poll while the caller's base `workspaceId` is a different (active)
+// workspace — the single-id filter silently dropped those, so a mention of a
+// pane in an unfocused workspace never delivered until the user switched.
+describe('events.rpc — workspaceIds union scoping (FIX-MULTI-WS)', () => {
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  /** Minimal channel.message emit — only the fields the poll filter reads
+   *  (type / workspaceId / recipientWorkspaceIds) matter here; the embedded
+   *  message payload is opaque to events.rpc. */
+  function emitChannelMessage(senderWs: string, recipients: string[]): void {
+    eventBus.emit({
+      type: 'channel.message',
+      workspaceId: senderWs,
+      channelId: 'ch-1',
+      seq: 1,
+      senderWorkspaceId: senderWs,
+      recipientWorkspaceIds: recipients,
+      message: {} as never,
+    } as never);
+  }
+
+  function emitChannelCatalog(actorWs: string, recipients: string[]): void {
+    eventBus.emit({
+      type: 'channel.catalog',
+      workspaceId: actorWs,
+      channelId: 'ch-1',
+      actorWorkspaceId: actorWs,
+      recipientWorkspaceIds: recipients,
+      reason: 'membership',
+    } as never);
+  }
+
+  it('delivers a channel.message addressed to a BACKGROUND workspace in the union (the P1 case)', async () => {
+    // Sender ws-C posts to a channel whose members include ws-B. The renderer
+    // is viewing ws-A but polls the union [ws-A, ws-B].
+    emitChannelMessage('ws-C', ['ws-B', 'ws-C']);
+    const router = setupRouter();
+    const events = await pollEvents(router, {
+      workspaceId: 'ws-A',
+      workspaceIds: ['ws-A', 'ws-B'],
+      types: ['channel.message'],
+    });
+    expect(events).toHaveLength(1);
+  });
+
+  it('drops a channel.message with NO overlap against the union (third-party leak guard)', async () => {
+    emitChannelMessage('ws-C', ['ws-C', 'ws-D']);
+    const router = setupRouter();
+    const events = await pollEvents(router, {
+      workspaceId: 'ws-A',
+      workspaceIds: ['ws-A', 'ws-B'],
+      types: ['channel.message'],
+    });
+    expect(events).toHaveLength(0);
+  });
+
+  it('single workspaceId behavior is unchanged (back-compat, no workspaceIds param)', async () => {
+    emitChannelMessage('ws-C', ['ws-B', 'ws-C']);
+    const router = setupRouter();
+    const asRecipient = await pollEvents(router, { workspaceId: 'ws-B', types: ['channel.message'] });
+    expect(asRecipient).toHaveLength(1);
+    const asThirdParty = await pollEvents(router, { workspaceId: 'ws-A', types: ['channel.message'] });
+    expect(asThirdParty).toHaveLength(0);
+  });
+
+  it('an unscoped poll (neither workspaceId nor workspaceIds) still receives ZERO channel events', async () => {
+    emitChannelMessage('ws-C', ['ws-B']);
+    emitChannelCatalog('ws-C', ['ws-B']);
+    const router = setupRouter();
+    const events = await pollEvents(router, { types: ['channel.message', 'channel.catalog'] });
+    expect(events).toHaveLength(0);
+  });
+
+  it('strict-scope types (agent.lifecycle et al.) match ANY workspace in the union, and only those', async () => {
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-A', paneId: 'pA' });
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-B', paneId: 'pB' });
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-C', paneId: 'pC' });
+    const router = setupRouter();
+    const events = await pollEvents(router, {
+      workspaceId: 'ws-A',
+      workspaceIds: ['ws-A', 'ws-B'],
+    });
+    expect(events).toHaveLength(2);
+  });
+
+  it('a2a.task dual-party scoping matches against the union (background receiver)', async () => {
+    publishA2aTask({
+      taskId: 'task-1',
+      from: 'ws-C',
+      to: 'ws-B',
+      kind: 'created',
+      state: 'submitted',
+    });
+    const router = setupRouter();
+    const events = await pollEvents(router, {
+      workspaceId: 'ws-A',
+      workspaceIds: ['ws-A', 'ws-B'],
+      types: ['a2a.task'],
+    });
+    expect(events).toHaveLength(1);
+    const foreign = await pollEvents(router, {
+      workspaceId: 'ws-A',
+      workspaceIds: ['ws-A', 'ws-D'],
+      types: ['a2a.task'],
+    });
+    expect(foreign).toHaveLength(0);
+  });
+
+  it('channel.catalog matches the union, including the "*" public broadcast sentinel', async () => {
+    emitChannelCatalog('ws-C', ['ws-B']);
+    emitChannelCatalog('ws-C', ['*']);
+    const router = setupRouter();
+    const events = await pollEvents(router, {
+      workspaceId: 'ws-A',
+      workspaceIds: ['ws-A', 'ws-B'],
+      types: ['channel.catalog'],
+    });
+    expect(events).toHaveLength(2);
+    // Union with no catalog overlap: only the '*' broadcast remains visible.
+    const noOverlap = await pollEvents(router, {
+      workspaceId: 'ws-D',
+      types: ['channel.catalog'],
+    });
+    expect(noOverlap).toHaveLength(1);
+  });
+
+  it('ignores malformed workspaceIds entries (non-string / empty) instead of widening scope', async () => {
+    emitChannelMessage('ws-C', ['ws-B']);
+    const router = setupRouter();
+    // Malformed entries dropped → effective scope is just ws-A → no delivery.
+    const events = await pollEvents(router, {
+      workspaceId: 'ws-A',
+      workspaceIds: [42, '', null, { ws: 'ws-B' }],
+      types: ['channel.message'],
+    });
+    expect(events).toHaveLength(0);
+  });
+});

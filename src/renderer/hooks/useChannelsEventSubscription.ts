@@ -20,12 +20,18 @@
 //     tasks are pasted into the now-idle pane's PTY (see channelMentionFlush).
 //     The renderer still never pays for pane/process/notification events.
 //
-// Per-recipient scoping: `events.poll` already filters by caller's
-// `workspaceId` for the base event; the channel.event fan-out adds every
-// `recipientWorkspaceId` as a matchable key (see events.rpc.ts). This
-// hook does NOT need to re-filter — it only receives events that the
-// daemon intended for the current workspace. The slice's
-// `appendMessageFromEvent` therefore doesn't re-check `recipientWorkspaceIds`.
+// Per-recipient scoping (FIX-MULTI-WS): the poll is scoped to the UNION of
+// every local workspace (`workspaceIds` param — daemon filters by set
+// membership, see events.rpc.ts). Channels are workspace-independent, so a
+// mention of a pane in a BACKGROUND workspace must deliver while the user is
+// viewing another one — the v1 single-workspace poll silently dropped those.
+// One loop, one cursor: the first multi-loop attempt (one poll loop per
+// workspace) regressed same-workspace delivery and was reverted; the union
+// scope keeps the loop structurally identical to v1. Because the batch now
+// carries OTHER workspaces' events, this hook re-filters per event: display
+// state (message cache / unread / catalog hydration) only for events relevant
+// to the ACTIVE workspace, mention routing + flush for EVERY local recipient
+// workspace.
 //
 // Resync handling: `events.poll` returns `resync: true` when the caller's
 // cursor drifted past the 1024-event ring window. On resync we drop the
@@ -55,7 +61,13 @@ import { findLeafPanes } from './a2aAddressing';
 import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
-import type { WmuxEvent, ChannelMessageEvent, AgentLifecycleEvent } from '../../shared/events';
+import type {
+  WmuxEvent,
+  ChannelMessageEvent,
+  ChannelCatalogEvent,
+  AgentLifecycleEvent,
+} from '../../shared/events';
+import type { PaneLeaf } from '../../shared/types';
 
 /** Polling cadence. 1 Hz is the same as the PluginFrame forwardEvents
  *  loop — established precedent. Higher frequency buys sub-second
@@ -89,6 +101,9 @@ interface EventsPollBridge {
     types: readonly ('channel.message' | 'agent.lifecycle' | 'channel.catalog')[];
     max?: number;
     workspaceId: string;
+    /** FIX-MULTI-WS: union scope — every LOCAL workspace id, so background
+     *  workspaces' channel/lifecycle events arrive in the same single poll. */
+    workspaceIds?: readonly string[];
   }): Promise<EventsPollEnvelope | null>;
 }
 
@@ -143,9 +158,11 @@ export function useChannelsEventSubscription(): void {
   // NEVER started — so live channel messages, the unread/mention dock badges,
   // AND the mention→a2a inbox routing all silently no-op'd. Keying the effect on
   // `workspaceId` re-runs it the moment self lands, starting the poll then.
-  // Multi-workspace renderers (FIX-MULTI-WS follow-up) will iterate every member
-  // workspace here; for v1 we poll one.
   const workspaceId = useStore((s) => s.company?.ceoWorkspaceId ?? s.activeWorkspaceId);
+  // FIX-MULTI-WS: every local workspace id, joined so the selector returns a
+  // stable primitive (string) — the effect re-runs (rebuilding the poll scope)
+  // only when a workspace is added/removed, not on unrelated store writes.
+  const allWorkspaceIds = useStore((s) => s.workspaces.map((w) => w.id).join(','));
   useEffect(() => {
     if (!workspaceId) {
       // No resolvable self yet (pre-boot). The selector above re-runs this
@@ -166,6 +183,12 @@ export function useChannelsEventSubscription(): void {
       return;
     }
 
+    // FIX-MULTI-WS: the poll's union scope — every local workspace. The
+    // active/CEO id is unioned in defensively (it should already be in the
+    // list; a boot race where it isn't must not drop it from the scope).
+    const localIds = allWorkspaceIds ? allWorkspaceIds.split(',').filter(Boolean) : [];
+    if (!localIds.includes(workspaceId)) localIds.push(workspaceId);
+
     // A4: stamp the mount time so the first poll can keep events that arrived
     // AFTER mount (live) while skipping pre-mount ring history (see `tick`).
     const mountTs = Date.now();
@@ -184,18 +207,22 @@ export function useChannelsEventSubscription(): void {
     // Drain queued channel mentions into their target panes' PTYs. Reads live
     // store state on each call (no stale closure). Stop path pins onlyPtyId +
     // requireIdle:false; arrival path scans all targets + requireIdle:true.
-    const runFlush = (opts: FlushOpts) => {
+    // FIX-MULTI-WS: parameterized by workspace — the mention queue, pane tree,
+    // and delivery are all per-workspace, and a background workspace's queue
+    // must drain without that workspace being active. `pty.write` goes through
+    // the main process, so an unmounted (background) pane still receives.
+    const runFlush = (wsId: string, opts: FlushOpts) => {
       const st = useStore.getState();
       // A3 sweep: runFlush now fires EVERY poll (not only on a new message) so a
       // mention queued for a pane that read as 'unknown' (fail-closed busy) at
       // arrival is retried once that pane's status resolves to idle. Cheap
       // early-out when nothing is queued so the per-poll sweep skips the
       // findLeafPanes DFS on an empty queue.
-      if (st.getUndeliveredChannelMentionTasks(workspaceId).length === 0) return;
-      const selfWs = st.workspaces.find((w) => w.id === workspaceId);
+      if (st.getUndeliveredChannelMentionTasks(wsId).length === 0) return;
+      const selfWs = st.workspaces.find((w) => w.id === wsId);
       if (!selfWs) return;
       const selfLeaves = findLeafPanes(selfWs.rootPane);
-      flushMentions(workspaceId, selfLeaves, {
+      flushMentions(wsId, selfLeaves, {
         getUndeliveredChannelMentionTasks: st.getUndeliveredChannelMentionTasks,
         // surfaceAgent (NOT surfaceAgentStatus) is the busy source: surfaceAgentStatus
         // is attention-only and DELETES running/idle entries (paneSlice.setSurfaceAgentStatus),
@@ -218,10 +245,27 @@ export function useChannelsEventSubscription(): void {
       }, opts);
     };
 
+    // FIX-MULTI-WS: flush every local workspace's queue. Each per-workspace
+    // call early-outs on an empty queue, so the sweep stays cheap; on the
+    // Stop path only the pty's OWNER workspace resolves a target (the others
+    // no-match on `onlyPtyId`), so flushing all is correct and avoids trusting
+    // the lifecycle event's workspace stamp.
+    const runFlushAll = (opts: FlushOpts) => {
+      for (const wsId of localIds) runFlush(wsId, opts);
+    };
+
     const tick = () => {
       if (disposed || inFlight) return;
       inFlight = true;
-      bridge({ cursor, types: ['channel.message', 'agent.lifecycle', 'channel.catalog'], max: EVENT_POLL_MAX, workspaceId })
+      bridge({
+        cursor,
+        types: ['channel.message', 'agent.lifecycle', 'channel.catalog'],
+        max: EVENT_POLL_MAX,
+        workspaceId,
+        // FIX-MULTI-WS: union scope — the daemon filters by set membership,
+        // so background workspaces' events arrive in this same single poll.
+        workspaceIds: localIds,
+      })
         .then((raw) => {
           if (disposed || !raw) return;
           // Peel the RPC transport envelope { id, ok, result }. The daemon's
@@ -244,6 +288,11 @@ export function useChannelsEventSubscription(): void {
           }
           cursor = result.nextCursor;
           if (result.resync) {
+            // FIX-MULTI-WS: recovery below is ACTIVE-workspace display state
+            // only — background workspaces keep no display cache, so there is
+            // nothing to rebuild for them. A mention that fell out of the ring
+            // during the drift is a rare bounded loss (1024-event window),
+            // same trade-off as the pre-multi-ws behavior.
             // Drift past the ring window — drop the local message
             // cache so the next refresh rebuilds it from the
             // authoritative daemon state. The channel catalog
@@ -295,45 +344,71 @@ export function useChannelsEventSubscription(): void {
             return;
           }
           let sawCatalog = false;
-          // A16: compute this workspace's leaf set ONCE per poll batch — it can't
-          // change mid-batch, and findLeafPanes is a DFS that a busy poll (many
-          // channel.message events) would otherwise re-walk per message.
-          const batchSelfWs = useStore.getState().workspaces.find((w) => w.id === workspaceId);
-          const batchSelfLeaves = batchSelfWs ? findLeafPanes(batchSelfWs.rootPane) : [];
+          // A16 (generalized for FIX-MULTI-WS): compute each workspace's leaf
+          // set at most ONCE per poll batch — it can't change mid-batch, and
+          // findLeafPanes is a DFS that a busy poll (many channel.message
+          // events) would otherwise re-walk per message. Lazy per-workspace
+          // cache: only workspaces actually mentioned in this batch pay it.
+          const batchLeaves = new Map<string, PaneLeaf[]>();
+          const leavesFor = (wsId: string): PaneLeaf[] => {
+            const cached = batchLeaves.get(wsId);
+            if (cached) return cached;
+            const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
+            const leaves = ws ? findLeafPanes(ws.rootPane) : [];
+            batchLeaves.set(wsId, leaves);
+            return leaves;
+          };
           for (const event of result.events) {
-            // The daemon already scoped by `events.poll`'s base
-            // workspaceId + per-recipient fan-out, so every event
-            // here is intended for the current workspace. No
-            // re-filter needed — the slice trusts the dispatch.
+            // FIX-MULTI-WS: the daemon scoped this batch to the UNION of local
+            // workspaces, so an event here may concern a BACKGROUND workspace.
+            // Display state is re-filtered to the active workspace; mention
+            // routing fans out to every local recipient workspace.
             if (event.type === 'channel.message') {
               const channelEvent = event as ChannelMessageEvent;
               const st = useStore.getState();
-              st.appendMessageFromEvent(channelEvent.message);
-              // Route on REPLAYED events too (no historical drop): with single-ws
-              // polling, a mention that arrived while this subscription was on
-              // ANOTHER workspace must still enqueue on switch-back (codex R6).
-              // routeChannelMentionToInbox is idempotent (deterministic task id +
-              // getTask short-circuit), and the flush's busy check stops a stale
-              // replay from pasting into a running agent. Duplicate re-delivery
-              // after a FULL renderer reload (transient delivered map lost) is a
-              // known trade-off — durable delivery state is a follow-up.
-              // #7 + agent-pane redesign: a post that @-mentions THIS workspace
-              // becomes an a2a inbox task. The router resolves the mention's
-              // pinned paneId against our own live leaves (fail-closed ptyId
-              // re-check) and pins to.paneId so a split workspace routes to
-              // EXACTLY the mentioned agent; a miss falls back to a ws-level task
-              // (any live agent picks it up via role:agent query). Idempotent by
+              // Display cache / unread / mention badges: ACTIVE workspace only.
+              // A background workspace's view is rebuilt by catalog + history
+              // hydration when the user switches to it — appending here would
+              // count unread against a catalog the active view doesn't hold.
+              if (
+                channelEvent.workspaceId === workspaceId ||
+                channelEvent.recipientWorkspaceIds.includes(workspaceId)
+              ) {
+                st.appendMessageFromEvent(channelEvent.message);
+              }
+              // Route on REPLAYED events too (no historical drop): a mention
+              // that arrived while this poll was down must still enqueue on
+              // restart (codex R6). routeChannelMentionToInbox is idempotent
+              // (deterministic task id + getTask short-circuit), and the
+              // flush's busy check stops a stale replay from pasting into a
+              // running agent. Duplicate re-delivery after a FULL renderer
+              // reload (transient delivered map lost) is a known trade-off —
+              // durable delivery state is a follow-up.
+              // #7 + agent-pane redesign: a post that @-mentions a LOCAL
+              // workspace becomes an a2a inbox task in THAT workspace — active
+              // or not (FIX-MULTI-WS: this is the cross-workspace delivery
+              // fix). The router resolves the mention's pinned paneId against
+              // that workspace's own live leaves (fail-closed ptyId re-check)
+              // and pins to.paneId so a split workspace routes to EXACTLY the
+              // mentioned agent; a miss falls back to a ws-level task (any
+              // live agent picks it up via role:agent query). Idempotent by
               // per-target deterministic task id.
-              routeChannelMentionToInbox(channelEvent.message, workspaceId, batchSelfLeaves, {
-                getTask: st.getTask,
-                createA2aTask: st.createA2aTask,
-                channelName: (id) => useStore.getState().channels[id]?.name ?? id,
-                workspaceName: (id) =>
-                  useStore.getState().workspaces.find((w) => w.id === id)?.name ?? id,
-                publish: publishA2aTask,
-                isHandled: isChannelMentionHandled,
-                markHandled: markChannelMentionHandled,
-              });
+              const mentionWs = new Set(
+                (channelEvent.message.mentions ?? []).map((m) => m.workspaceId),
+              );
+              for (const wsId of localIds) {
+                if (!mentionWs.has(wsId)) continue;
+                routeChannelMentionToInbox(channelEvent.message, wsId, leavesFor(wsId), {
+                  getTask: st.getTask,
+                  createA2aTask: st.createA2aTask,
+                  channelName: (id) => useStore.getState().channels[id]?.name ?? id,
+                  workspaceName: (id) =>
+                    useStore.getState().workspaces.find((w) => w.id === id)?.name ?? id,
+                  publish: publishA2aTask,
+                  isHandled: isChannelMentionHandled,
+                  markHandled: markChannelMentionHandled,
+                });
+              }
             } else if (event.type === 'agent.lifecycle') {
               // P1 autoresponse: agent.stop is the flush trigger, but only the
               // RIGHT kind+source is a paste-safe idle boundary.
@@ -360,8 +435,10 @@ export function useChannelsEventSubscription(): void {
               //     (no double paste — codex round-4/7). The pty's CURRENT status
               //     is the single source of truth.
               // subagent_stop / awaiting_input never reach here (kind check).
+              // FIX-MULTI-WS: the stop may belong to a BACKGROUND workspace's
+              // pane — flush all local queues; only the pty's owner matches.
               if (ev.kind === 'agent.stop') {
-                runFlush({ onlyPtyId: ev.ptyId });
+                runFlushAll({ onlyPtyId: ev.ptyId });
               }
             } else if (event.type === 'channel.catalog') {
               // A1: a channel's catalog/membership changed (create/archive/join/
@@ -369,16 +446,28 @@ export function useChannelsEventSubscription(): void {
               // re-hydrate after the batch so the sidebar + roster re-sync
               // instead of going silently stale (the audit's top structural gap:
               // 6 of 7 mutations used to emit nothing).
-              sawCatalog = true;
+              // FIX-MULTI-WS: hydration is membership-scoped to the ACTIVE
+              // workspace (setChannels is a full replace — hydrating for a
+              // background workspace would clobber the active view), so only
+              // an active-relevant catalog event triggers it. A background
+              // workspace's catalog is rebuilt on switch.
+              const ce = event as ChannelCatalogEvent;
+              if (
+                ce.recipientWorkspaceIds.includes('*') ||
+                ce.workspaceId === workspaceId ||
+                ce.recipientWorkspaceIds.includes(workspaceId)
+              ) {
+                sawCatalog = true;
+              }
             }
           }
           // Idle-immediate + A3 sweep: deliver any queued mention to a now-idle
           // pane. Runs EVERY poll (not only on a new message) so a mention queued
           // while its target pane read as 'unknown' (fail-closed busy) is retried
           // once that pane resolves to idle — without this, A3's fail-closed left
-          // such mentions undelivered forever (GLM P2). The early-out in runFlush
-          // keeps an empty-queue tick cheap.
-          runFlush({});
+          // such mentions undelivered forever (GLM P2). The per-workspace
+          // early-out in runFlush keeps an empty-queue tick cheap.
+          runFlushAll({});
           // A1: re-hydrate the catalog once per batch when any channel.catalog
           // event arrived. The six non-post mutations now emit this signal; the
           // receiver re-fetches list+members (daemon = source of truth), so a
@@ -418,5 +507,8 @@ export function useChannelsEventSubscription(): void {
       disposed = true;
       clearInterval(timer);
     };
-  }, [workspaceId]);
+    // FIX-MULTI-WS: allWorkspaceIds rebuilds the loop (and its union scope)
+    // when a workspace is added/removed — a NEW workspace must join the poll
+    // scope or its mentions would silently drop until the next remount.
+  }, [workspaceId, allWorkspaceIds]);
 }
