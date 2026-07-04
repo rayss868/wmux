@@ -19,7 +19,7 @@ import { getWmuxDir } from './config';
  *   - fish                 (v3 roadmap)
  */
 
-const INTEGRATION_VERSION = 4;
+const INTEGRATION_VERSION = 5;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
@@ -186,7 +186,7 @@ __wmux_uzd="\${WMUX_USER_ZDOTDIR:-$HOME}"
 [ -r "$__wmux_uzd/.zlogin" ] && source "$__wmux_uzd/.zlogin"
 `;
 
-const ZSH_RC = `# wmux shell integration — OSC 133 semantic markers (zsh, v${INTEGRATION_VERSION})
+export const ZSH_RC = `# wmux shell integration — OSC 133 semantic markers (zsh, v${INTEGRATION_VERSION})
 # Emits prompt/command boundaries so wmux's daemon can index command output.
 
 __wmux_uzd="\${WMUX_USER_ZDOTDIR:-$HOME}"
@@ -222,8 +222,11 @@ else
 fi
 
 # B (프롬프트 끝 / 사용자 입력 시작)을 PROMPT 끝에 한 번만 추가.
+# Wrap the raw OSC in zsh's %{...%} zero-width guard. Without it zle counts the
+# escape bytes as printable prompt width, and zrefresh/resetvideo overruns the
+# line buffer during resize sweeps → SIGBUS crash (RCA 2026-07-05).
 if [[ "$PROMPT" != *"133;B"* ]]; then
-  PROMPT="\${PROMPT}"$'\\033]133;B\\a'
+  PROMPT="\${PROMPT}%{"$'\\033]133;B\\a'"%}"
 fi
 `;
 
