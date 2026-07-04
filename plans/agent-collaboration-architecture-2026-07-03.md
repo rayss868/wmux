@@ -4,6 +4,12 @@
 > 이 문서는 그 위에 **행위자 전체**(휴먼 + 내부 에이전트 + 외부 에이전트 + 오케스트레이터)를
 > 올려놓고, "무궁무진한 케이스"를 유한한 축으로 접어 최적 협업 모델을 수립한다.
 > 코드 수정 없음 — 설계만.
+>
+> **개정 2026-07-04 (로드맵 확정)**: "wmux Channels PRD v0.1"을 본 문서에 접합.
+> 변경: 로드맵 R6(Approval Gate) 추가, Principal 스키마 `reports_to` 예약,
+> R5 비고에 모바일 클라이언트 프레임 명시, PRD 전 항목 처분표(§9) 인라인.
+> PRD 원문은 파일로 존재하지 않음(2026-07-04 대화 첨부) — §9 처분표가 정본.
+> 판정 근거: `~/.gstack/projects/openwong2kim-wmux/wong2kim-main-design-20260704-115727.md`
 
 ## 1. 행위자 분류 (Actor Taxonomy)
 
@@ -57,8 +63,13 @@ Principal {
   display: string
   reachability: 'gui' | 'renderer-hook' | 'pty-nudge' | 'poll-only'
   liveness: live | stale      // 판 죽음/워크스페이스 삭제 시 자동 전환
+  reports_to?: PrincipalId    // 회사모드 예약 (PRD v0.1 채택분) — v0 항상 null
 }
 ```
+
+- `reports_to`: 회사모드(supervisor 트리)의 유일한 추가 필드로 예약. additive optional이라
+  마이그레이션 불필요. 이 필드에 supervisor의 Principal ID가 들어가는 순간 위임/보고
+  트리가 완성된다. 활성화는 R6 이후 별도 결정.
 
 - 채널 멤버십·멘션·a2a 수신자가 전부 이 위에 올라간다.
 - 선행 문서의 P2(에이전트 판 1급 멤버화)는 이 레지스트리의 `pane-agent` 부분집합.
@@ -92,7 +103,7 @@ Principal {
 |---|---|---|
 | 내부 attached claude 판 | renderer hook (멘션→a2a task) | ✅ 있음 (same-ws만 P1로 개방) |
 | 내부 detached / 비-claude 판 | wake worker PTY 넛지 (quiet gate + 백오프 + cap) | ✅ 있음 |
-| 외부 에이전트 | **폴링 계약** — `wmux_events_poll` + `channel_unread` 주기 호출 | ⚠️ 도구는 있으나 계약 미문서화 |
+| 외부 에이전트 | **폴링 계약** — `wmux_events_poll` + `channel_unread` 주기 호출 | ⚠️ 도구는 있으나 계약 미문서화 — **R4 착수 전 문서화 필수** (폴링 주기 하한 포함) |
 | 외부 에이전트 (향후) | push — LAN link 대칭 확장 or webhook | ❌ 없음 (v0 수신전용) |
 | 휴먼 | GUI 배지 + 멘션 하이라이트 | ✅ 있음 |
 
@@ -143,15 +154,73 @@ Principal {
 | **R2** | = P2 확장: Principal 레지스트리 (pane-agent 1급 멤버 + liveness 정리 + local-ui 표기 제거) | R1 | 로스터 = 실수신자 명단, 죽은 멤버 해소 |
 | **R3** | 미션 채널 패턴 표준화 — 문서(AGENTS.md) + 헬퍼 MCP 도구(`channel_mission_start/close`) | R0 | 패턴 B 조율이 감사 가능해짐 |
 | **R4** | external principal (가상 ws additive) + 외부 폴링 계약 문서화 | R2 | 패턴 C 1단계 개통 (같은 머신 외부 에이전트) |
-| **R5** | LAN link 채널 브리지 (read/post만, execute 금지 유지) | R4 + lanlink PR-5 | 패턴 C 2단계 (다른 머신 OpenClaw) |
+| **R5** | LAN link 채널 브리지 (read/post만, execute 금지 유지) | R4 + lanlink PR-5 | 패턴 C 2단계 (다른 머신 OpenClaw). **모바일 앱도 이 브리지에 붙는 채널 클라이언트** — 별도 API 서버 없음, stateless viewer |
+| **R6** | **Approval Gate** — 매칭 액션 보류 → 휴먼 escalate → 승인/거부. 대상: humans-only 액션(kick/archive/원격 execute) 중 위임 가능하게 열 원격 명령 + 외부 principal의 실행성 액션(terminal_send, 판 스폰 등). 정확한 목록은 R6 설계 시 확정 | R4 | **humans-only 경계를 완화하는 유일한 통로.** 모바일의 킬러 유스케이스(밖에서 승인 탭) 전제 |
 
 **R1이 여전히 지렛대다.** 외부까지 포함한 큰 그림에서도, 필드 하나(senderPaneId)로
 열리는 패턴 A가 가장 싸고 가장 자주 쓰인다 (오케스트레이터+작업자를 한 워크스페이스에
-띄우는 게 기본 구도이므로). R4~R5는 독립 트랙이라 병행 가능.
+띄우는 게 기본 구도이므로). R4~R6는 독립 트랙이라 병행 가능 (R6는 R4 이후).
 
 ## 8. 결정 필요 사항 (구현 착수 전)
 
 1. **R2의 조인 시점**: 워크스페이스 추가 시 그 안의 판들을 자동 조인 vs 판별 명시 조인.
    자동이 Slack 멘탈모델에 맞지만, 판 수명이 짧은 워크플로에서는 로스터 churn 발생.
 2. **R4의 신원 부트스트랩**: external principal 등록을 페어링 PIN 재사용 vs 별도 토큰.
+   (PRD v0.1의 장기 토큰 방식은 후보 중 하나. **이 결정이 Gateway 상세 설계의 선행 조건.**)
 3. **R5 범위**: LAN 채널 브리지에 멘션(=인터럽트)까지 허용할지, post/read만 허용할지.
+
+## 9. PRD v0.1 처분표 (2026-07-04 접합)
+
+"wmux Channels PRD v0.1" 전 항목의 처분 기록. 처분 어휘 3종: **채택** / **기각** / **연기**
+(연기 = 방향은 인정하되 선행 조건 후 재개). 향후 PRD 용어(agent://, dm, broadcast 등)로
+논의가 재발하면 이 표가 참조 정본이다.
+
+### 9.1 개념 매핑 (PRD ↔ 본 문서)
+
+| PRD v0.1 | 본 문서 대응 | 판정 |
+|---|---|---|
+| Agent Registry `agent://<realm>/<name>` | Principal 레지스트리 (`human:` / `pane:` / `ext:`) — R2 | 동일 개념, 표기만 다름 |
+| "Human is an agent" | A1 휴먼 = principal | 동일 |
+| room 채널 (다자 협업) | 미션 채널 패턴 — R3 | 동일 |
+| 원격 에이전트 (헤르메스, OpenClaw) | external principal + 폴링 계약 — R4→R5 | 동일 목표, 보안 단계가 다름 |
+| task/result/ack/escalate | a2a task 시스템 (§3.3 이분법 유지) | 이미 존재 |
+| 회사모드 `reports_to` 트리 | §3.1 예약 필드 + 패턴 A/B/C | 방향 일치 |
+
+### 9.2 충돌 3곳 (기존 결정이 우선 — 프리미스 합의됨)
+
+1. **기판 중복**: PRD의 신규 JSONL 저장소 + Envelope + ULID는 동작 중인 채널 v2
+   (`ChannelService`) + a2a를 재기판하는 것 — 기각. additive 확장이 정본.
+2. **push-first vs pull 정본**: PRD Gateway는 WS push가 기본이나 원칙 3("push는 가속기,
+   pull이 정본")과 토큰 경제 방어(`MENTION_NUDGE_CAP`)가 우선.
+3. **보안 단계 건너뜀**: PRD의 원격 등록 + control cmd 즉시 개방은 "no remote execute"
+   불변식과 §5 패턴 C의 3단계 순서 위반 — 단계 준수 형태로만 수용.
+
+### 9.3 전 항목 처분
+
+| PRD 항목 | 처분 | 사유 |
+|---|---|---|
+| §1.1 Agent ID 스킴 `agent://<realm>/<name>` | 기각 (표기) / 채택 (개념) | R2 Principal id가 동일 역할. 표기 이원화는 이중 진실 |
+| §1.2 `capabilities` 필드 | 연기 | R2 Principal 스키마 설계 시 검토. 지금은 라우팅 수요 없음 |
+| §1.2 `reports_to` 필드 | **채택** | §3.1에 optional 예약 완료. v0 항상 null. additive라 비용 0 |
+| §1.3 로컬 등록 (환경변수 `WMUX_AGENT_ID` 주입) | 연기 | 기존 pane 신원 체계(멘션 토큰)와 중복. R2에서 통합 판단 |
+| §1.3 원격 등록 (토큰 인증) | 연기 | §8.2 신원 부트스트랩 결정의 입력 후보 중 하나 |
+| §1.4 Presence/heartbeat | 기각 | liveness 필드(live/stale) + 삭제 훅이 동일 문제 커버 |
+| §2 Message Envelope (신규 스키마 + ULID) | 기각 | 채널 v2 `ChannelMessage` additive 확장이 정본 (9.2-1) |
+| §2.2 task/result/ack/escalate 타입 | 기각 | a2a가 담당. "채널=논의, 태스크=상태" 이분법 유지 (§3.3) |
+| §2.2 cmd/cmd_result 타입 | 연기 | R6 Approval Gate 설계 시 함께 |
+| §2.3 첨부 참조 방식 (인라인 금지) | 연기 | 채널 첨부 수요 발생 시. 방향은 텍스트 기판 철학과 정합 |
+| §3.1 dm 채널 | 연기 | 현행 명시 생성으로 충분. 수요 확인 후 |
+| §3.1 room 채널 | 채택 (기존) | = 미션 채널 패턴 (R3). 신규 아님 |
+| §3.1 control 채널 | 연기 | R6과 동일 트랙. 보안 3단계 순서 준수 |
+| §3.1 broadcast 채널 | 연기 | 수요 미확인 |
+| §3.2 ACL (owner/member/observer) | 연기 | 현행 humans-only 경계가 사실상의 ACL. R2 로스터 정비 후 재검토 |
+| §3.3 Approval Gate | **채택** | R6로 로드맵 추가 완료. humans-only 경계 완화의 유일한 통로 |
+| §4.1 로컬 CLI (`wmux ch send/tail`) | 연기 | MCP 도구(`channel_post`/`channel_read`)가 동일 기능. 셸 CLI는 수요 확인 후 |
+| §4.2 Gateway WS | 연기 | §8.2 결정 후, 보안 2단계(read/post만) 준수 + "pull 정본" 모델로 재설계 |
+| §4.2 모바일 앱 = WS 클라이언트 | **채택** (프레임) | R5 비고에 명시 완료. 별도 API 서버 없음 |
+| §4.3 WS op 6개 프로토콜 | 연기 | Gateway 트랙 재개 시 초안으로 활용 |
+| §5 JSONL 파일 스토리지 + 로테이션 | 기각 | 데몬 채널 v2 저장(`ChannelStateWriter`)이 정본. 이중 저장소 금지 |
+| §5 Registry 이벤트 소싱 | 연기 | R2 Principal 저장 방식 설계 시 후보로 검토 |
+| §6 로드맵 P1~P4 | 기각 | 본 문서 R0~R6 로드맵으로 대체. PRD P1은 채널 v2 + R1로 이미 달성 |
+| §6 비목표 (E2EE, 페더레이션, 리치 미디어 제외) | 채택 | 기존 방향과 동일 |
+| §7 열린 질문 3건 | 채택 | Q1(수신 인터페이스) = 어댑터 계층(원칙 1)으로 흡수, 종결. Q2(와일드카드 구독 권한) = §8.3과 동축. Q3(task 상태 머신) = 현행 a2a 느슨 모델 유지로 종결 |

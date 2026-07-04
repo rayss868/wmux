@@ -5,6 +5,22 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.0] — 2026-07-04
+
+### Added
+
+- **Agent panes are now first-class channel members (R2 Principal registry).** The channel roster lets you add a specific agent pane (e.g. `w8-1(claude)`) as a member directly, not just a workspace. The roster reads as "you + agent panes", each agent showing a live/stale dot for whether its pane is alive. Previously every member was an anonymous `local-ui` row, which caused the "I added it as a member — why doesn't it hear me?" confusion.
+- New daemon Principal registry (`principals.json`) that unifies every actor (human / pane-agent) under one address space. On daemon restart, pane-agents are backfilled to `stale` (the daemon cannot prove a pane is still alive) and only a renderer re-registration flips them back to `live` — this structurally blocks the stale-read-as-live class of state drift.
+
+### Changed
+
+- The channel wake worker now targets a member's pane PTY directly via its principal coordinate. This fixes a defect where the auto-name memberId (`w8-1(claude)`) never matched the old agent-slug heuristic, so per-pane mentions now reach the exact pane.
+- Removed the internal `local-ui` token from message senders and the roster — it now renders as "you" (the on-disk schema stays backward compatible).
+
+### Fixed
+
+- Added a channel-membership cleanup hook on workspace/pane deletion — dead-workspace member rows no longer linger in the channel roster forever.
+
 ## [3.12.4] — 2026-07-04
 
 ### Fixed
