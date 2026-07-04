@@ -243,7 +243,8 @@ describe('routeChannelMentionToInbox', () => {
     expect(created.map((t) => t.to.paneId)).toEqual(['pane-A', 'pane-B']);
   });
 
-  it('does not ping yourself when you authored the post', () => {
+  it('skips a workspace-level self-mention on a post THIS workspace authored (ambiguous)', () => {
+    // Same-ws + no paneId: can't tell a self-loop from a sibling target → skip.
     const { deps, created, published } = makeDeps();
     const out = routeChannelMentionToInbox(
       makeMessage({ workspaceId: 'ws-me', mentions: [{ workspaceId: 'ws-me', name: 'me' }] }),
@@ -254,6 +255,74 @@ describe('routeChannelMentionToInbox', () => {
     expect(out).toEqual([]);
     expect(created).toHaveLength(0);
     expect(published).toHaveLength(0);
+  });
+
+  it('R1: routes a same-ws SIBLING mention (pane1 → pane2) from an agent post', () => {
+    // The sender (pty-sender → pane-sender) @-mentions a DIFFERENT pane (pane-B).
+    // senderPtyId resolves to pane-sender; mn.paneId=pane-B ≠ pane-sender → routes.
+    const { deps, created, published } = makeDeps();
+    const leaves = [
+      leaf('pane-sender', [surface('surf-s', 'pty-sender')]),
+      leaf('pane-B', [surface('surf-B', 'pty-B')]),
+    ];
+    const out = routeChannelMentionToInbox(
+      makeMessage({
+        workspaceId: 'ws-me',
+        senderPtyId: 'pty-sender',
+        mentions: [{ workspaceId: 'ws-me', paneId: 'pane-B', ptyId: 'pty-B', name: 'codex' }],
+      }),
+      'ws-me',
+      leaves,
+      deps,
+    );
+    expect(out).toEqual([channelMentionTaskId('ch-1', 5, 'pane-B')]);
+    expect(created).toHaveLength(1);
+    expect(created[0].to).toEqual({
+      workspaceId: 'ws-me',
+      name: 'My WS',
+      paneId: 'pane-B',
+      surfaceId: 'surf-B',
+      ptyId: 'pty-B',
+    });
+    expect(published[0].taskId).toBe('chmention-ch-1-5-pane-B');
+  });
+
+  it('R1: drops a true self-loop (an agent @-mentions its OWN pane)', () => {
+    // senderPtyId=pty-A resolves to pane-A; the mention targets pane-A → skip.
+    const { deps, created, published } = makeDeps();
+    const leaves = [leaf('pane-A', [surface('surf-A', 'pty-A')])];
+    const out = routeChannelMentionToInbox(
+      makeMessage({
+        workspaceId: 'ws-me',
+        senderPtyId: 'pty-A',
+        mentions: [{ workspaceId: 'ws-me', paneId: 'pane-A', ptyId: 'pty-A', name: 'claude' }],
+      }),
+      'ws-me',
+      leaves,
+      deps,
+    );
+    expect(out).toEqual([]);
+    expect(created).toHaveLength(0);
+    expect(published).toHaveLength(0);
+  });
+
+  it('R1: a human same-ws post (no senderPtyId) routes a pane-level mention', () => {
+    // The composer/human has no pane → senderPaneId undefined → the agent pane
+    // still receives the mention (a human can never self-loop).
+    const { deps, created } = makeDeps();
+    const leaves = [leaf('pane-A', [surface('surf-A', 'pty-A')])];
+    const out = routeChannelMentionToInbox(
+      makeMessage({
+        workspaceId: 'ws-me',
+        mentions: [{ workspaceId: 'ws-me', paneId: 'pane-A', ptyId: 'pty-A', name: 'claude' }],
+      }),
+      'ws-me',
+      leaves,
+      deps,
+    );
+    expect(out).toEqual([channelMentionTaskId('ch-1', 5, 'pane-A')]);
+    expect(created).toHaveLength(1);
+    expect(created[0].to.paneId).toBe('pane-A');
   });
 
   it('is idempotent — a re-delivered event does not double-create', () => {

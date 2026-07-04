@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Dev only:** `npm start` no longer opens to a blank, flickering window on macOS. Electron loaded the renderer from `http://localhost:5173`, which macOS resolves to IPv6 (`::1`) first, while the Vite dev server listens on IPv4 (`127.0.0.1`) — so the load failed and Electron retried in a loop. The dev-server URL is now normalized to `127.0.0.1`. No effect on packaged builds.
+## [3.12.3] — 2026-07-04
+
+### Fixed
+
+- **Splitting panes no longer randomly kills shells.** Splitting a pane (or reattaching after a reboot) could kill a pane's shell with a bus error, leaving "[process exited]" — seemingly at random. The real trigger: during a split or layout transition the pane is momentarily only a few characters wide, and resizing zsh below 7 columns crashes it outright (a macOS zsh 5.9 bug, reproduced 100%). wmux now never applies a terminal size below a safe floor (10 columns), and skips resize signals that don't change the size. Verified: the same narrow-resize test kills 5/5 shells on the old build and 0/5 on this one.
+## [3.12.2] — 2026-07-04
+
+Headline: you can now @-mention an agent running in your own workspace from a channel — the mention reaches that exact pane, while an agent still never pings its own pane in a loop.
+
+### Added
+
+- **Same-workspace @-mentions now deliver.** Before, a channel message could only mention agents in *other* workspaces — your own workspace's agent panes were hidden from the @-picker and any mention of them was dropped. Now the composer offers same-workspace agent panes as mention targets, and a mention routes to that specific pane as an inbox task. A human mentioning their own workspace's agent, and an agent mentioning a sibling pane, both work.
+
+### Changed
+
+- **Channel messages carry the sender's pane identity (`senderPtyId`).** This lets the receiving side tell a legitimate sibling mention (pane 1 → pane 2 in the same workspace) apart from a true self-loop (an agent mentioning its own pane). Self-loops are dropped; a workspace-level mention with no specific pane on a self-authored post stays conservative and is not routed. Older messages without the field degrade safely.
 
 ## [3.12.1] — 2026-07-03
 

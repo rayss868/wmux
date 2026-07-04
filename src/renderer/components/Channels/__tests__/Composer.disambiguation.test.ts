@@ -52,13 +52,15 @@ describe('buildMentionCandidates — same-ws same-agent disambiguation (P2)', ()
     expect(b.insertToken).toBe('w1-2(claude)'); // token stays stable + unique
   });
 
-  it('excludes our own workspace, non-member workspaces, and non-agent panes', () => {
+  it('includes our own workspace (R1), excludes non-member workspaces and non-agent panes', () => {
     const { ws, ptyA, ptyB } = twoClaudeWorkspace();
-    // Our own workspace → excluded entirely.
+    // R1: our own workspace's agent panes ARE candidates now (a human can ping
+    // their own workspace's agents; the receiver's mention router drops a true
+    // self-pane loop, not the candidate list). Both same-ws claude panes appear.
     expect(buildMentionCandidates({
       workspaces: [ws], surfaceAgent: { [ptyA]: CLAUDE, [ptyB]: CLAUDE },
       paneLabel: {}, memberWorkspaceIds: new Set(['ws-1']), selfWorkspaceId: 'ws-1',
-    })).toHaveLength(0);
+    })).toHaveLength(2);
     // Non-member workspace → excluded.
     expect(buildMentionCandidates({
       workspaces: [ws], surfaceAgent: { [ptyA]: CLAUDE, [ptyB]: CLAUDE },

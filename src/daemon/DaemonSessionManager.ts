@@ -86,6 +86,26 @@ export interface ManagedSession {
 const DEFERRED_UNMUTE_DELAY_MS = 100;
 
 /**
+ * Narrowest PTY geometry the daemon will ever apply, on create or resize.
+ *
+ * Root cause (2026-07-04, deterministic repro): resizing an interactive zsh
+ * (macOS zsh 5.9) to cols <= 6 crashes it with SIGBUS inside `zle.so`
+ * `resetvideo`/`zrefresh` (EXC_BAD_ACCESS / KERN_PROTECTION_FAILURE, raised
+ * from the SIGWINCH handler) — 6/6 in a node-pty harness at cols 2-6, 0/6 at
+ * cols >= 7, rows irrelevant (80x1 survives). Split/layout transitions
+ * transiently compute 2-5-col geometries (the renderer floors at 2), and that
+ * is exactly when panes were dying "randomly". 10 leaves margin over the
+ * observed 6/7 boundary, which may shift with prompt width or locale. The
+ * renderer's xterm view can briefly be narrower than the PTY during a layout
+ * transition — harmless compared to a dead shell, and the next settled resize
+ * reconciles them.
+ */
+const MIN_SAFE_COLS = 10;
+const MIN_SAFE_ROWS = 2;
+const clampCols = (cols: number): number => Math.max(MIN_SAFE_COLS, cols);
+const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
+
+/**
  * Manages ConPTY session lifecycles within the daemon process.
  * No Electron dependencies — uses EventEmitter for all notifications.
  *
@@ -222,8 +242,10 @@ export class DaemonSessionManager extends EventEmitter {
       throw new Error(`Session '${params.id}' already exists`);
     }
 
-    const cols = params.cols ?? DEFAULT_COLS;
-    const rows = params.rows ?? DEFAULT_ROWS;
+    // Clamped for the same reason as resizeSession: spawning zsh directly INTO
+    // a <=6-col PTY hits the same zle.so SIGBUS as resizing into one.
+    const cols = clampCols(params.cols ?? DEFAULT_COLS);
+    const rows = clampRows(params.rows ?? DEFAULT_ROWS);
     const cwd = params.cwd || os.homedir();
     let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
 
@@ -613,9 +635,18 @@ export class DaemonSessionManager extends EventEmitter {
     // Same rationale as attachSession — no live ptyProcess to resize.
     if (managed.meta.state === 'suspended') throw new Error(`Session '${id}' is suspended`);
 
-    managed.ptyProcess.resize(cols, rows);
-    managed.meta.cols = cols;
-    managed.meta.rows = rows;
+    // Floor the geometry (MIN_SAFE_COLS — the zle.so SIGBUS guard) and skip
+    // the SIGWINCH entirely when the effective geometry is unchanged: split/
+    // layout transitions re-send the same or transiently-degenerate sizes on
+    // every frame, and each avoided TIOCSWINSZ is one less signal delivered
+    // into the shell.
+    const safeCols = clampCols(cols);
+    const safeRows = clampRows(rows);
+    if (safeCols !== managed.meta.cols || safeRows !== managed.meta.rows) {
+      managed.ptyProcess.resize(safeCols, safeRows);
+      managed.meta.cols = safeCols;
+      managed.meta.rows = safeRows;
+    }
 
     // First resize on a deferred (recovery) session unmutes data
     // capture. The 100ms delay drains any pre-resize output ConPTY
