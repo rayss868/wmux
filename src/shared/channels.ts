@@ -148,6 +148,18 @@ export interface ChannelMessage {
    * won't have it.
    */
   mentions?: ChannelMention[];
+  /**
+   * R1 — the poster's own pane identity, stamped server-side from the caller's
+   * verified `senderPtyId` (the daemon session id of the sending pane; the MCP
+   * transport attaches it on every channel RPC, the daemon resolves it to a live
+   * session before accepting the post). Used ONLY by the receiving renderer to
+   * distinguish a true self-loop (an agent @-mentioning its OWN pane) from a
+   * legitimate same-workspace SIBLING mention (pane1 → pane2). The receiver
+   * resolves this ptyId to a pane in its own live leaves, exactly as it resolves
+   * a mention's `ptyId`. Absent for a human/composer post (local-ui has no pane)
+   * and for legacy pre-R1 messages — both degrade safely to "no self-pane known".
+   */
+  senderPtyId?: string;
 }
 
 /**

@@ -101,16 +101,35 @@ export function routeChannelMentionToInbox(
   // Only act on mentions of THIS workspace.
   const selfMentions = (message.mentions ?? []).filter((m) => m.workspaceId === selfWorkspaceId);
   if (selfMentions.length === 0) return [];
-  // Never ping yourself on a post THIS workspace authored. Same-ws sibling-agent
-  // mentions (pane1 → pane2 within one workspace) are a follow-up: the post event
-  // carries no sender paneId, so we cannot yet distinguish a true self-loop from a
-  // legitimate sibling target. Until then, a same-ws post never self-routes.
-  if (message.workspaceId === selfWorkspaceId) return [];
+  // R1 — same-workspace posts. A post authored INSIDE this workspace may still
+  // legitimately mention a SIBLING agent pane (pane1 → pane2); only a TRUE
+  // self-loop (an agent @-mentioning its OWN pane) must be dropped. We tell them
+  // apart by the poster's pane, resolved from the daemon-stamped `senderPtyId` in
+  // our OWN live leaves — the sender's pane lives in this workspace exactly when
+  // the post is same-ws. A human/composer post carries no senderPtyId (local-ui
+  // has no pane), so `senderPaneId` stays undefined and every same-ws pane-level
+  // mention routes (a human can never self-loop). Pre-R1 messages lack the field
+  // and fall into the same safe "no self-pane known" branch.
+  const isSameWs = message.workspaceId === selfWorkspaceId;
+  const senderPaneId =
+    isSameWs && message.senderPtyId
+      ? resolveSenderPaneAddress(selfLeaves, message.senderPtyId)?.paneId
+      : undefined;
 
   const chName = deps.channelName(message.channelId);
   const created: string[] = [];
   const seen = new Set<string>();
   for (const mn of selfMentions) {
+    // R1 same-ws gate: on a post THIS workspace authored, route only a pane-level
+    // mention of a pane OTHER than the sender's.
+    //  - no paneId (workspace-level mention): can't tell self from sibling →
+    //    skip (conservative — the pre-R1 behavior for this shape).
+    //  - paneId === the sender's own pane: a true self-loop → skip.
+    // A cross-ws post (isSameWs false) is never a self-loop and skips this gate.
+    if (isSameWs) {
+      if (!mn.paneId) continue;
+      if (senderPaneId && mn.paneId === senderPaneId) continue;
+    }
     // Resolve a pane-level target. The composer pinned `paneId` + a `ptyId`
     // snapshot at mention time; resolve the paneId in our OWN live leaves and
     // re-check the ptyId still matches (fail-closed). On any miss, leave the
