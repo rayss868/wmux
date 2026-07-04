@@ -266,6 +266,12 @@ export interface PostMessageParams {
    *  mentions are dropped — you cannot ping a workspace that isn't in the room.
    *  This validated set is what Phase 2 inbox routing trusts. */
   mentions?: ChannelMention[];
+  /** R1 — the caller's verified pane (daemon session id), attached by the MCP
+   *  transport and resolved to a live session by the stamp layer. Persisted
+   *  verbatim onto the message as `senderPtyId` so the receiving renderer can
+   *  tell a self-loop from a same-ws sibling mention. Opaque pass-through here:
+   *  the daemon owns the workspace/membership gate, not the live pane tree. */
+  senderPtyId?: string;
 }
 
 /** Discriminated success/failure envelope returned by every public method.
@@ -1217,6 +1223,9 @@ export class ChannelService {
         ...(params.clientMsgId !== undefined ? { clientMsgId: params.clientMsgId } : {}),
         ...(params.data !== undefined ? { data: params.data } : {}),
         ...(mentions.length > 0 ? { mentions } : {}),
+        ...(typeof params.senderPtyId === 'string' && params.senderPtyId.length > 0
+          ? { senderPtyId: params.senderPtyId }
+          : {}),
       };
       (this.state.messages[channel.id] ??= []).push(message);
       // Channels v2 (Codex review): a poster has, by definition, seen the
