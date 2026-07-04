@@ -221,7 +221,11 @@ export type RpcMethod =
   | 'a2a.channel.invite'
   | 'a2a.channel.kick'
   | 'a2a.channel.ack'
-  | 'a2a.channel.unread';
+  | 'a2a.channel.unread'
+  | 'a2a.channel.purgeMembership'
+  | 'a2a.principal.upsert'
+  | 'a2a.principal.remove'
+  | 'a2a.principal.markStaleWorkspace';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -349,6 +353,10 @@ export const ALL_RPC_METHODS = [
   'a2a.channel.kick',
   'a2a.channel.ack',
   'a2a.channel.unread',
+  'a2a.channel.purgeMembership',
+  'a2a.principal.upsert',
+  'a2a.principal.remove',
+  'a2a.principal.markStaleWorkspace',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===

@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   ChannelWakeWorker,
   pickTarget,
+  pickTargetWithPrincipal,
   MENTION_NUDGE_CAP,
   MENTION_NUDGE_BACKOFF_MS,
   WAKE_QUIET_MS,
@@ -353,5 +354,74 @@ describe('pickTarget — never guess', () => {
       'codex',
     );
     expect(target?.id).toBe('b');
+  });
+});
+
+describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
+  const PID = 'pane:ws-b/p1';
+
+  it('directly selects the LIVE principal\'s ptyId session without the heuristic (auto-name memberId)', () => {
+    // memberId "w2-1(codex)" never matches the slug heuristic — without the
+    // principal path this member would never get nudged. With two same-slug
+    // panes the heuristic would have returned null on ambiguity.
+    const target = pickTargetWithPrincipal(
+      [session({ id: 'pty-x', lastDetectedAgent: 'codex' }), session({ id: 'pty-y', lastDetectedAgent: 'codex' })],
+      'ws-b',
+      'w2-1(codex)',
+      PID,
+      (pid) => (pid === PID ? 'pty-y' : undefined),
+    );
+    expect(target?.id).toBe('pty-y');
+  });
+
+  it('a stale principal (undefined ptyId) falls back to the existing heuristic', () => {
+    const target = pickTargetWithPrincipal(
+      [session({ id: 'only', lastDetectedAgent: undefined })],
+      'ws-b',
+      'w2-1(codex)',
+      PID,
+      () => undefined,
+    );
+    // Fallback rule 3: the only eligible session.
+    expect(target?.id).toBe('only');
+  });
+
+  it('falls back if the session the registry points to is dead (race), and does not assert on workspace mismatch', () => {
+    const dead = pickTargetWithPrincipal(
+      [session({ id: 'other', lastDetectedAgent: 'codex' })],
+      'ws-b',
+      'codex',
+      PID,
+      () => 'pty-gone',
+    );
+    expect(dead?.id).toBe('other'); // heuristic rule 2 (slug match)
+
+    const wsMismatch = pickTargetWithPrincipal(
+      [session({ id: 'pty-z', workspaceId: 'ws-OTHER', lastDetectedAgent: 'codex' })],
+      'ws-b',
+      'codex',
+      PID,
+      () => 'pty-z',
+    );
+    expect(wsMismatch).toBeNull(); // ws-b has no eligible session
+  });
+
+  it('null when the principal is an ATTACHED claude pane — the renderer owns it, no re-routing', () => {
+    const target = pickTargetWithPrincipal(
+      [
+        session({ id: 'pty-c', lastDetectedAgent: 'claude', attached: true }),
+        session({ id: 'pty-d', lastDetectedAgent: undefined }),
+      ],
+      'ws-b',
+      'w2-1(claude)',
+      PID,
+      () => 'pty-c',
+    );
+    expect(target).toBeNull();
+  });
+
+  it('behaves identically to the existing pickTarget when principalId/lookup fn are absent', () => {
+    const sessions = [session({ id: 'b', lastDetectedAgent: 'codex' })];
+    expect(pickTargetWithPrincipal(sessions, 'ws-b', 'codex', undefined, undefined)?.id).toBe('b');
   });
 });

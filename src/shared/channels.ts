@@ -100,6 +100,19 @@ export interface ChannelMember {
    * (documented v1 simplification).
    */
   lastReadSeq?: number;
+  /**
+   * R2 (Principal registry) — the stable coordinate of the principal this
+   * member row points to (`pane:${workspaceId}/${paneId}` etc., see
+   * shared/principals.ts). memberId (auto name) drifts on workspace reorder,
+   * but this id is immutable for the pane's lifetime, so it is the key the
+   * wake worker uses to look up ptyId directly from the registry.
+   *
+   * OPTIONAL additive (`ChannelState.version` stays 1, lastReadSeq
+   * convention): absent on legacy rows and human (local-ui) rows, and when
+   * absent it degrades safely to the existing heuristic path. Display/routing
+   * only, not authz (#113 boundary invariant).
+   */
+  principalId?: string;
 }
 
 /**

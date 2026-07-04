@@ -356,6 +356,13 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.channel.kick':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.ack':         { capability: 'a2a.channel.read', riskClass: 'a2a' },
   'a2a.channel.unread':      { capability: 'a2a.channel.read', riskClass: 'a2a' },
+  // R2 — purge + the three principal writes are also humans-only (renderer-only
+  // mutateLocal path, not registered on the pipe router). Entries here for
+  // RpcMethod completeness, same as archive/kick.
+  'a2a.channel.purgeMembership':      { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.principal.upsert':             { capability: 'wmux.internal' },
+  'a2a.principal.remove':             { capability: 'wmux.internal' },
+  'a2a.principal.markStaleWorkspace': { capability: 'wmux.internal' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.

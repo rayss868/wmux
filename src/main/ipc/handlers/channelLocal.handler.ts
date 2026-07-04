@@ -39,8 +39,8 @@ import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
 import type { RpcMethod } from '../../../shared/rpc';
 
-/** Positive allow-list — only channel-mutating methods may ride the renderer
- *  trust path. Reads and every non-channel RPC are rejected so this surface
+/** Positive allow-list — only channel/principal-mutating methods may ride the
+ *  renderer trust path. Reads and every other RPC are rejected so this surface
  *  can never become a general renderer→daemon bypass. */
 const CHANNEL_MUTATING_METHODS: ReadonlySet<string> = new Set<string>([
   'a2a.channel.create',
@@ -65,6 +65,17 @@ const CHANNEL_MUTATING_METHODS: ReadonlySet<string> = new Set<string>([
   // same-user pipe client could forge another member's receipt). The renderer
   // drives it on channel read; route it through this pinned, pipe-unreachable path.
   'a2a.channel.ack',
+  // R2 — system cleanup / registry writes. Same humans-only convention as
+  // kick: deliberately absent from the pipe router, reachable only via this
+  // renderer-only path. purge is the system action that sweeps dead member
+  // rows on workspace/pane deletion, and the three principal writes are
+  // registry writes sourced from the renderer's agent detection — this
+  // allow-list is exactly the boundary that keeps a forgeable agent identity
+  // (#113) from registering/deleting arbitrary principals.
+  'a2a.channel.purgeMembership',
+  'a2a.principal.upsert',
+  'a2a.principal.remove',
+  'a2a.principal.markStaleWorkspace',
 ]);
 
 type ChannelRejection = { ok: false; error: { code: 'NOT_AUTHORIZED'; message: string } };
