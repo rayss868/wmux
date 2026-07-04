@@ -65,11 +65,13 @@ describe('ChannelMembersView — P2 roster (jsdom)', () => {
     if (!popover) throw new Error('roster popover did not open');
     const text = popover.textContent ?? '';
 
-    // Agent (non-UI) member id is shown for attribution.
-    expect(text).toContain('· lead');
-    // The internal UI member id is NOT a visible roster suffix (human members
-    // all share it). It may remain in a title tooltip, but not as row text.
+    // R2: agent rows read as "<memberId> · <ws>" (the agent is the subject).
+    expect(text).toContain('lead ·');
+    // The internal UI member id is NOT visible anywhere (R2: human rows render
+    // as "Me" — local-ui only survives in the storage schema).
     expect(text).not.toContain('local-ui');
+    // Human row label — the harness t returns the key verbatim, so the key is the rendered text.
+    expect(text).toContain('channels.me');
     // The workspace-level membership helper note renders.
     expect(container.querySelector('[data-channel-members-note]')).not.toBeNull();
   });

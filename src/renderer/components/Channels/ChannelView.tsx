@@ -531,7 +531,10 @@ export function ChannelViewContent({
                     data-channel-message-author
                     {...tokenAttrs('textMain', 'text')}
                   >
-                    {m.memberName}
+                    {/* R2 (drop local-ui labeling): human/GUI senders read as
+                          "Me" instead of the internal token — a presentation-layer
+                          substitution only, storage schema unchanged. */}
+                    {m.memberName === 'local-ui' ? (t('channels.me') || 'Me') : m.memberName}
                   </span>
                   <span
                     className="text-[9px] font-mono text-[var(--text-muted)]"

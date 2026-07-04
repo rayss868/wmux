@@ -28,11 +28,14 @@
 
 import { useState } from 'react';
 import type { Channel, ChannelMember } from '../../../shared/channels';
+import { panePrincipalId } from '../../../shared/principals';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { IconX, IconUsers } from '../icons';
+import { findLeafPanes } from '../../hooks/a2aAddressing';
+import { buildMentionCandidates } from './Composer';
 
 /** Stable UI member id — the human/GUI participates as one member per
  *  workspace. Mirrors the value the composer + create path already send. */
@@ -41,6 +44,18 @@ const UI_MEMBER_ID = 'local-ui';
 export interface JoinableWorkspace {
   id: string;
   name: string;
+}
+
+/** R2 — explicit-join candidate: a live agent pane that is not a member yet. */
+export interface JoinablePane {
+  workspaceId: string;
+  paneId: string;
+  /** auto name that becomes the channel memberId (same scheme as the mention token, e.g. "w8-1(claude)"). */
+  autoName: string;
+  /** display name reflecting any user rename. */
+  displayName: string;
+  /** stable principal coordinate — recorded on the member row, it is the key for liveness/wake targeting. */
+  principalId: string;
 }
 
 export interface ChannelMembersViewProps {
@@ -61,9 +76,17 @@ export interface ChannelMembersViewProps {
   /** Workspaces the human can add (not already members). Only meaningful when
    *  `canJoin` is true. */
   joinableWorkspaces: JoinableWorkspace[];
+  /** R2 — live agent panes that are not members yet (explicit join, §8.1 decision).
+   *  Optional: defaults to an empty list (backward-compat for old callers/tests). */
+  joinablePanes?: JoinablePane[];
   /** True for public, non-archived channels with a resolvable self workspace. */
   canJoin: boolean;
   onJoin: (workspaceId: string) => void;
+  /** R2 — join one agent pane as a first-class member. */
+  onJoinPane?: (pane: JoinablePane) => void;
+  /** R2 — liveness of an agent row (live when the pane is alive and an agent is detected).
+   *  Rows without a principalId (legacy/external MCP memberId) → undefined → no badge. */
+  agentLiveness?: (m: ChannelMember) => 'live' | 'stale' | undefined;
   onLeave: (memberId: string, workspaceId: string) => void;
   /** Eject ANOTHER member (humans-only). Shown on NON-self rows only when
    *  provided (a resolvable human identity + non-archived channel). Absent →
@@ -81,8 +104,11 @@ export function ChannelMembersView({
   selfWorkspaceId,
   selfMemberId,
   joinableWorkspaces,
+  joinablePanes = [],
   canJoin,
   onJoin,
+  onJoinPane = () => {},
+  agentLiveness,
   onLeave,
   onKick,
   t: tProp,
@@ -139,31 +165,42 @@ export function ChannelMembersView({
           ) : (
             members.map((m) => {
               const self = isSelf(m);
+              const isHuman = m.memberId === selfMemberId;
               // Channels v2 — consumption lag from the durable cursor. Only
               // meaningful for agent rows (humans advance the ws-wide cursor
               // just by reading the dock) and only when the head is known.
               // A pre-v2 row without lastReadSeq shows no badge (never a
               // fabricated number).
               const behind =
-                !self && m.memberId !== selfMemberId && typeof headSeq === 'number' && headSeq > 0 && typeof m.lastReadSeq === 'number'
+                !self && !isHuman && typeof headSeq === 'number' && headSeq > 0 && typeof m.lastReadSeq === 'number'
                   ? Math.max(0, headSeq - m.lastReadSeq)
                   : 0;
+              // R2: agent row liveness — when stale, dim it + gray dot.
+              const liveness = !isHuman ? agentLiveness?.(m) : undefined;
+              // R2 (drop local-ui labeling): human rows read as "Me · <ws>", agent
+              // rows as "<memberId> · <ws>". The internal token (local-ui) is never
+              // exposed anywhere — so the roster reads as "humans + agents".
+              const primary = isHuman ? (t('channels.me') || 'Me') : m.memberId;
               return (
                 <div
                   key={`${m.workspaceId}:${m.memberId}`}
                   data-channel-member-row
                   data-self={self ? 'true' : undefined}
-                  className="group flex items-center gap-2 px-3 py-1 text-[11px] font-mono"
+                  data-liveness={liveness}
+                  className={`group flex items-center gap-2 px-3 py-1 text-[11px] font-mono ${liveness === 'stale' ? 'opacity-60' : ''}`}
                 >
-                  <span className="truncate flex-1 min-w-0 text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')} title={`${workspaceLabel(m.workspaceId)} · ${m.memberId}`}>
-                    {workspaceLabel(m.workspaceId)}
-                    {/* P2: show the agent id only for real agents. Human/GUI
-                          members all share the UI member id (selfMemberId), an
-                          internal token — suppress it so the roster reads as
-                          agents + workspaces, not internal ids. */}
-                    {m.memberId !== selfMemberId && (
-                      <span className="text-[var(--text-muted)]"> · {m.memberId}</span>
-                    )}
+                  {liveness && (
+                    <span
+                      data-channel-member-liveness
+                      aria-hidden="true"
+                      title={liveness === 'live' ? (t('channels.memberLiveTitle') || 'Agent pane is live') : (t('channels.memberStaleTitle') || 'Agent pane is gone or restarting')}
+                      className="flex-shrink-0 w-1.5 h-1.5 rounded-full"
+                      style={{ backgroundColor: liveness === 'live' ? 'var(--accent-green)' : 'var(--text-subtle)' }}
+                    />
+                  )}
+                  <span className="truncate flex-1 min-w-0 text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')} title={`${primary} · ${workspaceLabel(m.workspaceId)}`}>
+                    {primary}
+                    <span className="text-[var(--text-muted)]"> · {workspaceLabel(m.workspaceId)}</span>
                   </span>
                   {behind > 0 && (
                     <span
@@ -209,6 +246,34 @@ export function ChannelMembersView({
 
           {canJoin && (
             <div className="mt-1 border-t border-[var(--border-soft)] pt-1" style={{ borderColor: 'var(--border-soft)' }}>
+              {/* R2 explicit join (§8.1 decision: no automatic bulk join) — pick
+                    live agent panes one at a time and add them as first-class
+                    members. Adding a workspace (the human subscription row) stays
+                    the existing section below. */}
+              <div className="px-3 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+                {t('channels.addAgentPane') || 'Add an agent pane'}
+              </div>
+              {joinablePanes.length === 0 ? (
+                <div className="px-3 py-1.5 text-[10px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+                  {t('channels.noAgentPanes') || 'No live agent panes to add.'}
+                </div>
+              ) : (
+                joinablePanes.map((p) => (
+                  <button
+                    key={p.principalId}
+                    type="button"
+                    data-channel-pane-add
+                    onClick={() => onJoinPane(p)}
+                    className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-[11px] font-mono text-[var(--text-sub)] hover:bg-[var(--bg-overlay)] transition-colors ${FOCUS_RING}`}
+                    {...tokenAttrs('textSub', 'text')}
+                  >
+                    <span className="text-[var(--accent-blue)]" aria-hidden="true">+</span>
+                    <span className="truncate">{p.displayName}</span>
+                    <span className="truncate text-[var(--text-muted)]">· {workspaceLabel(p.workspaceId)}</span>
+                  </button>
+                ))
+              )}
+
               <div className="px-3 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                 {t('channels.addMember') || 'Add a workspace'}
               </div>
@@ -257,6 +322,9 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
   const company = useStore((s) => s.company);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const pushToast = useStore((s) => s.pushToast);
+  // R2: agent-detection mirror used to compute explicit-join candidates + liveness.
+  const surfaceAgent = useStore((s) => s.surfaceAgent);
+  const paneLabel = useStore((s) => s.paneLabel);
 
   const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId ?? null;
   const workspaceLabel = (workspaceId: string): string =>
@@ -285,6 +353,53 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
   const joinableWorkspaces: JoinableWorkspace[] = workspaces
     .filter((w) => !members.some((m) => m.workspaceId === w.id))
     .map((w) => ({ id: w.id, name: w.name }));
+
+  // R2 — explicit-join candidates: live agent panes across all workspaces that
+  // are not yet members of this channel. The candidate predicate (live agent
+  // pane) and the auto name reuse exactly the same logic as the mention picker
+  // (buildMentionCandidates) — the roster and the @-candidates always sharing
+  // the same naming scheme is P2's core invariant.
+  const joinablePanes: JoinablePane[] = buildMentionCandidates({
+    workspaces,
+    surfaceAgent,
+    paneLabel,
+    memberWorkspaceIds: new Set(workspaces.map((w) => w.id)),
+    selfWorkspaceId,
+  })
+    .map((c) => ({
+      workspaceId: c.workspaceId,
+      paneId: c.paneId,
+      autoName: c.insertToken,
+      displayName: c.displayName,
+      principalId: panePrincipalId(c.workspaceId, c.paneId),
+    }))
+    .filter(
+      (p) =>
+        !members.some(
+          (m) =>
+            m.principalId === p.principalId ||
+            (m.workspaceId === p.workspaceId && m.memberId === p.autoName),
+        ),
+    );
+
+  // R2 — agent row liveness: live when the principal coordinate's pane still
+  // exists and holds a live agent. If the coordinate is gone (right after a pane
+  // close / workspace delete, before the catalog has synced) → stale. Rows with
+  // no principalId (legacy/external MCP) can't be judged → no badge (we don't
+  // fabricate facts we don't have).
+  const agentLiveness = (m: ChannelMember): 'live' | 'stale' | undefined => {
+    if (!m.principalId) return undefined;
+    const w = workspaces.find((x) => x.id === m.workspaceId);
+    if (!w) return 'stale';
+    for (const leaf of findLeafPanes(w.rootPane)) {
+      if (panePrincipalId(w.id, leaf.id) !== m.principalId) continue;
+      const live = leaf.surfaces.some(
+        (sf) => sf.surfaceType !== 'browser' && !!sf.ptyId && !!surfaceAgent[sf.ptyId]?.name,
+      );
+      return live ? 'live' : 'stale';
+    }
+    return 'stale';
+  };
 
   // Show the picker only when the self ws can actually act on the channel: a
   // public channel anyone can self-join, but a private channel can only be
@@ -324,6 +439,32 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
         pushToast({ level: 'info', message: t('channels.alreadyMemberToast', { workspace: label, channel: channel.name }) });
       } else {
         pushToast({ level: 'error', message: t('channels.joinFailedToast', { workspace: label }) });
+      }
+    });
+  };
+
+  // R2 — join one agent pane as a first-class member. memberId = auto name (same
+  // as the mention token), principalId = stable coordinate. Public channels
+  // self-join (pinned to the target ws); private ones are invited by the current
+  // member self ws — the same routing rule as handleJoin.
+  const handleJoinPane = (p: JoinablePane): void => {
+    const member = {
+      workspaceId: p.workspaceId,
+      memberId: p.autoName,
+      memberName: p.displayName,
+      principalId: p.principalId,
+    };
+    const action =
+      channel.visibility === 'public'
+        ? useStore.getState().joinChannelDaemon(channel.id, member, p.workspaceId)
+        : useStore.getState().inviteChannelDaemon(channel.id, member, selfWorkspaceId ?? p.workspaceId);
+    void action.then((result) => {
+      if (result.ok) {
+        pushToast({ level: 'info', message: t('channels.joinedToast', { workspace: p.displayName, channel: channel.name }) });
+      } else if (result.error.message.includes('DUPLICATE')) {
+        pushToast({ level: 'info', message: t('channels.alreadyMemberToast', { workspace: p.displayName, channel: channel.name }) });
+      } else {
+        pushToast({ level: 'error', message: t('channels.joinFailedToast', { workspace: p.displayName }) });
       }
     });
   };
@@ -380,8 +521,11 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
       selfWorkspaceId={selfWorkspaceId}
       selfMemberId={UI_MEMBER_ID}
       joinableWorkspaces={joinableWorkspaces}
+      joinablePanes={joinablePanes}
       canJoin={canJoin}
       onJoin={handleJoin}
+      onJoinPane={handleJoinPane}
+      agentLiveness={agentLiveness}
       onLeave={handleLeave}
       onKick={canKick ? handleKick : undefined}
       t={t}

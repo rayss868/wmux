@@ -13,6 +13,8 @@ import {
 } from '../../events/publisher';
 import { t } from '../../i18n';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
+import { panePrincipalId } from '../../../shared/principals';
+import { computePaneAutoName } from '../../utils/paneNaming';
 
 // Per-workspace leaf cap. xterm.js + node-pty memory scales linearly with
 // pane count, and the project memory budget targets ~200 MB for 10 panes
@@ -382,6 +384,38 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
   closePane: (paneId, workspaceId) => {
     let event: { wsId: string; closedPaneId: string; previousActiveId: string; newActiveId: string | null } | null = null;
+    // R2: snapshot the principal coordinates of live agent panes in the closing
+    // subtree outside the transaction — they must be collected before set()
+    // clears surfaceAgent. Capture autoName too (review I5): legacy rows that
+    // self-joined via MCP channel_join have no principalId, so principal matching
+    // cannot sweep them — a (workspaceId, memberId=autoName) auxiliary purge
+    // cleans those rows too. autoName is unique for a pane's lifetime (ordinals
+    // are not reused), so there is no collateral purge.
+    const principalTargets: { wsId: string; principalId: string; autoName: string }[] = [];
+    {
+      const s = get();
+      const wsSnap = s.workspaces.find((w: Workspace) => w.id === (workspaceId || s.activeWorkspaceId));
+      const parentSnap = wsSnap ? findParent(wsSnap.rootPane, paneId) : null;
+      const subtree = parentSnap?.children.find((c) => c.id === paneId);
+      if (wsSnap && subtree) {
+        for (const leaf of getLeafPanes(subtree)) {
+          const agentSurface = leaf.surfaces.find(
+            (sf) => sf.surfaceType !== 'browser' && !!sf.ptyId && !!s.surfaceAgent[sf.ptyId]?.name,
+          );
+          if (agentSurface) {
+            principalTargets.push({
+              wsId: wsSnap.id,
+              principalId: panePrincipalId(wsSnap.id, leaf.id),
+              autoName: computePaneAutoName(
+                wsSnap.wsOrdinal ?? 0,
+                leaf.ordinal ?? 0,
+                s.surfaceAgent[agentSurface.ptyId]?.slug,
+              ),
+            });
+          }
+        }
+      }
+    }
     set((state: StoreState) => {
       const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
       if (!ws) return;
@@ -462,6 +496,17 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       publishPaneClosed(e.wsId, e.closedPaneId);
       if (e.newActiveId) {
         publishPaneFocused(e.wsId, e.newActiveId, e.previousActiveId);
+      }
+      // R2: clean up the closed pane's channel member rows + principal. Only
+      // when there is an event — if the set() guards (root pane, nonexistent id)
+      // fired, nothing was actually closed. Matching on the canonical coordinate
+      // (principalId) makes it immune to auto-name drift.
+      // Optional call: the minimal test store has no channels slice.
+      for (const t of principalTargets) {
+        void get().purgeMembershipDaemon?.({ workspaceId: t.wsId, principalId: t.principalId });
+        // Review I5: auxiliary cleanup for legacy rows (no principalId) — matched by autoName memberId.
+        void get().purgeMembershipDaemon?.({ workspaceId: t.wsId, memberId: t.autoName });
+        void get().principalRemoveDaemon?.(t.principalId);
       }
     }
   },

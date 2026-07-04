@@ -498,6 +498,14 @@ export function useNotificationListener() {
             typeof rest.agentStatus === 'string' ? (rest.agentStatus as AgentStatus) : undefined,
             slugArg,
           );
+          // R2: register/refresh the pane whose agent identity was just resolved
+          // into the principal registry. A fresh getState() reads the name that
+          // was just stamped. When the content is unchanged the slice's internal
+          // debounce cache skips the daemon round-trip, so it is safe to call on
+          // every periodic broadcast.
+          if (useStore.getState().surfaceAgent[ptyId]?.name) {
+            void useStore.getState().principalRegisterPane(ptyId);
+          }
         }
         // Fleet View per-pane activity line: store the (already main-side
         // sanitized + throttled) string in the transient per-ptyId map. Main
@@ -546,7 +554,11 @@ export function useNotificationListener() {
                   // status (the surface may have gone complete/idle while this
                   // async resolveAgent was in flight) is preserved, not stomped
                   // back to 'running'. setSurfaceAgent keeps the existing status.
-                  if (needSurfaceBackfill) s.setSurfaceAgent(ptyId, name, undefined);
+                  if (needSurfaceBackfill) {
+                    s.setSurfaceAgent(ptyId, name, undefined);
+                    // R2: a pane that first gained an identity via backfill also takes the principal registration path.
+                    void useStore.getState().principalRegisterPane(ptyId);
+                  }
                 });
               }
             }
