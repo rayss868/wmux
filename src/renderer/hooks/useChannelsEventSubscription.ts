@@ -90,6 +90,38 @@ function isBusyStatus(status: string | undefined): boolean {
   return status != null && PASTE_UNSAFE_STATUSES.has(status);
 }
 
+/**
+ * FIX-MULTI-WS — per-`channel.message` delivery decision, extracted PURE so the
+ * active-vs-background fan-out is unit-testable without the GUI. This is the
+ * exact layer the first multi-workspace attempt regressed: it kept same-ws
+ * delivery working in the daemon filter (whose tests passed) but broke the
+ * renderer's same-ws ROUTING at runtime. Testing the decision here would have
+ * caught that.
+ *
+ *   - `appendToDisplay`: update the message cache / unread / mention badges
+ *     ONLY when the ACTIVE workspace is the sender or a recipient. A background
+ *     workspace keeps no display cache (setChannels is a full replace — a
+ *     background append would count unread against a catalog the active view
+ *     doesn't hold); its view is rebuilt by hydration on switch.
+ *   - `routeWorkspaces`: the LOCAL workspaces this post @-mentions — each gets
+ *     an a2a inbox task (active OR background: the cross-workspace fix). A
+ *     workspace mentioned but not local is skipped (its own renderer routes it).
+ */
+export function planChannelMessageDelivery(
+  senderWorkspaceId: string,
+  recipientWorkspaceIds: readonly string[],
+  mentionWorkspaceIds: readonly string[],
+  activeWorkspaceId: string,
+  localIds: readonly string[],
+): { appendToDisplay: boolean; routeWorkspaces: string[] } {
+  const appendToDisplay =
+    senderWorkspaceId === activeWorkspaceId ||
+    recipientWorkspaceIds.includes(activeWorkspaceId);
+  const mentionWs = new Set(mentionWorkspaceIds);
+  const routeWorkspaces = localIds.filter((id) => mentionWs.has(id));
+  return { appendToDisplay, routeWorkspaces };
+}
+
 /** Bridge global installed by `useRpcBridge` that forwards the
  *  `events.poll` call into the main process. Single-method facade
  *  matching the function-shaped global the bridge installs — the
@@ -366,16 +398,19 @@ export function useChannelsEventSubscription(): void {
             if (event.type === 'channel.message') {
               const channelEvent = event as ChannelMessageEvent;
               const st = useStore.getState();
+              // FIX-MULTI-WS: the pure decision (append-to-active-display +
+              // which local workspaces to route the mention into). See
+              // planChannelMessageDelivery — active-vs-background split, the
+              // exact layer the first multi-ws attempt regressed.
+              const plan = planChannelMessageDelivery(
+                channelEvent.workspaceId,
+                channelEvent.recipientWorkspaceIds,
+                (channelEvent.message.mentions ?? []).map((m) => m.workspaceId),
+                workspaceId,
+                localIds,
+              );
               // Display cache / unread / mention badges: ACTIVE workspace only.
-              // A background workspace's view is rebuilt by catalog + history
-              // hydration when the user switches to it — appending here would
-              // count unread against a catalog the active view doesn't hold.
-              if (
-                channelEvent.workspaceId === workspaceId ||
-                channelEvent.recipientWorkspaceIds.includes(workspaceId)
-              ) {
-                st.appendMessageFromEvent(channelEvent.message);
-              }
+              if (plan.appendToDisplay) st.appendMessageFromEvent(channelEvent.message);
               // Route on REPLAYED events too (no historical drop): a mention
               // that arrived while this poll was down must still enqueue on
               // restart (codex R6). routeChannelMentionToInbox is idempotent
@@ -393,11 +428,7 @@ export function useChannelsEventSubscription(): void {
               // mentioned agent; a miss falls back to a ws-level task (any
               // live agent picks it up via role:agent query). Idempotent by
               // per-target deterministic task id.
-              const mentionWs = new Set(
-                (channelEvent.message.mentions ?? []).map((m) => m.workspaceId),
-              );
-              for (const wsId of localIds) {
-                if (!mentionWs.has(wsId)) continue;
+              for (const wsId of plan.routeWorkspaces) {
                 routeChannelMentionToInbox(channelEvent.message, wsId, leavesFor(wsId), {
                   getTask: st.getTask,
                   createA2aTask: st.createA2aTask,
