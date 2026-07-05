@@ -10,6 +10,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { ChannelService } from '../ChannelService';
 import type { ChannelServiceEmit } from '../ChannelService';
 import type {
+  ChannelMember,
   ChannelMessage,
   ChannelState,
 } from '../../../shared/channels';
@@ -2305,3 +2306,227 @@ describe('ack (A1: delivery receipt makes deliveryStatus real)', () => {
 
 // Keep the imports referenced for type-checking the test file in isolation.
 void ({} as ChannelMessage);
+
+describe('P5 — unified human identity migration (load-time merge)', () => {
+  const HUMAN_WS = 'ws-human';
+  const UI = 'local-ui';
+
+  /** Seed a pre-P5 persisted state through the fake writer, then construct a
+   *  service against it — mirroring a daemon restart over old data. */
+  function seededService(state: ChannelState) {
+    const writer = makeFakeWriter();
+    writer.saveImmediate(state);
+    const emit = vi.fn<ChannelServiceEmit>();
+    const svc = new ChannelService({
+      writer: writer as unknown as ConstructorParameters<typeof ChannelService>[0]['writer'],
+      companyId: COMPANY,
+      emit,
+      now: () => 1_700_000_000_000,
+    });
+    return { svc, writer };
+  }
+
+  function preP5State(): ChannelState {
+    return {
+      version: 1,
+      channels: [
+        {
+          id: 'ch-1',
+          companyId: COMPANY,
+          name: 'general',
+          visibility: 'public',
+          status: 'active',
+          createdAt: 1,
+          createdBy: 'ws-a',
+          nextSeq: 11,
+        },
+      ],
+      members: {
+        'ch-1': [
+          { workspaceId: 'ws-a', memberId: UI, joinedAt: 100, historyFromSeq: 0, lastReadSeq: 4 },
+          { workspaceId: 'ws-b', memberId: UI, joinedAt: 50, historyFromSeq: 3, lastReadSeq: 9 },
+          {
+            workspaceId: 'ws-a',
+            memberId: 'w1-1(claude)',
+            joinedAt: 60,
+            historyFromSeq: 0,
+            lastReadSeq: 2,
+            principalId: 'pane:ws-a/pane-1',
+          },
+        ],
+      },
+      messages: { 'ch-1': [] },
+      idempotency: {},
+    };
+  }
+
+  it('merges scattered (ws, local-ui) rows into ONE (ws-human) row — earliest join, widest history, furthest cursor', () => {
+    const { svc } = seededService(preP5State());
+    const rows = svc.getMembers('ch-1', 'ws-a');
+    const humanRows = rows.filter((m) => m.memberId === UI);
+    expect(humanRows).toHaveLength(1);
+    expect(humanRows[0]).toMatchObject({
+      workspaceId: HUMAN_WS,
+      memberId: UI,
+      joinedAt: 50, // earliest seat
+      historyFromSeq: 0, // widest visibility
+      lastReadSeq: 9, // furthest ack
+      principalId: 'human:me',
+    });
+  });
+
+  it('leaves agent-pane member rows untouched', () => {
+    const { svc } = seededService(preP5State());
+    const agent = svc.getMembers('ch-1', 'ws-a').find((m) => m.memberId === 'w1-1(claude)');
+    expect(agent).toMatchObject({
+      workspaceId: 'ws-a',
+      joinedAt: 60,
+      historyFromSeq: 0,
+      lastReadSeq: 2,
+      principalId: 'pane:ws-a/pane-1',
+    });
+  });
+
+  it('is idempotent — a post-P5 state re-loads without change (restart no-op)', () => {
+    const first = seededService(preP5State());
+    // Force a persist so the writer holds the POST-migration shape, then
+    // construct again over it (second restart).
+    const persisted = await_persist(first);
+    const second = seededService(persisted);
+    const rows = second.svc.getMembers('ch-1', HUMAN_WS);
+    expect(rows.filter((m) => m.memberId === UI)).toHaveLength(1);
+    expect(rows).toHaveLength(2);
+
+    function await_persist(s: { svc: ChannelService; writer: ReturnType<typeof makeFakeWriter> }): ChannelState {
+      // getMembers is read-only; grab the live state via a join that no-ops…
+      // simpler: reach through the writer — the constructor does NOT persist,
+      // so rebuild the post-migration shape from the service's own reads.
+      const members = s.svc.getMembers('ch-1', HUMAN_WS).map((m) => ({ ...m }));
+      const st = preP5State();
+      st.members['ch-1'] = members;
+      return st;
+    }
+  });
+
+  it('a channel with a single pre-P5 human row still moves it to ws-human', () => {
+    const st = preP5State();
+    st.members['ch-1'] = [st.members['ch-1'][0]];
+    const { svc } = seededService(st);
+    const rows = svc.getMembers('ch-1', HUMAN_WS);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].workspaceId).toBe(HUMAN_WS);
+    expect(rows[0].lastReadSeq).toBe(4);
+  });
+
+  it('a channel with no human rows is untouched', () => {
+    const st = preP5State();
+    st.members['ch-1'] = [st.members['ch-1'][2]];
+    const { svc } = seededService(st);
+    const rows = svc.getMembers('ch-1', 'ws-a');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].memberId).toBe('w1-1(claude)');
+  });
+});
+
+describe('P5 migration — ship-review hardening', () => {
+  const HUMAN_WS = 'ws-human';
+  const UI = 'local-ui';
+
+  function seeded(state: ChannelState) {
+    const writer = makeFakeWriter();
+    writer.saveImmediate(state);
+    const emit = vi.fn<ChannelServiceEmit>();
+    const svc = new ChannelService({
+      writer: writer as unknown as ConstructorParameters<typeof ChannelService>[0]['writer'],
+      companyId: COMPANY,
+      emit,
+      now: () => 1_700_000_000_000,
+    });
+    return { svc, writer };
+  }
+  function baseChannel(nextSeq: number) {
+    return {
+      id: 'ch-1', companyId: COMPANY, name: 'general', visibility: 'public' as const,
+      status: 'active' as const, createdAt: 1, createdBy: 'ws-a', nextSeq,
+    };
+  }
+
+  it('merges pre-v2 human rows (no lastReadSeq): cursor = channel head, not the ?? 0 fallback (backfill-before-merge order)', () => {
+    const st: ChannelState = {
+      version: 1,
+      channels: [baseChannel(11)], // head = 10
+      members: {
+        'ch-1': [
+          { workspaceId: 'ws-a', memberId: UI, joinedAt: 100, historyFromSeq: 0 } as ChannelMember,
+          { workspaceId: 'ws-b', memberId: UI, joinedAt: 50, historyFromSeq: 3 } as ChannelMember,
+        ],
+      },
+      messages: { 'ch-1': [] },
+      idempotency: {},
+    };
+    const { svc } = seeded(st);
+    const human = svc.getMembers('ch-1', HUMAN_WS).find((m) => m.memberId === UI);
+    // backfill sets both missing cursors to head (10) BEFORE the merge, so max = 10.
+    // A future reorder of the two constructor blocks would collapse this to 0.
+    expect(human?.lastReadSeq).toBe(10);
+    expect(human?.historyFromSeq).toBe(0);
+  });
+
+  it('re-merges a ws-human row mixed with stale scattered rows (old-daemon join after upgrade)', () => {
+    const st: ChannelState = {
+      version: 1,
+      channels: [baseChannel(11)],
+      members: {
+        'ch-1': [
+          { workspaceId: HUMAN_WS, memberId: UI, joinedAt: 80, historyFromSeq: 2, lastReadSeq: 6, principalId: 'human:me' },
+          { workspaceId: 'ws-a', memberId: UI, joinedAt: 40, historyFromSeq: 0, lastReadSeq: 9 },
+        ],
+      },
+      messages: { 'ch-1': [] },
+      idempotency: {},
+    };
+    const { svc } = seeded(st);
+    const rows = svc.getMembers('ch-1', HUMAN_WS).filter((m) => m.memberId === UI);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ workspaceId: HUMAN_WS, joinedAt: 40, historyFromSeq: 0, lastReadSeq: 9 });
+  });
+
+  it('the wake worker never sweeps the reserved human workspace', () => {
+    const st: ChannelState = {
+      version: 1,
+      channels: [baseChannel(3)],
+      members: { 'ch-1': [{ workspaceId: HUMAN_WS, memberId: UI, joinedAt: 1, historyFromSeq: 0, lastReadSeq: 0 }] },
+      messages: { 'ch-1': [] },
+      idempotency: {},
+    };
+    const { svc } = seeded(st);
+    expect(svc.memberWorkspaces()).not.toContain(HUMAN_WS);
+  });
+});
+
+describe('ChannelService.create — P5 reserved human workspace guard (ship review, Codex delta)', () => {
+  it('rejects a create whose initial members[] seeds the reserved human workspace', async () => {
+    const { svc } = makeService();
+    const res = await svc.create({
+      name: 'sneaky',
+      visibility: 'private',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      verifiedWorkspaceId: 'ws-1',
+      members: [{ workspaceId: 'ws-human', memberId: 'agentX', memberName: 'X' }],
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('NOT_AUTHORIZED');
+    // Adversarial review: the rejection must leave NO orphaned in-memory channel.
+    // The phantom would be private + memberless (invisible to list), so the
+    // OBSERVABLE consequence is the duplicate-name check: a subsequent VALID
+    // create of the same name must SUCCEED (a leaked orphan would falsely
+    // collide). The guard now validates BEFORE the channel is pushed into state.
+    const retry = await svc.create({
+      name: 'sneaky',
+      visibility: 'private',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    expect(retry.ok).toBe(true);
+  });
+});

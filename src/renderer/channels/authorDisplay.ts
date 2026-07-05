@@ -11,11 +11,14 @@
 //   agent → primary = memberName (fallback memberId), chip = memberId
 //           (skipped when the primary already carries it)
 //   human → primary = the localized "Me" (substituted by the component),
-//           chip = the workspace name (every GUI seat shares the reserved
-//           'local-ui' member id, so the workspace IS the seat's identity)
+//           chip = null for a post from the unified ws-human seat (one human,
+//           no chip needed); a pre-P5 human post keeps its workspace-name chip
+//           as historical context
 //
 // Server-owned roster names (remediation plan Phase 1b) will replace the
 // free-form primary later; this layer is schema-free and works on history.
+
+import { HUMAN_MEMBER_ID, HUMAN_WORKSPACE_ID } from '../../shared/channels';
 
 export interface ChannelAuthorDisplay {
   kind: 'human' | 'agent';
@@ -28,10 +31,6 @@ export interface ChannelAuthorDisplay {
   /** Stable per-workspace hue (0-359) for the author color badge. */
   hue: number;
 }
-
-/** The reserved GUI member id (one human seat per workspace). Matches the
- *  daemon's reserved identity — see a2a.channel.rpc.ts (pipe spoof reject). */
-const HUMAN_MEMBER_ID = 'local-ui';
 
 /** Deterministic workspaceId → hue. The same workspace always renders the
  *  same badge color across sessions; distinct workspaces usually differ. */
@@ -65,6 +64,12 @@ export function formatChannelAuthor(
   // agent naming itself "local-ui" must NOT render as the human seat (the
   // pipe rejects that name, but the display layer pins it too; ship review).
   if (memberId === HUMAN_MEMBER_ID) {
+    // P5: a post from the unified human seat needs NO chip — there is exactly
+    // one human, "나/Me" alone identifies them. Pre-P5 posts carry the real
+    // workspace they were sent from; keep that chip as historical context.
+    if (message.workspaceId === HUMAN_WORKSPACE_ID) {
+      return { kind: 'human', primary: '', chip: null, hue };
+    }
     const ws = resolveWorkspaceName(message.workspaceId)?.trim();
     return { kind: 'human', primary: '', chip: ws || shortId(message.workspaceId), hue };
   }
@@ -99,7 +104,10 @@ export function rosterMemberLabel(
   workspaceLabel: string,
 ): RosterMemberLabel {
   const isSelf = member.workspaceId === selfWorkspaceId && member.memberId === selfMemberId;
-  if (isSelf) return { primary: '', showWorkspaceSuffix: true };
+  // P5: the unified human row is the ONLY human row — "나/Me" alone is
+  // unambiguous, and its workspace is the reserved virtual one (a raw
+  // 'ws-human' suffix would just leak an internal token).
+  if (isSelf) return { primary: '', showWorkspaceSuffix: false };
   if (member.memberId === selfMemberId) {
     // Another workspace's human seat — the workspace is its identity.
     return { primary: workspaceLabel, showWorkspaceSuffix: false };

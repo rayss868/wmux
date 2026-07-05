@@ -270,6 +270,43 @@ export const EMPTY_CHANNEL_STATE: ChannelState = {
  */
 export const DEFAULT_COMPANY_ID = 'co-default';
 
+/**
+ * P5 (unified human identity) — the VIRTUAL workspace that owns every human
+ * membership row. The human is ONE principal, not one-per-workspace: joining
+ * or creating a channel used to stamp whichever workspace happened to be
+ * active (`(ws-X, 'local-ui')`), scattering "you" across rows and binding the
+ * whole channel view to the active workspace. All human rows merge into
+ * `(HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID)` at daemon load — deterministic and
+ * crash-safe, the same contract as the lastReadSeq backfill. No collision is
+ * possible: real workspace ids are `ws-<uuid>`.
+ *
+ * Trust: only the renderer-local mutate path (channels:mutate-local) may claim
+ * this workspace id; a pipe caller asserting it is rejected — same class as
+ * the 'local-ui' spoof guard (a2a.channel.rpc.ts).
+ */
+export const HUMAN_WORKSPACE_ID = 'ws-human';
+
+/** The reserved human/GUI member id (one seat, app-wide). The pipe rejects it
+ *  as a caller identity (a2a.channel.rpc.ts spoof guard); the renderer
+ *  substitutes the localized "Me" at display time. Single source of truth —
+ *  renderer modules and the daemon previously each carried their own copy. */
+export const HUMAN_MEMBER_ID = 'local-ui';
+
+/**
+ * Channels schema epoch — the DAEMON-SIDE migration generation the current
+ * renderer requires. The daemon reports it additively on the
+ * `a2a.channel.list` response; the renderer compares on hydration and shows a
+ * "restart wmux" banner when the value is missing/lower (a long-lived daemon
+ * survives app upgrades by design, so a P5 renderer can find itself attached
+ * to a pre-P5 daemon whose state still holds scattered per-workspace human
+ * rows — posts would fail NOT_A_MEMBER with no explanation; ship review C1).
+ * Bump ONLY when a new daemon load-time channel migration is a prerequisite
+ * for renderer correctness.
+ *
+ * Epoch 1 = P5 unified human identity (ws-human row merge).
+ */
+export const CHANNELS_EPOCH = 1;
+
 /** Channel name length bounds. `CHANNEL_NAME_MIN` is the empty-length
  *  floor; the regex below requires at least 1 character. */
 export const CHANNEL_NAME_MIN = 1;

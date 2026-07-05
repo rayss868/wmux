@@ -61,6 +61,7 @@ import {
   isChannelMentionDeliveredPersisted,
   markChannelMentionDeliveredPersisted,
 } from './channelMentionHandled';
+import { HUMAN_WORKSPACE_ID } from '../../shared/channels';
 import { isNudgeRateLimited, recordNudge, shouldWarnLoopSuspect } from './channelMentionRateLimit';
 import { findLeafPanes } from './a2aAddressing';
 import { panePrincipalId } from '../../shared/principals';
@@ -114,12 +115,18 @@ export function planChannelMessageDelivery(
   senderWorkspaceId: string,
   recipientWorkspaceIds: readonly string[],
   mentionWorkspaceIds: readonly string[],
-  activeWorkspaceId: string,
   localIds: readonly string[],
 ): { appendToDisplay: boolean; routeWorkspaces: string[] } {
-  const appendToDisplay =
-    senderWorkspaceId === activeWorkspaceId ||
-    recipientWorkspaceIds.includes(activeWorkspaceId);
+  // P5: display exactly the channels the unified HUMAN is a member of, and
+  // ONLY those — the human's view is workspace-independent. The old
+  // active-workspace branch (ship review: Codex privacy_leak + Claude
+  // adversarial F4) leaked private agent-only channel traffic into the human's
+  // dock (the active workspace was a recipient but ws-human was not), producing
+  // phantom unread badges on channels the human can't even open. Mention
+  // ROUTING still fans out to every real local workspace (routeWorkspaces) so
+  // agents are pinged; only the human's DISPLAY is scoped to their membership.
+  void senderWorkspaceId; // retained for signature stability / future use
+  const appendToDisplay = recipientWorkspaceIds.includes(HUMAN_WORKSPACE_ID);
   const mentionWs = new Set(mentionWorkspaceIds);
   const routeWorkspaces = localIds.filter((id) => mentionWs.has(id));
   return { appendToDisplay, routeWorkspaces };
@@ -181,29 +188,17 @@ function readEventsPollBridge(): EventsPollBridge | undefined {
  *     `refreshChannels` rebuilds from authoritative state.
  */
 export function useChannelsEventSubscription(): void {
-  // Per-recipient scoping (plan U3, R3): the daemon's per-workspace filter at
-  // `events.rpc.ts:115-124` requires the caller to identify its own workspace
-  // or it silently drops every event. Channels are decoupled from in-app
-  // Company mode, so the identity is the company CEO workspace when set, else
-  // the active workspace (mirrors useChannelsHydration / ChannelsPanel).
-  //
-  // SUBSCRIBE to this (not getState() inside a []-deps effect): a prior bug read
-  // it once at mount, and if this hook mounted before `activeWorkspaceId` was
-  // set (boot race), self was null, the effect early-returned, and events.poll
-  // NEVER started — so live channel messages, the unread/mention dock badges,
-  // AND the mention→a2a inbox routing all silently no-op'd. Keying the effect on
-  // `workspaceId` re-runs it the moment self lands, starting the poll then.
-  const workspaceId = useStore((s) => s.company?.ceoWorkspaceId ?? s.activeWorkspaceId);
+  // P5 (unified human identity): the HUMAN's channel identity is the reserved
+  // virtual workspace — hydration/catalog reads, display scope, and mutations
+  // all key on it, NEVER on the active workspace, so switching workspaces no
+  // longer changes what the human sees. It is a constant, so the poll starts
+  // immediately (the old activeWorkspaceId boot race is gone).
+  const workspaceId = HUMAN_WORKSPACE_ID;
   // FIX-MULTI-WS: every local workspace id, joined so the selector returns a
   // stable primitive (string) — the effect re-runs (rebuilding the poll scope)
   // only when a workspace is added/removed, not on unrelated store writes.
   const allWorkspaceIds = useStore((s) => s.workspaces.map((w) => w.id).join(','));
   useEffect(() => {
-    if (!workspaceId) {
-      // No resolvable self yet (pre-boot). The selector above re-runs this
-      // effect once `activeWorkspaceId` is set — a wait, not a dead end.
-      return;
-    }
     const bridge = readEventsPollBridge();
     if (!bridge) {
       // The renderer should never reach this state — `useRpcBridge`
@@ -218,11 +213,13 @@ export function useChannelsEventSubscription(): void {
       return;
     }
 
-    // FIX-MULTI-WS: the poll's union scope — every local workspace. The
-    // active/CEO id is unioned in defensively (it should already be in the
-    // list; a boot race where it isn't must not drop it from the scope).
+    // FIX-MULTI-WS: the poll's union scope — every local workspace. P5 widens
+    // it with the reserved human workspace so events addressed to the unified
+    // human seat arrive too. `localIds` (REAL workspaces only) keeps feeding
+    // mention ROUTING and the flush/prune sweeps — ws-human owns no panes and
+    // must never become a routing target; `pollIds` is scope only.
     const localIds = allWorkspaceIds ? allWorkspaceIds.split(',').filter(Boolean) : [];
-    if (!localIds.includes(workspaceId)) localIds.push(workspaceId);
+    const pollIds = [...localIds, workspaceId];
 
     // A4: stamp the mount time so the first poll can keep events that arrived
     // AFTER mount (live) while skipping pre-mount ring history (see `tick`).
@@ -401,9 +398,9 @@ export function useChannelsEventSubscription(): void {
         types: ['channel.message', 'agent.lifecycle', 'channel.catalog'],
         max: EVENT_POLL_MAX,
         workspaceId,
-        // FIX-MULTI-WS: union scope — the daemon filters by set membership,
-        // so background workspaces' events arrive in this same single poll.
-        workspaceIds: localIds,
+        // FIX-MULTI-WS + P5: union scope — every local workspace PLUS the
+        // reserved human workspace; the daemon filters by set membership.
+        workspaceIds: pollIds,
       })
         .then((raw) => {
           if (disposed || !raw) return;
@@ -519,13 +516,12 @@ export function useChannelsEventSubscription(): void {
               const st = useStore.getState();
               // FIX-MULTI-WS: the pure decision (append-to-active-display +
               // which local workspaces to route the mention into). See
-              // planChannelMessageDelivery — active-vs-background split, the
-              // exact layer the first multi-ws attempt regressed.
+              // planChannelMessageDelivery — display is scoped to human
+              // membership (P5), routing fans out to real local workspaces.
               const plan = planChannelMessageDelivery(
                 channelEvent.workspaceId,
                 channelEvent.recipientWorkspaceIds,
                 (channelEvent.message.mentions ?? []).map((m) => m.workspaceId),
-                workspaceId,
                 localIds,
               );
               // Display cache / unread / mention badges: ACTIVE workspace only,
@@ -613,6 +609,9 @@ export function useChannelsEventSubscription(): void {
               // background workspace would clobber the active view), so only
               // an active-relevant catalog event triggers it. A background
               // workspace's catalog is rebuilt on switch.
+              // P5: catalog re-hydrates on any change touching the human seat
+              // or broadcast — the human's catalog is ws-human-scoped, so an
+              // active-workspace-only catalog change is not the human's view.
               const ce = event as ChannelCatalogEvent;
               if (
                 ce.recipientWorkspaceIds.includes('*') ||
@@ -673,6 +672,8 @@ export function useChannelsEventSubscription(): void {
     };
     // FIX-MULTI-WS: allWorkspaceIds rebuilds the loop (and its union scope)
     // when a workspace is added/removed — a NEW workspace must join the poll
-    // scope or its mentions would silently drop until the next remount.
-  }, [workspaceId, allWorkspaceIds]);
+    // scope or its mentions would silently drop until the next remount. P5: the
+    // active workspace no longer affects display, so it is not a dependency (no
+    // poll restart on workspace switch).
+  }, [allWorkspaceIds]);
 }

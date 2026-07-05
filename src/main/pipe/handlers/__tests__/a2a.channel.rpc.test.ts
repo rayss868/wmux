@@ -689,3 +689,160 @@ describe('a2a.channel.rpc — events.poll per-recipient scoping (PROTOCOL §2.8)
     expect(mine[0].channelId).toBe('ch-2');
   });
 });
+
+describe('a2a.channel.rpc — P5 reserved human workspace (ws-human) guard', () => {
+  it('REJECTS a pipe post claiming ws-human as the sender (human-seat impersonation)', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-spoof-post',
+      method: 'a2a.channel.post',
+      params: {
+        channelId: CHANNEL_ID,
+        sender: { workspaceId: 'ws-human', memberId: 'me2', memberName: 'Me' },
+        text: 'hi from "the human"',
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string; message: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+      expect(r.error?.message).toContain('ws-human');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+
+  it('REJECTS a pipe join claiming ws-human as the member', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-spoof-join',
+      method: 'a2a.channel.join',
+      params: {
+        channelId: CHANNEL_ID,
+        member: { workspaceId: 'ws-human', memberId: 'agent', memberName: 'A' },
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+
+  it('REJECTS inviting ws-human as a TARGET (5-model review: no invite-the-human post-P5)', async () => {
+    // The human joins via the GUI, never by invite. A ws-human invitedMember
+    // could only seed a phantom (ws-human, non-local-ui) row (the real seat's
+    // local-ui memberId is blocked by the C4 guard) that force-injects a channel
+    // into the human's always-on view. The router (and daemon invite()) reject it.
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-invite-human',
+      method: 'a2a.channel.invite',
+      params: {
+        channelId: CHANNEL_ID,
+        invitedMember: { workspaceId: 'ws-human', memberId: 'local-ui2', memberName: 'Me' },
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+
+  it('ALLOWS a no-PTY read scoped to ws-human (the renderer reads ride this router)', async () => {
+    let received: Record<string, unknown> = {};
+    const daemon = makeFakeDaemon((_m, params) => {
+      received = params as Record<string, unknown>;
+      return { ok: true, value: [] };
+    });
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-read-human',
+      method: 'a2a.channel.list',
+      params: { verifiedWorkspaceId: 'ws-human' },
+    });
+    expect(res.ok).toBe(true);
+    expect(received.verifiedWorkspaceId).toBe('ws-human');
+  });
+});
+
+describe('a2a.channel.rpc — P5 invite ws-human is REJECTED (5-model consensus)', () => {
+  it('REJECTS inviting ws-human with a non-local-ui memberId (phantom-row injection)', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-invite-phantom',
+      method: 'a2a.channel.invite',
+      params: {
+        channelId: CHANNEL_ID,
+        invitedMember: { workspaceId: 'ws-human', memberId: 'agentX', memberName: 'X' },
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string; message: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+      expect(r.error?.message).toContain('ws-human');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+});
+
+describe('a2a.channel.rpc — P5 create members[] cannot seed reserved identities (Codex delta)', () => {
+  it('REJECTS channel_create with a ws-human entry in initial members[]', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-create-phantom-member',
+      method: 'a2a.channel.create',
+      params: {
+        name: 'sneaky',
+        visibility: 'private',
+        members: [{ workspaceId: 'ws-human', memberId: 'agentX', memberName: 'X' }],
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+
+  it('REJECTS channel_create with a local-ui entry in initial members[]', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-create-spoof-member',
+      method: 'a2a.channel.create',
+      params: {
+        name: 'sneaky2',
+        visibility: 'private',
+        members: [{ workspaceId: 'ws-1', memberId: 'local-ui', memberName: 'Me' }],
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+});

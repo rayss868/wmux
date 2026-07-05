@@ -15,7 +15,7 @@ import { coerceLanLinkPatch } from '../shared/lanlink';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec } from './channels';
 import { PrincipalService, PrincipalStateWriter } from './principals';
 import { isPrincipalUpsertInput } from '../shared/principals';
-import { DEFAULT_COMPANY_ID } from '../shared/channels';
+import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
@@ -1574,7 +1574,10 @@ function registerRpcHandlers(
         },
       };
     }
-    return { ok: true, channels: channelService.list(verifiedWorkspaceId) };
+    // `channelsEpoch` is additive (ship review C1): the renderer compares it
+    // against its own CHANNELS_EPOCH on hydration to detect a stale daemon
+    // (pre-P5 daemons simply omit the field).
+    return { ok: true, channelsEpoch: CHANNELS_EPOCH, channels: channelService.list(verifiedWorkspaceId) };
   });
 
   pipeServer.onRpc('a2a.channel.get', async (rawParams) => {

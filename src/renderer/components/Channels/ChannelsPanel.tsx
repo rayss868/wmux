@@ -50,6 +50,7 @@
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import type { Channel, ChannelVisibility } from '../../../shared/channels';
+import { HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID } from '../../../shared/channels';
 import {
   canonicalizeChannelName,
   isValidChannelName,
@@ -365,7 +366,7 @@ export function synthesizeChannel(params: {
     visibility: params.visibility,
     status: 'active',
     createdAt: Date.now(),
-    createdBy: 'local-ui',
+    createdBy: HUMAN_MEMBER_ID,
     nextSeq: 1,
   };
 }
@@ -404,6 +405,10 @@ export interface ChannelsPanelViewProps {
    *  members from the daemon (manual re-sync for when a workspace/agent that
    *  came online isn't reflected yet). */
   onRefresh?: () => void;
+  /** Ship review C1 — the attached daemon predates the channels migration this
+   *  renderer requires (it survived the app upgrade). Renders a "restart wmux"
+   *  banner; posting/joining may fail with NOT_A_MEMBER until the restart. */
+  daemonStale?: boolean;
 }
 
 export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactElement {
@@ -420,6 +425,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
     onCollapse,
     collapseDir = 'right',
     onRefresh,
+    daemonStale = false,
   } = props;
   const t = props.t ?? ((k: string) => k);
 
@@ -460,6 +466,23 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
       className="border-t border-[var(--bg-surface)] py-2"
       style={{ borderColor: 'var(--border-soft)' }}
     >
+      {/* Ship review C1 — stale-daemon banner. The long-lived daemon survived
+            the app upgrade without the channels migration this renderer needs;
+            channels may look missing and posts may fail until it restarts.
+            Informational only (no auto-kill: the daemon holds live sessions). */}
+      {daemonStale && (
+        <div
+          data-channels-daemon-stale
+          className="mx-3 mb-1.5 px-2.5 py-1.5 rounded text-[10px] font-mono leading-snug text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.7)]"
+          style={{ border: '1px solid var(--border-soft)' }}
+          {...tokenAttrs('textSub', 'text')}
+        >
+          <span aria-hidden="true">⚠ </span>
+          {t('channels.daemonStaleBanner') ||
+            'Channels were updated, but the background daemon is still on the old version. Quit wmux fully and start it again to finish.'}
+        </div>
+      )}
+
       {/* Header row — section title + actions (new-channel + collapse).
             The collapse button is merged here from the old ChannelDock header
             so the "Channels" title renders once, not twice. */}
@@ -667,11 +690,10 @@ export function ChannelsPanel(): React.ReactElement {
   const channelUnread = useStore((s) => s.channelUnread);
   const channelMentions = useStore((s) => s.channelMentions);
   const activeChannelId = useStore((s) => s.activeChannelId);
+  const channelsDaemonStale = useStore((s) => s.channelsDaemonStale);
   const company = useStore((s) => s.company);
-  // Channels are decoupled from in-app Company mode: when no company is set,
-  // the active workspace stands in as the creator identity so the `+` button
-  // works without one (mirrors useChannelsHydration's identity resolution).
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // P5: the human's creator identity is the reserved ws-human seat (see
+  // selfWorkspaceId below), independent of which workspace is active.
   const workspaces = useStore((s) => s.workspaces);
   const channelMembers = useStore((s) => s.channelMembers);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
@@ -686,9 +708,10 @@ export function ChannelsPanel(): React.ReactElement {
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const t = useT();
 
-  // Self workspace = CEO ws under Company mode, else the active workspace
-  // (mirrors handleCreate / ChannelMembersControl identity resolution).
-  const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId ?? null;
+  // P5 (unified human identity): the human's channel identity is the reserved
+  // virtual workspace — membership, join, post, and "my channels" no longer
+  // depend on which workspace is active.
+  const selfWorkspaceId: string | null = HUMAN_WORKSPACE_ID;
 
   // Channel ids the self workspace is a member of — drives the joined vs
   // discoverable split in the view. O(channels) but the catalog is small.
@@ -710,12 +733,13 @@ export function ChannelsPanel(): React.ReactElement {
   const handleJoinDiscoverable = useCallback(
     (channelId: string) => {
       if (!selfWorkspaceId) return;
-      const label =
-        workspaces.find((w) => w.id === selfWorkspaceId)?.name ?? selfWorkspaceId;
+      // P5: the unified human seat joins — the row is workspace-independent and
+      // renders as the localized "Me"; no workspace label is involved anymore.
+      const label = t('channels.me') || 'Me';
       const channelName = channels[channelId]?.name ?? channelId;
       void joinChannelDaemon(
         channelId,
-        { workspaceId: selfWorkspaceId, memberId: 'local-ui', memberName: label },
+        { workspaceId: selfWorkspaceId, memberId: HUMAN_MEMBER_ID, memberName: HUMAN_MEMBER_ID },
         selfWorkspaceId,
       ).then((result) => {
         if (result.ok) {
@@ -746,12 +770,9 @@ export function ChannelsPanel(): React.ReactElement {
       // daemon's authoritative row (the daemon ignores any client companyId
       // and stamps its own — keeping them equal avoids a flicker on refresh).
       const companyId = company?.id ?? DEFAULT_COMPANY_ID;
-      // Sender identity: the CEO workspace when Company mode is active, else
-      // the active workspace. The daemon pins `createdBy` to the verified
-      // (renderer-supplied, process-boundary-trusted) workspace anyway; this
-      // is the value it pins to. Bail only if there is no workspace at all.
-      const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId;
-      if (!selfWorkspaceId) return false;
+      // P5: the creator identity is the reserved ws-human seat; the daemon
+      // re-pins `createdBy` to the verified workspace anyway.
+      const selfWorkspaceId = HUMAN_WORKSPACE_ID;
       // Synthesize the row the slice would use as the optimistic
       // insert. The `*Daemon` thunk will overwrite this with the
       // daemon's authoritative row on success — the synthesized row
@@ -767,8 +788,8 @@ export function ChannelsPanel(): React.ReactElement {
         visibility: params.visibility,
         createdBy: {
           workspaceId: selfWorkspaceId,
-          memberId: 'local-ui',
-          memberName: 'local-ui',
+          memberId: HUMAN_MEMBER_ID,
+          memberName: HUMAN_MEMBER_ID,
         },
         channel,
       });
@@ -797,8 +818,7 @@ export function ChannelsPanel(): React.ReactElement {
     const bridge = useStore.getState().channelsRpc();
     if (!bridge) return;
     const s = useStore.getState();
-    const wsId = s.company?.ceoWorkspaceId ?? s.activeWorkspaceId ?? '';
-    if (!wsId) return;
+    const wsId = HUMAN_WORKSPACE_ID;
     void hydrateChannelsCatalog({
       rpc: bridge.rpc,
       workspaceId: wsId,
@@ -822,6 +842,7 @@ export function ChannelsPanel(): React.ReactElement {
       onCollapse={() => setChannelDockVisible(false)}
       collapseDir={sidebarPosition !== 'right' ? 'right' : 'left'}
       onRefresh={handleRefresh}
+      daemonStale={channelsDaemonStale}
       t={t}
     />
   );

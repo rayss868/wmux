@@ -27,6 +27,7 @@ import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { generateId, type Workspace } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
 import type { ChannelMember, ChannelMention, ChannelMessage } from '../../../shared/channels';
+import { HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID } from '../../../shared/channels';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
@@ -628,7 +629,7 @@ export function ComposerContent({
 
 // ─── Container ──────────────────────────────────────────────────────────
 
-/** Resolves the active company + member identity from the store and
+/** Resolves the unified human (ws-human) identity from the store and
  *  wires the composer to `postMessageOptimistic`. The `onError` is the
  *  toast slot from the parent (`useStore((s) => s.pushToast)`). */
 export interface ComposerProps {
@@ -640,11 +641,6 @@ const EMPTY_MEMBERS: ChannelMember[] = [];
 
 export function Composer({ channelId, onError }: ComposerProps): React.ReactElement {
   const t = useT();
-  const company = useStore((s) => s.company);
-  // Channels are decoupled from in-app Company mode: the active workspace
-  // stands in as the sender identity when no company is set (mirrors
-  // ChannelsPanel / ChannelView / useChannelsHydration).
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const channel = useStore((s) => s.channels[channelId]);
   const members = useStore((s) => s.channelMembers[channelId] ?? EMPTY_MEMBERS);
   const workspaces = useStore((s) => s.workspaces);
@@ -652,10 +648,10 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
   const paneLabel = useStore((s) => s.paneLabel);
   const postMessageDaemon = useStore((s) => s.postMessageDaemon);
 
-  // Sender identity: the CEO workspace when Company mode is active, else the
-  // active workspace. The daemon's post path requires
-  // sender.workspaceId === verifiedWorkspaceId AND membership.
-  const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId ?? null;
+  // P5 (unified human identity): the composer posts as the reserved human
+  // workspace — the daemon's post path requires sender.workspaceId ===
+  // verifiedWorkspaceId AND membership, both of which are the ws-human row now.
+  const selfWorkspaceId: string | null = HUMAN_WORKSPACE_ID;
 
   // @-mention candidates (agent-pane redesign): every LIVE AGENT pane in a member
   // workspace except our own. We walk each member workspace's live pane tree and
@@ -698,8 +694,8 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
         seq: nextSeq,
         text,
         senderWorkspaceId: selfWorkspaceId,
-        senderMemberId: 'local-ui',
-        senderMemberName: 'local-ui',
+        senderMemberId: HUMAN_MEMBER_ID,
+        senderMemberName: HUMAN_MEMBER_ID,
         clientMsgId,
         mentions: mentionsArg,
       });
@@ -707,8 +703,8 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
         text,
         sender: {
           workspaceId: selfWorkspaceId,
-          memberId: 'local-ui',
-          memberName: 'local-ui',
+          memberId: HUMAN_MEMBER_ID,
+          memberName: HUMAN_MEMBER_ID,
         },
         clientMsgId,
         mentions: mentionsArg,

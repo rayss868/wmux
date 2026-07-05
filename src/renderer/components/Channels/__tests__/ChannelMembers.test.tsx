@@ -109,12 +109,13 @@ describe('ChannelMembers — wiring regression guard', () => {
     expect(members).toMatch(/m\.workspaceId === selfWorkspaceId && m\.memberId === selfMemberId/);
   });
 
-  it('operator model: the picker offers EVERY non-member workspace (not self-only)', () => {
-    // The human GUI operates every local workspace, so the picker is no longer
-    // gated to the active workspace. The old self-only filter is gone, and the
-    // joinable list starts from the full workspace set.
+  it('P5 unified human: "add a workspace" is no longer a membership concept', () => {
+    // The human is ONE seat (ws-human) and agents join as panes — the container
+    // passes an empty joinable-workspace list, the section stays unrendered, and
+    // self identity is the reserved human workspace, not the active one.
     expect(members).not.toContain('w.id === selfWorkspaceId');
-    expect(members).toMatch(/const joinableWorkspaces: JoinableWorkspace\[\] = workspaces/);
+    expect(members).toMatch(/const joinableWorkspaces: JoinableWorkspace\[\] = \[\];/);
+    expect(members).toMatch(/selfWorkspaceId: string \| null = HUMAN_WORKSPACE_ID/);
   });
 
   it('add routes by channel visibility: public → self-join, private → invite', () => {

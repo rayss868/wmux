@@ -63,6 +63,7 @@ import type {
   ChannelMessage,
   ChannelVisibility,
 } from '../../../shared/channels';
+import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName } from '../../utils/paneNaming';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
@@ -173,6 +174,12 @@ export interface ChannelsSlice {
    *  workspace — a strict subset of `channelUnread`, surfaced as a stronger
    *  dock badge. Cleared with unread by `markChannelRead` / `setActiveChannel`. */
   channelMentions: Record<string, number>;
+  /** Ship review C1 — true when the attached daemon reported a channels epoch
+   *  older than this renderer requires (a long-lived pre-P5 daemon survived the
+   *  app upgrade). Drives the "restart wmux" banner in ChannelsPanel; set from
+   *  hydration on every (re)connect, so it self-clears after a daemon restart. */
+  channelsDaemonStale: boolean;
+  setChannelsDaemonStale: (stale: boolean) => void;
 
   // ── User-initiated actions (optimistic local mutations) ─────────
   // Each action takes the daemon-resolved result as a parameter so the
@@ -347,6 +354,12 @@ export const createChannelsSlice: StateCreator<
   activeChannelId: null,
   channelUnread: {},
   channelMentions: {},
+  channelsDaemonStale: false,
+
+  setChannelsDaemonStale: (stale) =>
+    set((state: StoreState) => {
+      state.channelsDaemonStale = stale;
+    }),
 
   setActiveChannel: (channelId) =>
     set((state: StoreState) => {
@@ -554,9 +567,10 @@ export const createChannelsSlice: StateCreator<
         next[idx] = message;
         state.channelMessages[channelId] = next;
       }
-      // `self` = the company CEO workspace when set, else the active workspace —
-      // mirrors ChannelView/Composer identity resolution.
-      const selfWs = state.company?.ceoWorkspaceId ?? state.activeWorkspaceId;
+      // P5: `self` = the unified human seat — the human's own posts are muted;
+      // agent posts (any workspace, incl. the active one) DO count as unread
+      // now, which is the honest badge (they are news to the human).
+      const selfWs = HUMAN_WORKSPACE_ID;
       if (isNew && state.activeChannelId !== channelId) {
         // A6 self-mute (unread): a workspace's OWN posts must not badge it as
         // unread. A composer post never bumps unread anyway (the activeChannelId

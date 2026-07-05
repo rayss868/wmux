@@ -11,23 +11,22 @@
 //   - ChannelMembersControl — store-connected; resolves identity, the joinable
 //     workspace list, and wires join/leave + the self-leave view cleanup.
 //
-// Scope (P1b — invite):
+// Scope (P5 — unified human seat):
 //   - Remove (✕) is SELF-ONLY and shows on the exact (self ws, self memberId)
 //     row — you can leave, not eject (matches daemon leave() capability).
-//   - "+ member" shows for any non-archived channel with a resolvable self ws.
-//     A MEMBER may add any non-member workspace (invite — the only path into a
-//     private channel; daemon gates on the inviter being a member). A NON-member
-//     can only self-join (public), so the picker offers just their own ws.
-//     Adding self → joinChannelDaemon (self-pin); adding another → inviteChannelDaemon.
+//   - There is ONE app-wide human seat (ws-human); agents join as panes via the
+//     "add an agent pane" picker. The old "add a workspace" picker is retired —
+//     the container passes an empty joinableWorkspaces list.
 //   - On a successful self-leave of the active channel, the container clears
 //     activeChannelId so the dock doesn't show a dead/blank pane.
 //
 // No hex literals — theme tokens only. Agents keep per-agent membership via the
-// MCP channel_post member_id; the UI identity is workspace-level (memberId
-// 'local-ui'), which is correct (one human per workspace).
+// MCP channel_post member_id; the human UI identity is the single reserved seat
+// (HUMAN_MEMBER_ID on HUMAN_WORKSPACE_ID).
 
 import { useState } from 'react';
 import type { Channel, ChannelMember } from '../../../shared/channels';
+import { HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID } from '../../../shared/channels';
 import { panePrincipalId } from '../../../shared/principals';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -37,10 +36,6 @@ import { IconX, IconUsers } from '../icons';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { rosterMemberLabel } from '../../channels/authorDisplay';
 import { buildMentionCandidates } from './Composer';
-
-/** Stable UI member id — the human/GUI participates as one member per
- *  workspace. Mirrors the value the composer + create path already send. */
-const UI_MEMBER_ID = 'local-ui';
 
 export interface JoinableWorkspace {
   id: string;
@@ -281,14 +276,16 @@ export function ChannelMembersView({
                 ))
               )}
 
-              <div className="px-3 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-                {t('channels.addMember') || 'Add a workspace'}
-              </div>
-              {joinableWorkspaces.length === 0 ? (
-                <div className="px-3 py-1.5 text-[10px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-                  {t('channels.allWorkspacesMembers') || 'All workspaces are members.'}
+              {/* P5: the "add a workspace" section only renders when a caller
+                    still supplies candidates (legacy/tests) — the container now
+                    passes [] because the human is one seat and agents join as
+                    panes. Section removal proper rides the P6 roster rework. */}
+              {joinableWorkspaces.length > 0 && (
+                <div className="px-3 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+                  {t('channels.addMember') || 'Add a workspace'}
                 </div>
-              ) : (
+              )}
+              {joinableWorkspaces.length > 0 && (
                 joinableWorkspaces.map((w) => (
                   <button
                     key={w.id}
@@ -327,13 +324,14 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
   });
   const workspaces = useStore((s) => s.workspaces);
   const company = useStore((s) => s.company);
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const pushToast = useStore((s) => s.pushToast);
   // R2: agent-detection mirror used to compute explicit-join candidates + liveness.
   const surfaceAgent = useStore((s) => s.surfaceAgent);
   const paneLabel = useStore((s) => s.paneLabel);
 
-  const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId ?? null;
+  // P5 (unified human identity): self is the reserved human workspace —
+  // isSelf/leave/kick authz no longer depend on which workspace is active.
+  const selfWorkspaceId: string | null = HUMAN_WORKSPACE_ID;
   const workspaceLabel = (workspaceId: string): string =>
     workspaces.find((w) => w.id === workspaceId)?.name ?? workspaceId;
 
@@ -352,14 +350,11 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
   // now just another member row. Agents render as per-member rows for attribution.
   const rosterMembers = members;
 
-  // The human GUI operates EVERY local workspace, so the picker offers every
-  // workspace that is not already a member — not just the active one. The old
-  // "a non-member may only self-join" rule is an AGENT constraint (an agent can't
-  // act for a sibling workspace); the first-party GUI can, and the daemon trusts
-  // the renderer-supplied workspaceId across the process boundary.
-  const joinableWorkspaces: JoinableWorkspace[] = workspaces
-    .filter((w) => !members.some((m) => m.workspaceId === w.id))
-    .map((w) => ({ id: w.id, name: w.name }));
+  // P5: "add a WORKSPACE" is gone as a membership concept — the human is ONE
+  // seat (ws-human) and agents join as panes. An empty list keeps the section
+  // unrendered (the view gates on length) without churning the props contract;
+  // full prop removal rides the P6 roster rework.
+  const joinableWorkspaces: JoinableWorkspace[] = [];
 
   // R2 — explicit-join candidates: live agent panes across all workspaces that
   // are not yet members of this channel. The candidate predicate (live agent
@@ -435,10 +430,10 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
       channel.visibility === 'public'
         ? useStore
             .getState()
-            .joinChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, workspaceId)
+            .joinChannelDaemon(channel.id, { workspaceId, memberId: HUMAN_MEMBER_ID, memberName: label }, workspaceId)
         : useStore
             .getState()
-            .inviteChannelDaemon(channel.id, { workspaceId, memberId: UI_MEMBER_ID, memberName: label }, selfWorkspaceId ?? workspaceId);
+            .inviteChannelDaemon(channel.id, { workspaceId, memberId: HUMAN_MEMBER_ID, memberName: label }, selfWorkspaceId ?? workspaceId);
     void action.then((result) => {
       if (result.ok) {
         pushToast({ level: 'info', message: t('channels.joinedToast', { workspace: label, channel: channel.name }) });
@@ -526,7 +521,7 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
       headSeq={headSeq}
       workspaceLabel={workspaceLabel}
       selfWorkspaceId={selfWorkspaceId}
-      selfMemberId={UI_MEMBER_ID}
+      selfMemberId={HUMAN_MEMBER_ID}
       joinableWorkspaces={joinableWorkspaces}
       joinablePanes={joinablePanes}
       canJoin={canJoin}

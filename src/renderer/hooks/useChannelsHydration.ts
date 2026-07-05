@@ -10,9 +10,9 @@
 // and dispatches the result into `setChannels`.
 //
 // Identity: channels are decoupled from in-app Company mode. The "self"
-// workspace is the Company CEO workspace when Company mode is active, else
-// the active workspace — so channels hydrate (and stay visible) without a
-// company. Reads ride the `rpc` bridge (the pipe RpcRouter); the main-side
+// workspace is the reserved unified human seat (ws-human, P5) — so channels
+// hydrate (and stay visible) independent of which workspace is active. Reads
+// ride the `rpc` bridge (the pipe RpcRouter); the main-side
 // `a2a.channel.*` read handler accepts a caller-supplied workspace for a
 // no-senderPtyId renderer caller (process-boundary trust — see the header of
 // `src/main/pipe/handlers/a2a.channel.rpc.ts`). Only the unforgeable D5 pin
@@ -27,11 +27,11 @@
 //   3. `daemon.onConnected` — covers respawn/reconnect after the first
 //      hydration already ran.
 //
-// Scope note (FIX-MULTI-WS): the daemon's `list(verifiedWorkspaceId)` returns
-// every PUBLIC channel plus PRIVATE channels the passed workspace is a member
-// of. With a single self-workspace, private channels owned by a different
-// workspace stay hidden until the multi-workspace identity follow-up lands.
-// Public channels (the create modal's default) always hydrate.
+// Scope note: the daemon's `list(verifiedWorkspaceId)` returns every PUBLIC
+// channel plus PRIVATE channels the passed workspace is a member of. Since the
+// self-workspace is now the unified ws-human seat (P5), every private channel
+// the human joined hydrates; public channels (the create modal's default)
+// always hydrate.
 //
 // The core list→getMembers→setChannels logic is extracted into the pure
 // `hydrateChannelsCatalog` (mirroring the `createLateReconcileOnConnect` /
@@ -41,6 +41,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
 import type { Channel, ChannelMember, ChannelMessage } from '../../shared/channels';
+import { HUMAN_WORKSPACE_ID, CHANNELS_EPOCH } from '../../shared/channels';
 
 /** Dependencies for the pure hydration routine. */
 export interface ChannelHydrationDeps {
@@ -51,6 +52,12 @@ export interface ChannelHydrationDeps {
   workspaceId: string;
   /** Catalog setter (`channelsSlice.setChannels`). */
   setChannels: (channels: Channel[], members: Record<string, ChannelMember[]>) => void;
+  /** Ship review C1 — stale-daemon signal. Called with `true` when the daemon's
+   *  `a2a.channel.list` reply carries a missing/lower `channelsEpoch` (a
+   *  long-lived pre-P5 daemon survived the app upgrade: the human's channel
+   *  identity can't resolve until it restarts), `false` when the epoch is
+   *  current. Optional so tests/legacy callers are untouched. */
+  setDaemonStale?: (stale: boolean) => void;
   /** Liveness guard. When it returns false the routine bails before
    *  dispatching (the hook passes `() => !disposed`). Defaults to always-live
    *  for tests. */
@@ -107,6 +114,14 @@ export async function hydrateChannelsCatalog(deps: ChannelHydrationDeps): Promis
   const rawChannels = (listEnv as { channels?: unknown }).channels;
   if (!Array.isArray(rawChannels)) return 0;
   const channels = rawChannels as Channel[];
+
+  // Ship review C1 — stale-daemon detection. A CURRENT daemon stamps
+  // `channelsEpoch >= CHANNELS_EPOCH` on the list reply; a pre-P5 daemon omits
+  // the field. Signal BOTH directions so the banner self-clears once the daemon
+  // restarts (this routine re-runs on every reconnect).
+  const rawEpoch = (listEnv as { channelsEpoch?: unknown }).channelsEpoch;
+  const epoch = typeof rawEpoch === 'number' && Number.isFinite(rawEpoch) ? rawEpoch : 0;
+  deps.setDaemonStale?.(epoch < CHANNELS_EPOCH);
 
   // Fetch members per channel in parallel (best-effort — a channel whose
   // getMembers fails hydrates with no member entry and is reconciled on the
@@ -223,13 +238,11 @@ function readChannelsRpc(): ChannelsRpcBridge | undefined {
  * its daemon listener on unmount.
  */
 export function useChannelsHydration(): void {
-  // Subscribe to the self workspace id (NOT read once via getState). On boot the
-  // hook can mount BEFORE activeWorkspaceId is set; with empty deps it captured
-  // workspaceId='' and hydrateChannelsCatalog bailed (no channels, no members) —
-  // so @mention candidates (which come from channelMembers) were always empty.
-  // Keying the effect on workspaceId re-runs hydration the moment identity
-  // resolves. Mirrors the boot-race fix in useChannelsEventSubscription (2b40035).
-  const workspaceId = useStore((s) => s.company?.ceoWorkspaceId ?? s.activeWorkspaceId ?? '');
+  // P5 (unified human identity): the catalog hydrates as the reserved human
+  // workspace — every public channel plus every private channel the HUMAN is
+  // a member of, independent of which workspace is active. This also removes
+  // the old boot race (identity used to wait on activeWorkspaceId).
+  const workspaceId = HUMAN_WORKSPACE_ID;
   useEffect(() => {
     let disposed = false;
 
@@ -241,6 +254,7 @@ export function useChannelsHydration(): void {
         rpc: bridge.rpc,
         workspaceId,
         setChannels: useStore.getState().setChannels,
+        setDaemonStale: useStore.getState().setChannelsDaemonStale,
         isCurrent: () => !disposed,
       });
     };

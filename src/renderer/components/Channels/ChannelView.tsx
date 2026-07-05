@@ -27,6 +27,7 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { IconX, IconArchive, IconCheck, IconChevron } from '../icons';
 import { formatChannelAuthor } from '../../channels/authorDisplay';
+import { HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID } from '../../../shared/channels';
 import { Composer } from './Composer';
 import { ChannelMembersControl } from './ChannelMembers';
 
@@ -632,11 +633,6 @@ export function ChannelView(): React.ReactElement | null {
   const members = useStore((s) =>
     activeChannelId ? s.channelMembers[activeChannelId] ?? EMPTY_MEMBERS : EMPTY_MEMBERS,
   );
-  const company = useStore((s) => s.company);
-  // Channels are decoupled from in-app Company mode: the active workspace is
-  // the renderer's "self" identity when no company is set (mirrors
-  // useChannelsHydration / ChannelsPanel).
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // Identity audit 1a: workspace display names for the sender identity chips
   // (human posts read "Me · <workspace>"). Subscribe to a STRING projection of
   // (id, name) pairs, not the workspaces array itself — the array reference
@@ -664,9 +660,9 @@ export function ChannelView(): React.ReactElement | null {
   // Close the conversation view only (deselect) — the channel stays + you stay a member.
   const handleClose = useCallback(() => setActiveChannel(null), [setActiveChannel]);
 
-  // The renderer's "self" workspace — same expression as `viewer` below (the
-  // company CEO when set, else the active workspace).
-  const selfWs = company?.ceoWorkspaceId ?? activeWorkspaceId ?? '';
+  // P5 (unified human identity): the human's channel identity is the reserved
+  // virtual workspace, independent of company mode or the active workspace.
+  const selfWs = HUMAN_WORKSPACE_ID;
   // The X = LEAVE the channel (removes this workspace's UI membership), then
   // close the view. Gate on the ACTUAL (selfWs, 'local-ui') GUI member row, not
   // just any member of this workspace: handleLeave always removes memberId
@@ -675,11 +671,11 @@ export function ChannelView(): React.ReactElement | null {
   // Agent-only membership — and a public channel you're only previewing — show
   // no leave affordance.
   const selfIsMember =
-    !!selfWs && members.some((m) => m.workspaceId === selfWs && m.memberId === 'local-ui');
+    !!selfWs && members.some((m) => m.workspaceId === selfWs && m.memberId === HUMAN_MEMBER_ID);
   const handleLeave = useCallback(() => {
     if (!activeChannelId || !selfWs) return;
-    // memberId 'local-ui' is the human/GUI member id (one per workspace).
-    void leaveChannelDaemon(activeChannelId, 'local-ui', selfWs).then((res) => {
+    // The one unified human seat leaves — there is no per-workspace row anymore.
+    void leaveChannelDaemon(activeChannelId, HUMAN_MEMBER_ID, selfWs).then((res) => {
       if (res.ok) {
         setActiveChannel(null);
         pushToast({
@@ -724,15 +720,9 @@ export function ChannelView(): React.ReactElement | null {
     [selfWs, activeChannelId],
   );
 
-  // Pick a stable viewer — first member whose workspaceId matches the
-  // current renderer's workspace (the company's `ceoWorkspaceId` is the
-  // closest available stand-in for the renderer's own identity, since
-  // the slice doesn't carry per-renderer identity yet), falling back
-  // to the first member of the channel. The fallback matters when the
-  // renderer's own workspace is not a member of the channel — e.g. a
-  // private channel from another workspace that the renderer is
-  // previewing. Multi-workspace subscription is a known gap (see
-  // plan Open Questions `FIX-MULTI-WS`).
+  // Pick a stable viewer — the unified human (ws-human) member row when the
+  // human is in this channel; members[0] fallback for previewing a channel the
+  // human is not in (the code keys on HUMAN_WORKSPACE_ID below).
   //
   // Rules of hooks: the `useMemo` MUST run on every render, including
   // the early-return path below. Earlier versions had the `useMemo`
@@ -742,13 +732,12 @@ export function ChannelView(): React.ReactElement | null {
   // return makes the hook order stable across renders.
   const viewer = useMemo<ChannelMember | null>(() => {
     if (members.length === 0) return null;
-    const ownWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId;
-    if (ownWorkspaceId) {
-      const own = members.find((m) => m.workspaceId === ownWorkspaceId);
-      if (own) return own;
-    }
+    // P5: the viewer is the unified human row when present; the members[0]
+    // fallback remains for previewing channels the human is not in.
+    const own = members.find((m) => m.workspaceId === HUMAN_WORKSPACE_ID);
+    if (own) return own;
     return members[0] ?? null;
-  }, [members, company?.ceoWorkspaceId, activeWorkspaceId]);
+  }, [members]);
 
   // P0: load RECENT message history into the store when a channel is opened.
   // The view renders `store.channelMessages` only (it never calls getMessages
@@ -760,8 +749,7 @@ export function ChannelView(): React.ReactElement | null {
     if (!activeChannelId) return;
     const bridge = useStore.getState().channelsRpc();
     if (!bridge) return;
-    const selfWs = company?.ceoWorkspaceId ?? activeWorkspaceId ?? '';
-    if (!selfWs) return;
+    const selfWs = HUMAN_WORKSPACE_ID;
     // Read nextSeq fresh — the `channel` prop may be a render behind a
     // just-arrived catalog refresh.
     const nextSeq = useStore.getState().channels[activeChannelId]?.nextSeq ?? 1;
@@ -805,7 +793,7 @@ export function ChannelView(): React.ReactElement | null {
     return () => {
       disposed = true;
     };
-  }, [activeChannelId, company?.ceoWorkspaceId, activeWorkspaceId]);
+  }, [activeChannelId]);
 
   if (!activeChannelId || !channel) {
     // The activeChannelId-but-channel-undefined case can fire on a

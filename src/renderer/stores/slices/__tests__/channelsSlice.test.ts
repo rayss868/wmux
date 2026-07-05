@@ -294,10 +294,9 @@ describe('channelsSlice — appendMessageFromEvent', () => {
       createdBy: sender,
       channel: makeChannel(),
     });
-    // self = ws-1 (not viewing ch-1). An MCP/agent post from ws-1 has no
-    // optimistic row, so without the self guard it would unread-badge itself.
-    store.setState((s) => ({ ...s, activeWorkspaceId: 'ws-1' }) as TestState);
-    store.getState().appendMessageFromEvent(makeMessage('ch-1', 1, { workspaceId: 'ws-1' }));
+    // P5: self = the unified human seat (ws-human). A post from the human's
+    // own seat must not unread-badge; agent posts (any workspace) DO badge.
+    store.getState().appendMessageFromEvent(makeMessage('ch-1', 1, { workspaceId: 'ws-human' }));
     expect(store.getState().channelUnread['ch-1'] ?? 0).toBe(0);
     expect(store.getState().channelMentions['ch-1'] ?? 0).toBe(0);
     // Another workspace's post on the same (inactive) channel still bumps.
@@ -313,11 +312,10 @@ describe('channelsSlice — appendMessageFromEvent', () => {
       createdBy: sender,
       channel: makeChannel(),
     });
-    store.setState((s) => ({ ...s, activeWorkspaceId: 'ws-1' }) as TestState);
-    // Same-ws sender @mentions self-ws (pane A → sibling pane B): being mentioned
-    // is a real signal, so the @ badge bumps independently of the unread self-mute.
+    // P5: the human's own post that @mentions the human seat (edge) — the @
+    // badge bumps independently of the unread self-mute.
     store.getState().appendMessageFromEvent(
-      makeMessage('ch-1', 1, { workspaceId: 'ws-1', mentions: [{ workspaceId: 'ws-1', name: 'B' }] }),
+      makeMessage('ch-1', 1, { workspaceId: 'ws-human', mentions: [{ workspaceId: 'ws-human', name: 'me' }] }),
     );
     expect(store.getState().channelMentions['ch-1']).toBe(1);
     expect(store.getState().channelUnread['ch-1'] ?? 0).toBe(0); // unread still self-muted
@@ -338,11 +336,7 @@ describe('channelsSlice — appendMessageFromEvent', () => {
 
   it('bumps channelMentions when an unseen message @-mentions self', () => {
     const store = createTestStore();
-    // The self identity lives on sibling slices (company / activeWorkspaceId);
-    // inject it into the minimal channels-only test store.
-    store.setState((s) => {
-      (s as unknown as { activeWorkspaceId: string }).activeWorkspaceId = 'ws-me';
-    });
+    // P5: mention-of-self = a mention of the unified human seat (ws-human).
     store.getState().createChannelOptimistic({
       name: 'general',
       visibility: 'public',
@@ -350,7 +344,7 @@ describe('channelsSlice — appendMessageFromEvent', () => {
       channel: makeChannel(),
     });
     store.getState().appendMessageFromEvent(
-      makeMessage('ch-1', 1, { mentions: [{ workspaceId: 'ws-me', name: 'me' }] }),
+      makeMessage('ch-1', 1, { mentions: [{ workspaceId: 'ws-human', name: 'me' }] }),
     );
     expect(store.getState().channelMentions['ch-1']).toBe(1);
     expect(store.getState().channelUnread['ch-1']).toBe(1);
@@ -385,7 +379,7 @@ describe('channelsSlice — appendMessageFromEvent', () => {
       createdBy: sender,
       channel: makeChannel(),
     });
-    const mention = { mentions: [{ workspaceId: 'ws-me', name: 'me' }] };
+    const mention = { mentions: [{ workspaceId: 'ws-human', name: 'me' }] };
     store.getState().appendMessageFromEvent(makeMessage('ch-1', 1, mention));
     expect(store.getState().channelMentions['ch-1']).toBe(1);
 
