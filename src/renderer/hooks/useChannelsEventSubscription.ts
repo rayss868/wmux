@@ -64,6 +64,8 @@ import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import {
   createPasteGateState,
   isMentionPasteBusy,
+  notePtyOutput,
+  prunePasteGateState,
 } from './channelMentionPasteGate';
 import type {
   WmuxEvent,
@@ -234,6 +236,15 @@ export function useChannelsEventSubscription(): void {
     // scoped so the per-pty first-unknown timestamp survives across poll ticks
     // (a fresh map per remount is correct — a remount re-establishes the poll).
     const pasteGate = createPasteGateState();
+    // RCA 2026-07-05 (mid-turn paste race): stamp each pty's last-output time so
+    // the paste gate's second (output-quiet) check can tell a slow/thinking
+    // background agent (still emitting) from a truly idle one. main forwards
+    // background pane pty output to the renderer too (pty.handler.ts, no mounted
+    // gating), so this sees every local pane. Optional-chained for the (test /
+    // pre-mount) window where electronAPI isn't installed yet.
+    const removePtyDataListener = window.electronAPI?.pty?.onData?.((id) =>
+      notePtyOutput(pasteGate, id, Date.now()),
+    );
 
     // Drain queued channel mentions into their target panes' PTYs. Reads live
     // store state on each call (no stale closure). Stop path pins onlyPtyId +
@@ -285,6 +296,24 @@ export function useChannelsEventSubscription(): void {
     // the lifecycle event's workspace stamp.
     const runFlushAll = (opts: FlushOpts) => {
       for (const wsId of localIds) runFlush(wsId, opts);
+    };
+
+    // Map-leak guard (3-model consensus): prune the paste gate's per-pty clocks
+    // down to the live leaf ptys. Runs in the tick's `.finally` — poll-outcome
+    // independent, so a stretch of failed polls can't let the global pty-data
+    // listener grow `lastOutputAt` unbounded (Codex map-leak follow-up).
+    const pruneGateToLivePanes = () => {
+      const st = useStore.getState();
+      const live = new Set<string>();
+      for (const wsId of localIds) {
+        const ws = st.workspaces.find((w) => w.id === wsId);
+        if (ws) {
+          for (const leaf of findLeafPanes(ws.rootPane)) {
+            for (const s of leaf.surfaces) if (s.ptyId) live.add(s.ptyId);
+          }
+        }
+      }
+      prunePasteGateState(pasteGate, live);
     };
 
     const tick = () => {
@@ -527,6 +556,7 @@ export function useChannelsEventSubscription(): void {
         })
         .finally(() => {
           inFlight = false;
+          pruneGateToLivePanes();
         });
     };
 
@@ -538,6 +568,7 @@ export function useChannelsEventSubscription(): void {
     return () => {
       disposed = true;
       clearInterval(timer);
+      removePtyDataListener?.();
     };
     // FIX-MULTI-WS: allWorkspaceIds rebuilds the loop (and its union scope)
     // when a workspace is added/removed — a NEW workspace must join the poll
