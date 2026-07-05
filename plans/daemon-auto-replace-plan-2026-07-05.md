@@ -218,3 +218,9 @@ semver 비교는 숫자 삼중쌍 + 프리릴리스 유무 — 외부 패키지 
 - **GLM 5.2** (8건): 2 CRITICAL은 실코드 검증에서 환각 판정(이중 스폰 방어가 "같은 부모만"이라는 주장 — 실제는 데몬 자식의 잠금 2중 강제로 부모 무관; 무고 프로세스 SIGKILL — killDaemonByPidFile 가드 미인지). G6(하드 타임아웃 ack 유실)·G7(race 테스트)은 부분 채택. **2/8 부분 채택, 6/8 기각.**
 - **Claude Opus 적대** (11건, §1 좌표 전수 재검증): CL1(=C3 강화: probe 영구정지 메커니즘 규명) / CL2(=C4: G3 문구 거짓 입증) / CL3(=C6: detached 신데몬 생존 창) / CL4(unknown≠dead 위반 → sentinel 설계로 해소, env 무조건 대입) / CL5(무고 인스턴스 비용 → 정직 문서화) / CL6(=C5: 정의적 검증 필수) / CL7~11(minor: epoch 범위, settle, MCP 창, 버짓 소모, 프리릴리스 엣지). **9 채택(2건은 문서화로), 2 부분.**
 - 교차 합의(≥2모델): 예산 8s / bootstrap 라우팅 / before-quit 취소 / kill 타겟·검증 / 배너 불가 — 전부 v1.1에 반영.
+
+### 2차 — 구현 코드 리뷰 (동일 3패널)
+- **Codex** 3건: #1 취소 미관철 2곳(pre-ack reuse 분기, fresh connect/ping 창) **채택** / #2 stateSaved 앱측 미배선 **채택** / #3 dead-end 테스트의 유닛 한계 **주석 정직화**.
+- **GLM** 5건: MAJOR 2건 기각(ENV_KEYS 누락 주장은 tsc ×4 통과가 반증하는 환각; delete-필요 주장은 재대입=덮어쓰기라 비문제), MINOR 주석 1건 채택. 원칙 준수표 9항목 ✓는 유효한 교차 확인.
+- **Claude Opus** 6건: [MAJOR 100] 테스트 TS 에러(CFA가 클로저 대입을 못 봐 never 판정 — CI tsc 게이트 차단) **수정**(객체 게이트 패턴) / stateSaved 미배선(=Codex#2) / connect/ping 잔여 orphan 창(=Codex#1b, 최종 disposed 체크+kill로 봉쇄, 그 이하 창은 before-quit pid-파일 kill이 커버) / replacing 토스트 과약속 → 문구 "may pause"로 정직화 / 축③④⑤(dead-end 라우팅·kill 리팩터 의미론 불변·shutdown 반환형 파급·createSession 가드 vs recovery 분리)는 **결함 없음 판정**.
+- 수정분 검증: tsc ×4 클린, 관련 스위트 80/80, 전체 4891 pass(1건 플레이크는 형제 런 재실행으로 판정), lint 델타 0.

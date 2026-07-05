@@ -93,13 +93,16 @@ describe('isDaemonOlder', () => {
 // ---------------------------------------------------------------------------
 
 interface Script {
-  ack?: boolean | (() => Promise<boolean>);
+  ack?: boolean | (() => Promise<{ acked: boolean; stateSaved?: boolean }>);
   /** Sequence of liveness answers; the last value repeats forever. */
   liveness: ProcessLiveness[];
   connectedAfterShutdownFail?: boolean;
   killResult?: boolean;
-  /** When set, liveness flips to 'dead' after the kill call. */
+  /** When true, checkLiveness answers 'dead' only AFTER killVerifiedPid ran —
+   *  models the daemon dying BECAUSE of the kill, not before it. */
   deadAfterKill?: boolean;
+  /** stateSaved carried on a successful ack (undefined = pre-B′ daemon). */
+  stateSaved?: boolean;
   cancelled?: boolean | (() => boolean);
 }
 
@@ -118,7 +121,7 @@ function makeDeps(script: Script) {
     shutdownRpc: async (timeoutMs) => {
       calls.shutdownTimeouts.push(timeoutMs);
       if (typeof script.ack === 'function') return script.ack();
-      return script.ack ?? true;
+      return { acked: script.ack ?? true, stateSaved: script.stateSaved };
     },
     isClientConnected: () => script.connectedAfterShutdownFail ?? false,
     disconnectClient: async () => { calls.disconnects++; },
@@ -246,6 +249,37 @@ describe('runDaemonReplacement', () => {
       cancelled: true,
     });
     expect(outcome).toBe('cancelled');
+  });
+
+  it('cancellation during a failed shutdown race → cancelled, old client NOT offered for reuse', async () => {
+    // Codex code-review #1a: without this, dispose() during the 8s race
+    // would fall into the reuse branch and hand a client to install() on a
+    // disposed controller.
+    const { outcome, calls } = await run({
+      ack: false,
+      connectedAfterShutdownFail: true,
+      liveness: ['alive'],
+      cancelled: true,
+    });
+    expect(outcome).toBe('cancelled');
+    expect(calls.kills).toBe(0);
+  });
+
+  it('ack with stateSaved=false proceeds but logs the snapshot-grade downgrade', async () => {
+    const { outcome, calls } = await run({
+      ack: true,
+      stateSaved: false,
+      liveness: ['dead'],
+    });
+    expect(outcome).toBe('old-daemon-dead');
+    expect(calls.logs.some((m) => m.includes('stateSaved=false'))).toBe(true);
+  });
+
+  it('ack with stateSaved=true (or absent) logs no downgrade warning', async () => {
+    const withTrue = await run({ ack: true, stateSaved: true, liveness: ['dead'] });
+    expect(withTrue.calls.logs.some((m) => m.includes('stateSaved=false'))).toBe(false);
+    const preBPrime = await run({ ack: true, liveness: ['dead'] });
+    expect(preBPrime.calls.logs.some((m) => m.includes('stateSaved=false'))).toBe(false);
   });
 
   it('disconnect failure does not derail the sequence', async () => {

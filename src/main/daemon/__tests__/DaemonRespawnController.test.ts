@@ -561,7 +561,7 @@ function makeReplacementHooks(overrides: Partial<DaemonReplacementHooks> = {}): 
   return Object.assign(state, {
     appVersion: '3.17.0',
     channelsEpoch: 2,
-    raceShutdown: async () => { state.raceShutdownCalls++; return true; },
+    raceShutdown: async () => { state.raceShutdownCalls++; return { acked: true }; },
     checkLiveness: () => 'dead' as const,
     killVerifiedPid: (pid: number) => { state.killCalls.push(pid); return true; },
     sleep: async () => { /* instant */ },
@@ -653,7 +653,7 @@ describe('DaemonRespawnController stale-daemon replacement', () => {
   });
 
   it('pre-ack abort (shutdown refused, old daemon still connected) installs the OLD client', async () => {
-    const hooks = makeReplacementHooks({ raceShutdown: async () => false });
+    const hooks = makeReplacementHooks({ raceShutdown: async () => ({ acked: false }) });
     const h = makeHarness({
       replacement: hooks,
       config: { healthIntervalMs: 0 },
@@ -676,6 +676,14 @@ describe('DaemonRespawnController stale-daemon replacement', () => {
     let ensureCall = 0;
     // Ack received but the old daemon lingers and the verified kill refuses
     // (indeterminate verification) → dead-end.
+    //
+    // Unit-harness limitation (Codex code-review #3): the second
+    // ensureDaemon() here scripts a fresh spawn, whereas the real launcher
+    // would re-enter its pid-file liveness/verification path against the
+    // still-lingering pid. That composition is covered by the launcher's
+    // own liveness suites plus the dogfood procedure (plan §9); this test
+    // pins only the CONTROLLER's routing (no install on dead-end, budget
+    // loop entered, no second replacement attempt).
     const hooks = makeReplacementHooks({
       checkLiveness: () => 'alive' as const,
       killVerifiedPid: () => false,
@@ -746,9 +754,14 @@ describe('DaemonRespawnController stale-daemon replacement', () => {
 
   it('dispose during replacement cancels before the fresh spawn (before-quit race)', async () => {
     let ensureCall = 0;
-    let resolveShutdown: ((v: boolean) => void) | null = null;
+    // Object-typed gate instead of a closed-over `let`: TS control-flow
+    // analysis cannot see the executor-callback assignment on a plain local
+    // (it narrows the variable to `null` and flags the call as `never` —
+    // broke the tsc CI gate), but property narrowing resets across the
+    // intervening function calls, so this stays well-typed.
+    const shutdownGate: { resolve?: (v: { acked: boolean }) => void } = {};
     const hooks = makeReplacementHooks({
-      raceShutdown: () => new Promise<boolean>((res) => { resolveShutdown = res; }),
+      raceShutdown: () => new Promise<{ acked: boolean }>((res) => { shutdownGate.resolve = res; }),
     });
     const h = makeHarness({
       replacement: hooks,
@@ -765,9 +778,9 @@ describe('DaemonRespawnController stale-daemon replacement', () => {
     const bootP = h.controller.bootstrap();
     // Give the gate a chance to fire the shutdown RPC, then quit.
     await vi.advanceTimersByTimeAsync(0);
-    expect(resolveShutdown).not.toBeNull();
+    expect(shutdownGate.resolve).toBeDefined();
     h.controller.dispose();
-    resolveShutdown?.(true); // ack lands after dispose
+    shutdownGate.resolve?.({ acked: true }); // ack lands after dispose
 
     const result = await bootP;
     expect(result).toBeNull();

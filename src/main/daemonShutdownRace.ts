@@ -13,6 +13,10 @@ export interface DaemonShutdownRaceResult {
   ok: boolean;
   /** Reason for the failure, if any. Useful for log breadcrumbs. */
   error?: string;
+  /** B′ additive from the daemon's shutdown ack: false means the suspended
+   *  state save failed (recovery degrades to periodic snapshots); undefined
+   *  when a pre-B′ daemon doesn't report the field or the race failed. */
+  stateSaved?: boolean;
 }
 
 // Minimal client shape used here. Decouples this helper from DaemonClient so
@@ -31,7 +35,7 @@ export async function raceDaemonShutdown(
 ): Promise<DaemonShutdownRaceResult> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    await Promise.race([
+    const ack = await Promise.race([
       client.rpc('daemon.shutdown', {}, { timeoutMs }),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
@@ -40,7 +44,10 @@ export async function raceDaemonShutdown(
         );
       }),
     ]);
-    return { ok: true };
+    // Surface the B′ `stateSaved` additive when the daemon reports it —
+    // only an explicit boolean passes through (pre-B′ daemons omit it).
+    const reported = (ack as { stateSaved?: unknown } | null | undefined)?.stateSaved;
+    return { ok: true, ...(typeof reported === 'boolean' ? { stateSaved: reported } : {}) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   } finally {

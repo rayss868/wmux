@@ -143,12 +143,21 @@ export type ReplacementOutcome =
    *  quietly and must not spawn. */
   | 'cancelled';
 
+/** Outcome of the daemon.shutdown race as the orchestrator consumes it.
+ *  `stateSaved` mirrors the daemon's additive ack field: false means the
+ *  suspended-state save failed and recovery degrades to the 30s periodic
+ *  snapshots; undefined means a pre-B′ daemon that doesn't report it. */
+export interface ShutdownRpcResult {
+  acked: boolean;
+  stateSaved?: boolean;
+}
+
 export interface ReplacementDeps {
   /** Old daemon PID captured from ensureDaemon BEFORE the shutdown — never
    *  re-read from daemon.pid (another instance may have rewritten it). */
   oldPid: number;
-  /** Send daemon.shutdown with the given timeout; resolve true iff acked. */
-  shutdownRpc: (timeoutMs: number) => Promise<boolean>;
+  /** Send daemon.shutdown with the given timeout. */
+  shutdownRpc: (timeoutMs: number) => Promise<ShutdownRpcResult>;
   /** Live connection state of the client the shutdown was sent on. */
   isClientConnected: () => boolean;
   disconnectClient: () => Promise<void>;
@@ -168,13 +177,29 @@ export interface ReplacementDeps {
 export async function runDaemonReplacement(deps: ReplacementDeps): Promise<ReplacementOutcome> {
   // Step 1 — graceful shutdown, budgeted BELOW the daemon's hard timeout.
   let acked = false;
+  let stateSaved: boolean | undefined;
   try {
-    acked = await deps.shutdownRpc(REPLACEMENT_SHUTDOWN_BUDGET_MS);
+    const r = await deps.shutdownRpc(REPLACEMENT_SHUTDOWN_BUDGET_MS);
+    acked = r.acked;
+    stateSaved = r.stateSaved;
   } catch {
     acked = false;
   }
+  if (acked && stateSaved === false) {
+    // Plan §5 step-1: the ack still means "the daemon finished trying", but
+    // the suspended records did not land — recovery will be snapshot-grade.
+    deps.log('warn', `[replace] old daemon (pid=${deps.oldPid}) acked shutdown but reported stateSaved=false — recovery degrades to periodic snapshots`);
+  }
 
   if (!acked) {
+    if (deps.isCancelled()) {
+      // before-quit disposed the controller during the shutdown race
+      // (Codex code-review #1a). Do not hand the old client back for
+      // install — quit teardown owns the daemon from here (the before-quit
+      // pid-file kill covers the full-shutdown case).
+      deps.log('warn', '[replace] cancelled during shutdown race (app quitting) — not reusing, not spawning');
+      return 'cancelled';
+    }
     if (deps.isClientConnected()) {
       // Genuine refusal or slow-walk by a still-alive daemon. Reuse it —
       // pre-ack means nothing was suspended, so this is lossless. If it was

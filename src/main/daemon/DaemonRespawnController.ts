@@ -1,7 +1,7 @@
 import { DaemonClient } from '../DaemonClient';
 import type { DaemonInfo, DaemonPingResult } from './launcher';
 import type { ProcessLiveness } from '../../shared/processLiveness';
-import { isDaemonOlder, runDaemonReplacement } from './daemonReplacement';
+import { isDaemonOlder, runDaemonReplacement, type ShutdownRpcResult } from './daemonReplacement';
 
 export interface DaemonRespawnState {
   attempt: number;
@@ -55,8 +55,8 @@ export interface DaemonRespawnDeps {
 export interface DaemonReplacementHooks {
   appVersion: string;
   channelsEpoch: number;
-  /** Wraps raceDaemonShutdown — resolve true iff the daemon acked. */
-  raceShutdown: (client: DaemonClient, timeoutMs: number) => Promise<boolean>;
+  /** Wraps raceDaemonShutdown — carries the ack + the daemon's stateSaved additive. */
+  raceShutdown: (client: DaemonClient, timeoutMs: number) => Promise<ShutdownRpcResult>;
   checkLiveness: (pid: number) => ProcessLiveness;
   /** Verified SIGKILL against an explicit pid (definitiveOnly mode). */
   killVerifiedPid: (pid: number) => boolean;
@@ -372,6 +372,17 @@ export class DaemonRespawnController {
       this.replacementDeadEnd = true;
       this.lastError = `replacement daemon auth/ping failed: ${this.stringifyError(err)}`;
       await freshClient.disconnect().catch(() => { /* best-effort */ });
+      return null;
+    }
+    if (this.disposed) {
+      // dispose() landed during connect()/ping (Codex code-review #1b): a
+      // detached fresh daemon must not survive a "shut down completely" —
+      // kill what we just made before bailing. Any window narrower than
+      // this (dispose after this check) is covered by before-quit's
+      // pid-file kill, which runs AFTER dispose and the fresh daemon has
+      // already written daemon.pid at acquireLock.
+      await freshClient.disconnect().catch(() => { /* best-effort */ });
+      if (freshInfo.spawned) rep.killVerifiedPid(freshInfo.pid);
       return null;
     }
     this.deps.logger.info(

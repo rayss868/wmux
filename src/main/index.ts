@@ -962,8 +962,10 @@ app.on('ready', async () => {
     replacement: {
       appVersion: app.getVersion(),
       channelsEpoch: CHANNELS_EPOCH,
-      raceShutdown: async (client, timeoutMs) =>
-        (await raceDaemonShutdown(client, timeoutMs)).ok,
+      raceShutdown: async (client, timeoutMs) => {
+        const r = await raceDaemonShutdown(client, timeoutMs);
+        return { acked: r.ok, stateSaved: r.stateSaved };
+      },
       checkLiveness: checkProcessLiveness,
       killVerifiedPid: (pid) => killVerifiedDaemonPid(pid, { definitiveOnly: true }),
     },
