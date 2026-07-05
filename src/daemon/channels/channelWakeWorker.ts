@@ -347,8 +347,10 @@ export class ChannelWakeWorker {
  *     eligible like any agent (headless has no other delivery path —
  *     Codex round-3);
  *  2. eligible session whose detected agent slug === memberId;
- *  3. else the ONLY eligible session in the workspace;
- *  4. else null (multi-pane ambiguity falls back to polling).
+ *  3. else the ONLY eligible session in the workspace — but ONLY when it
+ *     actually hosts a detected agent; a bare shell is never nudged
+ *     (2026-07-05 dogfood, see the guard below);
+ *  4. else null (multi-pane ambiguity / agent-less shell falls back to polling).
  */
 /**
  * R2 — direct principal targeting. When the member row has a principalId and
@@ -405,6 +407,15 @@ export function pickTarget(
     (s) => s.lastDetectedAgent === memberId && s.lastDetectedAgent === 'claude' && s.attached === true,
   );
   if (ownedByRenderer) return null;
-  if (eligible.length === 1) return eligible[0];
+  // Single-pane fallback — but ONLY if that pane actually hosts an agent to
+  // receive the nudge. A bare shell with no detected agent (lastDetectedAgent
+  // undefined/empty) is NOT a wake target: live -dev dogfood 2026-07-05 caught
+  // the worker auto-submitting `wmux channel read ch-… --since N` into an
+  // agent-less zsh — the member's real Claude pane was ATTACHED, so it deferred
+  // to the renderer Stop-hook path and left the shell as the lone "eligible"
+  // pane; the pasted hint (text + Enter) then ran as a shell command. If the
+  // only eligible pane is such a shell, hand off to polling (null) — the same
+  // philosophy as the budget-exhausted human handoff, never a guess.
+  if (eligible.length === 1 && Boolean(eligible[0].lastDetectedAgent)) return eligible[0];
   return null;
 }
