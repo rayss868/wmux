@@ -97,6 +97,16 @@ eventLoopMonitor.enable();
 // lines land in ~/.wmux/logs/daemon-YYYY-MM-DD.log.
 initDaemonLogSink(wmuxDir);
 
+// B′ daemon auto-replace: the app version that spawned this process, captured
+// once at load from the env the launcher injects unconditionally. The sentinel
+// 'unknown' is load-bearing: a B′-era daemon ALWAYS echoes SOMETHING in
+// daemon.ping, so a ping response with no `spawnedByVersion` field at all is a
+// positive confirmation of pre-B′ daemon code (replace-safe), while 'unknown'
+// means "B′ code but spawn path unclear" (information absence — never treated
+// as older; the gate falls back to the stale banner instead of destruction).
+const SPAWNED_BY_VERSION: string =
+  process.env[ENV_KEYS.SPAWNED_BY_VERSION] || 'unknown';
+
 // Recovery soft-cap ceiling. The hard PTY ceiling is now configurable
 // (config.session.maxSessions, default 200); recovery derives its own cap
 // as min(maxSessions, 40) in main(). This 40 is the startup-headroom
@@ -1033,6 +1043,14 @@ function registerRpcHandlers(
 ): void {
   // daemon.createSession
   pipeServer.onRpc('daemon.createSession', async (params) => {
+    // B′ auto-replace (Codex #1): shutdown() snapshots the managed-session
+    // list once, so a session created AFTER that snapshot would be disposed
+    // without any durable suspended record — silent data loss. shutdown()
+    // does not stop the RPC layer (the ack must still flush), so reject
+    // creates explicitly once shutdown has begun.
+    if (shuttingDown) {
+      throw new Error('SHUTTING_DOWN: daemon is shutting down — retry after reconnect');
+    }
     if (watchdog.isBlocked) {
       throw new Error('Cannot create session: memory pressure too high. Try again later.');
     }
@@ -1507,6 +1525,10 @@ function registerRpcHandlers(
     // (the redundant-daemon path cleaned the pid file). Log-only otherwise.
     // `bootTrace` is additive (S-A cold-start instrumentation): the perf
     // bench reads it; launcher/respawn-controller only read status/pid.
+    // `spawnedByVersion` + `channelsEpoch` are additive (B′ auto-replace):
+    // the launcher's staleness gate compares them against the running app.
+    // A pre-B′ daemon omits both — that absence is itself the gate's
+    // "positively old" signal (see SPAWNED_BY_VERSION sentinel note).
     return {
       status: 'ok',
       pid: process.pid,
@@ -1514,6 +1536,8 @@ function registerRpcHandlers(
       sessions: sessions.length,
       eventLoopLagMs,
       bootTrace: { jsStartEpochMs: DAEMON_BOOT.jsStartEpochMs, marks: DAEMON_BOOT.marks },
+      spawnedByVersion: SPAWNED_BY_VERSION,
+      channelsEpoch: CHANNELS_EPOCH,
     };
   });
 
@@ -1971,7 +1995,7 @@ function registerRpcHandlers(
   // await this with a per-call timeoutMs override (DaemonClient.rpc opt).
   pipeServer.onRpc('daemon.shutdown', async () => {
     log('info', 'Shutdown requested via RPC');
-    await shutdown(
+    const { stateSaved } = await shutdown(
       'rpc.shutdown',
       sessionManager,
       pipeServer,
@@ -2015,7 +2039,9 @@ function registerRpcHandlers(
         });
       }, 50);
     });
-    return { status: 'ok' };
+    // `stateSaved` is additive (B′ auto-replace): false tells the caller the
+    // suspended records did not land and recovery will be snapshot-grade.
+    return { status: 'ok', stateSaved };
   });
 }
 
@@ -2520,8 +2546,8 @@ async function shutdown(
   processMonitor: ProcessMonitor,
   watchdog: Watchdog,
   opts: { skipPipeStop?: boolean; skipExit?: boolean } = {},
-): Promise<void> {
-  if (shuttingDown) return;
+): Promise<{ stateSaved: boolean }> {
+  if (shuttingDown) return { stateSaved: false };
   shuttingDown = true;
   log('info', `Received ${signal} — shutting down gracefully`);
 
@@ -2623,8 +2649,15 @@ async function shutdown(
     sessions: managedSessions.map((m) => ({ ...m.meta })),
     bootId: cachedBootId,
   };
-  stateWriter.saveImmediate(suspendState);
-  phaseLog('stateSave', stateSaveStart, { sessions: managedSessions.length });
+  // saveImmediate is non-throwing (returns false on write failure). Capture
+  // the outcome so daemon.shutdown can report it (`stateSaved` additive) —
+  // a false here means the suspended records did NOT land and the next boot
+  // degrades to the 30s-snapshot recovery path (Codex review B′ #2).
+  const stateSaved = stateWriter.saveImmediate(suspendState);
+  if (!stateSaved) {
+    log('error', 'Shutdown state save FAILED — suspended records not durable; next boot falls back to periodic snapshots');
+  }
+  phaseLog('stateSave', stateSaveStart, { sessions: managedSessions.length, stateSaved });
 
   // Dispose all sessions (kills PTYs, clears map)
   const disposeStart = phaseStartedAt();
@@ -2655,7 +2688,7 @@ async function shutdown(
   if (opts.skipExit) {
     // Caller (RPC handler) will fire setImmediate(() => process.exit(0))
     // after returning so the ack flushes back to the client first.
-    return;
+    return { stateSaved };
   }
   process.exit(0);
 }
@@ -3054,8 +3087,9 @@ async function main(): Promise<void> {
   // callback can route through the same termination path used by
   // SIGTERM/SIGINT/daemon.shutdown — referenced from within the
   // Watchdog tick (always runs after this point in the boot order).
-  const doShutdown = (sig: string): Promise<void> =>
-    shutdown(sig, sessionManager, pipeServer, stateWriter, channelStateWriter, principalStateWriter, sessionPipes, processMonitor, watchdog);
+  const doShutdown = async (sig: string): Promise<void> => {
+    await shutdown(sig, sessionManager, pipeServer, stateWriter, channelStateWriter, principalStateWriter, sessionPipes, processMonitor, watchdog);
+  };
 
   // 8. Start watchdog with escalation callbacks
   watchdog.setCallbacks({

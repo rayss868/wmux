@@ -89,8 +89,10 @@ describe('A2 — daemon.shutdown RPC + shutdown() opts (source-level invariants)
     expect(defBody).toMatch(/if\s*\(\s*!opts\.skipPipeStop\s*\)\s*{[\s\S]*?pipeServer\.stop/);
 
     // Body must early-return when opts.skipExit is true (skipping
-    // process.exit) — match the inverse: `if (opts.skipExit) { ... return; }`.
-    expect(defBody).toMatch(/if\s*\(\s*opts\.skipExit\s*\)\s*\{[\s\S]*?return;/);
+    // process.exit). B′: the return now carries `{ stateSaved }` so the
+    // daemon.shutdown ack can report whether the suspended-state save
+    // actually landed — match `if (opts.skipExit) { ... return { stateSaved };`.
+    expect(defBody).toMatch(/if\s*\(\s*opts\.skipExit\s*\)\s*\{[\s\S]*?return\s*\{\s*stateSaved\s*\};/);
   });
 
   it('DaemonClient.rpc accepts opts.timeoutMs (per-call override)', () => {
