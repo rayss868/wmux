@@ -154,6 +154,15 @@ export interface ChannelServiceDeps {
    * derivation falls back to the memberId (legacy construction sites, tests).
    */
   resolvePrincipalDisplay?: (principalId: string) => string | undefined;
+  /**
+   * 1b/1d bridge (review F1/F2) — resolve the caller's CURRENT pty to its
+   * pane principal. join() uses it when the joiner supplies no principalId
+   * (the CLI path): the pane's registry identity supplies the pretty
+   * display, lets a spawn-stamped default (memberId === senderPtyId)
+   * converge onto the pane's canonical auto-name seat, and dedups a second
+   * seat for a pane that is already a member via another entry path.
+   */
+  resolvePrincipalByPtyId?: (ptyId: string) => { id: string; display?: string; memberId?: string } | undefined;
 }
 
 /** Sender identity carried in post/join payloads. */
@@ -211,6 +220,16 @@ export interface JoinChannelParams {
    *  is pinned to THIS, not the caller-supplied `member.workspaceId`, so a
    *  forger cannot join a channel as a victim workspace. */
   verifiedWorkspaceId: string;
+  /**
+   * 1b/1d bridge — the caller's verified ptyId, already present on the raw
+   * pipe params (the CLI/MCP transports send it for workspace resolution;
+   * post persists it). join() uses it to resolve the joiner's PANE PRINCIPAL
+   * when no explicit principalId is supplied, so a CLI self-join gets the
+   * registry display instead of an opaque ptyId and the same pane cannot be
+   * seated twice via different entry paths (review F1/F2). Routing/display
+   * only — never an authz input (#113).
+   */
+  senderPtyId?: string;
 }
 
 export interface LeaveChannelParams {
@@ -334,6 +353,10 @@ interface IdempotencyEntry {
    *  clientMsgId gets the same sender feedback instead of a silent drop on the
    *  replay (in-memory only — not persisted across a daemon restart). */
   droppedMentions?: ChannelDroppedMention[];
+  /** 1c — same replay contract as droppedMentions (Codex #2): the retry that
+   *  lost the FIRST response is exactly when the identity-drift warning
+   *  matters most, so the replay must re-emit it too. */
+  unmatchedMemberId?: string;
 }
 
 export class ChannelService {
@@ -346,19 +369,25 @@ export class ChannelService {
   private readonly emit: ChannelServiceEmit;
   private readonly now: () => number;
   private readonly resolvePrincipalDisplay?: (principalId: string) => string | undefined;
+  private readonly resolvePrincipalByPtyId?: (
+    ptyId: string,
+  ) => { id: string; display?: string; memberId?: string } | undefined;
 
   /**
    * 1b — derive the server-owned display name for a member row. Principal
    * registry display when the coordinate resolves, else the memberId itself.
    * Best-effort: a resolver throw degrades to the memberId (display must
-   * never fail a membership mutation).
+   * never fail a membership mutation), but it is LOGGED — a silently failing
+   * registry would quietly downgrade every new row's display (GLM review).
    */
   private deriveMemberName(memberId: string, principalId?: string): string {
     if (principalId && this.resolvePrincipalDisplay) {
       try {
         const display = this.resolvePrincipalDisplay(principalId);
         if (typeof display === 'string' && display.length > 0) return display;
-      } catch { /* display derivation is best-effort */ }
+      } catch (err) {
+        console.error('[ChannelService] principal display lookup failed:', err);
+      }
     }
     return memberId;
   }
@@ -384,6 +413,7 @@ export class ChannelService {
     this.emit = deps.emit;
     this.now = deps.now ?? (() => Date.now());
     this.resolvePrincipalDisplay = deps.resolvePrincipalDisplay;
+    this.resolvePrincipalByPtyId = deps.resolvePrincipalByPtyId;
     // Channels v2 cursor backfill — member rows persisted before the
     // `lastReadSeq` field existed get the channel HEAD ("start reading from
     // now"), NOT 0: a 0 default would flag the entire history unread on
@@ -809,7 +839,13 @@ export class ChannelService {
    * history). Members of an `emptySince`-tagged channel clear that
    * tag on join so the empty-channel reaper stops counting it.
    */
-  async join(params: JoinChannelParams): Promise<EmptyResult> {
+  async join(params: JoinChannelParams): Promise<Result<{
+    /** 1b/1d bridge — the member id the seat was ACTUALLY created under.
+     *  May differ from the requested id when a spawn-stamped default
+     *  (memberId === senderPtyId) converged onto the pane's canonical
+     *  auto-name seat. Callers report THIS, not what they sent. */
+    memberId?: string;
+  }>> {
     return this.withChannelLock(params.channelId, async () => {
       const channel = this.state.channels.find((c) => c.id === params.channelId);
       if (!channel) {
@@ -841,9 +877,63 @@ export class ChannelService {
         return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot join an archived channel' } };
       }
       const members = this.state.members[channel.id] ?? [];
+      // 1b/1d bridge (review F1/F2): when the joiner supplies no explicit
+      // principalId (the CLI path), resolve the pane principal from the
+      // caller's verified pty. Three things fall out of one lookup:
+      //  - the pretty registry display for the row's memberName (F1);
+      //  - a spawn-stamped DEFAULT member id (memberId === senderPtyId, the
+      //    1d stamp — not an explicit human choice) converges onto the
+      //    pane's canonical auto-name seat, so GUI-add and CLI-join land on
+      //    the SAME row instead of forking;
+      //  - a principal-keyed duplicate check, so a pane already seated via
+      //    another entry path cannot get a second row (F2).
+      let joinMemberId = params.member.memberId;
+      let panePrincipal: { id: string; display?: string; memberId?: string } | undefined;
+      if (!params.member.principalId && params.senderPtyId && this.resolvePrincipalByPtyId) {
+        try {
+          panePrincipal = this.resolvePrincipalByPtyId(params.senderPtyId);
+        } catch (err) {
+          console.error('[ChannelService] principal-by-pty lookup failed:', err);
+        }
+        if (
+          panePrincipal?.memberId &&
+          joinMemberId === params.senderPtyId // the 1d default, not an explicit --member
+        ) {
+          joinMemberId = panePrincipal.memberId;
+        }
+      }
       // Reject duplicate membership (keyed on the server-resolved workspace).
-      if (members.some((m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.member.memberId)) {
-        return { ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } };
+      if (members.some((m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === joinMemberId)) {
+        return {
+          ok: false,
+          error: {
+            code: 'DUPLICATE_MEMBER',
+            // When the id CONVERGED (caller sent the spawn default, the pane's
+            // canonical seat already exists) the caller doesn't know the seat
+            // id it collided with — name it.
+            message:
+              joinMemberId !== params.member.memberId
+                ? `Already a member as "${joinMemberId}" (same pane)`
+                : 'Already a member',
+          },
+        };
+      }
+      // F2 — principal-keyed dedup: the same PANE must not hold two seats in
+      // one workspace just because it entered once via the GUI (auto-name
+      // memberId) and once via the CLI (ptyId memberId).
+      if (panePrincipal) {
+        const samePane = members.find(
+          (m) => m.workspaceId === params.verifiedWorkspaceId && m.principalId === panePrincipal?.id,
+        );
+        if (samePane) {
+          return {
+            ok: false,
+            error: {
+              code: 'DUPLICATE_MEMBER',
+              message: `Already a member as "${samePane.memberId}" (same pane)`,
+            },
+          };
+        }
       }
       // Snapshot emptySince so we can restore it on a saveOrFail
       // rollback (R10). Without the snapshot, a failed persist would
@@ -869,12 +959,18 @@ export class ChannelService {
         params.verifiedWorkspaceId === HUMAN_WORKSPACE_ID &&
         params.member.memberId === HUMAN_MEMBER_ID
           ? HUMAN_SELF_PRINCIPAL_ID
-          : params.member.principalId;
+          : (params.member.principalId ?? panePrincipal?.id);
+      // 1b: server-owned display name — explicit-principal registry display,
+      // else the pty-resolved pane principal's display, else the memberId.
+      const joinMemberName =
+        panePrincipal?.display && !params.member.principalId
+          ? panePrincipal.display
+          : this.deriveMemberName(joinMemberId, joinPrincipalId);
       members.push({
         // D5: pin the joining member to the server-resolved workspace, NOT the
         // caller-supplied member.workspaceId — a forger must not join as a victim.
         workspaceId: params.verifiedWorkspaceId,
-        memberId: params.member.memberId,
+        memberId: joinMemberId,
         joinedAt: now,
         historyFromSeq,
         // v2 cursor: "start reading from now" — a joiner may SEE history
@@ -882,8 +978,7 @@ export class ChannelService {
         // starts at 0 so the wake worker never nudge-storms a fresh member.
         lastReadSeq: channel.nextSeq - 1,
         ...(joinPrincipalId ? { principalId: joinPrincipalId } : {}),
-        // 1b: server-owned display name (principal display, else memberId).
-        memberName: this.deriveMemberName(params.member.memberId, joinPrincipalId),
+        memberName: joinMemberName,
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
@@ -900,7 +995,7 @@ export class ChannelService {
         members.map((m) => m.workspaceId),
         'membership',
       );
-      return { ok: true };
+      return { ok: true, memberId: joinMemberId };
     });
   }
 
@@ -1291,6 +1386,11 @@ export class ChannelService {
               ...(existing.droppedMentions && existing.droppedMentions.length > 0
                 ? { droppedMentions: [...existing.droppedMentions] }
                 : {}),
+              // 1c (Codex #2): replay the identity-drift warning too — a retry
+              // after a lost first response must not silently swallow it.
+              ...(existing.unmatchedMemberId !== undefined
+                ? { unmatchedMemberId: existing.unmatchedMemberId }
+                : {}),
             };
           }
           // Cache points at a seq that no longer exists (e.g. message was
@@ -1311,10 +1411,11 @@ export class ChannelService {
       // workspace match here means a verified member is posting — gating on the
       // forgeable memberId on top of that added no security, only the bug.
       const members = this.state.members[channel.id] ?? [];
-      const isMember = members.some(
-        (m) => m.workspaceId === params.sender.workspaceId,
-      );
-      if (!isMember) {
+      // Membership gate + 1c resolution share one pass over the (tiny,
+      // capped) member list: the sender's workspace rows ARE the membership
+      // evidence (GLM review — no separate some() sweep).
+      const senderWsRows = members.filter((m) => m.workspaceId === params.sender.workspaceId);
+      if (senderWsRows.length === 0) {
         return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Not a channel member' } };
       }
       // 1c — resolve the sender's ROSTER ROW before building the message, so
@@ -1331,7 +1432,6 @@ export class ChannelService {
       //   3. multiple rows, none matching → keep the client memberId (cannot
       //      guess between seats) and echo `unmatchedMemberId` so the sender
       //      gets explicit feedback instead of a silent identity fork.
-      const senderWsRows = members.filter((m) => m.workspaceId === params.sender.workspaceId);
       let senderRow = senderWsRows.find((m) => m.memberId === params.sender.memberId);
       let unmatchedMemberId: string | undefined;
       if (!senderRow) {
@@ -1342,11 +1442,36 @@ export class ChannelService {
         }
       }
       const resolvedMemberId = senderRow ? senderRow.memberId : params.sender.memberId;
+      // 1b refresh (Codex #4): the roster name follows the principal
+      // registry — an agent swap on the same pane updates the principal
+      // display, so re-derive on post (which persists anyway). Refresh ONLY
+      // on a POSITIVE registry hit: a transient registry miss must not
+      // downgrade a good name to the memberId fallback. Rolled back with
+      // the rest of the post state on persist failure.
+      let senderRowPrevName: string | undefined;
+      let senderRowNameRefreshed = false;
+      if (senderRow?.principalId && this.resolvePrincipalDisplay) {
+        try {
+          const freshDisplay = this.resolvePrincipalDisplay(senderRow.principalId);
+          if (
+            typeof freshDisplay === 'string' &&
+            freshDisplay.length > 0 &&
+            freshDisplay !== senderRow.memberName
+          ) {
+            senderRowPrevName = senderRow.memberName;
+            senderRow.memberName = freshDisplay;
+            senderRowNameRefreshed = true;
+          }
+        } catch (err) {
+          console.error('[ChannelService] principal display refresh failed:', err);
+        }
+      }
       // 1b — the message's display-name snapshot comes from the roster row
-      // (server-derived at create/join/invite), never the caller's free text
-      // when a row is known. Legacy rows without memberName fall back to the
-      // row's memberId; the unmatched path falls back to whatever the client
-      // sent (then its memberId) so old callers keep a sane display.
+      // (server-derived at create/join/invite, refreshed above), never the
+      // caller's free text when a row is known. Legacy rows without
+      // memberName fall back to the row's memberId; the unmatched path falls
+      // back to whatever the client sent (then its memberId) so old callers
+      // keep a sane display.
       const resolvedMemberName = senderRow
         ? (senderRow.memberName ?? senderRow.memberId)
         : (params.sender.memberName ?? params.sender.memberId);
@@ -1459,10 +1584,24 @@ export class ChannelService {
         const key = JSON.stringify([mn.workspaceId, paneId]);
         if (mentionedKeys.has(key)) continue;
         mentionedKeys.add(key);
+        // 1c, recipient side (Codex #3): a mention memberId that matches no
+        // roster row of its target workspace would be persisted verbatim —
+        // and then unreadFor's member-scoped mention counting and the wake
+        // ledger both ignore it (the mention "lands" but never behaves like
+        // one). Same ladder as the sender: exact row wins, a single-row
+        // workspace maps, multi-row stays verbatim (never guess a seat).
+        let mnMemberId = typeof mn.memberId === 'string' ? mn.memberId : undefined;
+        if (mnMemberId !== undefined) {
+          const targetRows = members.filter((m) => m.workspaceId === mn.workspaceId);
+          const exact = targetRows.some((m) => m.memberId === mnMemberId);
+          if (!exact && targetRows.length === 1) {
+            mnMemberId = targetRows[0].memberId;
+          }
+        }
         mentions.push({
           workspaceId: mn.workspaceId,
           name: typeof mn.name === 'string' && mn.name.length > 0 ? mn.name.slice(0, 80) : mn.workspaceId,
-          ...(typeof mn.memberId === 'string' ? { memberId: mn.memberId } : {}),
+          ...(mnMemberId !== undefined ? { memberId: mnMemberId } : {}),
           ...(typeof mn.paneId === 'string' && mn.paneId.length > 0 ? { paneId: mn.paneId } : {}),
           ...(typeof mn.ptyId === 'string' && mn.ptyId.length > 0 ? { ptyId: mn.ptyId } : {}),
         });
@@ -1511,6 +1650,7 @@ export class ChannelService {
           // Store a COPY so a same-process caller mutating the returned array
           // can't poison the cached replay value.
           ...(droppedMentions.length > 0 ? { droppedMentions: [...droppedMentions] } : {}),
+          ...(unmatchedMemberId !== undefined ? { unmatchedMemberId } : {}),
         });
         // LRU eviction down to CHANNEL_IDEMPOTENCY_CAP.
         if (channelIdMap.size > CHANNEL_IDEMPOTENCY_CAP) {
@@ -1529,6 +1669,11 @@ export class ChannelService {
         const msgs = this.state.messages[channel.id];
         if (msgs) msgs.pop();
         if (senderRow && senderRowRode) senderRow.lastReadSeq = seq - 1;
+        // 1b refresh rollback: the in-memory row must match disk again.
+        if (senderRow && senderRowNameRefreshed) {
+          if (senderRowPrevName === undefined) delete senderRow.memberName;
+          else senderRow.memberName = senderRowPrevName;
+        }
         if (params.clientMsgId) {
           const channelIdMap = this.idempotency.get(channel.id);
           if (channelIdMap) {

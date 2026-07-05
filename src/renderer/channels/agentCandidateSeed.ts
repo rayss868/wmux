@@ -20,6 +20,10 @@
 // AppLayout.
 
 import type { AgentSlug } from '../../shared/events';
+// Pure display→slug table owned by the detector (renderer main-imports are
+// established practice for pure modules — methodCapabilityMap precedent; the
+// daemon cross-imports this same module).
+import { agentDisplayToSlug } from '../../main/pty/AgentDetector';
 
 const AGENT_SLUGS: ReadonlySet<string> = new Set([
   'claude',
@@ -30,22 +34,46 @@ const AGENT_SLUGS: ReadonlySet<string> = new Set([
   'copilot',
 ] satisfies AgentSlug[]);
 
-/** Narrow a daemon-reported agent name to a known slug (the detector's
- *  `lastAgent` IS the slug — 'claude', 'codex', … — but type it defensively:
- *  an unknown future value seeds the name without a slug, so the auto-name
- *  suffix simply stays generic instead of lying). */
+/** Narrow a daemon-reported agent identity to a known slug. The daemon's
+ *  `getAgentName` returns the DISPLAY name ('Claude Code'), not the slug —
+ *  Codex review #1: treating it as a slug seeded candidates whose auto-name
+ *  lost the '(claude)' suffix. Accept both shapes: slug passthrough for
+ *  slug-shaped inputs, the detector's canonical display→slug table for
+ *  display-shaped ones. Unknown values seed the name without a slug (the
+ *  auto-name suffix stays generic instead of lying). */
 export function asAgentSlug(name: string): AgentSlug | undefined {
-  return AGENT_SLUGS.has(name) ? (name as AgentSlug) : undefined;
+  if (AGENT_SLUGS.has(name)) return name as AgentSlug;
+  return agentDisplayToSlug(name);
+}
+
+// Panes already asked this app-run. Without this, every daemon:connected
+// re-runs hydrate and re-fans-out resolveAgent to every NON-agent pane
+// (plain shells never gain a surfaceAgent entry, so the name-gate alone
+// never filters them — Claude review #5). Module-scoped like the mention
+// rate-limit ledgers; reset seam for tests.
+const seedAttempted = new Set<string>();
+
+/** Mark a pane as attempted regardless of outcome (call when the resolve
+ *  settles). A later LIVE detection still lands via its own path. */
+export function markSeedAttempted(ptyId: string): void {
+  seedAttempted.add(ptyId);
+}
+
+export function __resetSeedAttemptedForTests(): void {
+  seedAttempted.clear();
 }
 
 /**
  * Which hydrated sessions need a boot-time agent-identity pull? Only those
- * with NO detected name yet — a live detection (or a previous seed) must
- * never be re-queried or overwritten by a slower boot pull.
+ * with NO detected name yet and not already attempted this run — a live
+ * detection (or a previous seed) must never be re-queried or overwritten
+ * by a slower boot pull.
  */
 export function planAgentCandidateSeed(
   sessionIds: readonly string[],
   surfaceAgent: Readonly<Record<string, { name: string } | undefined>>,
 ): string[] {
-  return sessionIds.filter((id) => id.length > 0 && !surfaceAgent[id]?.name);
+  return sessionIds.filter(
+    (id) => id.length > 0 && !surfaceAgent[id]?.name && !seedAttempted.has(id),
+  );
 }

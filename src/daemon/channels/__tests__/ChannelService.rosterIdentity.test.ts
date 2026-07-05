@@ -217,6 +217,12 @@ describe('1c — ghost memberId mapping and feedback', () => {
       verifiedWorkspaceId: 'ws-1',
     });
     expect(posted.ok).toBe(true);
+    // GLM review: pin the 1c behavior too — single-row workspace maps the
+    // ghost id onto the roster seat with no warning.
+    if (posted.ok) {
+      expect(posted.message.memberId).toBe('w1-1(claude)');
+      expect(posted.unmatchedMemberId).toBeUndefined();
+    }
   });
 
   it('exact (workspaceId, memberId) match is used verbatim — no mapping, no warning', async () => {
@@ -234,5 +240,187 @@ describe('1c — ghost memberId mapping and feedback', () => {
     if (!posted.ok) return;
     expect(posted.message.memberId).toBe('w1-2(codex)');
     expect(posted.unmatchedMemberId).toBeUndefined();
+  });
+});
+
+
+describe('1c — feedback + mention hardening (code-review round)', () => {
+  it('idempotent replay re-emits unmatchedMemberId (Codex #2)', async () => {
+    const { svc } = makeService();
+    const channel = await createChannel(svc, {
+      members: [{ workspaceId: 'ws-1', memberId: 'w1-2(codex)' }], // multi-row ws-1
+    });
+    const first = await svc.post({
+      channelId: channel.id,
+      sender: { workspaceId: 'ws-1', memberId: 'ghost', memberName: 'ghost' },
+      text: 'retry me',
+      clientMsgId: 'c-1',
+      verifiedWorkspaceId: 'ws-1',
+    });
+    expect(first.ok).toBe(true);
+    if (first.ok) expect(first.unmatchedMemberId).toBe('ghost');
+    const replay = await svc.post({
+      channelId: channel.id,
+      sender: { workspaceId: 'ws-1', memberId: 'ghost', memberName: 'ghost' },
+      text: 'retry me',
+      clientMsgId: 'c-1',
+      verifiedWorkspaceId: 'ws-1',
+    });
+    expect(replay.ok).toBe(true);
+    if (replay.ok) {
+      expect(replay.idempotent).toBe(true);
+      expect(replay.unmatchedMemberId).toBe('ghost'); // warning survives the retry
+    }
+  });
+
+  it('mention memberId maps onto a single-row target workspace; multi-row stays verbatim (Codex #3)', async () => {
+    const { svc } = makeService();
+    const channel = await createChannel(svc, {
+      members: [
+        { workspaceId: 'ws-2', memberId: 'w2-1(codex)' },          // single row
+        { workspaceId: 'ws-3', memberId: 'w3-1(a)' },
+        { workspaceId: 'ws-3', memberId: 'w3-2(b)' },              // multi row
+      ],
+    });
+    const posted = await svc.post({
+      channelId: channel.id,
+      sender: { workspaceId: 'ws-1', memberId: 'w1-1(claude)' },
+      text: 'pings',
+      mentions: [
+        { workspaceId: 'ws-2', name: 'x', memberId: 'stale-id' },  // ghost → map
+        { workspaceId: 'ws-3', name: 'y', memberId: 'ghost-3' },   // ambiguous → verbatim
+        { workspaceId: 'ws-3', name: 'z', memberId: 'w3-2(b)', paneId: 'p-2' }, // exact → keep
+      ],
+      verifiedWorkspaceId: 'ws-1',
+    });
+    expect(posted.ok).toBe(true);
+    if (!posted.ok) return;
+    const mns = posted.message.mentions ?? [];
+    expect(mns.find((m) => m.workspaceId === 'ws-2')?.memberId).toBe('w2-1(codex)');
+    expect(mns.find((m) => m.workspaceId === 'ws-3' && !m.paneId)?.memberId).toBe('ghost-3');
+    expect(mns.find((m) => m.paneId === 'p-2')?.memberId).toBe('w3-2(b)');
+  });
+});
+
+describe('1b — post-time roster name refresh (Codex #4)', () => {
+  it('an agent swap on the pane refreshes the roster name on the next post', async () => {
+    let display = 'w2-1(claude)';
+    const { svc } = makeService({ resolvePrincipalDisplay: () => display });
+    const channel = await createChannel(svc, {
+      members: [{ workspaceId: 'ws-2', memberId: 'seat-2', principalId: 'pane:ws-2/p-1' }],
+    });
+    display = 'w2-1(codex)'; // agent swap: registry display moved on
+    const posted = await svc.post({
+      channelId: channel.id,
+      sender: { workspaceId: 'ws-2', memberId: 'seat-2' },
+      text: 'after swap',
+      verifiedWorkspaceId: 'ws-2',
+    });
+    expect(posted.ok).toBe(true);
+    if (posted.ok) expect(posted.message.memberName).toBe('w2-1(codex)');
+    const row = svc.getMembers(channel.id, 'ws-2').find((m) => m.memberId === 'seat-2');
+    expect(row?.memberName).toBe('w2-1(codex)'); // row persisted with the fresh name
+  });
+
+  it('a registry MISS never downgrades an existing roster name', async () => {
+    let hit = true;
+    const { svc } = makeService({
+      resolvePrincipalDisplay: () => (hit ? 'w2-1(claude)' : undefined),
+    });
+    const channel = await createChannel(svc, {
+      members: [{ workspaceId: 'ws-2', memberId: 'seat-2', principalId: 'pane:ws-2/p-1' }],
+    });
+    hit = false; // registry transiently empty (e.g. daemon restart backfill)
+    const posted = await svc.post({
+      channelId: channel.id,
+      sender: { workspaceId: 'ws-2', memberId: 'seat-2' },
+      text: 'registry down',
+      verifiedWorkspaceId: 'ws-2',
+    });
+    expect(posted.ok).toBe(true);
+    if (posted.ok) expect(posted.message.memberName).toBe('w2-1(claude)'); // kept
+  });
+});
+
+describe('1b/1d bridge — join resolves the pane principal from senderPtyId (review F1/F2)', () => {
+  const PANE_PRINCIPAL = { id: 'pane:ws-4/p-7', display: 'w4-1(claude)', memberId: 'w4-1(claude)' };
+  const byPty = (ptyId: string) => (ptyId === 'pty-77' ? PANE_PRINCIPAL : undefined);
+
+  it('a spawn-stamped default (memberId === senderPtyId) converges onto the canonical auto-name seat', async () => {
+    const { svc } = makeService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (svc as any).resolvePrincipalByPtyId = byPty;
+    const channel = await createChannel(svc);
+    const joined = await svc.join({
+      channelId: channel.id,
+      member: { workspaceId: 'ws-4', memberId: 'pty-77' }, // the 1d default
+      verifiedWorkspaceId: 'ws-4',
+      senderPtyId: 'pty-77',
+    });
+    expect(joined.ok).toBe(true);
+    if (joined.ok) expect(joined.memberId).toBe('w4-1(claude)');
+    const row = svc.getMembers(channel.id, 'ws-4').find((m) => m.workspaceId === 'ws-4');
+    expect(row?.memberId).toBe('w4-1(claude)');
+    expect(row?.memberName).toBe('w4-1(claude)');
+    expect(row?.principalId).toBe('pane:ws-4/p-7');
+  });
+
+  it('an EXPLICIT member id is respected (no convergence) but still gets the principal display', async () => {
+    const { svc } = makeService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (svc as any).resolvePrincipalByPtyId = byPty;
+    const channel = await createChannel(svc);
+    const joined = await svc.join({
+      channelId: channel.id,
+      member: { workspaceId: 'ws-4', memberId: 'lead' }, // human-chosen id ≠ senderPtyId
+      verifiedWorkspaceId: 'ws-4',
+      senderPtyId: 'pty-77',
+    });
+    expect(joined.ok).toBe(true);
+    if (joined.ok) expect(joined.memberId).toBe('lead');
+    const row = svc.getMembers(channel.id, 'ws-4').find((m) => m.memberId === 'lead');
+    expect(row?.memberName).toBe('w4-1(claude)'); // registry display still wins for the label
+  });
+
+  it('the same PANE cannot be seated twice via different entry paths (F2 dedup)', async () => {
+    const { svc } = makeService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (svc as any).resolvePrincipalByPtyId = byPty;
+    const channel = await createChannel(svc);
+    // GUI-add path: auto-name memberId + explicit principalId.
+    const guiAdd = await svc.join({
+      channelId: channel.id,
+      member: { workspaceId: 'ws-4', memberId: 'w4-1(claude)', principalId: 'pane:ws-4/p-7' },
+      verifiedWorkspaceId: 'ws-4',
+    });
+    expect(guiAdd.ok).toBe(true);
+    // CLI path for the SAME pane: spawn-stamped default + senderPtyId.
+    const cliJoin = await svc.join({
+      channelId: channel.id,
+      member: { workspaceId: 'ws-4', memberId: 'pty-77' },
+      verifiedWorkspaceId: 'ws-4',
+      senderPtyId: 'pty-77',
+    });
+    expect(cliJoin.ok).toBe(false);
+    if (!cliJoin.ok) {
+      expect(cliJoin.error.code).toBe('DUPLICATE_MEMBER');
+      expect(cliJoin.error.message).toContain('w4-1(claude)');
+    }
+    expect(svc.getMembers(channel.id, 'ws-4').filter((m) => m.workspaceId === 'ws-4')).toHaveLength(1);
+  });
+
+  it('no registry hit → the join proceeds under the supplied id (headless/legacy)', async () => {
+    const { svc } = makeService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (svc as any).resolvePrincipalByPtyId = () => undefined;
+    const channel = await createChannel(svc);
+    const joined = await svc.join({
+      channelId: channel.id,
+      member: { workspaceId: 'ws-9', memberId: 'pty-unknown' },
+      verifiedWorkspaceId: 'ws-9',
+      senderPtyId: 'pty-unknown',
+    });
+    expect(joined.ok).toBe(true);
+    if (joined.ok) expect(joined.memberId).toBe('pty-unknown');
   });
 });

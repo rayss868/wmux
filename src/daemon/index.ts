@@ -2739,6 +2739,20 @@ async function main(): Promise<void> {
     // 1b (server-owned roster identity): member rows derive their display
     // name from the principal registry at create/join/invite time.
     resolvePrincipalDisplay: (principalId) => principalService.find(principalId)?.display,
+    // 1b/1d bridge (review F1/F2): CLI self-joins resolve their pane
+    // principal from the verified pty so the seat gets the registry
+    // display / canonical auto-name instead of an opaque ptyId. O(n) over
+    // a small registry, called once per join.
+    resolvePrincipalByPtyId: (ptyId) => {
+      const rec = principalService.list().find((r) => r.ptyId === ptyId);
+      return rec
+        ? {
+            id: rec.id,
+            ...(rec.display ? { display: rec.display } : {}),
+            ...(rec.memberId ? { memberId: rec.memberId } : {}),
+          }
+        : undefined;
+    },
     // U5 archive-authz (KTD-F): the CEO override is gated on this field.
     // The renderer owns `Company.ceoWorkspaceId` today; the daemon does
     // not have a copy, so we pass `undefined` (creator-only archive)

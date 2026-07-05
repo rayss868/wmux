@@ -483,7 +483,10 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         console.log(JSON.stringify(result, null, 2));
         return;
       }
-      console.log(`Joined ${channelId} as ${memberId}. New messages from now count as your unread.`);
+      // 1b/1d bridge: the daemon may converge a spawn-stamped default id
+      // onto the pane's canonical auto-name seat — report the ACTUAL seat.
+      const seatedAs = (result['memberId'] as string | undefined) ?? memberId;
+      console.log(`Joined ${channelId} as ${seatedAs}. New messages from now count as your unread.`);
       return;
     }
 

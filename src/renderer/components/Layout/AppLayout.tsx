@@ -56,7 +56,7 @@ import {
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
-import { planAgentCandidateSeed, asAgentSlug } from '../../channels/agentCandidateSeed';
+import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import AgentToolbar from '../AgentToolbar/AgentToolbar';
 
@@ -885,6 +885,11 @@ export default function AppLayout() {
         );
         for (const ptyId of seedTargets) {
           void window.electronAPI.metadata.resolveAgent(ptyId).then((name) => {
+            // Attempted either way — a null answer means "not an agent pane
+            // (yet)"; re-asking on every daemon:connected would fan the RPC
+            // out to every plain shell forever (Claude review #5). A later
+            // live detection still lands via its own path.
+            markSeedAttempted(ptyId);
             if (!name) return;
             const store = useStore.getState();
             // A live detection may have landed while this pull was in
@@ -896,7 +901,7 @@ export default function AppLayout() {
             // registry exactly like the live-detection path (debounced
             // slice-side, so repeat calls are cheap).
             void useStore.getState().principalRegisterPane(ptyId);
-          }).catch(() => { /* best-effort — the pane stays a visit-to-detect candidate */ });
+          }).catch(() => { /* best-effort — transient failure; retry allowed on the next connect */ });
         }
       }).catch(() => { /* best-effort — a transient list failure self-heals on the next connect */ });
     };
