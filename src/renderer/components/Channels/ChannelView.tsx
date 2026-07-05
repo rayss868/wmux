@@ -633,9 +633,6 @@ export function ChannelView(): React.ReactElement | null {
   const members = useStore((s) =>
     activeChannelId ? s.channelMembers[activeChannelId] ?? EMPTY_MEMBERS : EMPTY_MEMBERS,
   );
-  // Channels are decoupled from in-app Company mode: the active workspace is
-  // the renderer's "self" identity when no company is set (mirrors
-  // useChannelsHydration / ChannelsPanel).
   // Identity audit 1a: workspace display names for the sender identity chips
   // (human posts read "Me · <workspace>"). Subscribe to a STRING projection of
   // (id, name) pairs, not the workspaces array itself — the array reference
@@ -723,15 +720,9 @@ export function ChannelView(): React.ReactElement | null {
     [selfWs, activeChannelId],
   );
 
-  // Pick a stable viewer — first member whose workspaceId matches the
-  // current renderer's workspace (the company's `ceoWorkspaceId` is the
-  // closest available stand-in for the renderer's own identity, since
-  // the slice doesn't carry per-renderer identity yet), falling back
-  // to the first member of the channel. The fallback matters when the
-  // renderer's own workspace is not a member of the channel — e.g. a
-  // private channel from another workspace that the renderer is
-  // previewing. Multi-workspace subscription is a known gap (see
-  // plan Open Questions `FIX-MULTI-WS`).
+  // Pick a stable viewer — the unified human (ws-human) member row when the
+  // human is in this channel; members[0] fallback for previewing a channel the
+  // human is not in (the code keys on HUMAN_WORKSPACE_ID below).
   //
   // Rules of hooks: the `useMemo` MUST run on every render, including
   // the early-return path below. Earlier versions had the `useMemo`

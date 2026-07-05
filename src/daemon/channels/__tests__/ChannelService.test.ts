@@ -10,6 +10,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { ChannelService } from '../ChannelService';
 import type { ChannelServiceEmit } from '../ChannelService';
 import type {
+  ChannelMember,
   ChannelMessage,
   ChannelState,
 } from '../../../shared/channels';
@@ -2424,5 +2425,81 @@ describe('P5 — unified human identity migration (load-time merge)', () => {
     const rows = svc.getMembers('ch-1', 'ws-a');
     expect(rows).toHaveLength(1);
     expect(rows[0].memberId).toBe('w1-1(claude)');
+  });
+});
+
+describe('P5 migration — ship-review hardening', () => {
+  const HUMAN_WS = 'ws-human';
+  const UI = 'local-ui';
+
+  function seeded(state: ChannelState) {
+    const writer = makeFakeWriter();
+    writer.saveImmediate(state);
+    const emit = vi.fn<ChannelServiceEmit>();
+    const svc = new ChannelService({
+      writer: writer as unknown as ConstructorParameters<typeof ChannelService>[0]['writer'],
+      companyId: COMPANY,
+      emit,
+      now: () => 1_700_000_000_000,
+    });
+    return { svc, writer };
+  }
+  function baseChannel(nextSeq: number) {
+    return {
+      id: 'ch-1', companyId: COMPANY, name: 'general', visibility: 'public' as const,
+      status: 'active' as const, createdAt: 1, createdBy: 'ws-a', nextSeq,
+    };
+  }
+
+  it('merges pre-v2 human rows (no lastReadSeq): cursor = channel head, not the ?? 0 fallback (backfill-before-merge order)', () => {
+    const st: ChannelState = {
+      version: 1,
+      channels: [baseChannel(11)], // head = 10
+      members: {
+        'ch-1': [
+          { workspaceId: 'ws-a', memberId: UI, joinedAt: 100, historyFromSeq: 0 } as ChannelMember,
+          { workspaceId: 'ws-b', memberId: UI, joinedAt: 50, historyFromSeq: 3 } as ChannelMember,
+        ],
+      },
+      messages: { 'ch-1': [] },
+      idempotency: {},
+    };
+    const { svc } = seeded(st);
+    const human = svc.getMembers('ch-1', HUMAN_WS).find((m) => m.memberId === UI);
+    // backfill sets both missing cursors to head (10) BEFORE the merge, so max = 10.
+    // A future reorder of the two constructor blocks would collapse this to 0.
+    expect(human?.lastReadSeq).toBe(10);
+    expect(human?.historyFromSeq).toBe(0);
+  });
+
+  it('re-merges a ws-human row mixed with stale scattered rows (old-daemon join after upgrade)', () => {
+    const st: ChannelState = {
+      version: 1,
+      channels: [baseChannel(11)],
+      members: {
+        'ch-1': [
+          { workspaceId: HUMAN_WS, memberId: UI, joinedAt: 80, historyFromSeq: 2, lastReadSeq: 6, principalId: 'human:me' },
+          { workspaceId: 'ws-a', memberId: UI, joinedAt: 40, historyFromSeq: 0, lastReadSeq: 9 },
+        ],
+      },
+      messages: { 'ch-1': [] },
+      idempotency: {},
+    };
+    const { svc } = seeded(st);
+    const rows = svc.getMembers('ch-1', HUMAN_WS).filter((m) => m.memberId === UI);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ workspaceId: HUMAN_WS, joinedAt: 40, historyFromSeq: 0, lastReadSeq: 9 });
+  });
+
+  it('the wake worker never sweeps the reserved human workspace', () => {
+    const st: ChannelState = {
+      version: 1,
+      channels: [baseChannel(3)],
+      members: { 'ch-1': [{ workspaceId: HUMAN_WS, memberId: UI, joinedAt: 1, historyFromSeq: 0, lastReadSeq: 0 }] },
+      messages: { 'ch-1': [] },
+      idempotency: {},
+    };
+    const { svc } = seeded(st);
+    expect(svc.memberWorkspaces()).not.toContain(HUMAN_WS);
   });
 });

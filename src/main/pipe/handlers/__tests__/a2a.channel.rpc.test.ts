@@ -735,12 +735,12 @@ describe('a2a.channel.rpc — P5 reserved human workspace (ws-human) guard', () 
     expect(daemon.rpc).not.toHaveBeenCalled();
   });
 
-  it('ALLOWS inviting the human seat (invitedMember=ws-human is a target, not a caller)', async () => {
-    let received: Record<string, unknown> = {};
-    const daemon = makeFakeDaemon((_m, params) => {
-      received = params as Record<string, unknown>;
-      return { ok: true, value: null };
-    });
+  it('REJECTS inviting ws-human as a TARGET (5-model review: no invite-the-human post-P5)', async () => {
+    // The human joins via the GUI, never by invite. A ws-human invitedMember
+    // could only seed a phantom (ws-human, non-local-ui) row (the real seat's
+    // local-ui memberId is blocked by the C4 guard) that force-injects a channel
+    // into the human's always-on view. The router (and daemon invite()) reject it.
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
     const router = setupHandlerRouter(daemon);
     const res = await router.dispatch({
       id: 'p5-invite-human',
@@ -752,8 +752,12 @@ describe('a2a.channel.rpc — P5 reserved human workspace (ws-human) guard', () 
       },
     });
     expect(res.ok).toBe(true);
-    expect(daemon.rpc).toHaveBeenCalledTimes(1);
-    expect((received.invitedMember as Record<string, unknown>).workspaceId).toBe('ws-human');
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
   });
 
   it('ALLOWS a no-PTY read scoped to ws-human (the renderer reads ride this router)', async () => {
@@ -770,5 +774,29 @@ describe('a2a.channel.rpc — P5 reserved human workspace (ws-human) guard', () 
     });
     expect(res.ok).toBe(true);
     expect(received.verifiedWorkspaceId).toBe('ws-human');
+  });
+});
+
+describe('a2a.channel.rpc — P5 invite ws-human is REJECTED (5-model consensus)', () => {
+  it('REJECTS inviting ws-human with a non-local-ui memberId (phantom-row injection)', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-invite-phantom',
+      method: 'a2a.channel.invite',
+      params: {
+        channelId: CHANNEL_ID,
+        invitedMember: { workspaceId: 'ws-human', memberId: 'agentX', memberName: 'X' },
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string; message: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+      expect(r.error?.message).toContain('ws-human');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
   });
 });

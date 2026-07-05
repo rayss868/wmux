@@ -34,6 +34,19 @@
 // is re-minted while the session lives would leave a stale binding; under
 // the #113 ceiling this is ADVISORY attribution either way, and the GUI
 // paths (rule 1) keep using the renderer's live answer.
+//
+// P5 ws-human residual (ship review, Codex + Claude adversarial F7): rule 1
+// trusts a pre-stamped `verifiedWorkspaceId` verbatim, so a DIRECT daemon-pipe
+// caller (bypassing the main router's ws-human guard) can pre-stamp
+// `verifiedWorkspaceId: 'ws-human'` and act as the unified human seat (post as
+// "Me", advance the human cursor). This is the SAME #113 same-user ceiling as
+// forging any other workspace id — a same-user process that reaches the daemon
+// socket already has full same-user authority; P5 only makes the human's id a
+// well-known constant instead of a discoverable uuid. The main-pipe router
+// (a2a.channel.rpc.ts) rejects ws-human for capability-gated MCP/plugin
+// callers, and invite-into-ws-human is rejected daemon-side (invite()); the
+// remaining direct-socket vector is the accepted ceiling, not a new boundary
+// this module can close (that needs GetNamedPipeClientProcessId, strategy track).
 
 /** Resolve a live session's owning workspace, '' when unknown. */
 export type ResolveSessionWorkspace = (sessionId: string) => string;

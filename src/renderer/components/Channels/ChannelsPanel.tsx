@@ -366,7 +366,7 @@ export function synthesizeChannel(params: {
     visibility: params.visibility,
     status: 'active',
     createdAt: Date.now(),
-    createdBy: 'local-ui',
+    createdBy: HUMAN_MEMBER_ID,
     nextSeq: 1,
   };
 }
@@ -669,9 +669,8 @@ export function ChannelsPanel(): React.ReactElement {
   const channelMentions = useStore((s) => s.channelMentions);
   const activeChannelId = useStore((s) => s.activeChannelId);
   const company = useStore((s) => s.company);
-  // Channels are decoupled from in-app Company mode: when no company is set,
-  // the active workspace stands in as the creator identity so the `+` button
-  // works without one (mirrors useChannelsHydration's identity resolution).
+  // P5: the human's creator identity is the reserved ws-human seat (see
+  // selfWorkspaceId below), independent of which workspace is active.
   const workspaces = useStore((s) => s.workspaces);
   const channelMembers = useStore((s) => s.channelMembers);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
@@ -686,8 +685,6 @@ export function ChannelsPanel(): React.ReactElement {
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const t = useT();
 
-  // Self workspace = CEO ws under Company mode, else the active workspace
-  // (mirrors handleCreate / ChannelMembersControl identity resolution).
   // P5 (unified human identity): the human's channel identity is the reserved
   // virtual workspace — membership, join, post, and "my channels" no longer
   // depend on which workspace is active.
@@ -750,10 +747,8 @@ export function ChannelsPanel(): React.ReactElement {
       // daemon's authoritative row (the daemon ignores any client companyId
       // and stamps its own — keeping them equal avoids a flicker on refresh).
       const companyId = company?.id ?? DEFAULT_COMPANY_ID;
-      // Sender identity: the CEO workspace when Company mode is active, else
-      // the active workspace. The daemon pins `createdBy` to the verified
-      // (renderer-supplied, process-boundary-trusted) workspace anyway; this
-      // is the value it pins to. Bail only if there is no workspace at all.
+      // P5: the creator identity is the reserved ws-human seat; the daemon
+      // re-pins `createdBy` to the verified workspace anyway.
       const selfWorkspaceId = HUMAN_WORKSPACE_ID;
       // Synthesize the row the slice would use as the optimistic
       // insert. The `*Daemon` thunk will overwrite this with the
@@ -770,8 +765,8 @@ export function ChannelsPanel(): React.ReactElement {
         visibility: params.visibility,
         createdBy: {
           workspaceId: selfWorkspaceId,
-          memberId: 'local-ui',
-          memberName: 'local-ui',
+          memberId: HUMAN_MEMBER_ID,
+          memberName: HUMAN_MEMBER_ID,
         },
         channel,
       });

@@ -140,23 +140,26 @@ export function registerA2aChannelRpc(
       }
     }
     // P5 — 'ws-human' is the reserved VIRTUAL workspace of the unified human
-    // identity. Only the renderer-local mutate path may ACT as it; a pipe
-    // caller claiming it as its own identity would impersonate the human's
-    // seat (post as "Me", join/create/ack the human's row). Reject the claim
-    // on caller-identity refs only:
-    //   - `invitedMember` is deliberately EXEMPT — inviting the human seat is
-    //     a TARGET identity (pre-P5 capability parity: any member could invite
-    //     the human's workspace).
-    //   - Reads keep the documented process-boundary residual: the renderer's
-    //     own reads ride this router scoped to ws-human.
-    for (const key of ['member', 'createdBy', 'sender'] as const) {
+    // identity, created and managed ONLY by the renderer-local mutate path. A
+    // pipe caller must never touch it, as a CALLER (post/join/create as "Me")
+    // OR as an invite TARGET. `invitedMember` is included (5-model ship review):
+    // the human is NOT invited post-P5 (they self-join via the GUI), and the
+    // pre-existing 'local-ui' guard already blocks invitedMember.memberId ===
+    // 'local-ui', so the only thing an invitedMember=ws-human exemption could
+    // do is seed a bogus (ws-human, <non-local-ui>) row that the load-time
+    // merge (which folds only memberId === 'local-ui') can never clean and that
+    // every renderer membership check (workspaceId-keyed) treats as the human —
+    // an agent force-injecting a channel into the human's always-on view. Reject
+    // it. Reads keep the documented process-boundary residual (renderer reads
+    // ride this router scoped to ws-human).
+    for (const key of ['member', 'invitedMember', 'createdBy', 'sender'] as const) {
       const ref = base[key] as Record<string, unknown> | undefined;
       if (ref && typeof ref === 'object' && ref.workspaceId === HUMAN_WORKSPACE_ID) {
         return {
           ok: false,
           error: {
             code: 'NOT_AUTHORIZED',
-            message: `'${HUMAN_WORKSPACE_ID}' is the reserved human workspace and cannot be claimed from the pipe`,
+            message: `'${HUMAN_WORKSPACE_ID}' is the reserved human workspace and cannot be claimed or targeted from the pipe`,
           },
         };
       }

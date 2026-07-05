@@ -115,17 +115,18 @@ export function planChannelMessageDelivery(
   senderWorkspaceId: string,
   recipientWorkspaceIds: readonly string[],
   mentionWorkspaceIds: readonly string[],
-  activeWorkspaceId: string,
   localIds: readonly string[],
 ): { appendToDisplay: boolean; routeWorkspaces: string[] } {
-  // P5: any channel the unified HUMAN is a member of displays regardless of
-  // which workspace is active — the whole point of the virtual human seat is
-  // that switching workspaces no longer changes what the human sees. Channels
-  // the human is NOT in (agent-only rooms) keep the active-workspace rule.
-  const appendToDisplay =
-    recipientWorkspaceIds.includes(HUMAN_WORKSPACE_ID) ||
-    senderWorkspaceId === activeWorkspaceId ||
-    recipientWorkspaceIds.includes(activeWorkspaceId);
+  // P5: display exactly the channels the unified HUMAN is a member of, and
+  // ONLY those — the human's view is workspace-independent. The old
+  // active-workspace branch (ship review: Codex privacy_leak + Claude
+  // adversarial F4) leaked private agent-only channel traffic into the human's
+  // dock (the active workspace was a recipient but ws-human was not), producing
+  // phantom unread badges on channels the human can't even open. Mention
+  // ROUTING still fans out to every real local workspace (routeWorkspaces) so
+  // agents are pinged; only the human's DISPLAY is scoped to their membership.
+  void senderWorkspaceId; // retained for signature stability / future use
+  const appendToDisplay = recipientWorkspaceIds.includes(HUMAN_WORKSPACE_ID);
   const mentionWs = new Set(mentionWorkspaceIds);
   const routeWorkspaces = localIds.filter((id) => mentionWs.has(id));
   return { appendToDisplay, routeWorkspaces };
@@ -188,17 +189,11 @@ function readEventsPollBridge(): EventsPollBridge | undefined {
  */
 export function useChannelsEventSubscription(): void {
   // P5 (unified human identity): the HUMAN's channel identity is the reserved
-  // virtual workspace — hydration/catalog reads and the human's display scope
-  // key on it, NOT on whichever workspace happens to be active. The ACTIVE
-  // workspace still matters for one thing: displaying agent-only channels the
-  // human is not a member of while one of their workspaces is (the legacy
-  // rule), so it is read separately and fed to planChannelMessageDelivery.
-  //
-  // SUBSCRIBE to activeWs (not getState() inside a []-deps effect): a prior bug
-  // read identity once at mount and never re-ran on the boot race. The human
-  // identity itself is a constant now, so the poll can start immediately.
+  // virtual workspace — hydration/catalog reads, display scope, and mutations
+  // all key on it, NEVER on the active workspace, so switching workspaces no
+  // longer changes what the human sees. It is a constant, so the poll starts
+  // immediately (the old activeWorkspaceId boot race is gone).
   const workspaceId = HUMAN_WORKSPACE_ID;
-  const activeWs = useStore((s) => s.activeWorkspaceId);
   // FIX-MULTI-WS: every local workspace id, joined so the selector returns a
   // stable primitive (string) — the effect re-runs (rebuilding the poll scope)
   // only when a workspace is added/removed, not on unrelated store writes.
@@ -521,16 +516,12 @@ export function useChannelsEventSubscription(): void {
               const st = useStore.getState();
               // FIX-MULTI-WS: the pure decision (append-to-active-display +
               // which local workspaces to route the mention into). See
-              // planChannelMessageDelivery — active-vs-background split, the
-              // exact layer the first multi-ws attempt regressed.
+              // planChannelMessageDelivery — display is scoped to human
+              // membership (P5), routing fans out to real local workspaces.
               const plan = planChannelMessageDelivery(
                 channelEvent.workspaceId,
                 channelEvent.recipientWorkspaceIds,
                 (channelEvent.message.mentions ?? []).map((m) => m.workspaceId),
-                // P5: the ACTIVE workspace only drives the legacy agent-channel
-                // display rule; human-membership display is decided inside the
-                // plan via HUMAN_WORKSPACE_ID (workspace-switch independent).
-                activeWs ?? '',
                 localIds,
               );
               // Display cache / unread / mention badges: ACTIVE workspace only,
@@ -618,15 +609,14 @@ export function useChannelsEventSubscription(): void {
               // background workspace would clobber the active view), so only
               // an active-relevant catalog event triggers it. A background
               // workspace's catalog is rebuilt on switch.
+              // P5: catalog re-hydrates on any change touching the human seat
+              // or broadcast — the human's catalog is ws-human-scoped, so an
+              // active-workspace-only catalog change is not the human's view.
               const ce = event as ChannelCatalogEvent;
               if (
                 ce.recipientWorkspaceIds.includes('*') ||
                 ce.workspaceId === workspaceId ||
-                ce.recipientWorkspaceIds.includes(workspaceId) ||
-                // P5: catalog changes touching the ACTIVE workspace still
-                // re-hydrate (agent membership churn in the visible view).
-                (!!activeWs &&
-                  (ce.workspaceId === activeWs || ce.recipientWorkspaceIds.includes(activeWs)))
+                ce.recipientWorkspaceIds.includes(workspaceId)
               ) {
                 sawCatalog = true;
               }
@@ -682,6 +672,8 @@ export function useChannelsEventSubscription(): void {
     };
     // FIX-MULTI-WS: allWorkspaceIds rebuilds the loop (and its union scope)
     // when a workspace is added/removed — a NEW workspace must join the poll
-    // scope or its mentions would silently drop until the next remount.
-  }, [activeWs, allWorkspaceIds]);
+    // scope or its mentions would silently drop until the next remount. P5: the
+    // active workspace no longer affects display, so it is not a dependency (no
+    // poll restart on workspace switch).
+  }, [allWorkspaceIds]);
 }

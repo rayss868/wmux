@@ -11,11 +11,14 @@
 //   agent → primary = memberName (fallback memberId), chip = memberId
 //           (skipped when the primary already carries it)
 //   human → primary = the localized "Me" (substituted by the component),
-//           chip = the workspace name (every GUI seat shares the reserved
-//           'local-ui' member id, so the workspace IS the seat's identity)
+//           chip = null for a post from the unified ws-human seat (one human,
+//           no chip needed); a pre-P5 human post keeps its workspace-name chip
+//           as historical context
 //
 // Server-owned roster names (remediation plan Phase 1b) will replace the
 // free-form primary later; this layer is schema-free and works on history.
+
+import { HUMAN_MEMBER_ID, HUMAN_WORKSPACE_ID } from '../../shared/channels';
 
 export interface ChannelAuthorDisplay {
   kind: 'human' | 'agent';
@@ -28,8 +31,6 @@ export interface ChannelAuthorDisplay {
   /** Stable per-workspace hue (0-359) for the author color badge. */
   hue: number;
 }
-
-import { HUMAN_MEMBER_ID, HUMAN_WORKSPACE_ID } from '../../shared/channels';
 
 /** Deterministic workspaceId → hue. The same workspace always renders the
  *  same badge color across sessions; distinct workspaces usually differ. */

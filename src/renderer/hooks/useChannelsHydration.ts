@@ -10,9 +10,9 @@
 // and dispatches the result into `setChannels`.
 //
 // Identity: channels are decoupled from in-app Company mode. The "self"
-// workspace is the Company CEO workspace when Company mode is active, else
-// the active workspace — so channels hydrate (and stay visible) without a
-// company. Reads ride the `rpc` bridge (the pipe RpcRouter); the main-side
+// workspace is the reserved unified human seat (ws-human, P5) — so channels
+// hydrate (and stay visible) independent of which workspace is active. Reads
+// ride the `rpc` bridge (the pipe RpcRouter); the main-side
 // `a2a.channel.*` read handler accepts a caller-supplied workspace for a
 // no-senderPtyId renderer caller (process-boundary trust — see the header of
 // `src/main/pipe/handlers/a2a.channel.rpc.ts`). Only the unforgeable D5 pin
@@ -27,11 +27,11 @@
 //   3. `daemon.onConnected` — covers respawn/reconnect after the first
 //      hydration already ran.
 //
-// Scope note (FIX-MULTI-WS): the daemon's `list(verifiedWorkspaceId)` returns
-// every PUBLIC channel plus PRIVATE channels the passed workspace is a member
-// of. With a single self-workspace, private channels owned by a different
-// workspace stay hidden until the multi-workspace identity follow-up lands.
-// Public channels (the create modal's default) always hydrate.
+// Scope note: the daemon's `list(verifiedWorkspaceId)` returns every PUBLIC
+// channel plus PRIVATE channels the passed workspace is a member of. Since the
+// self-workspace is now the unified ws-human seat (P5), every private channel
+// the human joined hydrates; public channels (the create modal's default)
+// always hydrate.
 //
 // The core list→getMembers→setChannels logic is extracted into the pure
 // `hydrateChannelsCatalog` (mirroring the `createLateReconcileOnConnect` /

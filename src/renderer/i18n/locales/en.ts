@@ -660,7 +660,6 @@ export const en = {
   'channels.noMembers': 'No members yet.',
   'channels.leaveChannel': 'Leave channel',
   'channels.addMember': 'Add a workspace',
-  'channels.allWorkspacesMembers': 'All workspaces are members.',
   'channels.me': 'Me',
   'channels.addAgentPane': 'Add an agent pane',
   'channels.noAgentPanes': 'No live agent panes to add.',

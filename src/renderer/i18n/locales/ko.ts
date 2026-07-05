@@ -585,7 +585,6 @@ export const ko = {
   'channels.noMembers': '아직 멤버가 없습니다.',
   'channels.leaveChannel': '채널 나가기',
   'channels.addMember': '워크스페이스 추가',
-  'channels.allWorkspacesMembers': '모든 워크스페이스가 멤버입니다.',
   'channels.me': '나',
   'channels.addAgentPane': '에이전트 판 추가',
   'channels.noAgentPanes': '추가할 에이전트 판이 없습니다.',

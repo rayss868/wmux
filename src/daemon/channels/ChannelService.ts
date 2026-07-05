@@ -385,8 +385,15 @@ export class ChannelService {
           memberId: HUMAN_MEMBER_ID,
           // Earliest seat wins: the human has been "in" since their first join.
           joinedAt: Math.min(...humanRows.map((m) => m.joinedAt)),
-          // Widest visibility + furthest cursor: the human could already see
-          // everything any seat saw, and consumed up to the furthest ack.
+          // Widest visibility + furthest cursor: the human is ONE principal, so
+          // if any seat read up to seq N the human has seen the content up to N
+          // (ship review: Claude adversarial confirmed this semantic). Codex
+          // flagged a narrow edge — a seat with a narrow history floor but a
+          // high (e.g. backfilled-to-head) cursor could mark a low seq read that
+          // only a WIDER-history seat could see but didn't. It is benign here:
+          // the ws-human cursor feeds only the now-excluded wake sweep (never a
+          // renderer badge — the renderer computes unread from live events), and
+          // opening the channel re-acks to head regardless.
           historyFromSeq: Math.min(...humanRows.map((m) => m.historyFromSeq)),
           lastReadSeq: Math.max(...humanRows.map((m) => m.lastReadSeq ?? 0)),
           principalId: HUMAN_SELF_PRINCIPAL_ID,
@@ -627,6 +634,12 @@ export class ChannelService {
           // v2 cursor seeded at head (nextSeq-1 = 0 on a fresh channel):
           // a brand-new channel starts with zero unread.
           lastReadSeq: 0,
+          // P5: stamp the human principal when the creator is the human seat, so
+          // a GUI-created channel's human row matches the migrated shape.
+          ...(params.verifiedWorkspaceId === HUMAN_WORKSPACE_ID &&
+          params.createdBy.memberId === HUMAN_MEMBER_ID
+            ? { principalId: HUMAN_SELF_PRINCIPAL_ID }
+            : {}),
         },
       ];
       for (const member of params.members ?? []) {
@@ -802,8 +815,18 @@ export class ChannelService {
         // (historyFromSeq) but does not owe an ack for the backlog; unread
         // starts at 0 so the wake worker never nudge-storms a fresh member.
         lastReadSeq: channel.nextSeq - 1,
-        // R2: principal stable coordinate (additive, for display/routing).
-        ...(params.member.principalId ? { principalId: params.member.principalId } : {}),
+        // R2: principal stable coordinate (additive, for display/routing). P5:
+        // a fresh human seat (ws-human, local-ui) is stamped with the human
+        // principal daemon-side so it matches the migrated row's shape — the
+        // renderer join/create paths send no principalId (ship review:
+        // data-migration shape drift), so normalize here where every transport
+        // converges.
+        ...(params.verifiedWorkspaceId === HUMAN_WORKSPACE_ID &&
+        params.member.memberId === HUMAN_MEMBER_ID
+          ? { principalId: HUMAN_SELF_PRINCIPAL_ID }
+          : params.member.principalId
+            ? { principalId: params.member.principalId }
+            : {}),
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
@@ -1061,6 +1084,23 @@ export class ChannelService {
         return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot invite to an archived channel' } };
       }
       const invitee = params.invitedMember;
+      // P5: the reserved human workspace is never an invite TARGET. The human
+      // joins channels themselves via the GUI (self-join as ws-human); an invite
+      // into ws-human could only seed a phantom (ws-human, <non-local-ui>) row —
+      // the load-time merge folds only memberId 'local-ui', and every renderer
+      // membership check is workspaceId-keyed, so such a row force-injects a
+      // channel into the human's always-on view (ship review: 5-model consensus).
+      // Enforced HERE (not just the main-pipe router) so a direct daemon-pipe
+      // caller under the #113 same-user ceiling cannot bypass it either.
+      if (invitee.workspaceId === HUMAN_WORKSPACE_ID) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: 'The reserved human workspace cannot be invited; the human joins via the GUI',
+          },
+        };
+      }
       if (members.some((m) => m.workspaceId === invitee.workspaceId && m.memberId === invitee.memberId)) {
         return { ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } };
       }
@@ -1669,7 +1709,15 @@ export class ChannelService {
     const out = new Set<string>();
     for (const channel of this.state.channels) {
       if (channel.status === 'archived') continue;
-      for (const m of this.state.members[channel.id] ?? []) out.add(m.workspaceId);
+      for (const m of this.state.members[channel.id] ?? []) {
+        // P5: never sweep the virtual human workspace. It owns no PTY session,
+        // so pickTarget always misses — but including it made the wake worker
+        // walk every channel's every message each 15s tick for an unread cursor
+        // that can never be nudged or exhausted (ship review: Claude adversarial
+        // F5 CPU drift + data-migration). The human is reached by the GUI badge.
+        if (m.workspaceId === HUMAN_WORKSPACE_ID) continue;
+        out.add(m.workspaceId);
+      }
     }
     return Array.from(out);
   }
