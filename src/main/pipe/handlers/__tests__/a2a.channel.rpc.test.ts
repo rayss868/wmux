@@ -800,3 +800,49 @@ describe('a2a.channel.rpc — P5 invite ws-human is REJECTED (5-model consensus)
     expect(daemon.rpc).not.toHaveBeenCalled();
   });
 });
+
+describe('a2a.channel.rpc — P5 create members[] cannot seed reserved identities (Codex delta)', () => {
+  it('REJECTS channel_create with a ws-human entry in initial members[]', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-create-phantom-member',
+      method: 'a2a.channel.create',
+      params: {
+        name: 'sneaky',
+        visibility: 'private',
+        members: [{ workspaceId: 'ws-human', memberId: 'agentX', memberName: 'X' }],
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+
+  it('REJECTS channel_create with a local-ui entry in initial members[]', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-create-spoof-member',
+      method: 'a2a.channel.create',
+      params: {
+        name: 'sneaky2',
+        visibility: 'private',
+        members: [{ workspaceId: 'ws-1', memberId: 'local-ui', memberName: 'Me' }],
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+});

@@ -118,18 +118,32 @@ export function registerA2aChannelRpc(
         }
       }
     }
+    // Every caller-supplied identity ref the spoof guards below must cover: the
+    // four scalar refs PLUS each entry of create's initial `members[]` array
+    // (ship review — Codex: create's members[] was the ONE identity path the
+    // per-key guards missed, so a pipe channel_create could seed a reserved-id
+    // member row and bypass both guards below).
+    const identityRefs: Array<Record<string, unknown>> = [];
+    for (const key of ['member', 'invitedMember', 'createdBy', 'sender'] as const) {
+      const ref = base[key];
+      if (ref && typeof ref === 'object' && !Array.isArray(ref)) {
+        identityRefs.push(ref as Record<string, unknown>);
+      }
+    }
+    if (Array.isArray(base.members)) {
+      for (const m of base.members) {
+        if (m && typeof m === 'object' && !Array.isArray(m)) {
+          identityRefs.push(m as Record<string, unknown>);
+        }
+      }
+    }
     // R2 review C4: 'local-ui' is the GUI human's reserved identity — if a pipe
     // path uses this label, it would be shown in the roster/transcript
     // impersonating the human ("me"). The GUI never goes through this router
     // (channels:mutate-local only), so a 'local-ui' over the pipe is always a
     // spoof — reject.
-    for (const key of ['member', 'invitedMember', 'createdBy', 'sender'] as const) {
-      const ref = base[key] as Record<string, unknown> | undefined;
-      if (
-        ref &&
-        typeof ref === 'object' &&
-        (ref.memberId === 'local-ui' || ref.memberName === 'local-ui')
-      ) {
+    for (const ref of identityRefs) {
+      if (ref.memberId === 'local-ui' || ref.memberName === 'local-ui') {
         return {
           ok: false,
           error: {
@@ -141,20 +155,18 @@ export function registerA2aChannelRpc(
     }
     // P5 — 'ws-human' is the reserved VIRTUAL workspace of the unified human
     // identity, created and managed ONLY by the renderer-local mutate path. A
-    // pipe caller must never touch it, as a CALLER (post/join/create as "Me")
-    // OR as an invite TARGET. `invitedMember` is included (5-model ship review):
-    // the human is NOT invited post-P5 (they self-join via the GUI), and the
-    // pre-existing 'local-ui' guard already blocks invitedMember.memberId ===
-    // 'local-ui', so the only thing an invitedMember=ws-human exemption could
-    // do is seed a bogus (ws-human, <non-local-ui>) row that the load-time
-    // merge (which folds only memberId === 'local-ui') can never clean and that
-    // every renderer membership check (workspaceId-keyed) treats as the human —
-    // an agent force-injecting a channel into the human's always-on view. Reject
-    // it. Reads keep the documented process-boundary residual (renderer reads
-    // ride this router scoped to ws-human).
-    for (const key of ['member', 'invitedMember', 'createdBy', 'sender'] as const) {
-      const ref = base[key] as Record<string, unknown> | undefined;
-      if (ref && typeof ref === 'object' && ref.workspaceId === HUMAN_WORKSPACE_ID) {
+    // pipe caller must never touch it, as a CALLER (post/join/create as "Me"),
+    // an invite TARGET, or a create initial-member. `invitedMember` and the
+    // create `members[]` entries are both covered (ship review): the only thing
+    // a ws-human ref from the pipe could do is seed a bogus (ws-human,
+    // <non-local-ui>) row that the load-time merge (which folds only memberId
+    // === 'local-ui') can never clean and that every renderer membership check
+    // (workspaceId-keyed) treats as the human — an agent force-injecting a
+    // channel into the human's always-on view. Reject it. Reads keep the
+    // documented process-boundary residual (renderer reads ride this router
+    // scoped to ws-human).
+    for (const ref of identityRefs) {
+      if (ref.workspaceId === HUMAN_WORKSPACE_ID) {
         return {
           ok: false,
           error: {

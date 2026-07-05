@@ -120,7 +120,8 @@ export async function hydrateChannelsCatalog(deps: ChannelHydrationDeps): Promis
   // the field. Signal BOTH directions so the banner self-clears once the daemon
   // restarts (this routine re-runs on every reconnect).
   const rawEpoch = (listEnv as { channelsEpoch?: unknown }).channelsEpoch;
-  deps.setDaemonStale?.((typeof rawEpoch === 'number' ? rawEpoch : 0) < CHANNELS_EPOCH);
+  const epoch = typeof rawEpoch === 'number' && Number.isFinite(rawEpoch) ? rawEpoch : 0;
+  deps.setDaemonStale?.(epoch < CHANNELS_EPOCH);
 
   // Fetch members per channel in parallel (best-effort — a channel whose
   // getMembers fails hydrates with no member entry and is reconciled on the

@@ -2503,3 +2503,18 @@ describe('P5 migration — ship-review hardening', () => {
     expect(svc.memberWorkspaces()).not.toContain(HUMAN_WS);
   });
 });
+
+describe('ChannelService.create — P5 reserved human workspace guard (ship review, Codex delta)', () => {
+  it('rejects a create whose initial members[] seeds the reserved human workspace', async () => {
+    const { svc } = makeService();
+    const res = await svc.create({
+      name: 'sneaky',
+      visibility: 'private',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      verifiedWorkspaceId: 'ws-1',
+      members: [{ workspaceId: 'ws-human', memberId: 'agentX', memberName: 'X' }],
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('NOT_AUTHORIZED');
+  });
+});
