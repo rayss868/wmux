@@ -325,3 +325,66 @@ describe('wmux channel — failure surfaces', () => {
     expect(out).toContain('WARNING: 4 message(s) trimmed');
   });
 });
+
+describe('wmux channel join — 1d member id discipline', () => {
+  it('join WITHOUT --member and WITHOUT $WMUX_MEMBER_ID fails closed (no more shared "agent" default)', async () => {
+    daemonRpc.mockResolvedValue(okEnvelope({ ok: true }));
+    await expect(handleChannel('join', ['ch-1'], false)).rejects.toThrow('exit(1)');
+    const err = errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(err).toContain('--member');
+    // The refused legacy default must be named so agents understand the change.
+    expect(err).toContain('agent');
+    expect(daemonRpc).not.toHaveBeenCalledWith('a2a.channel.join', expect.anything());
+  });
+
+  it('join defaults to $WMUX_MEMBER_ID (stamped at pane spawn)', async () => {
+    process.env.WMUX_MEMBER_ID = 'daemon-a1b2c3d4';
+    daemonRpc.mockResolvedValue(okEnvelope({ ok: true }));
+    await handleChannel('join', ['ch-1'], false);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.channel.join', {
+      channelId: 'ch-1',
+      member: { memberId: 'daemon-a1b2c3d4', memberName: 'daemon-a1b2c3d4' },
+      senderPtyId: 'pty-self',
+    });
+  });
+
+  it('explicit --member beats the env default', async () => {
+    process.env.WMUX_MEMBER_ID = 'daemon-a1b2c3d4';
+    daemonRpc.mockResolvedValue(okEnvelope({ ok: true }));
+    await handleChannel('join', ['ch-1', '--member', 'lead'], false);
+    const params = daemonRpc.mock.calls.find((c: unknown[]) => c[0] === 'a2a.channel.join')?.[1] as {
+      member: { memberId: string };
+    };
+    expect(params.member.memberId).toBe('lead');
+  });
+});
+
+describe('wmux channel post — 1c server feedback', () => {
+  it('prints the SERVER-resolved member id and the unmatched warning', async () => {
+    daemonRpc.mockResolvedValue(
+      okEnvelope({
+        ok: true,
+        message: { seq: 7, memberId: 'w1-1(claude)' },
+        unmatchedMemberId: undefined,
+      }),
+    );
+    await handleChannel('post', ['ch-1', 'hi', '--member', 'agent'], false);
+    const out = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    // 1c mapped the ghost onto the roster row — report the stored identity.
+    expect(out).toContain('as w1-1(claude)');
+  });
+
+  it('surfaces unmatchedMemberId as a warning on multi-row workspaces', async () => {
+    daemonRpc.mockResolvedValue(
+      okEnvelope({
+        ok: true,
+        message: { seq: 8, memberId: 'ghost' },
+        unmatchedMemberId: 'ghost',
+      }),
+    );
+    await handleChannel('post', ['ch-1', 'hi', '--member', 'ghost'], false);
+    const out = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(out).toContain('WARNING');
+    expect(out).toContain('"ghost"');
+  });
+});

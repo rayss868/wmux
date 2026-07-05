@@ -52,11 +52,11 @@ wmux channel — durable agent messaging (Channels v2)
   wmux channel list
       Channels visible to your workspace.
 
-  --member is your member id in the channel. Defaults to $WMUX_MEMBER_ID;
-  post/ack without it resolve your workspace's SINGLE member row in that
-  channel (two+ rows → pass --member; never guessed). join defaults to
-  "agent" — pick a stable, short id (e.g. "codex") so humans can tell
-  agents apart in the roster.
+  --member is your member id in the channel. Defaults to $WMUX_MEMBER_ID
+  (stamped at pane spawn with the pane's ptyId); post/ack without it resolve
+  your workspace's SINGLE member row in that channel (two+ rows → pass
+  --member; never guessed). join REQUIRES an id ($WMUX_MEMBER_ID or
+  --member) — the old shared "agent" default made agents indistinguishable.
   --json on any subcommand prints the raw RPC payload.
 
   Typical loop when nudged: unread → read → do the work → post → ack.
@@ -159,6 +159,23 @@ async function resolveChannelId(ref: string): Promise<string> {
 
 function memberIdFrom(args: string[]): string {
   return parseFlag(args, '--member') ?? process.env['WMUX_MEMBER_ID'] ?? 'agent';
+}
+
+/**
+ * 1d — member id for ROSTER-CREATING calls (join). Unlike post/ack — where a
+ * legacy ghost id is absorbed by the daemon's single-row mapping (1c) — join
+ * PLANTS the roster row, so a colliding literal default ('agent') would seed
+ * the exact identity collision 1b/1c exist to fix. Panes spawned by wmux
+ * carry $WMUX_MEMBER_ID (the pane's ptyId, stamped at spawn); outside a
+ * wmux pane the caller must say who they are.
+ */
+function requiredMemberIdFrom(args: string[]): string {
+  const id = parseFlag(args, '--member') ?? process.env['WMUX_MEMBER_ID'];
+  if (id !== undefined && id.length > 0) return id;
+  console.error(
+    'Error: no member id. Pass --member <id> (or run inside a wmux pane, where $WMUX_MEMBER_ID is stamped at spawn). Refusing the old "agent" default — shared ids made agents indistinguishable in the roster.',
+  );
+  process.exit(1);
 }
 
 /**
@@ -389,11 +406,18 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         console.log(JSON.stringify(result, null, 2));
         return;
       }
-      const message = result['message'] as { seq?: number } | undefined;
-      console.log(`Posted to ${channelId} as ${memberId} (seq ${message?.seq ?? '?'}).`);
+      const message = result['message'] as { seq?: number; memberId?: string } | undefined;
+      // 1c: the daemon may have mapped a ghost member id onto the workspace's
+      // single roster row — report the identity the message was actually
+      // stored under, not the one we sent.
+      console.log(`Posted to ${channelId} as ${message?.memberId ?? memberId} (seq ${message?.seq ?? '?'}).`);
       const dropped = result['droppedMentions'] as Array<{ workspaceId: string }> | undefined;
       if (dropped && dropped.length > 0) {
         console.log(`WARNING: ${dropped.length} @mention(s) did NOT land (target not a channel member): ${dropped.map((d) => d.workspaceId).join(', ')}`);
+      }
+      const unmatched = result['unmatchedMemberId'] as string | undefined;
+      if (unmatched) {
+        console.log(`WARNING: member id "${unmatched}" matches no roster row of your workspace (it has several) — pass --member <id> so the message lands on the right seat.`);
       }
       return;
     }
@@ -448,7 +472,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         process.exit(1);
       }
       const channelId = await resolveChannelId(ref);
-      const memberId = memberIdFrom(args);
+      const memberId = requiredMemberIdFrom(args);
       const memberName = parseFlag(args, '--name') ?? memberId;
       const result = await callChannel(
         'a2a.channel.join' as RpcMethod,
