@@ -424,3 +424,79 @@ describe('1b/1d bridge — join resolves the pane principal from senderPtyId (re
     if (joined.ok) expect(joined.memberId).toBe('pty-unknown');
   });
 });
+
+
+describe('delta re-review fixes (Codex P1 + Claude reproduced defects)', () => {
+  it('a REJECTED post (body clamp) never mutates the roster name (refresh sits after all validations)', async () => {
+    let display = 'w2-1(claude)';
+    const { svc, writer } = makeService({ resolvePrincipalDisplay: () => display });
+    const channel = await createChannel(svc, {
+      members: [{ workspaceId: 'ws-2', memberId: 'seat-2', principalId: 'pane:ws-2/p-1' }],
+    });
+    display = 'w2-1(codex)'; // agent swap happened
+    const savesBefore = writer.saveImmediate.mock.calls.length;
+    const posted = await svc.post({
+      channelId: channel.id,
+      sender: { workspaceId: 'ws-2', memberId: 'seat-2' },
+      text: 'x'.repeat(100_000), // over CHANNEL_BODY_MAX → early return
+      verifiedWorkspaceId: 'ws-2',
+    });
+    expect(posted.ok).toBe(false);
+    // No persist happened AND the in-memory row still matches disk.
+    expect(writer.saveImmediate.mock.calls.length).toBe(savesBefore);
+    const row = svc.getMembers(channel.id, 'ws-2').find((m) => m.memberId === 'seat-2');
+    expect(row?.memberName).toBe('w2-1(claude)');
+  });
+
+  it('registry-timing double seat is closed: raw-ptyId seat blocks a later converged join (Claude delta ①)', async () => {
+    const { svc } = makeService();
+    const channel = await createChannel(svc);
+    // 1st join: agent not detected yet → registry miss → raw ptyId seat.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (svc as any).resolvePrincipalByPtyId = () => undefined;
+    const first = await svc.join({
+      channelId: channel.id,
+      member: { workspaceId: 'ws-4', memberId: 'pty-77' },
+      verifiedWorkspaceId: 'ws-4',
+      senderPtyId: 'pty-77',
+    });
+    expect(first.ok).toBe(true);
+    // Agent detected between the joins → registry now resolves.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (svc as any).resolvePrincipalByPtyId = () => ({
+      id: 'pane:ws-4/p-7', display: 'w4-1(claude)', memberId: 'w4-1(claude)',
+    });
+    const second = await svc.join({
+      channelId: channel.id,
+      member: { workspaceId: 'ws-4', memberId: 'pty-77' },
+      verifiedWorkspaceId: 'ws-4',
+      senderPtyId: 'pty-77',
+    });
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.error.code).toBe('DUPLICATE_MEMBER');
+      expect(second.error.message).toContain('pty-77'); // names the pre-registry seat
+    }
+    expect(svc.getMembers(channel.id, 'ws-4').filter((m) => m.workspaceId === 'ws-4')).toHaveLength(1);
+  });
+
+  it('the human seat never takes the pane-principal path even with a forged senderPtyId', async () => {
+    const { svc } = makeService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (svc as any).resolvePrincipalByPtyId = () => ({
+      id: 'pane:ws-1/p-9', display: 'w1-1(claude)', memberId: 'w1-1(claude)',
+    });
+    const channel = await createChannel(svc);
+    const joined = await svc.join({
+      channelId: channel.id,
+      member: { workspaceId: 'ws-human', memberId: 'local-ui' },
+      verifiedWorkspaceId: 'ws-human',
+      senderPtyId: 'pty-forged',
+    });
+    expect(joined.ok).toBe(true);
+    const row = svc.getMembers(channel.id, 'ws-human').find((m) => m.workspaceId === 'ws-human');
+    expect(row?.memberId).toBe('local-ui');       // no convergence
+    expect(row?.memberName).toBe('local-ui');      // no pane display stamped
+    expect(row?.principalId).toBe('human:me');     // human principal intact
+  });
+});

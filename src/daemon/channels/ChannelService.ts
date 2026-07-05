@@ -355,7 +355,9 @@ interface IdempotencyEntry {
   droppedMentions?: ChannelDroppedMention[];
   /** 1c — same replay contract as droppedMentions (Codex #2): the retry that
    *  lost the FIRST response is exactly when the identity-drift warning
-   *  matters most, so the replay must re-emit it too. */
+   *  matters most, so the replay must re-emit it too. Like droppedMentions,
+   *  IN-MEMORY ONLY: `state.idempotency` persists just the seq, so a replay
+   *  after a daemon restart returns the message without this warning. */
   unmatchedMemberId?: string;
 }
 
@@ -889,7 +891,15 @@ export class ChannelService {
       //    another entry path cannot get a second row (F2).
       let joinMemberId = params.member.memberId;
       let panePrincipal: { id: string; display?: string; memberId?: string } | undefined;
-      if (!params.member.principalId && params.senderPtyId && this.resolvePrincipalByPtyId) {
+      if (
+        !params.member.principalId &&
+        params.senderPtyId &&
+        this.resolvePrincipalByPtyId &&
+        // The human seat never resolves through a pane pty — a direct-socket
+        // caller forging senderPtyId alongside the human member must not get
+        // a pane display stamped onto the human row (delta review 1-low).
+        params.verifiedWorkspaceId !== HUMAN_WORKSPACE_ID
+      ) {
         try {
           panePrincipal = this.resolvePrincipalByPtyId(params.senderPtyId);
         } catch (err) {
@@ -931,6 +941,30 @@ export class ChannelService {
             error: {
               code: 'DUPLICATE_MEMBER',
               message: `Already a member as "${samePane.memberId}" (same pane)`,
+            },
+          };
+        }
+      }
+      // F2b (delta review 1 - reproduced double-seat): a seat created under
+      // the RAW spawn default BEFORE the registry resolved this pane carries
+      // memberId === ptyId and NO principalId, so neither dedup above can
+      // see it once a later join converges to the auto-name. The caller's
+      // verified pty IS that seat's id — collide on it explicitly.
+      //
+      // Residual (documented): the REVERSE order — converged seat exists,
+      // registry entry lost (restart backfill), new join under the raw
+      // default — is uncorrelatable without a registry hit; the lifecycle
+      // reconcile (plan 4a) is the eventual sweeper for such rows.
+      if (params.senderPtyId && joinMemberId !== params.senderPtyId) {
+        const rawSeat = members.find(
+          (m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.senderPtyId,
+        );
+        if (rawSeat) {
+          return {
+            ok: false,
+            error: {
+              code: 'DUPLICATE_MEMBER',
+              message: `Already a member as "${rawSeat.memberId}" (same pane, pre-registry seat)`,
             },
           };
         }
@@ -1442,39 +1476,6 @@ export class ChannelService {
         }
       }
       const resolvedMemberId = senderRow ? senderRow.memberId : params.sender.memberId;
-      // 1b refresh (Codex #4): the roster name follows the principal
-      // registry — an agent swap on the same pane updates the principal
-      // display, so re-derive on post (which persists anyway). Refresh ONLY
-      // on a POSITIVE registry hit: a transient registry miss must not
-      // downgrade a good name to the memberId fallback. Rolled back with
-      // the rest of the post state on persist failure.
-      let senderRowPrevName: string | undefined;
-      let senderRowNameRefreshed = false;
-      if (senderRow?.principalId && this.resolvePrincipalDisplay) {
-        try {
-          const freshDisplay = this.resolvePrincipalDisplay(senderRow.principalId);
-          if (
-            typeof freshDisplay === 'string' &&
-            freshDisplay.length > 0 &&
-            freshDisplay !== senderRow.memberName
-          ) {
-            senderRowPrevName = senderRow.memberName;
-            senderRow.memberName = freshDisplay;
-            senderRowNameRefreshed = true;
-          }
-        } catch (err) {
-          console.error('[ChannelService] principal display refresh failed:', err);
-        }
-      }
-      // 1b — the message's display-name snapshot comes from the roster row
-      // (server-derived at create/join/invite, refreshed above), never the
-      // caller's free text when a row is known. Legacy rows without
-      // memberName fall back to the row's memberId; the unmatched path falls
-      // back to whatever the client sent (then its memberId) so old callers
-      // keep a sane display.
-      const resolvedMemberName = senderRow
-        ? (senderRow.memberName ?? senderRow.memberId)
-        : (params.sender.memberName ?? params.sender.memberId);
       // Body clamp (U6). Measure the post-canonicalized form (C0 strip +
       // trim) so padding whitespace and zero-width characters cannot
       // bypass the cap. Reject BEFORE allocating a seq so an oversize
@@ -1531,6 +1532,45 @@ export class ChannelService {
           },
         };
       }
+      // 1b refresh (Codex #4): the roster name follows the principal
+      // registry — an agent swap on the same pane updates the principal
+      // display, so re-derive on post (which persists anyway). Refresh ONLY
+      // on a POSITIVE registry hit: a transient registry miss must not
+      // downgrade a good name to the memberId fallback.
+      //
+      // PLACEMENT IS LOAD-BEARING (delta review, Codex P1 + Claude ②,
+      // reproduced): this mutation must sit AFTER every early-return
+      // validation above (body clamp, data clamp, mention cap) so a
+      // REJECTED post can never leave the in-memory row ahead of disk.
+      // The only exits after this point are the persist-failure branch —
+      // which rolls the name back — and success, which persists it.
+      let senderRowPrevName: string | undefined;
+      let senderRowNameRefreshed = false;
+      if (senderRow?.principalId && this.resolvePrincipalDisplay) {
+        try {
+          const freshDisplay = this.resolvePrincipalDisplay(senderRow.principalId);
+          if (
+            typeof freshDisplay === 'string' &&
+            freshDisplay.length > 0 &&
+            freshDisplay !== senderRow.memberName
+          ) {
+            senderRowPrevName = senderRow.memberName;
+            senderRow.memberName = freshDisplay;
+            senderRowNameRefreshed = true;
+          }
+        } catch (err) {
+          console.error('[ChannelService] principal display refresh failed:', err);
+        }
+      }
+      // 1b — the message's display-name snapshot comes from the roster row
+      // (server-derived at create/join/invite, refreshed above), never the
+      // caller's free text when a row is known. Legacy rows without
+      // memberName fall back to the row's memberId; the unmatched path falls
+      // back to whatever the client sent (then its memberId) so old callers
+      // keep a sane display.
+      const resolvedMemberName = senderRow
+        ? (senderRow.memberName ?? senderRow.memberId)
+        : (params.sender.memberName ?? params.sender.memberId);
       // Freeze the recipient snapshot at critical-section entry (plan KTD3).
       // We deliberately do NOT re-read members after this point; a concurrent
       // `join` that lands later will not retroactively change the snapshot
@@ -1581,6 +1621,10 @@ export class ChannelService {
         // Collision-free dedup key: JSON-encode the (workspaceId, paneId) pair so
         // no separator-substring ambiguity can fold two distinct targets onto one
         // key and silently drop the later mention (review-team: codex+GLM).
+        // KNOWN LIMITATION (pre-existing, delta review Codex #2): the key
+        // ignores memberId, so two member-scoped mentions of the SAME
+        // (workspace, no-pane) target dedup to the first even when they name
+        // different seats. Revisit with the mention-semantics work (P6).
         const key = JSON.stringify([mn.workspaceId, paneId]);
         if (mentionedKeys.has(key)) continue;
         mentionedKeys.add(key);
