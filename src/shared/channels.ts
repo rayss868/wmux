@@ -113,6 +113,19 @@ export interface ChannelMember {
    * only, not authz (#113 boundary invariant).
    */
   principalId?: string;
+  /**
+   * 1b (server-owned roster identity) — the display name the DAEMON derived
+   * for this row at create/join/invite time: the principal registry's
+   * `display` when `principalId` resolves, else the memberId itself. Post
+   * renders `ChannelMessage.memberName` from THIS (the roster row), never
+   * from the caller-supplied free text — a client can no longer post under
+   * an arbitrary name once its row exists.
+   *
+   * OPTIONAL additive (`ChannelState.version` stays 1, lastReadSeq /
+   * principalId convention): absent on legacy rows; the renderer's
+   * authorDisplay fallback (1a) covers those. Display only, not authz.
+   */
+  memberName?: string;
 }
 
 /**

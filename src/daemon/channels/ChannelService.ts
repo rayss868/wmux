@@ -146,13 +146,27 @@ export interface ChannelServiceDeps {
   emit: ChannelServiceEmit;
   /** Time source. Defaults to `Date.now`. Override in tests for stable seq. */
   now?: () => number;
+  /**
+   * 1b (server-owned roster identity) — resolve a principal stable coordinate
+   * to its registry display name. Injected (rather than taking the whole
+   * PrincipalService) so channel tests need no registry fixture and the
+   * coupling surface stays one function. Optional: when absent, memberName
+   * derivation falls back to the memberId (legacy construction sites, tests).
+   */
+  resolvePrincipalDisplay?: (principalId: string) => string | undefined;
 }
 
 /** Sender identity carried in post/join payloads. */
 export interface SenderRef {
   workspaceId: string;
   memberId: string;
-  memberName: string;
+  /**
+   * 1b: OPTIONAL since the daemon now derives the authoritative name from
+   * the roster row (principal display, else memberId). A client-supplied
+   * value is used only as the message-snapshot fallback when no roster row
+   * matches (see post()'s unmatchedMemberId path).
+   */
+  memberName?: string;
   /** R2 — the principal stable coordinate to record on the member row (optional, additive). */
   principalId?: string;
 }
@@ -331,6 +345,23 @@ export class ChannelService {
   private readonly ceoWorkspaceId: string | undefined;
   private readonly emit: ChannelServiceEmit;
   private readonly now: () => number;
+  private readonly resolvePrincipalDisplay?: (principalId: string) => string | undefined;
+
+  /**
+   * 1b — derive the server-owned display name for a member row. Principal
+   * registry display when the coordinate resolves, else the memberId itself.
+   * Best-effort: a resolver throw degrades to the memberId (display must
+   * never fail a membership mutation).
+   */
+  private deriveMemberName(memberId: string, principalId?: string): string {
+    if (principalId && this.resolvePrincipalDisplay) {
+      try {
+        const display = this.resolvePrincipalDisplay(principalId);
+        if (typeof display === 'string' && display.length > 0) return display;
+      } catch { /* display derivation is best-effort */ }
+    }
+    return memberId;
+  }
   /**
    * Monotonic counter advanced once per persisted `clientMsgId` entry
    * during hydration (U7). It seeds `lastUsedAt` so the first post on
@@ -352,6 +383,7 @@ export class ChannelService {
     this.ceoWorkspaceId = deps.ceoWorkspaceId;
     this.emit = deps.emit;
     this.now = deps.now ?? (() => Date.now());
+    this.resolvePrincipalDisplay = deps.resolvePrincipalDisplay;
     // Channels v2 cursor backfill — member rows persisted before the
     // `lastReadSeq` field existed get the channel HEAD ("start reading from
     // now"), NOT 0: a 0 default would flag the entire history unread on
@@ -639,6 +671,13 @@ export class ChannelService {
       // initial members (U6) are appended after the creator; duplicates
       // against the creator are silently dropped so a caller cannot
       // double-stamp the creator and skew the count.
+      // P5: stamp the human principal when the creator is the human seat, so
+      // a GUI-created channel's human row matches the migrated shape.
+      const creatorPrincipalId =
+        params.verifiedWorkspaceId === HUMAN_WORKSPACE_ID &&
+        params.createdBy.memberId === HUMAN_MEMBER_ID
+          ? HUMAN_SELF_PRINCIPAL_ID
+          : undefined;
       const initialMembers: ChannelMember[] = [
         {
           // D5: the creator's membership is keyed to the server-resolved
@@ -650,12 +689,10 @@ export class ChannelService {
           // v2 cursor seeded at head (nextSeq-1 = 0 on a fresh channel):
           // a brand-new channel starts with zero unread.
           lastReadSeq: 0,
-          // P5: stamp the human principal when the creator is the human seat, so
-          // a GUI-created channel's human row matches the migrated shape.
-          ...(params.verifiedWorkspaceId === HUMAN_WORKSPACE_ID &&
-          params.createdBy.memberId === HUMAN_MEMBER_ID
-            ? { principalId: HUMAN_SELF_PRINCIPAL_ID }
-            : {}),
+          ...(creatorPrincipalId ? { principalId: creatorPrincipalId } : {}),
+          // 1b: server-owned display name (principal display, else memberId) —
+          // never the caller-supplied free-text memberName.
+          memberName: this.deriveMemberName(params.createdBy.memberId, creatorPrincipalId),
         },
       ];
       for (const member of params.members ?? []) {
@@ -674,6 +711,8 @@ export class ChannelService {
           lastReadSeq: 0,
           // R2: principal stable coordinate (additive).
           ...(member.principalId ? { principalId: member.principalId } : {}),
+          // 1b: server-owned display name.
+          memberName: this.deriveMemberName(member.memberId, member.principalId),
         });
       }
       this.state.members[channel.id] = initialMembers;
@@ -820,6 +859,17 @@ export class ChannelService {
       }
       const now = this.now();
       const historyFromSeq = params.includeHistory === false ? channel.nextSeq : 0;
+      // R2: principal stable coordinate (additive, for display/routing). P5:
+      // a fresh human seat (ws-human, local-ui) is stamped with the human
+      // principal daemon-side so it matches the migrated row's shape — the
+      // renderer join/create paths send no principalId (ship review:
+      // data-migration shape drift), so normalize here where every transport
+      // converges.
+      const joinPrincipalId =
+        params.verifiedWorkspaceId === HUMAN_WORKSPACE_ID &&
+        params.member.memberId === HUMAN_MEMBER_ID
+          ? HUMAN_SELF_PRINCIPAL_ID
+          : params.member.principalId;
       members.push({
         // D5: pin the joining member to the server-resolved workspace, NOT the
         // caller-supplied member.workspaceId — a forger must not join as a victim.
@@ -831,18 +881,9 @@ export class ChannelService {
         // (historyFromSeq) but does not owe an ack for the backlog; unread
         // starts at 0 so the wake worker never nudge-storms a fresh member.
         lastReadSeq: channel.nextSeq - 1,
-        // R2: principal stable coordinate (additive, for display/routing). P5:
-        // a fresh human seat (ws-human, local-ui) is stamped with the human
-        // principal daemon-side so it matches the migrated row's shape — the
-        // renderer join/create paths send no principalId (ship review:
-        // data-migration shape drift), so normalize here where every transport
-        // converges.
-        ...(params.verifiedWorkspaceId === HUMAN_WORKSPACE_ID &&
-        params.member.memberId === HUMAN_MEMBER_ID
-          ? { principalId: HUMAN_SELF_PRINCIPAL_ID }
-          : params.member.principalId
-            ? { principalId: params.member.principalId }
-            : {}),
+        ...(joinPrincipalId ? { principalId: joinPrincipalId } : {}),
+        // 1b: server-owned display name (principal display, else memberId).
+        memberName: this.deriveMemberName(params.member.memberId, joinPrincipalId),
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
@@ -1142,6 +1183,8 @@ export class ChannelService {
         lastReadSeq: channel.nextSeq - 1,
         // R2: principal stable coordinate (additive).
         ...(invitee.principalId ? { principalId: invitee.principalId } : {}),
+        // 1b: server-owned display name (principal display, else memberId).
+        memberName: this.deriveMemberName(invitee.memberId, invitee.principalId),
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
@@ -1193,6 +1236,13 @@ export class ChannelService {
      *  the dominant failure mode found in A2A dogfooding was silent mis-route.
      *  Present only on a fresh (non-idempotent) post with ≥1 dropped mention. */
     droppedMentions?: ChannelDroppedMention[];
+    /** 1c — the caller's memberId matched NO roster row of its (verified)
+     *  workspace AND the workspace holds MULTIPLE rows, so the daemon could
+     *  not map it to a single seat. The post succeeded under the client
+     *  memberId verbatim; this echoes it back so the sender learns its
+     *  identity is drifting from the roster (a single-row workspace is
+     *  silently mapped instead — see the sender-row resolution below). */
+    unmatchedMemberId?: string;
   }>> {
     return this.withChannelLock(params.channelId, async () => {
       // Sender-pin gate (R5). Must run BEFORE any state read or
@@ -1267,6 +1317,39 @@ export class ChannelService {
       if (!isMember) {
         return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Not a channel member' } };
       }
+      // 1c — resolve the sender's ROSTER ROW before building the message, so
+      // the persisted identity (memberId/memberName) is server-owned and the
+      // self-cursor-ride below operates on the row that actually exists.
+      // Ghost memberIds were the bug class here: an MCP/CLI caller posting as
+      // (ws, 'agent') while the roster row is (ws, 'w26-1(claude)') matched no
+      // row, so the ride never fired and the wake worker re-nudged the sender
+      // about its OWN message. Resolution ladder:
+      //   1. exact (workspaceId, memberId) row → use it verbatim;
+      //   2. workspace holds exactly ONE row → map the post onto that seat
+      //      (memberId + name follow the roster; the CLI does the same
+      //      single-row resolution client-side already);
+      //   3. multiple rows, none matching → keep the client memberId (cannot
+      //      guess between seats) and echo `unmatchedMemberId` so the sender
+      //      gets explicit feedback instead of a silent identity fork.
+      const senderWsRows = members.filter((m) => m.workspaceId === params.sender.workspaceId);
+      let senderRow = senderWsRows.find((m) => m.memberId === params.sender.memberId);
+      let unmatchedMemberId: string | undefined;
+      if (!senderRow) {
+        if (senderWsRows.length === 1) {
+          senderRow = senderWsRows[0];
+        } else {
+          unmatchedMemberId = params.sender.memberId;
+        }
+      }
+      const resolvedMemberId = senderRow ? senderRow.memberId : params.sender.memberId;
+      // 1b — the message's display-name snapshot comes from the roster row
+      // (server-derived at create/join/invite), never the caller's free text
+      // when a row is known. Legacy rows without memberName fall back to the
+      // row's memberId; the unmatched path falls back to whatever the client
+      // sent (then its memberId) so old callers keep a sane display.
+      const resolvedMemberName = senderRow
+        ? (senderRow.memberName ?? senderRow.memberId)
+        : (params.sender.memberName ?? params.sender.memberId);
       // Body clamp (U6). Measure the post-canonicalized form (C0 strip +
       // trim) so padding whitespace and zero-width characters cannot
       // bypass the cap. Reject BEFORE allocating a seq so an oversize
@@ -1390,8 +1473,9 @@ export class ChannelService {
         channelId: channel.id,
         seq,
         workspaceId: params.sender.workspaceId,
-        memberId: params.sender.memberId,
-        memberName: params.sender.memberName,
+        // 1b/1c — server-resolved identity (roster row), not caller verbatim.
+        memberId: resolvedMemberId,
+        memberName: resolvedMemberName,
         text: sanitizedText,
         postedAt: now,
         deliveryStatus: 'pending',
@@ -1412,9 +1496,9 @@ export class ChannelService {
       // OLDER unread keeps its cursor: the backlog is still owed
       // (unreadFor additionally exempts self-authored messages, so even
       // that sender is never re-nudged about itself).
-      const senderRow = members.find(
-        (m) => m.workspaceId === params.sender.workspaceId && m.memberId === params.sender.memberId,
-      );
+      // 1c: `senderRow` is the RESOLVED row from above — a ghost memberId in
+      // a single-row workspace now rides that row's cursor instead of
+      // matching nothing and re-nudging itself.
       const senderRowRode = senderRow !== undefined && senderRow.lastReadSeq === seq - 1;
       if (senderRow && senderRowRode) senderRow.lastReadSeq = seq;
       // Update idempotency cache.
@@ -1486,8 +1570,10 @@ export class ChannelService {
           seq,
           sender: {
             workspaceId: params.sender.workspaceId,
-            memberId: params.sender.memberId,
-            memberName: params.sender.memberName,
+            // 1b/1c — the event mirrors the PERSISTED message identity (the
+            // server-resolved roster row), not the caller verbatim.
+            memberId: resolvedMemberId,
+            memberName: resolvedMemberName,
           },
           recipients: snapshot,
           message,
@@ -1540,6 +1626,9 @@ export class ChannelService {
         ok: true,
         message,
         ...(droppedMentions.length > 0 ? { droppedMentions } : {}),
+        // 1c — explicit feedback when the caller's memberId matched no roster
+        // row in a multi-row workspace (see the sender-row resolution above).
+        ...(unmatchedMemberId !== undefined ? { unmatchedMemberId } : {}),
       };
     });
   }
