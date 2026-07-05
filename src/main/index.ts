@@ -60,8 +60,9 @@ import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
-import { ensureDaemon, killDaemonByPidFile } from './daemon/launcher';
+import { ensureDaemon, killDaemonByPidFile, killVerifiedDaemonPid, checkProcessLiveness } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
+import { CHANNELS_EPOCH } from '../shared/channels';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
@@ -923,6 +924,10 @@ app.on('ready', async () => {
         });
       } else if (event.type === 'reconnected') {
         mainWindow.webContents.send('daemon:reconnected');
+      } else if (event.type === 'replacing') {
+        // B′: renderer shows an "updating daemon…" toast so the pane freeze
+        // + recovery replay reads as intentional.
+        mainWindow.webContents.send('daemon:replacing');
       } else if (event.type === 'respawn-exhausted') {
         // Forward to renderer (channel exists since v2.7.x — preload.ts
         // and daemonMode.ts both subscribe). The renderer doesn't yet
@@ -949,6 +954,18 @@ app.on('ready', async () => {
       info: (msg) => { logLine('info', 'daemon-respawn', msg); },
       warn: (msg) => { logLine('warn', 'daemon-respawn', msg); },
       error: (msg) => { logLine('error', 'daemon-respawn', msg); },
+    },
+    // B′ stale-daemon auto-replacement (plans/daemon-auto-replace-plan-
+    // 2026-07-05.md). Fires only when a REUSED daemon is positively older
+    // than this app; the whole destructive path rides the daemon's own
+    // daemon.shutdown suspend loop + the launcher's verified-kill guards.
+    replacement: {
+      appVersion: app.getVersion(),
+      channelsEpoch: CHANNELS_EPOCH,
+      raceShutdown: async (client, timeoutMs) =>
+        (await raceDaemonShutdown(client, timeoutMs)).ok,
+      checkLiveness: checkProcessLiveness,
+      killVerifiedPid: (pid) => killVerifiedDaemonPid(pid, { definitiveOnly: true }),
     },
   });
   markBoot('daemon-bootstrap-start');

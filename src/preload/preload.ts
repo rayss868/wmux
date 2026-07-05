@@ -335,6 +335,14 @@ const electronAPI = {
       ipcRenderer.on('daemon:reconnecting', listener);
       return () => { ipcRenderer.removeListener('daemon:reconnecting', listener); };
     },
+    // B′ stale-daemon auto-replacement started (session-preserving
+    // suspend → respawn → recover). One-shot toast cue: without it the
+    // pane freeze + scrollback replay looks like an unexplained glitch.
+    onReplacing: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('daemon:replacing', listener);
+      return () => { ipcRenderer.removeListener('daemon:replacing', listener); };
+    },
     // Fires once a respawned client is healthy again. Distinct from
     // `onConnected` so the renderer can choose to show recovery UX
     // (e.g. "Daemon reconnected — sessions restored") rather than the
