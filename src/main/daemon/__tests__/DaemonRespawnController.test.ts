@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import {
   DaemonRespawnController,
   type DaemonRespawnDeps,
+  type DaemonReplacementHooks,
   type RespawnEvent,
 } from '../DaemonRespawnController';
 import type { DaemonClient } from '../../DaemonClient';
@@ -72,6 +73,7 @@ function makeHarness(
   opts: {
     ensureDaemonImpl?: () => Promise<DaemonInfo>;
     config?: Parameters<typeof buildController>[1];
+    replacement?: DaemonReplacementHooks;
   } = {},
 ): Harness {
   const logs: { level: string; msg: string }[] = [];
@@ -100,6 +102,7 @@ function makeHarness(
       warn: (msg) => { logs.push({ level: 'warn', msg }); },
       error: (msg) => { logs.push({ level: 'error', msg }); },
     },
+    replacement: opts.replacement,
   };
 
   const controller = buildController(deps, opts.config);
@@ -536,5 +539,239 @@ describe('DaemonRespawnController.dispose', () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(h.ensureDaemonCalls).toBe(1); // bootstrap only
     expect(h.controller.isHealthy).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B′ stale-daemon auto-replacement (plans/daemon-auto-replace-plan-2026-07-05.md §5).
+// The orchestrator's own step logic is covered in daemonReplacement.test.ts;
+// these tests pin the CONTROLLER integration: gate conditions, which client
+// gets installed on each outcome, the bootstrap dead-end → budget-loop
+// routing, and the before-quit cancellation seams.
+// ---------------------------------------------------------------------------
+
+const OLD_PONG = { status: 'ok', pid: 4242 }; // pre-B′: no spawnedByVersion
+const NEW_PONG = { status: 'ok', pid: 5000, spawnedByVersion: '3.17.0', channelsEpoch: 2 };
+
+function makeReplacementHooks(overrides: Partial<DaemonReplacementHooks> = {}): DaemonReplacementHooks & {
+  raceShutdownCalls: number;
+  killCalls: number[];
+} {
+  const state = { raceShutdownCalls: 0, killCalls: [] as number[] };
+  return Object.assign(state, {
+    appVersion: '3.17.0',
+    channelsEpoch: 2,
+    raceShutdown: async () => { state.raceShutdownCalls++; return true; },
+    checkLiveness: () => 'dead' as const,
+    killVerifiedPid: (pid: number) => { state.killCalls.push(pid); return true; },
+    sleep: async () => { /* instant */ },
+    ...overrides,
+  });
+}
+
+describe('DaemonRespawnController stale-daemon replacement', () => {
+  it('replaces a reused pre-B′ daemon at bootstrap: shutdown → death → fresh spawn → install fresh client', async () => {
+    let ensureCall = 0;
+    const hooks = makeReplacementHooks();
+    const h = makeHarness({
+      replacement: hooks,
+      config: { healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => {
+        ensureCall++;
+        return ensureCall === 1
+          ? { pid: 4242, authToken: 'tok', pipeName: 'pipe', spawned: false } // reused stale
+          : { pid: 5000, authToken: 'tok2', pipeName: 'pipe', spawned: true }; // fresh
+      },
+    });
+    const oldClient = new FakeDaemonClient();
+    oldClient.rpcImpl = async () => OLD_PONG;
+    const freshClient = new FakeDaemonClient();
+    freshClient.rpcImpl = async () => NEW_PONG;
+    h.clientQueue.push(oldClient, freshClient);
+
+    const result = await h.controller.bootstrap();
+
+    expect(result).toBe(freshClient);
+    expect(h.ensureDaemonCalls).toBe(2);
+    expect(hooks.raceShutdownCalls).toBe(1);
+    expect(hooks.killCalls).toEqual([]); // clean death — no escalation
+    expect(h.events).toContainEqual({ type: 'replacing' });
+    expect(h.deps.onInstall).toHaveBeenCalledTimes(1);
+    // Our own socket to the old daemon was released during replacement.
+    expect(oldClient.disconnectCalls).toBe(1);
+    expect(h.controller.isHealthy).toBe(true);
+  });
+
+  it('does NOT fire for a freshly spawned daemon even if the pong looks old', async () => {
+    const hooks = makeReplacementHooks();
+    const h = makeHarness({
+      replacement: hooks,
+      config: { healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => ({ pid: 1, authToken: 't', pipeName: 'p', spawned: true }),
+    });
+    const c1 = new FakeDaemonClient();
+    c1.rpcImpl = async () => OLD_PONG;
+    h.clientQueue.push(c1);
+
+    const result = await h.controller.bootstrap();
+    expect(result).toBe(c1);
+    expect(hooks.raceShutdownCalls).toBe(0);
+    expect(h.events).toEqual([]);
+  });
+
+  it('does NOT fire for a reused current-version daemon', async () => {
+    const hooks = makeReplacementHooks();
+    const h = makeHarness({
+      replacement: hooks,
+      config: { healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => ({ pid: 1, authToken: 't', pipeName: 'p', spawned: false }),
+    });
+    const c1 = new FakeDaemonClient();
+    c1.rpcImpl = async () => NEW_PONG;
+    h.clientQueue.push(c1);
+
+    const result = await h.controller.bootstrap();
+    expect(result).toBe(c1);
+    expect(hooks.raceShutdownCalls).toBe(0);
+  });
+
+  it('keeps a NEWER reused daemon (downgrade forbidden) and logs at warn', async () => {
+    const hooks = makeReplacementHooks({ appVersion: '3.16.0' });
+    const h = makeHarness({
+      replacement: hooks,
+      config: { healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => ({ pid: 1, authToken: 't', pipeName: 'p', spawned: false }),
+    });
+    const c1 = new FakeDaemonClient();
+    c1.rpcImpl = async () => NEW_PONG; // 3.17.0 daemon under a 3.16.0 app
+    h.clientQueue.push(c1);
+
+    const result = await h.controller.bootstrap();
+    expect(result).toBe(c1);
+    expect(hooks.raceShutdownCalls).toBe(0);
+    expect(h.logs.some((l) => l.level === 'warn' && l.msg.includes('NEWER'))).toBe(true);
+  });
+
+  it('pre-ack abort (shutdown refused, old daemon still connected) installs the OLD client', async () => {
+    const hooks = makeReplacementHooks({ raceShutdown: async () => false });
+    const h = makeHarness({
+      replacement: hooks,
+      config: { healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => ({ pid: 4242, authToken: 't', pipeName: 'p', spawned: false }),
+    });
+    const oldClient = new FakeDaemonClient();
+    oldClient.rpcImpl = async () => OLD_PONG;
+    h.clientQueue.push(oldClient);
+
+    const result = await h.controller.bootstrap();
+    // connect() set connected=true and the failed shutdown didn't drop it,
+    // so the pre-ack branch reuses the live old client.
+    expect(result).toBe(oldClient);
+    expect(h.ensureDaemonCalls).toBe(1); // no fresh spawn
+    expect(h.events).toContainEqual({ type: 'replacing' });
+    expect(h.controller.isHealthy).toBe(true);
+  });
+
+  it('bootstrap dead-end routes into the respawn budget loop and recovers on the next attempt', async () => {
+    let ensureCall = 0;
+    // Ack received but the old daemon lingers and the verified kill refuses
+    // (indeterminate verification) → dead-end.
+    const hooks = makeReplacementHooks({
+      checkLiveness: () => 'alive' as const,
+      killVerifiedPid: () => false,
+    });
+    const h = makeHarness({
+      replacement: hooks,
+      config: { healthIntervalMs: 0, baseBackoffMs: 100 },
+      ensureDaemonImpl: async () => {
+        ensureCall++;
+        return ensureCall === 1
+          ? { pid: 4242, authToken: 't', pipeName: 'p', spawned: false }  // stale reuse
+          : { pid: 5000, authToken: 't2', pipeName: 'p', spawned: true }; // budget-loop spawn
+      },
+    });
+    const oldClient = new FakeDaemonClient();
+    oldClient.rpcImpl = async () => OLD_PONG;
+    const freshClient = new FakeDaemonClient();
+    freshClient.rpcImpl = async () => NEW_PONG;
+    h.clientQueue.push(oldClient, freshClient);
+
+    const result = await h.controller.bootstrap();
+    expect(result).toBeNull();
+    // No client installed on a dead-end — a dead/dying client would wedge
+    // the health probe (early-return on !isConnected) forever.
+    expect(h.deps.onInstall).not.toHaveBeenCalled();
+    // Budget loop entered: uninstall fired and a reconnecting event queued.
+    expect(h.deps.onUninstall).toHaveBeenCalledTimes(1);
+    expect(h.events).toContainEqual({ type: 'reconnecting', attempt: 1, backoffMs: 100 });
+
+    // Let the budgeted respawn fire — it must spawn fresh (old pid dead by
+    // now in the real world; the harness just hands out the fresh info) and
+    // NOT re-attempt replacement (once-per-run).
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.controller.isHealthy).toBe(true);
+    expect(h.deps.onInstall).toHaveBeenCalledTimes(1);
+    expect(hooks.raceShutdownCalls).toBe(1); // no second replacement attempt
+  });
+
+  it('once-per-run: a second reused-stale encounter installs the old client without replacing', async () => {
+    const hooks = makeReplacementHooks({
+      checkLiveness: () => 'alive' as const,
+      killVerifiedPid: () => false,
+    });
+    const h = makeHarness({
+      replacement: hooks,
+      config: { healthIntervalMs: 0, baseBackoffMs: 100 },
+      ensureDaemonImpl: async () => ({ pid: 4242, authToken: 't', pipeName: 'p', spawned: false }),
+    });
+    const oldClient1 = new FakeDaemonClient();
+    oldClient1.rpcImpl = async () => OLD_PONG;
+    const oldClient2 = new FakeDaemonClient();
+    oldClient2.rpcImpl = async () => OLD_PONG;
+    h.clientQueue.push(oldClient1, oldClient2);
+
+    // First encounter: dead-end (ack + linger + kill refused) → budget loop.
+    const result = await h.controller.bootstrap();
+    expect(result).toBeNull();
+    expect(hooks.raceShutdownCalls).toBe(1);
+
+    // Budgeted retry meets the SAME stale daemon — once-per-run must let it
+    // through as a plain reuse (today's behavior + banner) instead of
+    // stalling every reconnect on another shutdown budget.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(hooks.raceShutdownCalls).toBe(1); // still 1
+    expect(h.controller.isHealthy).toBe(true);
+    expect(h.deps.onInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispose during replacement cancels before the fresh spawn (before-quit race)', async () => {
+    let ensureCall = 0;
+    let resolveShutdown: ((v: boolean) => void) | null = null;
+    const hooks = makeReplacementHooks({
+      raceShutdown: () => new Promise<boolean>((res) => { resolveShutdown = res; }),
+    });
+    const h = makeHarness({
+      replacement: hooks,
+      config: { healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => {
+        ensureCall++;
+        return { pid: 4242, authToken: 't', pipeName: 'p', spawned: false };
+      },
+    });
+    const oldClient = new FakeDaemonClient();
+    oldClient.rpcImpl = async () => OLD_PONG;
+    h.clientQueue.push(oldClient);
+
+    const bootP = h.controller.bootstrap();
+    // Give the gate a chance to fire the shutdown RPC, then quit.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolveShutdown).not.toBeNull();
+    h.controller.dispose();
+    resolveShutdown?.(true); // ack lands after dispose
+
+    const result = await bootP;
+    expect(result).toBeNull();
+    expect(ensureCall).toBe(1);            // fresh spawn never attempted
+    expect(h.deps.onInstall).not.toHaveBeenCalled();
   });
 });
