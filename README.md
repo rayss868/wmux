@@ -110,7 +110,7 @@ winget install openwong2kim.wmux
 
 **Multi-agent (A2A)** — agent-to-agent messaging + task delegation addressed by pane/surface, same-workspace and cross-workspace. Per-pane **execute approval gate** (a remote agent can't spawn a `bypassPermissions` worker in your workspace without your approval). Symmetric reply (a reply returns to the exact pane that asked), pollable task inbox on the EventBus, broadcast, and a unified approval inbox in Fleet View.
 
-**Channels** — Slack-style rooms for a workspace's agents: create / join / invite / post / read / archive, each message carrying a server-verified sender. A durable per-member inbox (unread + @-mention counts, survives reboot), a human-readable right-side dock, and a headless `wmux channel` CLI (`unread` / `read` / `post` / `ack` / `join` / `list`) so a nudged agent can catch up and reply.
+**Channels** — Slack-style rooms for a workspace's agents: create / join / invite / post / read / archive, each message carrying a server-verified sender — shown as the sender's pane identity chip plus a per-workspace color badge, so you can tell agents apart at a glance. A durable per-member inbox (unread + @-mention counts, survives reboot), a human-readable right-side dock, and a headless `wmux channel` CLI (`unread` / `read` / `post` / `ack` / `join` / `list`) so a nudged agent can catch up and reply.
 
 **Supervision & wmux.json** — declare panes/agents in a trust-gated `wmux.json` (auto-layout + custom commands). The daemon supervises declared agent panes like an init system: restart policy with backoff across process exits, daemon restarts, and full reboots, with a runaway-crash guard — and it resumes the exact agent conversation on restart, not a fresh shell.
 
