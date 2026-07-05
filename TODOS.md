@@ -1,12 +1,21 @@
 # TODOS
 
-## 채널 멘션: 크로스-워크스페이스 전달 (오프스크린 워크스페이스 판)
+## ✅ 채널 멘션: 크로스-워크스페이스 전달 — DONE v3.14.0 (2026-07-05)
+- 데몬 `events.poll` union scope(`workspaceIds` 집합 필터, ea36425) + 렌더러 단일 폴 fan-out(`planChannelMessageDelivery` 순수함수 유닛테스트, 7a108ea)으로 구현. 1차 N-루프 시도의 same-ws 회귀는 이 재설계(TODO의 "더 나은 방향")로 회피. idle-since-attach 전달 차단은 grace+output-quiet paste 게이트로 해결(c8b3bf9, 941a639). 3모델 리뷰(Claude·Codex·GLM) 통과. 아래는 이력 보존:
+
+### (이력) 원래 TODO 본문
 - **What:** 채널은 워크스페이스 독립이어야 하는데, `useChannelsEventSubscription.ts:148`이 **활성 워크스페이스 하나만** `events.poll` 폴링. 데몬이 이벤트를 caller 워크스페이스(`recipientWorkspaceIds`)로 필터링하므로, WS1을 연 상태에서 WS2 판을 멘션하면 WS2 이벤트가 필터에서 빠져 전달 안 됨 (원문 주석에도 "for v1 we poll one / FIX-MULTI-WS follow-up"으로 명시된 알려진 v1 단축).
 - **1차 시도 → 회귀로 revert:** 폴 루프를 `startLoop(workspaceId, isFull)`로 추출해 모든 로컬 워크스페이스 폴링(활성=full, 나머지=delivery전용). 그러나 도그푸딩에서 **same-ws 활성 멘션 전달 회귀** 발생(w18 무응답). diff상 full 경로는 기존과 100% 동일한데 실패 — 원격에서 렌더러 상태 검증 불가로 원인 미확정(가설: 8+ 동시 폴 루프 스케일의 타이밍 vs fail-closed busy 선재동작). **패치 보존: `~/.wmux-multiws-delivery.patch`** — 재개 시 여기서 시작.
 - **재개 전 확정 필요:** (1) w18 회귀가 멀티-ws 때문인지 vs fail-closed busy(`channelMentionFlush` isBusy: status null/running=busy) 선재동작인지 — 로컬 dev 빌드에서 렌더러 로그로 flush 스킵 여부 관찰. (2) `setChannels` 전체 대체 클로버링 회피(delivery 모드가 표시 상태 미변경)는 맞았으나, N개 동시 폴의 비용/타이밍 재검토.
 - **더 나은 방향(재설계):** 워크스페이스별 N폴 대신 "사람=모든 로컬 수신" 단일 스코프를 데몬 `events.poll`에 추가 — 렌더러가 로컬 워크스페이스 집합을 한 번에 넘기고 데몬이 union 필터. 폴 1개로 유지되고 스케일 문제 없음. 단 데몬 events.rpc 스코프 semantics 변경 필요.
 - **시작점:** `src/renderer/hooks/useChannelsEventSubscription.ts:148`(폴 스코프), `src/main/pipe/handlers/events.rpc.ts:108-135`(caller 필터), `src/renderer/hooks/channelMentionFlush.ts`(isBusy fail-closed).
 - **Priority:** P1 (사용자가 명시적으로 요구한 기능 — "워크스페이스 제약이 있으면 안 됨").
+
+## 멘션 paste 게이트 OUTPUT_QUIET_MS 도그푸드 튜닝 (follow-up, P2)
+- **What:** `channelMentionPasteGate.ts`의 `OUTPUT_QUIET_MS=2000` / `MAX_UNKNOWN_HOLD_MS=45000`은 실측 없이 잡은 보수값. 실제 idle vs thinking 에이전트의 pty 출력 주기를 도그푸드로 관측해 튜닝. perpetual-unknown이 하드-실링으로 배달되는 경로에 debug 로그 1줄 추가 검토(사일런트 지연 가시화).
+- **Why:** 3모델 리뷰(Codex CRITICAL + Claude fallback) — QUIET 임계가 idle 커서-쿼리 주기보다 짧으면 배달 지연 가능. 현재는 실링으로 fail-safe(무배달 아닌 지연)이나 최적값은 관측 필요. Claude가 지적한 `useChannelsEventSubscription`의 stale `requireIdle` 주석(FlushOpts에 필드 없음) 정정도 이때 함께.
+- **Context:** `src/renderer/hooks/channelMentionPasteGate.ts`, `useChannelsEventSubscription.ts`. 착수점 = 실 에이전트 pty 출력 스트림 관측.
+- **Priority:** P2
 
 ## 터미널: 멘션 전달 직후 DSR-CPR(`ESC[<row>;<col>R`) 응답이 화면으로 새어 `;3R40` 폭주
 - **What:** 채널 멘션이 판에 붙여넣어진 직후, 커서 위치 응답(`ESC[40;3R`)이 Claude TUI에 소비되지 않고 터미널 스크롤백에 리터럴 텍스트로 대량 출력됨. CPU 0% = 일회성 버스트(핫루프 아님), 데이터·채널 정상, 순수 표시 깨짐.
