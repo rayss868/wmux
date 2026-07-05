@@ -56,6 +56,7 @@ import {
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
+import { planAgentCandidateSeed, asAgentSlug } from '../../channels/agentCandidateSeed';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import AgentToolbar from '../AgentToolbar/AgentToolbar';
 
@@ -873,6 +874,30 @@ export default function AppLayout() {
         useStore.getState().hydrateSupervision(snapshot);
         useStore.getState().hydrateResume(resumeSnapshot);
         useStore.getState().hydrateResumeBindings(resumeBindingSnapshot);
+        // 4d (channels): seed agent identity for panes the user has NOT
+        // visited yet, so recovered agents show up as invite/mention
+        // candidates right after boot instead of only after a visit.
+        // Pull from the daemon AgentDetector (authoritative, race-free);
+        // live detection overwrites the seed on visit. Best-effort per pane.
+        const seedTargets = planAgentCandidateSeed(
+          sessions.map((s) => s.id),
+          useStore.getState().surfaceAgent,
+        );
+        for (const ptyId of seedTargets) {
+          void window.electronAPI.metadata.resolveAgent(ptyId).then((name) => {
+            if (!name) return;
+            const store = useStore.getState();
+            // A live detection may have landed while this pull was in
+            // flight — setSurfaceAgent keeps existing names, but skip the
+            // principal round-trip in that case entirely.
+            if (store.surfaceAgent[ptyId]?.name) return;
+            store.setSurfaceAgent(ptyId, name, undefined, asAgentSlug(name));
+            // R2: freshly-identified panes register into the principal
+            // registry exactly like the live-detection path (debounced
+            // slice-side, so repeat calls are cheap).
+            void useStore.getState().principalRegisterPane(ptyId);
+          }).catch(() => { /* best-effort — the pane stays a visit-to-detect candidate */ });
+        }
       }).catch(() => { /* best-effort — a transient list failure self-heals on the next connect */ });
     };
     hydrate();
