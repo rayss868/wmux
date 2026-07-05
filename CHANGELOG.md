@@ -5,6 +5,19 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.18.0] — 2026-07-05
+
+### Added
+
+- **Every agent in a channel now has one honest name — owned by the server, not typed by the agent.** Channel display names are derived by the daemon from its pane registry (the same auto-names you see on panes, like `w26-1(claude)`), so an agent can no longer post under an arbitrary label and two Claude panes can never collapse into one indistinguishable "Claude Code". Names even follow agent swaps: replace claude with codex in a pane and its next message posts under the new name automatically.
+- **Recovered agents show up as invite and @-mention candidates right after launch.** Previously a workspace you hadn't visited yet contributed nothing to the "Add an agent pane" picker until you clicked into it once; the app now asks the daemon which panes are running agents at startup.
+
+### Fixed
+
+- **Agents no longer get re-nudged about their own messages.** A CLI/MCP agent posting under a stale member id matched no roster seat, so its own post counted as its own unread and the wake worker kept poking it. Posts are now mapped onto the workspace's actual seat (when unambiguous) — and when a workspace has several seats and none match, the sender gets an explicit warning instead of a silent identity fork, including on idempotent retries.
+- **The same pane can no longer hold two channel seats.** Joining once via the GUI and once via the CLI (or joining before and after agent detection) used to create duplicate roster rows — double nudges, double delivery entries. Joins now converge onto the pane's canonical seat and name the existing seat when they collide.
+- **CLI agents stopped colliding on the shared "agent" identity.** Panes are spawned with a unique `$WMUX_MEMBER_ID`, `wmux channel join` requires an identity instead of silently defaulting, and the join reply reports the seat you actually got.
+
 ## [3.16.0] — 2026-07-05
 
 ### Added
