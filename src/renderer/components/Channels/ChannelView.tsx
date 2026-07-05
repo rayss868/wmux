@@ -26,6 +26,7 @@ import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { IconX, IconArchive, IconCheck, IconChevron } from '../icons';
+import { formatChannelAuthor } from '../../channels/authorDisplay';
 import { Composer } from './Composer';
 import { ChannelMembersControl } from './ChannelMembers';
 
@@ -261,6 +262,10 @@ export interface ChannelViewContentProps {
   onLoadEarlier?: (beforeSeq: number) => Promise<number>;
   /** Translator — defaults to identity. Tests pass a stub. */
   t?: (key: string) => string;
+  /** Resolve a workspaceId to its display name for the sender identity chips
+   *  (human posts read "Me · <workspace>"). Absent (tests) → chips fall back
+   *  to a shortened workspace id. */
+  workspaceName?: (workspaceId: string) => string | undefined;
   /** Wrapper rendered after the message list; the composer lives here. */
   composerSlot: React.ReactNode;
   /** Header control for the members roster (count + join/leave popover).
@@ -277,6 +282,7 @@ export function ChannelViewContent({
   onLeave,
   onArchive,
   onLoadEarlier,
+  workspaceName = () => undefined,
   composerSlot,
   membersSlot,
   t: tProp,
@@ -513,6 +519,7 @@ export function ChannelViewContent({
             const myStatus = viewerDeliveryStatus(m, viewer?.memberId ?? null);
             const mentionsMe =
               !!viewer && !!m.mentions?.some((mn) => mn.workspaceId === viewer.workspaceId);
+            const author = formatChannelAuthor(m, workspaceName);
             return (
               <div
                 key={`${channel.id}:${m.seq}`}
@@ -526,16 +533,44 @@ export function ChannelViewContent({
                 }`}
               >
                 <div className="flex items-baseline gap-2">
+                  {/* Identity audit 1a: per-workspace color badge — round for a
+                        human seat, square for an agent pane — so same-named
+                        senders from different workspaces stay tellable. */}
+                  <span
+                    aria-hidden="true"
+                    data-channel-author-badge={author.kind}
+                    className={`self-center inline-block w-2 h-2 shrink-0 ${
+                      author.kind === 'human' ? 'rounded-full' : 'rounded-[1px]'
+                    }`}
+                    style={{
+                      backgroundColor: `hsl(${author.hue} 55% 62%)`,
+                      // The hue is dynamic so it can't be a theme token; the
+                      // border keeps the badge visible on light themes where
+                      // L=62% alone would wash out (ship design review).
+                      border: '1px solid var(--border-soft)',
+                    }}
+                  />
                   <span
                     className="text-[11px] font-mono font-bold text-[var(--text-main)]"
                     data-channel-message-author
                     {...tokenAttrs('textMain', 'text')}
                   >
-                    {/* R2 (drop local-ui labeling): human/GUI senders read as
-                          "Me" instead of the internal token — a presentation-layer
-                          substitution only, storage schema unchanged. */}
-                    {m.memberName === 'local-ui' ? (t('channels.me') || 'Me') : m.memberName}
+                    {/* Human/GUI senders read as "Me" (never the internal
+                          local-ui token); agent senders read as their display
+                          name with the pane memberId chip alongside — the fix
+                          for every agent collapsing into "Claude Code". */}
+                    {author.kind === 'human' ? (t('channels.me') || 'Me') : author.primary}
                   </span>
+                  {author.chip && (
+                    <span
+                      data-channel-author-chip
+                      className="text-[10px] font-mono text-[var(--text-sub)]"
+                      title={author.kind === 'human' ? m.workspaceId : m.memberId}
+                      {...tokenAttrs('textSub', 'text')}
+                    >
+                      {author.chip}
+                    </span>
+                  )}
                   <span
                     className="text-[9px] font-mono text-[var(--text-muted)]"
                     data-channel-message-time
@@ -602,6 +637,25 @@ export function ChannelView(): React.ReactElement | null {
   // the renderer's "self" identity when no company is set (mirrors
   // useChannelsHydration / ChannelsPanel).
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // Identity audit 1a: workspace display names for the sender identity chips
+  // (human posts read "Me · <workspace>"). Subscribe to a STRING projection of
+  // (id, name) pairs, not the workspaces array itself — the array reference
+  // churns on every pane-tree mutation (terminal titles, cwd, layout), which
+  // would re-render the full 200-row transcript while agents are active (ship
+  // perf review). The joined key only changes on actual rename/add/remove.
+  const workspaceNamesKey = useStore((s) =>
+    s.workspaces.map((w) => `${w.id}\u0000${w.name}`).join('\u0001'),
+  );
+  const workspaceName = useMemo(() => {
+    const names = new Map<string, string>();
+    if (workspaceNamesKey) {
+      for (const pair of workspaceNamesKey.split('\u0001')) {
+        const sep = pair.indexOf('\u0000');
+        if (sep > 0) names.set(pair.slice(0, sep), pair.slice(sep + 1));
+      }
+    }
+    return (id: string) => names.get(id);
+  }, [workspaceNamesKey]);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const pushToast = useStore((s) => s.pushToast);
   const archiveChannelDaemon = useStore((s) => s.archiveChannelDaemon);
@@ -774,6 +828,7 @@ export function ChannelView(): React.ReactElement | null {
         onLeave={selfIsMember ? handleLeave : undefined}
         onArchive={canArchive ? handleArchive : undefined}
         onLoadEarlier={handleLoadEarlier}
+        workspaceName={workspaceName}
         t={t}
         membersSlot={<ChannelMembersControl channel={channel} />}
         composerSlot={
