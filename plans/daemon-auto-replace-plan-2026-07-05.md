@@ -224,3 +224,8 @@ semver 비교는 숫자 삼중쌍 + 프리릴리스 유무 — 외부 패키지 
 - **GLM** 5건: MAJOR 2건 기각(ENV_KEYS 누락 주장은 tsc ×4 통과가 반증하는 환각; delete-필요 주장은 재대입=덮어쓰기라 비문제), MINOR 주석 1건 채택. 원칙 준수표 9항목 ✓는 유효한 교차 확인.
 - **Claude Opus** 6건: [MAJOR 100] 테스트 TS 에러(CFA가 클로저 대입을 못 봐 never 판정 — CI tsc 게이트 차단) **수정**(객체 게이트 패턴) / stateSaved 미배선(=Codex#2) / connect/ping 잔여 orphan 창(=Codex#1b, 최종 disposed 체크+kill로 봉쇄, 그 이하 창은 before-quit pid-파일 kill이 커버) / replacing 토스트 과약속 → 문구 "may pause"로 정직화 / 축③④⑤(dead-end 라우팅·kill 리팩터 의미론 불변·shutdown 반환형 파급·createSession 가드 vs recovery 분리)는 **결함 없음 판정**.
 - 수정분 검증: tsc ×4 클린, 관련 스위트 80/80, 전체 4891 pass(1건 플레이크는 형제 런 재실행으로 판정), lint 델타 0.
+
+### 3차 — 델타 재리뷰 (수정분 재리뷰 규칙, P5 선례)
+- **Codex 델타**: [HIGH 90] disposed→kill이 detach Quit에서도 발화(dispose는 두 quit 모드 공통) → **isFullShutdown 훅 게이트로 수정** (detach는 신 데몬을 살려둠 — 그게 tmux식 지속성의 원하는 종말 상태). 리뷰발 수정의 연쇄 결함 패턴이 실제로 재현·차단된 사례.
+- **Claude Opus 델타**: 연쇄 결함 없음, 수정 권고 없음. 무해 판정 2건(종료 중 lastError 오염은 관측 불가 — respawn-exhausted가 disposed 가드로 미발화; recovery-중-SIGKILL 창 소폭 확대는 기존 문서화된 트레이드오프). ack 파싱 견고성·additive 파급 없음·테스트 동형성 검증.
+- delta-2(게이트 수정)는 Codex 마이크로 패스로 마감.
