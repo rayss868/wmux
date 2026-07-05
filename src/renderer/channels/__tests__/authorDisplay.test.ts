@@ -63,9 +63,9 @@ describe('rosterMemberLabel (identity audit C-A3)', () => {
   const SELF_WS = 'ws-self';
   const UI = 'local-ui';
 
-  it("labels only the viewer's own row as Me (empty primary)", () => {
+  it("labels only the viewer's own row as Me — with NO workspace suffix (P5: one human seat)", () => {
     const own = rosterMemberLabel({ workspaceId: SELF_WS, memberId: UI }, SELF_WS, UI, 'Workspace 1');
-    expect(own).toEqual({ primary: '', showWorkspaceSuffix: true });
+    expect(own).toEqual({ primary: '', showWorkspaceSuffix: false });
   });
 
   it("labels another workspace's human seat with its workspace name, no duplicate suffix", () => {
@@ -92,5 +92,23 @@ describe('formatChannelAuthor — untrusted memberName (ship review pin)', () =>
     );
     expect(a.kind).toBe('agent');
     expect(a.chip).toBe('w1-1(codex)');
+  });
+});
+
+describe('formatChannelAuthor — P5 unified human seat', () => {
+  it('a post from ws-human renders as plain "Me" with NO chip (one human, no ambiguity)', () => {
+    const a = formatChannelAuthor(
+      { workspaceId: 'ws-human', memberId: 'local-ui', memberName: 'local-ui' },
+      noWs,
+    );
+    expect(a).toMatchObject({ kind: 'human', primary: '', chip: null });
+  });
+
+  it('a PRE-P5 human post (real workspace id) keeps its workspace chip as history', () => {
+    const a = formatChannelAuthor(
+      { workspaceId: WS, memberId: 'local-ui', memberName: 'local-ui' },
+      () => 'Workspace 2',
+    );
+    expect(a.chip).toBe('Workspace 2');
   });
 });

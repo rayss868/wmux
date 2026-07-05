@@ -29,7 +29,7 @@ export interface ChannelAuthorDisplay {
   hue: number;
 }
 
-import { HUMAN_MEMBER_ID } from '../../shared/channels';
+import { HUMAN_MEMBER_ID, HUMAN_WORKSPACE_ID } from '../../shared/channels';
 
 /** Deterministic workspaceId → hue. The same workspace always renders the
  *  same badge color across sessions; distinct workspaces usually differ. */
@@ -63,6 +63,12 @@ export function formatChannelAuthor(
   // agent naming itself "local-ui" must NOT render as the human seat (the
   // pipe rejects that name, but the display layer pins it too; ship review).
   if (memberId === HUMAN_MEMBER_ID) {
+    // P5: a post from the unified human seat needs NO chip — there is exactly
+    // one human, "나/Me" alone identifies them. Pre-P5 posts carry the real
+    // workspace they were sent from; keep that chip as historical context.
+    if (message.workspaceId === HUMAN_WORKSPACE_ID) {
+      return { kind: 'human', primary: '', chip: null, hue };
+    }
     const ws = resolveWorkspaceName(message.workspaceId)?.trim();
     return { kind: 'human', primary: '', chip: ws || shortId(message.workspaceId), hue };
   }
@@ -97,7 +103,10 @@ export function rosterMemberLabel(
   workspaceLabel: string,
 ): RosterMemberLabel {
   const isSelf = member.workspaceId === selfWorkspaceId && member.memberId === selfMemberId;
-  if (isSelf) return { primary: '', showWorkspaceSuffix: true };
+  // P5: the unified human row is the ONLY human row — "나/Me" alone is
+  // unambiguous, and its workspace is the reserved virtual one (a raw
+  // 'ws-human' suffix would just leak an internal token).
+  if (isSelf) return { primary: '', showWorkspaceSuffix: false };
   if (member.memberId === selfMemberId) {
     // Another workspace's human seat — the workspace is its identity.
     return { primary: workspaceLabel, showWorkspaceSuffix: false };

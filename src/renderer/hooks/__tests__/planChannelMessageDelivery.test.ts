@@ -79,3 +79,27 @@ describe('planChannelMessageDelivery — mention routing (all local workspaces)'
     expect(plan.routeWorkspaces).toEqual([BG]);
   });
 });
+
+describe('planChannelMessageDelivery — P5 unified human display', () => {
+  it('a channel the HUMAN is in displays regardless of the active workspace', () => {
+    const plan = planChannelMessageDelivery(
+      'ws-agent-sender',
+      ['ws-human', 'ws-other'],
+      [],
+      'ws-active-unrelated',
+      ['ws-active-unrelated', 'ws-other'],
+    );
+    expect(plan.appendToDisplay).toBe(true);
+  });
+
+  it('an agent-only channel still follows the active-workspace rule', () => {
+    const plan = planChannelMessageDelivery(
+      'ws-agent-sender',
+      ['ws-other'],
+      [],
+      'ws-active-unrelated',
+      ['ws-active-unrelated', 'ws-other'],
+    );
+    expect(plan.appendToDisplay).toBe(false);
+  });
+});

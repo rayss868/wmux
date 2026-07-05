@@ -63,6 +63,7 @@ import type {
   ChannelMessage,
   ChannelVisibility,
 } from '../../../shared/channels';
+import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName } from '../../utils/paneNaming';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
@@ -554,9 +555,10 @@ export const createChannelsSlice: StateCreator<
         next[idx] = message;
         state.channelMessages[channelId] = next;
       }
-      // `self` = the company CEO workspace when set, else the active workspace —
-      // mirrors ChannelView/Composer identity resolution.
-      const selfWs = state.company?.ceoWorkspaceId ?? state.activeWorkspaceId;
+      // P5: `self` = the unified human seat — the human's own posts are muted;
+      // agent posts (any workspace, incl. the active one) DO count as unread
+      // now, which is the honest badge (they are news to the human).
+      const selfWs = HUMAN_WORKSPACE_ID;
       if (isNew && state.activeChannelId !== channelId) {
         // A6 self-mute (unread): a workspace's OWN posts must not badge it as
         // unread. A composer post never bumps unread anyway (the activeChannelId

@@ -61,6 +61,7 @@ import {
   isChannelMentionDeliveredPersisted,
   markChannelMentionDeliveredPersisted,
 } from './channelMentionHandled';
+import { HUMAN_WORKSPACE_ID } from '../../shared/channels';
 import { isNudgeRateLimited, recordNudge, shouldWarnLoopSuspect } from './channelMentionRateLimit';
 import { findLeafPanes } from './a2aAddressing';
 import { panePrincipalId } from '../../shared/principals';
@@ -117,7 +118,12 @@ export function planChannelMessageDelivery(
   activeWorkspaceId: string,
   localIds: readonly string[],
 ): { appendToDisplay: boolean; routeWorkspaces: string[] } {
+  // P5: any channel the unified HUMAN is a member of displays regardless of
+  // which workspace is active — the whole point of the virtual human seat is
+  // that switching workspaces no longer changes what the human sees. Channels
+  // the human is NOT in (agent-only rooms) keep the active-workspace rule.
   const appendToDisplay =
+    recipientWorkspaceIds.includes(HUMAN_WORKSPACE_ID) ||
     senderWorkspaceId === activeWorkspaceId ||
     recipientWorkspaceIds.includes(activeWorkspaceId);
   const mentionWs = new Set(mentionWorkspaceIds);
@@ -181,29 +187,23 @@ function readEventsPollBridge(): EventsPollBridge | undefined {
  *     `refreshChannels` rebuilds from authoritative state.
  */
 export function useChannelsEventSubscription(): void {
-  // Per-recipient scoping (plan U3, R3): the daemon's per-workspace filter at
-  // `events.rpc.ts:115-124` requires the caller to identify its own workspace
-  // or it silently drops every event. Channels are decoupled from in-app
-  // Company mode, so the identity is the company CEO workspace when set, else
-  // the active workspace (mirrors useChannelsHydration / ChannelsPanel).
+  // P5 (unified human identity): the HUMAN's channel identity is the reserved
+  // virtual workspace — hydration/catalog reads and the human's display scope
+  // key on it, NOT on whichever workspace happens to be active. The ACTIVE
+  // workspace still matters for one thing: displaying agent-only channels the
+  // human is not a member of while one of their workspaces is (the legacy
+  // rule), so it is read separately and fed to planChannelMessageDelivery.
   //
-  // SUBSCRIBE to this (not getState() inside a []-deps effect): a prior bug read
-  // it once at mount, and if this hook mounted before `activeWorkspaceId` was
-  // set (boot race), self was null, the effect early-returned, and events.poll
-  // NEVER started — so live channel messages, the unread/mention dock badges,
-  // AND the mention→a2a inbox routing all silently no-op'd. Keying the effect on
-  // `workspaceId` re-runs it the moment self lands, starting the poll then.
-  const workspaceId = useStore((s) => s.company?.ceoWorkspaceId ?? s.activeWorkspaceId);
+  // SUBSCRIBE to activeWs (not getState() inside a []-deps effect): a prior bug
+  // read identity once at mount and never re-ran on the boot race. The human
+  // identity itself is a constant now, so the poll can start immediately.
+  const workspaceId = HUMAN_WORKSPACE_ID;
+  const activeWs = useStore((s) => s.activeWorkspaceId);
   // FIX-MULTI-WS: every local workspace id, joined so the selector returns a
   // stable primitive (string) — the effect re-runs (rebuilding the poll scope)
   // only when a workspace is added/removed, not on unrelated store writes.
   const allWorkspaceIds = useStore((s) => s.workspaces.map((w) => w.id).join(','));
   useEffect(() => {
-    if (!workspaceId) {
-      // No resolvable self yet (pre-boot). The selector above re-runs this
-      // effect once `activeWorkspaceId` is set — a wait, not a dead end.
-      return;
-    }
     const bridge = readEventsPollBridge();
     if (!bridge) {
       // The renderer should never reach this state — `useRpcBridge`
@@ -218,11 +218,13 @@ export function useChannelsEventSubscription(): void {
       return;
     }
 
-    // FIX-MULTI-WS: the poll's union scope — every local workspace. The
-    // active/CEO id is unioned in defensively (it should already be in the
-    // list; a boot race where it isn't must not drop it from the scope).
+    // FIX-MULTI-WS: the poll's union scope — every local workspace. P5 widens
+    // it with the reserved human workspace so events addressed to the unified
+    // human seat arrive too. `localIds` (REAL workspaces only) keeps feeding
+    // mention ROUTING and the flush/prune sweeps — ws-human owns no panes and
+    // must never become a routing target; `pollIds` is scope only.
     const localIds = allWorkspaceIds ? allWorkspaceIds.split(',').filter(Boolean) : [];
-    if (!localIds.includes(workspaceId)) localIds.push(workspaceId);
+    const pollIds = [...localIds, workspaceId];
 
     // A4: stamp the mount time so the first poll can keep events that arrived
     // AFTER mount (live) while skipping pre-mount ring history (see `tick`).
@@ -401,9 +403,9 @@ export function useChannelsEventSubscription(): void {
         types: ['channel.message', 'agent.lifecycle', 'channel.catalog'],
         max: EVENT_POLL_MAX,
         workspaceId,
-        // FIX-MULTI-WS: union scope — the daemon filters by set membership,
-        // so background workspaces' events arrive in this same single poll.
-        workspaceIds: localIds,
+        // FIX-MULTI-WS + P5: union scope — every local workspace PLUS the
+        // reserved human workspace; the daemon filters by set membership.
+        workspaceIds: pollIds,
       })
         .then((raw) => {
           if (disposed || !raw) return;
@@ -525,7 +527,10 @@ export function useChannelsEventSubscription(): void {
                 channelEvent.workspaceId,
                 channelEvent.recipientWorkspaceIds,
                 (channelEvent.message.mentions ?? []).map((m) => m.workspaceId),
-                workspaceId,
+                // P5: the ACTIVE workspace only drives the legacy agent-channel
+                // display rule; human-membership display is decided inside the
+                // plan via HUMAN_WORKSPACE_ID (workspace-switch independent).
+                activeWs ?? '',
                 localIds,
               );
               // Display cache / unread / mention badges: ACTIVE workspace only,
@@ -617,7 +622,11 @@ export function useChannelsEventSubscription(): void {
               if (
                 ce.recipientWorkspaceIds.includes('*') ||
                 ce.workspaceId === workspaceId ||
-                ce.recipientWorkspaceIds.includes(workspaceId)
+                ce.recipientWorkspaceIds.includes(workspaceId) ||
+                // P5: catalog changes touching the ACTIVE workspace still
+                // re-hydrate (agent membership churn in the visible view).
+                (!!activeWs &&
+                  (ce.workspaceId === activeWs || ce.recipientWorkspaceIds.includes(activeWs)))
               ) {
                 sawCatalog = true;
               }
@@ -674,5 +683,5 @@ export function useChannelsEventSubscription(): void {
     // FIX-MULTI-WS: allWorkspaceIds rebuilds the loop (and its union scope)
     // when a workspace is added/removed — a NEW workspace must join the poll
     // scope or its mentions would silently drop until the next remount.
-  }, [workspaceId, allWorkspaceIds]);
+  }, [activeWs, allWorkspaceIds]);
 }

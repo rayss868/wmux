@@ -50,6 +50,7 @@
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import type { Channel, ChannelVisibility } from '../../../shared/channels';
+import { HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID } from '../../../shared/channels';
 import {
   canonicalizeChannelName,
   isValidChannelName,
@@ -671,7 +672,6 @@ export function ChannelsPanel(): React.ReactElement {
   // Channels are decoupled from in-app Company mode: when no company is set,
   // the active workspace stands in as the creator identity so the `+` button
   // works without one (mirrors useChannelsHydration's identity resolution).
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const workspaces = useStore((s) => s.workspaces);
   const channelMembers = useStore((s) => s.channelMembers);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
@@ -688,7 +688,10 @@ export function ChannelsPanel(): React.ReactElement {
 
   // Self workspace = CEO ws under Company mode, else the active workspace
   // (mirrors handleCreate / ChannelMembersControl identity resolution).
-  const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId ?? null;
+  // P5 (unified human identity): the human's channel identity is the reserved
+  // virtual workspace — membership, join, post, and "my channels" no longer
+  // depend on which workspace is active.
+  const selfWorkspaceId: string | null = HUMAN_WORKSPACE_ID;
 
   // Channel ids the self workspace is a member of — drives the joined vs
   // discoverable split in the view. O(channels) but the catalog is small.
@@ -710,12 +713,13 @@ export function ChannelsPanel(): React.ReactElement {
   const handleJoinDiscoverable = useCallback(
     (channelId: string) => {
       if (!selfWorkspaceId) return;
-      const label =
-        workspaces.find((w) => w.id === selfWorkspaceId)?.name ?? selfWorkspaceId;
+      // P5: the unified human seat joins — the row is workspace-independent and
+      // renders as the localized "Me"; no workspace label is involved anymore.
+      const label = t('channels.me') || 'Me';
       const channelName = channels[channelId]?.name ?? channelId;
       void joinChannelDaemon(
         channelId,
-        { workspaceId: selfWorkspaceId, memberId: 'local-ui', memberName: label },
+        { workspaceId: selfWorkspaceId, memberId: HUMAN_MEMBER_ID, memberName: HUMAN_MEMBER_ID },
         selfWorkspaceId,
       ).then((result) => {
         if (result.ok) {
@@ -750,8 +754,7 @@ export function ChannelsPanel(): React.ReactElement {
       // the active workspace. The daemon pins `createdBy` to the verified
       // (renderer-supplied, process-boundary-trusted) workspace anyway; this
       // is the value it pins to. Bail only if there is no workspace at all.
-      const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId;
-      if (!selfWorkspaceId) return false;
+      const selfWorkspaceId = HUMAN_WORKSPACE_ID;
       // Synthesize the row the slice would use as the optimistic
       // insert. The `*Daemon` thunk will overwrite this with the
       // daemon's authoritative row on success — the synthesized row
@@ -797,8 +800,7 @@ export function ChannelsPanel(): React.ReactElement {
     const bridge = useStore.getState().channelsRpc();
     if (!bridge) return;
     const s = useStore.getState();
-    const wsId = s.company?.ceoWorkspaceId ?? s.activeWorkspaceId ?? '';
-    if (!wsId) return;
+    const wsId = HUMAN_WORKSPACE_ID;
     void hydrateChannelsCatalog({
       rpc: bridge.rpc,
       workspaceId: wsId,

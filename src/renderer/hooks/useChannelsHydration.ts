@@ -41,6 +41,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
 import type { Channel, ChannelMember, ChannelMessage } from '../../shared/channels';
+import { HUMAN_WORKSPACE_ID } from '../../shared/channels';
 
 /** Dependencies for the pure hydration routine. */
 export interface ChannelHydrationDeps {
@@ -223,13 +224,11 @@ function readChannelsRpc(): ChannelsRpcBridge | undefined {
  * its daemon listener on unmount.
  */
 export function useChannelsHydration(): void {
-  // Subscribe to the self workspace id (NOT read once via getState). On boot the
-  // hook can mount BEFORE activeWorkspaceId is set; with empty deps it captured
-  // workspaceId='' and hydrateChannelsCatalog bailed (no channels, no members) —
-  // so @mention candidates (which come from channelMembers) were always empty.
-  // Keying the effect on workspaceId re-runs hydration the moment identity
-  // resolves. Mirrors the boot-race fix in useChannelsEventSubscription (2b40035).
-  const workspaceId = useStore((s) => s.company?.ceoWorkspaceId ?? s.activeWorkspaceId ?? '');
+  // P5 (unified human identity): the catalog hydrates as the reserved human
+  // workspace — every public channel plus every private channel the HUMAN is
+  // a member of, independent of which workspace is active. This also removes
+  // the old boot race (identity used to wait on activeWorkspaceId).
+  const workspaceId = HUMAN_WORKSPACE_ID;
   useEffect(() => {
     let disposed = false;
 
