@@ -164,6 +164,18 @@
 
 **목표:** 어느 워크스페이스를 봐도 채널 unread/멤버십/뷰가 동일. 배달은 이미 ws-독립인데(FIX-MULTI-WS) 휴먼 뷰만 활성-종속인 비대칭 해소. **결정 필요 §D3.**
 
+> **우선순위 승격 (2026-07-05):** 사용자가 두 차례 직접 부딪힘("활성 ws 따라 동작이 달라짐", 로스터 "나 · Workspace 2" 스크린샷). P3/P4보다 앞으로 — **P2 착지 직후 착수.**
+>
+> **확정 설계 (v1.2, Fable): 가상 휴먼 워크스페이스** — R4가 예정한 "external principal = 가상 ws additive" 메커니즘을 휴먼에 선차용.
+> - `HUMAN_WORKSPACE_ID = 'ws-human'` 예약 상수(shared/channels.ts). 휴먼 멤버 행 = `(ws-human, 'local-ui', principalId:'human:me')` — memberId는 기존 예약 id 유지(파이프 스푸핑 거부 배선 재사용), 표시 로직("나") 무변경.
+> - **daemon load-time 병합 마이그레이션(additive, 1회)**: 채널별 모든 `(anyWs, local-ui)` 행 → `(ws-human, local-ui)` 단일 행. lastReadSeq=max, historyFromSeq=min, 기존 행 제거. 스키마 필드 무변경(version 1 유지).
+> - **authz**: 휴먼 뮤테이션은 renderer-local 경로가 `verifiedWorkspaceId='ws-human'` 스탬프(프로세스 경계 신뢰, 기존 모델 그대로). 파이프에서 'ws-human' 주장 → **거부**(local-ui 스푸핑 가드와 동일 계열, a2a.channel.rpc.ts + channelCallerIdentity).
+> - **표시/이벤트**: 렌더러 poll `workspaceIds`에 'ws-human' 상수 union → ws-human이 수신자인 채널은 **활성 워크스페이스 무관하게 항상 표시**(appendToDisplay 규칙 확장). myChannelIds/viewer/ack/leave의 self 판정 전부 ws-human 기준으로 교체.
+> - **안전 불변식 유지**: ws-human엔 pane이 없고 inbox의 human 필터가 존재 → 휴먼 멘션은 구조적으로 PTY 불가침 그대로. wake worker memberWorkspaces에서 ws-human 제외(휴먼은 GUI 배지).
+> - **UI**: 로스터 "나" 단독(꼬리표 소멸 — 행이 하나라 모호성 없음). "워크스페이스 추가" 섹션은 "에이전트 판 추가" 중심으로 재편(에이전트 pane 행이 이미 ws 멤버십을 제공하므로 ws-단위 추가는 불필요 — 제거 또는 보조로 강등, +4d 시드와 함께).
+> - **기각 대안**: 렌더러-only 병합(디스크 진실이 흩어진 채 남는 반쪽 수정), 회사모드 승격(무거운 우회).
+> - **리스크**: 데몬 마이그레이션 = 최고위험 영역 → test-first + 3모델 리뷰 + 도그푸드 게이트. 렌더러 self-판정 치환은 범위 넓지만 기계적.
+
 - **문제:** 표시가 `activeWorkspaceId` 정체성에 묶임 — `planChannelMessageDelivery` appendToDisplay=활성만(`useChannelsEventSubscription.ts:114-116`), `selfWorkspaceId`=활성(`ChannelsPanel.tsx:691`), list/hydration이 활성 ws 질의. 휴먼이 워크스페이스별 `local-ui`로 흩어진 결과. [감사 §5, planChannelMessageDelivery]
 - **변경:**
   - 5a. `appendToDisplay`를 "활성만" → **어느 로컬 ws든 멤버인 채널이면 표시**(union).
