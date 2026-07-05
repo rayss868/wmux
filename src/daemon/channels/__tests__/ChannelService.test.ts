@@ -2516,5 +2516,17 @@ describe('ChannelService.create — P5 reserved human workspace guard (ship revi
     });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error.code).toBe('NOT_AUTHORIZED');
+    // Adversarial review: the rejection must leave NO orphaned in-memory channel.
+    // The phantom would be private + memberless (invisible to list), so the
+    // OBSERVABLE consequence is the duplicate-name check: a subsequent VALID
+    // create of the same name must SUCCEED (a leaked orphan would falsely
+    // collide). The guard now validates BEFORE the channel is pushed into state.
+    const retry = await svc.create({
+      name: 'sneaky',
+      visibility: 'private',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    expect(retry.ok).toBe(true);
   });
 });

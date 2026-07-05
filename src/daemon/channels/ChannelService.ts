@@ -602,6 +602,22 @@ export class ChannelService {
       if (this.state.channels.some((c) => c.companyId === this.companyId && c.name === name)) {
         return { ok: false, error: { code: 'INVALID_NAME', message: `Channel name already exists: ${name}` } };
       }
+      // P5: the reserved human workspace is never seeded as an initial member
+      // from create(). Symmetric with invite()'s guard — enforced daemon-side so
+      // a direct-socket caller (under the #113 ceiling) cannot bypass the
+      // main-router members[] guard and plant a phantom human row (ship review).
+      // Validated BEFORE the channel is pushed into state so a rejection leaves
+      // NO orphaned in-memory channel (adversarial review: the in-loop guard
+      // early-returned after the push, leaking a phantom row until restart).
+      if ((params.members ?? []).some((m) => m.workspaceId === HUMAN_WORKSPACE_ID)) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: 'The reserved human workspace cannot be seeded as a channel member',
+          },
+        };
+      }
       const now = this.now();
       const channel: Channel = {
         id: `ch-${randomUUID()}`,
@@ -643,19 +659,6 @@ export class ChannelService {
         },
       ];
       for (const member of params.members ?? []) {
-        // P5: the reserved human workspace is never seeded as an initial member
-        // from create(). Symmetric with invite()'s guard — enforced daemon-side
-        // so a direct-socket caller (under the #113 ceiling) cannot bypass the
-        // main-router members[] guard and plant a phantom human row (ship review).
-        if (member.workspaceId === HUMAN_WORKSPACE_ID) {
-          return {
-            ok: false,
-            error: {
-              code: 'NOT_AUTHORIZED',
-              message: 'The reserved human workspace cannot be seeded as a channel member',
-            },
-          };
-        }
         if (
           initialMembers.some(
             (m) => m.workspaceId === member.workspaceId && m.memberId === member.memberId,
