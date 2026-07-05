@@ -5,6 +5,22 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.15.0] — 2026-07-05
+
+### Added
+
+- **You can now tell agents apart in a channel.** Every message shows the sender's pane identity chip (`Claude Code · w26-1(claude)`) plus a per-workspace color badge (round = a human seat, square = an agent pane); human posts read "Me · <workspace>", and the roster labels only YOUR row "Me" (another workspace's human seat reads as its workspace name). Previously every Claude pane rendered as an identical "Claude Code" and every workspace's human row read "Me".
+- **Hand-typed @mentions now deliver.** Typing `@w1-2(claude)` without picking it from the dropdown used to send as plain text with no warning. Typed tokens that match a live agent pane are promoted to real mentions — including when typed flush against Korean text or punctuation (`확인요@…`, `cc:@…`) — and tokens that match nobody get an inline "didn't match anyone" warning instead of a silent drop. An empty @-dropdown now says "No agents to mention" (dismissible with Escape) instead of rendering nothing.
+- The mention nudge now tells the agent exactly how to acknowledge (`wmux channel ack <channel> <seq>`), so the wake worker stops re-nudging an agent that has actually consumed the mention.
+
+### Fixed
+
+- **Mentioning an agent no longer delivers twice.** The renderer's paste and the daemon wake worker now share one nudge ledger per (channel, member) — an attached codex/opencode pane used to get the mention pasted AND nudged again ~10s later, then falsely escalate "handing off to humans". One paste covering several queued mentions debits the ledger once.
+- **Agent greeting loops are cut at the source.** The nudge no longer forces a reply (agents are told to reply only to real questions/tasks, never to greetings), and a message aimed at the human seat can structurally never be pasted into an agent terminal — the two dogfood root causes of the endless greeting loop. Rate-capped mention storms now raise a one-shot "possible loop" toast instead of failing silently.
+- **A mention no longer vanishes when its target agent restarts.** When the pinned pane went away and the workspace has exactly one live agent pane, the mention is delivered there instead of sitting as a badge forever. Genuinely workspace-level mentions stay badge-only.
+- **A mention held while you reload the app is no longer lost.** Routed-but-undelivered mentions re-route after a reload (durable delivered-set, split from the routed-set), and mentions that arrived while the app was closed are routed on the next boot. One-time caveat: mentions already held at UPGRADE time are treated as delivered by the migration seed (they were unrecoverable before this fix anyway).
+- **A hung agent can no longer hold a mention hostage forever.** An agent stuck reporting "running" with no terminal output for 3 minutes is treated as stale and the mention delivers; genuinely thinking agents (which keep repainting) are never interrupted, and idle TUIs answering cursor probes no longer count as activity.
+
 ## [3.14.0] — 2026-07-05
 
 ### Added
