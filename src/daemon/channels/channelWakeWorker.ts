@@ -129,6 +129,11 @@ interface NudgeTrackerEntry {
   plainNudgedAtSeq: number;
   /** Epoch ms of the last exhaustion announcement (0 = never). */
   lastExhaustedAnnounceAt: number;
+  /** Last time we LOGGED that no eligible agent pane exists for this key —
+   *  the null-target hold would otherwise be fully silent (no nudge, no
+   *  budget spend, no exhaustion handoff), which is exactly the invisible
+   *  infinite-hold class the delivery audit flagged. Log-only, slow cadence. */
+  lastNoTargetAnnounceAt: number;
 }
 
 const keyOf = (ws: string, e: { channelId: string; memberId: string }): string =>
@@ -141,6 +146,7 @@ const freshTrackerState = (): NudgeTrackerEntry => ({
   lastMentionNudgeAt: 0,
   plainNudgedAtSeq: -1,
   lastExhaustedAnnounceAt: 0,
+  lastNoTargetAnnounceAt: 0,
 });
 
 const sanitizeLine = (s: string): string =>
@@ -287,7 +293,23 @@ export class ChannelWakeWorker {
           entry.principalId,
           this.deps.livePtyIdOf?.bind(this.deps),
         );
-        if (!target) continue; // ambiguity / no live pane / claude-only → polling fallback
+        if (!target) {
+          // Ambiguity / no live pane / claude-only / agent-less shells →
+          // polling fallback. Surface the silent hold on a slow cadence so a
+          // member that can never be targeted (e.g. its agent exited and only
+          // bare shells remain) is visible in the log instead of stalling
+          // invisibly with zero budget spend (Codex micro-pass, 2026-07-05).
+          const never = state.lastNoTargetAnnounceAt === 0;
+          if (never || this.deps.now() - state.lastNoTargetAnnounceAt >= EXHAUSTED_REANNOUNCE_MS) {
+            state.lastNoTargetAnnounceAt = this.deps.now();
+            this.tracker.set(key, state);
+            this.deps.log(
+              'info',
+              `[wake] no eligible agent pane for ${key} (${entry.unread} unread) — holding for detection/poll`,
+            );
+          }
+          continue;
+        }
         if (this.deps.now() - target.lastActivityMs < WAKE_QUIET_MS) continue; // busy — retry next tick
 
         // A failed write must not burn the nudge budget (G5 spirit: never
@@ -379,9 +401,17 @@ export function pickTargetWithPrincipal(
       const s = sessions.find((x) => x.id === ptyId && x.deferred !== true);
       if (s && s.workspaceId === workspaceId) {
         if (s.lastDetectedAgent === 'claude' && s.attached === true) return null;
-        return s;
+        // Same agent-required discipline as the heuristic fallback (Codex
+        // micro-pass on the 2026-07-05 shell-nudge fix): a registry row's
+        // ptyId can outlive the agent — the agent exits, the pane keeps its
+        // shell, the row stays live until the next upsert/purge. A direct
+        // hit on a session with NO detected agent must not auto-submit into
+        // that bare shell; fall through to the heuristic (which now refuses
+        // agent-less panes too).
+        if (s.lastDetectedAgent) return s;
       }
-      // Session gone / workspace mismatch → heuristic fallback (never guess).
+      // Session gone / workspace mismatch / agent-less pane → heuristic
+      // fallback (never guess).
     }
   }
   return pickTarget(sessions, workspaceId, memberId);

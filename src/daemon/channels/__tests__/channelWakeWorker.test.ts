@@ -464,6 +464,41 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
     expect(pickTargetWithPrincipal(sessions, 'ws-b', 'codex', undefined, undefined)?.id).toBe('b');
   });
 
+  it('a principal DIRECT HIT on an agent-less session falls through to the heuristic (no shell nudge)', () => {
+    // Codex micro-pass on the shell-nudge fix: a registry row's ptyId can
+    // outlive the agent (agent exits, pane keeps its shell, row stays live
+    // until the next upsert/purge). The direct-hit branch must carry the
+    // same agent-required discipline as the fallback.
+    const PID3 = 'pane:ws-b/pY';
+    // Direct hit points at a session with NO detected agent; the only other
+    // pane is also agent-less → null overall.
+    expect(
+      pickTargetWithPrincipal(
+        [session({ id: 'was-agent-now-shell', lastDetectedAgent: undefined })],
+        'ws-b',
+        'w2-1(codex)',
+        PID3,
+        () => 'was-agent-now-shell',
+      ),
+    ).toBeNull();
+    // Direct hit agent-less, but the heuristic SLUG-MATCHES a real agent
+    // pane → the fall-through still delivers. (With an auto-name memberId
+    // the two-pane case stays null — the heuristic never guesses between a
+    // shell and an unmatched agent pane; that ambiguity rule is unchanged.)
+    expect(
+      pickTargetWithPrincipal(
+        [
+          session({ id: 'was-agent-now-shell', lastDetectedAgent: undefined }),
+          session({ id: 'real-agent', lastDetectedAgent: 'codex' }),
+        ],
+        'ws-b',
+        'codex',
+        PID3,
+        () => 'was-agent-now-shell',
+      )?.id,
+    ).toBe('real-agent');
+  });
+
   it('the heuristic fallback carries the same agent-required discipline (no shell nudge)', () => {
     const PID2 = 'pane:ws-b/pX';
     // Stale principal → heuristic fallback; the only pane is an agent-less
