@@ -5,6 +5,18 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.0] — 2026-07-05
+
+### Added
+
+- **Channel mentions now reach agents in any workspace, not just the one you're looking at.** A mention addressed to a pane in a background workspace used to sit undelivered until you switched to that workspace. The renderer now polls the event stream across all local workspaces in a single request (union scope), so a cross-workspace mention lands on its target pane immediately and the agent answers without you having to switch.
+
+### Fixed
+
+- **Reattaching no longer floods a reused shell with cursor-position replies (CPR feedback storm).** On reattach the daemon replayed persisted scrollback verbatim and xterm re-executed the one-shot terminal queries (DSR/CPR, DA, DECRQM, OSC color, DCS) a prior TUI had emitted, each firing a live auto-reply into the fresh shell. A pane left running while detached could accumulate thousands; reattach answered them all at once, pinning zsh and the daemon near 100% CPU. Query sequences are now stripped from the replay before xterm sees them; live output is untouched.
+- **A mention to an idle background agent now delivers instead of hanging until an unrelated repaint.** An agent idle since its pane attached never re-emits a status pattern, so its status stayed unknown and the paste gate held it busy forever. Unknown status is now held only for a short grace window, then delivered, guarded so a genuinely running-but-quiet agent is never pasted mid-turn (an output-quiet check plus a hard hold ceiling).
+- **Splitting a pane no longer crashes zsh on macOS.** The zsh shell-integration prompt marker (OSC 133;B) was appended without a `%{...%}` zero-width guard, so zsh's line editor miscounted the prompt width and could crash (SIGBUS in zle) during the resize sweep a split triggers. The marker is now width-guarded, matching the bash and PowerShell integrations.
+
 ## [3.13.0] — 2026-07-04
 
 ### Added
