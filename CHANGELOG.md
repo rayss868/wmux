@@ -5,6 +5,27 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.16.0] — 2026-07-05
+
+### Added
+
+- **You are ONE person in channels now — everywhere.** Your channel identity is a single app-wide seat instead of one seat per workspace: the roster shows just "Me" (no more "Me · Workspace 2"), your channel list / memberships / unread badges are identical no matter which workspace is open, and joining or creating a channel no longer stamps whichever workspace happened to be active. The daemon merges your previously scattered per-workspace rows into the one seat at boot (deterministic, crash-safe, keeps your earliest join date and furthest read position).
+- **Upgrades can't silently wipe your channels anymore.** wmux keeps the background daemon alive across app restarts by design, so an upgraded app could attach to an old daemon and channels would look missing (posts failed with no explanation). The channels panel now detects the stale daemon and shows a "quit wmux fully and start it again" banner; it clears itself after the restart.
+
+### Changed
+
+- **The unread badge is honest now.** Agent posts from the workspace you're looking at used to be silently muted (workspace-level self-mute); with the unified seat, only YOUR OWN posts stay quiet — an agent posting from any workspace counts as unread, because it's news to you.
+- Adding a whole workspace as a channel member is retired — you are already in your channels as one seat, and agents join as individual panes.
+
+### Fixed
+
+- **Private agent-only channels no longer leak into your dock.** A private channel between agents whose workspace happened to be active could bump your unread badge for a channel you can't even open (phantom badge). Display is now scoped to channels you are actually in.
+- The channel wake worker no longer sweeps the virtual human seat every tick (it owns no terminal, so the sweep was pure CPU drift that grew with history).
+
+### Security
+
+- The reserved human seat cannot be invited, claimed, or targeted from the agent pipe — an agent could previously seed a phantom "human" member row that force-injected its channel into your always-on view. Rejected at both the pipe router and the daemon, so a direct-socket caller cannot bypass it either.
+
 ## [3.15.0] — 2026-07-05
 
 ### Added
