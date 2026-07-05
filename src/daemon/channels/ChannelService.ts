@@ -38,7 +38,10 @@ import {
   type ChannelRecipientStatus,
   type ChannelState,
   type ChannelVisibility,
+  HUMAN_WORKSPACE_ID,
+  HUMAN_MEMBER_ID,
 } from '../../shared/channels';
+import { HUMAN_SELF_PRINCIPAL_ID } from '../../shared/principals';
 import type { ChannelStateWriter } from './ChannelStateWriter';
 
 /**
@@ -362,6 +365,34 @@ export class ChannelService {
           member.lastReadSeq = head;
         }
       }
+    }
+    // P5 (unified human identity) — merge every per-workspace human row into
+    // THE single virtual-workspace row. Pre-P5, joining/creating stamped the
+    // then-active workspace, scattering the one human across `(ws-X,
+    // 'local-ui')` rows and binding the channel view to the active workspace.
+    // Deterministic on every construction (same crash-safety contract as the
+    // lastReadSeq backfill above — and it runs AFTER it, so every cursor is a
+    // number): a pre-P5 state re-merges identically, a post-P5 state is a
+    // no-op, and the merged shape persists on the next regular save.
+    for (const channel of this.state.channels) {
+      const rows = this.state.members[channel.id] ?? [];
+      const humanRows = rows.filter((m) => m.memberId === HUMAN_MEMBER_ID);
+      if (humanRows.length === 0) continue;
+      if (humanRows.length === 1 && humanRows[0].workspaceId === HUMAN_WORKSPACE_ID) continue;
+      this.state.members[channel.id] = [
+        {
+          workspaceId: HUMAN_WORKSPACE_ID,
+          memberId: HUMAN_MEMBER_ID,
+          // Earliest seat wins: the human has been "in" since their first join.
+          joinedAt: Math.min(...humanRows.map((m) => m.joinedAt)),
+          // Widest visibility + furthest cursor: the human could already see
+          // everything any seat saw, and consumed up to the furthest ack.
+          historyFromSeq: Math.min(...humanRows.map((m) => m.historyFromSeq)),
+          lastReadSeq: Math.max(...humanRows.map((m) => m.lastReadSeq ?? 0)),
+          principalId: HUMAN_SELF_PRINCIPAL_ID,
+        },
+        ...rows.filter((m) => m.memberId !== HUMAN_MEMBER_ID),
+      ];
     }
     // Hydrate the idempotency LRU from persisted state (R9). Without
     // this, a daemon restart loses every `clientMsgId → seq` mapping

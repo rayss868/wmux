@@ -270,6 +270,28 @@ export const EMPTY_CHANNEL_STATE: ChannelState = {
  */
 export const DEFAULT_COMPANY_ID = 'co-default';
 
+/**
+ * P5 (unified human identity) — the VIRTUAL workspace that owns every human
+ * membership row. The human is ONE principal, not one-per-workspace: joining
+ * or creating a channel used to stamp whichever workspace happened to be
+ * active (`(ws-X, 'local-ui')`), scattering "you" across rows and binding the
+ * whole channel view to the active workspace. All human rows merge into
+ * `(HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID)` at daemon load — deterministic and
+ * crash-safe, the same contract as the lastReadSeq backfill. No collision is
+ * possible: real workspace ids are `ws-<uuid>`.
+ *
+ * Trust: only the renderer-local mutate path (channels:mutate-local) may claim
+ * this workspace id; a pipe caller asserting it is rejected — same class as
+ * the 'local-ui' spoof guard (a2a.channel.rpc.ts).
+ */
+export const HUMAN_WORKSPACE_ID = 'ws-human';
+
+/** The reserved human/GUI member id (one seat, app-wide). The pipe rejects it
+ *  as a caller identity (a2a.channel.rpc.ts spoof guard); the renderer
+ *  substitutes the localized "Me" at display time. Single source of truth —
+ *  renderer modules and the daemon previously each carried their own copy. */
+export const HUMAN_MEMBER_ID = 'local-ui';
+
 /** Channel name length bounds. `CHANNEL_NAME_MIN` is the empty-length
  *  floor; the regex below requires at least 1 character. */
 export const CHANNEL_NAME_MIN = 1;
