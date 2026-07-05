@@ -221,6 +221,7 @@ export type RpcMethod =
   | 'a2a.channel.invite'
   | 'a2a.channel.kick'
   | 'a2a.channel.ack'
+  | 'a2a.channel.nudgeRecorded'
   | 'a2a.channel.unread'
   | 'a2a.channel.purgeMembership'
   | 'a2a.principal.upsert'
@@ -352,6 +353,7 @@ export const ALL_RPC_METHODS = [
   'a2a.channel.invite',
   'a2a.channel.kick',
   'a2a.channel.ack',
+  'a2a.channel.nudgeRecorded',
   'a2a.channel.unread',
   'a2a.channel.purgeMembership',
   'a2a.principal.upsert',

@@ -140,6 +140,7 @@ export function createPasteGateState(): PasteGateState {
  *  or ESC[24;80R (cursor-position report). An idle TUI answers these on a timer
  *  without doing any real work, so a chunk that reduces to ONLY these must not
  *  count as activity. */
+// eslint-disable-next-line no-control-regex -- ESC (0x1b) is required to match DSR/CPR sequences
 const CPR_SEQ_RE = /\x1b\[[0-9;?]*[Rn]/g;
 
 /** Record that `ptyId` just produced output at `now`. Fed by the renderer's
