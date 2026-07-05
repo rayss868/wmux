@@ -349,6 +349,7 @@ interface RenderPanelArgs {
   channelMentions?: Record<string, number>;
   activeChannelId?: string | null;
   company?: Company | null;
+  daemonStale?: boolean;
   onSelect?: (id: string) => void;
   onCreate?: (params: { name: string; visibility: 'public' | 'private' }) => boolean;
 }
@@ -361,6 +362,7 @@ function renderPanel(args: RenderPanelArgs = {}): string {
       channelMentions: args.channelMentions ?? {},
       activeChannelId: args.activeChannelId ?? null,
       company: args.company === undefined ? makeCompany() : args.company,
+      daemonStale: args.daemonStale,
       onSelect: args.onSelect ?? ((id) => recordedSelects.push(id)),
       onCreate:
         args.onCreate ??
@@ -580,5 +582,17 @@ describe('ChannelsPanel — createChannelOptimistic wiring', () => {
     expect(after.channels[channel.id]).toBeDefined();
     expect(after.channels[channel.id].companyId).toBe(DEFAULT_COMPANY_ID);
     expect(after.channelMembers[channel.id]).toHaveLength(1);
+  });
+});
+
+describe('ChannelsPanelView — stale-daemon banner (ship review C1)', () => {
+  it('renders the restart banner when daemonStale is true', () => {
+    const html = renderPanel({ daemonStale: true });
+    expect(html).toContain('data-channels-daemon-stale');
+  });
+
+  it('renders NO banner by default (current daemon / flag unset)', () => {
+    expect(renderPanel()).not.toContain('data-channels-daemon-stale');
+    expect(renderPanel({ daemonStale: false })).not.toContain('data-channels-daemon-stale');
   });
 });

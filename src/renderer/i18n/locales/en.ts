@@ -666,6 +666,8 @@ export const en = {
   'channels.memberLiveTitle': 'Agent pane is live',
   'channels.memberStaleTitle': 'Agent pane is gone or restarting',
   'channels.joinedToast': 'Added {workspace} to #{channel}',
+  'channels.daemonStaleBanner':
+    'Channels were updated, but the background daemon is still running the old version. Quit wmux fully and start it again to finish the update.',
   'channels.alreadyMemberToast': '{workspace} is already in #{channel}',
   'channels.joinFailedToast': "Couldn't add {workspace} to the channel",
   'channels.leftToast': 'Left #{channel}',

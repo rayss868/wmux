@@ -41,7 +41,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
 import type { Channel, ChannelMember, ChannelMessage } from '../../shared/channels';
-import { HUMAN_WORKSPACE_ID } from '../../shared/channels';
+import { HUMAN_WORKSPACE_ID, CHANNELS_EPOCH } from '../../shared/channels';
 
 /** Dependencies for the pure hydration routine. */
 export interface ChannelHydrationDeps {
@@ -52,6 +52,12 @@ export interface ChannelHydrationDeps {
   workspaceId: string;
   /** Catalog setter (`channelsSlice.setChannels`). */
   setChannels: (channels: Channel[], members: Record<string, ChannelMember[]>) => void;
+  /** Ship review C1 — stale-daemon signal. Called with `true` when the daemon's
+   *  `a2a.channel.list` reply carries a missing/lower `channelsEpoch` (a
+   *  long-lived pre-P5 daemon survived the app upgrade: the human's channel
+   *  identity can't resolve until it restarts), `false` when the epoch is
+   *  current. Optional so tests/legacy callers are untouched. */
+  setDaemonStale?: (stale: boolean) => void;
   /** Liveness guard. When it returns false the routine bails before
    *  dispatching (the hook passes `() => !disposed`). Defaults to always-live
    *  for tests. */
@@ -108,6 +114,13 @@ export async function hydrateChannelsCatalog(deps: ChannelHydrationDeps): Promis
   const rawChannels = (listEnv as { channels?: unknown }).channels;
   if (!Array.isArray(rawChannels)) return 0;
   const channels = rawChannels as Channel[];
+
+  // Ship review C1 — stale-daemon detection. A CURRENT daemon stamps
+  // `channelsEpoch >= CHANNELS_EPOCH` on the list reply; a pre-P5 daemon omits
+  // the field. Signal BOTH directions so the banner self-clears once the daemon
+  // restarts (this routine re-runs on every reconnect).
+  const rawEpoch = (listEnv as { channelsEpoch?: unknown }).channelsEpoch;
+  deps.setDaemonStale?.((typeof rawEpoch === 'number' ? rawEpoch : 0) < CHANNELS_EPOCH);
 
   // Fetch members per channel in parallel (best-effort — a channel whose
   // getMembers fails hydrates with no member entry and is reconciled on the
@@ -240,6 +253,7 @@ export function useChannelsHydration(): void {
         rpc: bridge.rpc,
         workspaceId,
         setChannels: useStore.getState().setChannels,
+        setDaemonStale: useStore.getState().setChannelsDaemonStale,
         isCurrent: () => !disposed,
       });
     };

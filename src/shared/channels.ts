@@ -292,6 +292,21 @@ export const HUMAN_WORKSPACE_ID = 'ws-human';
  *  renderer modules and the daemon previously each carried their own copy. */
 export const HUMAN_MEMBER_ID = 'local-ui';
 
+/**
+ * Channels schema epoch — the DAEMON-SIDE migration generation the current
+ * renderer requires. The daemon reports it additively on the
+ * `a2a.channel.list` response; the renderer compares on hydration and shows a
+ * "restart wmux" banner when the value is missing/lower (a long-lived daemon
+ * survives app upgrades by design, so a P5 renderer can find itself attached
+ * to a pre-P5 daemon whose state still holds scattered per-workspace human
+ * rows — posts would fail NOT_A_MEMBER with no explanation; ship review C1).
+ * Bump ONLY when a new daemon load-time channel migration is a prerequisite
+ * for renderer correctness.
+ *
+ * Epoch 1 = P5 unified human identity (ws-human row merge).
+ */
+export const CHANNELS_EPOCH = 1;
+
 /** Channel name length bounds. `CHANNEL_NAME_MIN` is the empty-length
  *  floor; the regex below requires at least 1 character. */
 export const CHANNEL_NAME_MIN = 1;

@@ -591,6 +591,8 @@ export const ko = {
   'channels.memberLiveTitle': '에이전트 판이 살아 있습니다',
   'channels.memberStaleTitle': '에이전트 판이 사라졌거나 재시작 중입니다',
   'channels.joinedToast': '{workspace}을(를) #{channel}에 추가했습니다',
+  'channels.daemonStaleBanner':
+    '채널이 업데이트되었지만 백그라운드 데몬이 이전 버전으로 실행 중입니다. wmux를 완전히 종료한 뒤 다시 시작하면 적용됩니다.',
   'channels.alreadyMemberToast': '{workspace}은(는) 이미 #{channel}에 있습니다',
   'channels.joinFailedToast': '{workspace} 추가에 실패했습니다',
   'channels.leftToast': '#{channel}에서 나갔습니다',

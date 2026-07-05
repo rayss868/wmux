@@ -174,6 +174,12 @@ export interface ChannelsSlice {
    *  workspace — a strict subset of `channelUnread`, surfaced as a stronger
    *  dock badge. Cleared with unread by `markChannelRead` / `setActiveChannel`. */
   channelMentions: Record<string, number>;
+  /** Ship review C1 — true when the attached daemon reported a channels epoch
+   *  older than this renderer requires (a long-lived pre-P5 daemon survived the
+   *  app upgrade). Drives the "restart wmux" banner in ChannelsPanel; set from
+   *  hydration on every (re)connect, so it self-clears after a daemon restart. */
+  channelsDaemonStale: boolean;
+  setChannelsDaemonStale: (stale: boolean) => void;
 
   // ── User-initiated actions (optimistic local mutations) ─────────
   // Each action takes the daemon-resolved result as a parameter so the
@@ -348,6 +354,12 @@ export const createChannelsSlice: StateCreator<
   activeChannelId: null,
   channelUnread: {},
   channelMentions: {},
+  channelsDaemonStale: false,
+
+  setChannelsDaemonStale: (stale) =>
+    set((state: StoreState) => {
+      state.channelsDaemonStale = stale;
+    }),
 
   setActiveChannel: (channelId) =>
     set((state: StoreState) => {

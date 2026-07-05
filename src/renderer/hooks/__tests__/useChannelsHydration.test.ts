@@ -10,6 +10,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { hydrateChannelsCatalog, loadChannelHistory } from '../useChannelsHydration';
 import type { Channel, ChannelMember, ChannelMessage } from '../../../shared/channels';
+import { CHANNELS_EPOCH } from '../../../shared/channels';
 
 function makeChannel(overrides: Partial<Channel> = {}): Channel {
   return {
@@ -266,5 +267,44 @@ describe('loadChannelHistory (P0 recent-history load)', () => {
     const n = await loadChannelHistory({ rpc, channelId: 'ch-1', nextSeq: 10, workspaceId: 'ws-self', apply });
     expect(n).toBe(0);
     expect(apply).not.toHaveBeenCalled();
+  });
+});
+
+describe('hydrateChannelsCatalog — stale-daemon epoch detection (ship review C1)', () => {
+  it('flags stale when the list reply has NO channelsEpoch (pre-P5 daemon)', async () => {
+    const setDaemonStale = vi.fn();
+    await hydrateChannelsCatalog({
+      rpc: makeRpc({ list: () => ({ ok: true, channels: [makeChannel()] }) }),
+      workspaceId: 'ws-human',
+      setChannels: vi.fn(),
+      setDaemonStale,
+    });
+    expect(setDaemonStale).toHaveBeenCalledWith(true);
+  });
+
+  it('clears stale when the daemon reports a current epoch (self-heal after restart)', async () => {
+    const setDaemonStale = vi.fn();
+    await hydrateChannelsCatalog({
+      rpc: makeRpc({
+        list: () => ({ ok: true, channelsEpoch: CHANNELS_EPOCH, channels: [makeChannel()] }),
+      }),
+      workspaceId: 'ws-human',
+      setChannels: vi.fn(),
+      setDaemonStale,
+    });
+    expect(setDaemonStale).toHaveBeenCalledWith(false);
+  });
+
+  it('does NOT signal on a failed list (no false banner while the daemon reconnects)', async () => {
+    const setDaemonStale = vi.fn();
+    await hydrateChannelsCatalog({
+      rpc: vi.fn(async () => {
+        throw new Error('pipe down');
+      }),
+      workspaceId: 'ws-human',
+      setChannels: vi.fn(),
+      setDaemonStale,
+    });
+    expect(setDaemonStale).not.toHaveBeenCalled();
   });
 });

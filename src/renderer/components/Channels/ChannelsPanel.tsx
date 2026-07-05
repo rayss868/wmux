@@ -405,6 +405,10 @@ export interface ChannelsPanelViewProps {
    *  members from the daemon (manual re-sync for when a workspace/agent that
    *  came online isn't reflected yet). */
   onRefresh?: () => void;
+  /** Ship review C1 — the attached daemon predates the channels migration this
+   *  renderer requires (it survived the app upgrade). Renders a "restart wmux"
+   *  banner; posting/joining may fail with NOT_A_MEMBER until the restart. */
+  daemonStale?: boolean;
 }
 
 export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactElement {
@@ -421,6 +425,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
     onCollapse,
     collapseDir = 'right',
     onRefresh,
+    daemonStale = false,
   } = props;
   const t = props.t ?? ((k: string) => k);
 
@@ -461,6 +466,23 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
       className="border-t border-[var(--bg-surface)] py-2"
       style={{ borderColor: 'var(--border-soft)' }}
     >
+      {/* Ship review C1 — stale-daemon banner. The long-lived daemon survived
+            the app upgrade without the channels migration this renderer needs;
+            channels may look missing and posts may fail until it restarts.
+            Informational only (no auto-kill: the daemon holds live sessions). */}
+      {daemonStale && (
+        <div
+          data-channels-daemon-stale
+          className="mx-3 mb-1.5 px-2.5 py-1.5 rounded text-[10px] font-mono leading-snug text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.7)]"
+          style={{ border: '1px solid var(--border-soft)' }}
+          {...tokenAttrs('textSub', 'text')}
+        >
+          <span aria-hidden="true">⚠ </span>
+          {t('channels.daemonStaleBanner') ||
+            'Channels were updated, but the background daemon is still on the old version. Quit wmux fully and start it again to finish.'}
+        </div>
+      )}
+
       {/* Header row — section title + actions (new-channel + collapse).
             The collapse button is merged here from the old ChannelDock header
             so the "Channels" title renders once, not twice. */}
@@ -668,6 +690,7 @@ export function ChannelsPanel(): React.ReactElement {
   const channelUnread = useStore((s) => s.channelUnread);
   const channelMentions = useStore((s) => s.channelMentions);
   const activeChannelId = useStore((s) => s.activeChannelId);
+  const channelsDaemonStale = useStore((s) => s.channelsDaemonStale);
   const company = useStore((s) => s.company);
   // P5: the human's creator identity is the reserved ws-human seat (see
   // selfWorkspaceId below), independent of which workspace is active.
@@ -819,6 +842,7 @@ export function ChannelsPanel(): React.ReactElement {
       onCollapse={() => setChannelDockVisible(false)}
       collapseDir={sidebarPosition !== 'right' ? 'right' : 'left'}
       onRefresh={handleRefresh}
+      daemonStale={channelsDaemonStale}
       t={t}
     />
   );
