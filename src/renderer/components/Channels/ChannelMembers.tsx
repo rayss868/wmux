@@ -35,6 +35,7 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { IconX, IconUsers } from '../icons';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
+import { rosterMemberLabel } from '../../channels/authorDisplay';
 import { buildMentionCandidates } from './Composer';
 
 /** Stable UI member id — the human/GUI participates as one member per
@@ -177,10 +178,14 @@ export function ChannelMembersView({
                   : 0;
               // R2: agent row liveness — when stale, dim it + gray dot.
               const liveness = !isHuman ? agentLiveness?.(m) : undefined;
-              // R2 (drop local-ui labeling): human rows read as "Me · <ws>", agent
-              // rows as "<memberId> · <ws>". The internal token (local-ui) is never
-              // exposed anywhere — so the roster reads as "humans + agents".
-              const primary = isHuman ? (t('channels.me') || 'Me') : m.memberId;
+              // R2 (drop local-ui labeling) + identity audit C-A3: only the
+              // viewer's OWN row reads "Me" — every workspace's GUI seat shares
+              // the reserved member id, so keying on isHuman alone labeled ALL
+              // of them "Me". Another workspace's human seat now reads as its
+              // workspace name (rosterMemberLabel).
+              const wsLabel = workspaceLabel(m.workspaceId);
+              const label = rosterMemberLabel(m, selfWorkspaceId, selfMemberId, wsLabel);
+              const primary = label.primary || (t('channels.me') || 'Me');
               return (
                 <div
                   key={`${m.workspaceId}:${m.memberId}`}
@@ -198,9 +203,11 @@ export function ChannelMembersView({
                       style={{ backgroundColor: liveness === 'live' ? 'var(--accent-green)' : 'var(--text-subtle)' }}
                     />
                   )}
-                  <span className="truncate flex-1 min-w-0 text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')} title={`${primary} · ${workspaceLabel(m.workspaceId)}`}>
+                  <span className="truncate flex-1 min-w-0 text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')} title={label.showWorkspaceSuffix ? `${primary} · ${wsLabel}` : primary}>
                     {primary}
-                    <span className="text-[var(--text-muted)]"> · {workspaceLabel(m.workspaceId)}</span>
+                    {label.showWorkspaceSuffix && (
+                      <span className="text-[var(--text-muted)]"> · {wsLabel}</span>
+                    )}
                   </span>
                   {behind > 0 && (
                     <span

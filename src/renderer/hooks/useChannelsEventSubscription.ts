@@ -55,9 +55,15 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { loadChannelHistory, hydrateChannelsCatalog } from './useChannelsHydration';
 import { routeChannelMentionToInbox } from './channelMentionInbox';
-import { isChannelMentionHandled, markChannelMentionHandled } from './channelMentionHandled';
-import { isNudgeRateLimited, recordNudge } from './channelMentionRateLimit';
+import {
+  isChannelMentionHandled,
+  markChannelMentionHandled,
+  isChannelMentionDeliveredPersisted,
+  markChannelMentionDeliveredPersisted,
+} from './channelMentionHandled';
+import { isNudgeRateLimited, recordNudge, shouldWarnLoopSuspect } from './channelMentionRateLimit';
 import { findLeafPanes } from './a2aAddressing';
+import { panePrincipalId } from '../../shared/principals';
 import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
@@ -224,9 +230,6 @@ export function useChannelsEventSubscription(): void {
     let disposed = false;
     let cursor = 0;
     let inFlight = false;
-    // A4: the first poll establishes a ring-head baseline (see the guard in
-    // `tick`) instead of replaying still-in-ring history as if it were new.
-    let primed = false;
     // Generation guard for catalog re-hydration: hydrateChannelsCatalog awaits
     // list/member RPCs before setChannels, so a slower OLDER hydrate could land
     // after a newer one and overwrite the sidebar/roster with stale membership.
@@ -242,8 +245,11 @@ export function useChannelsEventSubscription(): void {
     // background pane pty output to the renderer too (pty.handler.ts, no mounted
     // gating), so this sees every local pane. Optional-chained for the (test /
     // pre-mount) window where electronAPI isn't installed yet.
-    const removePtyDataListener = window.electronAPI?.pty?.onData?.((id) =>
-      notePtyOutput(pasteGate, id, Date.now()),
+    const removePtyDataListener = window.electronAPI?.pty?.onData?.((id, data) =>
+      // 2c: pass the chunk so pure DSR/CPR query-answer echo (an idle TUI
+      // answering cursor probes) does not count as activity and pin the pane
+      // under the output-quiet bar until the hold ceiling.
+      notePtyOutput(pasteGate, id, Date.now(), data),
     );
 
     // Drain queued channel mentions into their target panes' PTYs. Reads live
@@ -264,8 +270,17 @@ export function useChannelsEventSubscription(): void {
       const selfWs = st.workspaces.find((w) => w.id === wsId);
       if (!selfWs) return;
       const selfLeaves = findLeafPanes(selfWs.rootPane);
+      // 2b: ptys currently hosting a detected agent — the ws-level single-agent
+      // delivery rule needs to know when the workspace has exactly one.
+      const agentPtys = new Set<string>();
+      for (const leaf of selfLeaves) {
+        for (const s of leaf.surfaces) {
+          if (s.ptyId && st.surfaceAgent[s.ptyId]) agentPtys.add(s.ptyId);
+        }
+      }
       flushMentions(wsId, selfLeaves, {
         getUndeliveredChannelMentionTasks: st.getUndeliveredChannelMentionTasks,
+        agentPtys,
         // surfaceAgent (NOT surfaceAgentStatus) is the busy source: surfaceAgentStatus
         // is attention-only and DELETES running/idle entries (paneSlice.setSurfaceAgentStatus),
         // so a running agent would read as undefined→idle and get pasted mid-turn (codex P1).
@@ -284,8 +299,70 @@ export function useChannelsEventSubscription(): void {
           isMentionPasteBusy(st.surfaceAgent[ptyId]?.status, ptyId, Date.now(), pasteGate),
         deliverNudge: (ptyId, text) => submitBracketedPasteToPty(ptyId, text),
         markDelivered: st.markChannelMentionDelivered,
-        isRateLimited: isNudgeRateLimited,
+        // 2f: rate cap unchanged; the first capped observation per window also
+        // raises a one-shot user-visible toast (the cap itself only console-
+        // warned, so a mention loop looked like "the agent ignored me").
+        isRateLimited: (ptyId) => {
+          const limited = isNudgeRateLimited(ptyId, Date.now());
+          if (limited && shouldWarnLoopSuspect(ptyId, Date.now())) {
+            useStore.getState().pushToast({
+              level: 'info',
+              message:
+                'Possible agent mention loop — auto-nudges for a pane are rate-capped; queued mentions stay pullable via a2a_task_query.',
+            });
+          }
+          return limited;
+        },
         recordNudge,
+        // 2a-2 + 2d: after a successful paste, persist the durable delivered
+        // mark (reload no longer resurrects it) and report the nudge to the
+        // daemon wake worker's shared ledger (its re-nudge budget counts this
+        // paste instead of immediately double-pasting the same member).
+        onNudgeDelivered: (_ptyId, tasks) => {
+          const st2 = useStore.getState();
+          const bridge = st2.channelsRpc();
+          // One paste = ONE nudge per (channel, member): a group of N mentions
+          // must not fire N RPCs and burn N ledger slots (CAP is 3 — that would
+          // trigger a premature human handoff; ship perf review).
+          const reported = new Set<string>();
+          for (const task of tasks) {
+            const md = task.history?.[0]?.metadata as Record<string, unknown> | undefined;
+            const handledKey = md?.['handledKey'];
+            if (typeof handledKey === 'string' && handledKey) {
+              markChannelMentionDeliveredPersisted(handledKey);
+            }
+            const channelId = md?.['channelId'];
+            if (!bridge || typeof channelId !== 'string' || !channelId) continue;
+            // Resolve the ledger member key from the pane's R2 roster row FIRST
+            // (authoritative — the worker keys its budget on the row's memberId):
+            // GUI-composed mentions carry no memberId at all (only MCP posts
+            // do), and a sender-supplied mention.memberId can drift from the
+            // row ("w16-1" vs "w16-1(claude)"), silently no-op'ing the debit
+            // (ship testing + adversarial reviews). mentionMemberId is the
+            // fallback for degraded tasks with no pinned pane.
+            let memberId = '';
+            const paneId = task.metadata.to.paneId;
+            if (paneId) {
+              const pid = panePrincipalId(wsId, paneId);
+              memberId =
+                st2.channelMembers[channelId]?.find((m) => m.principalId === pid)?.memberId ?? '';
+            }
+            if (!memberId && typeof md?.['mentionMemberId'] === 'string') {
+              memberId = md['mentionMemberId'] as string;
+            }
+            if (!memberId) continue;
+            const dedupKey = `${channelId}|${memberId}`;
+            if (reported.has(dedupKey)) continue;
+            reported.add(dedupKey);
+            void bridge
+              .mutateLocal('a2a.channel.nudgeRecorded', {
+                channelId,
+                verifiedWorkspaceId: wsId,
+                memberId,
+              })
+              .catch(() => undefined);
+          }
+        },
       }, opts);
     };
 
@@ -344,10 +421,22 @@ export function useChannelsEventSubscription(): void {
           // keep only events stamped at/after mount and process them normally;
           // pre-mount history is skipped (durable history is shown by the
           // open-channel hydration path, not by ring replay).
-          if (!primed) {
-            primed = true;
-            result.events = result.events.filter((e) => e.ts >= mountTs);
-          }
+          // 2d amendment: keep pre-mount channel.message events for ROUTING
+          // (a mention that arrived while the app was closed must still
+          // enqueue — for an attached-Claude target the wake worker declines,
+          // so this replay is its ONLY active delivery path). Display/unread
+          // stays mount-gated per event below; lifecycle/catalog history is
+          // still dropped (stale stops / catalog re-hydrates on mount anyway).
+          // Routing is idempotent: persisted handled/delivered sets +
+          // deterministic task ids. Applied on EVERY batch — a boot backlog
+          // larger than EVENT_POLL_MAX spans multiple polls, and gating this
+          // on the first batch let batch 2+ re-inflate badges and route
+          // through a not-yet-hydrated pane tree (adversarial review F5).
+          // Post-catch-up the filter is a no-op (the cursor is monotonic, so
+          // later polls never return pre-mount events).
+          result.events = result.events.filter(
+            (e) => e.ts >= mountTs || e.type === 'channel.message',
+          );
           cursor = result.nextCursor;
           if (result.resync) {
             // FIX-MULTI-WS: recovery below is ACTIVE-workspace display state
@@ -439,8 +528,10 @@ export function useChannelsEventSubscription(): void {
                 workspaceId,
                 localIds,
               );
-              // Display cache / unread / mention badges: ACTIVE workspace only.
-              if (plan.appendToDisplay) st.appendMessageFromEvent(channelEvent.message);
+              // Display cache / unread / mention badges: ACTIVE workspace only,
+              // and never for pre-mount ring history (A4 — badge inflation).
+              const preMount = event.ts < mountTs;
+              if (plan.appendToDisplay && !preMount) st.appendMessageFromEvent(channelEvent.message);
               // Route on REPLAYED events too (no historical drop): a mention
               // that arrived while this poll was down must still enqueue on
               // restart (codex R6). routeChannelMentionToInbox is idempotent
@@ -459,7 +550,14 @@ export function useChannelsEventSubscription(): void {
               // live agent picks it up via role:agent query). Idempotent by
               // per-target deterministic task id.
               for (const wsId of plan.routeWorkspaces) {
-                routeChannelMentionToInbox(channelEvent.message, wsId, leavesFor(wsId), {
+                const routeLeaves = leavesFor(wsId);
+                // Boot-replay guard: routing a pane-pinned mention through a
+                // not-yet-hydrated (empty) pane tree would degrade it to a
+                // ws-level badge task. Skip — the events are ring history; the
+                // next full reload retries, and the wake worker still covers
+                // non-attached-Claude targets via the durable cursor.
+                if (preMount && routeLeaves.length === 0) continue;
+                routeChannelMentionToInbox(channelEvent.message, wsId, routeLeaves, {
                   getTask: st.getTask,
                   createA2aTask: st.createA2aTask,
                   channelName: (id) => useStore.getState().channels[id]?.name ?? id,
@@ -468,6 +566,9 @@ export function useChannelsEventSubscription(): void {
                   publish: publishA2aTask,
                   isHandled: isChannelMentionHandled,
                   markHandled: markChannelMentionHandled,
+                  // 2d: lets the route guard re-route a pane-targeted mention
+                  // that was routed-but-never-pasted before a reload.
+                  isDeliveredPersisted: isChannelMentionDeliveredPersisted,
                 });
               }
             } else if (event.type === 'agent.lifecycle') {

@@ -355,6 +355,10 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.channel.archive':     { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.kick':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.ack':         { capability: 'a2a.channel.read', riskClass: 'a2a' },
+  // Shared nudge ledger (2a-2) — renderer-only mutateLocal path, deliberately
+  // absent from the pipe router (a forgeable pipe caller could suppress another
+  // member's re-nudges). Entry here for RpcMethod completeness, same as kick.
+  'a2a.channel.nudgeRecorded': { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.unread':      { capability: 'a2a.channel.read', riskClass: 'a2a' },
   // R2 — purge + the three principal writes are also humans-only (renderer-only
   // mutateLocal path, not registered on the pipe router). Entries here for

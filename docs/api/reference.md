@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v3.14.0 sources.** This file is produced by
+> **Generated from wmux v3.15.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **128** methods (`ALL_RPC_METHODS` in
+Total: **129** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -169,6 +169,7 @@ Total: **128** methods (`ALL_RPC_METHODS` in
 | `a2a.channel.invite` | `a2a.channel.send` | `a2a` |
 | `a2a.channel.kick` | `a2a.channel.send` | `a2a` *(renderer-only; not routed on the main pipe/MCP path)* |
 | `a2a.channel.ack` | `a2a.channel.read` | `a2a` |
+| `a2a.channel.nudgeRecorded` | `a2a.channel.send` | `a2a` |
 | `a2a.channel.unread` | `a2a.channel.read` | `a2a` |
 | `a2a.channel.purgeMembership` | `a2a.channel.send` | `a2a` |
 | `a2a.principal.upsert` | `wmux.internal` |  |
