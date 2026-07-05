@@ -148,6 +148,12 @@
 - **변경:** `ChannelStateWriter` prune 술어를 load 시 1회(`ChannelService.ts:347`) 외에 **저빈도 인터벌**(또는 leave/kick/purge가 채널 비운 직후 기회적)로. [감사 A-F4, 라이브 "test1" members:[] 잔존]
 - **검증:** 유닛 — emptySince 7d 초과 채널이 인터벌에 purge.
 
+### 4d. (도그푸드 2026-07-05 추가) 부팅 직후 미방문 워크스페이스의 에이전트가 초대 후보에 안 뜸
+- **증상:** `npm start` 시 이미 살아있는(복원된) Claude pane이 있는데 "에이전트 판 추가" 목록이 비어 있음 — 그 워크스페이스를 한 번 방문해야 후보로 등장.
+- **원인:** 후보 판정이 `surfaceAgent[ptyId]?.name`(렌더러 감지, `useNotificationListener`→`setSurfaceAgent`)에만 의존. 감지는 터미널 mount/출력에서 발화하므로 미방문 워크스페이스는 영영 미감지. 데몬은 세션에 `lastDetectedAgent`를 이미 알고 있고(wake worker가 그걸 씀), R2 principal 레지스트리(`principals.json`)에도 agentSlug·ptyId가 있는데 렌더러 부팅 하이드레이션이 이를 후보 소스로 안 씀.
+- **수정 방향:** 부팅 시 principal 레지스트리(또는 데몬 세션 레코드)의 pane-agent들을 후보/`surfaceAgent`에 시드 — liveness stale은 회색 후보로. 방문 시 실감지가 덮어씀.
+- **우선순위:** P2 (멤버 초대 UX의 첫 관문 — P5 통합 휴먼 뷰와 같은 릴리스에 실으면 좋음)
+
 ### 4c. principalId 없는 멤버 liveness 표시
 - **변경:** `ChannelMembers.tsx:391` principalId 없는 행(외부 MCP/레거시)에 "liveness 불명" 상태 렌더(현재 아무것도 안 함). "stale 제거" affordance. [감사 C-B2]
 - **검증:** GUI — principalId 없는 죽은 멤버가 불명 상태로 구분됨.
