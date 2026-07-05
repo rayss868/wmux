@@ -60,6 +60,15 @@ export interface DaemonReplacementHooks {
   checkLiveness: (pid: number) => ProcessLiveness;
   /** Verified SIGKILL against an explicit pid (definitiveOnly mode). */
   killVerifiedPid: (pid: number) => boolean;
+  /**
+   * True when the user asked for "Shut down wmux completely". dispose()
+   * fires on EVERY quit (before-quit calls it unconditionally, ahead of the
+   * detach-vs-teardown branch), so a dispose observed mid-replacement must
+   * only kill the freshly spawned daemon when the quit is a full shutdown —
+   * a normal detach Quit wants a live daemon left behind (Codex delta
+   * review). Absent means "never full shutdown" (kill suppressed).
+   */
+  isFullShutdown?: () => boolean;
   /** Test seam; production omits (real setTimeout). */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -352,11 +361,19 @@ export class DaemonRespawnController {
       return null;
     }
     if (this.disposed) {
-      // Quit raced the spawn itself. A detached fresh daemon surviving a
-      // "shut down completely" would violate the user's explicit teardown —
-      // kill what we just made (verified, explicit pid). Its recovery may be
-      // interrupted mid-replay; the next boot's snapshot path absorbs that.
-      if (freshInfo.spawned) rep.killVerifiedPid(freshInfo.pid);
+      // Quit raced the spawn itself. Two quit modes, opposite duties
+      // (dispose() runs on BOTH — before-quit calls it ahead of the
+      // detach-vs-teardown branch):
+      //  - full shutdown: a detached fresh daemon surviving "shut down
+      //    completely" violates the explicit teardown — kill what we just
+      //    made (verified, explicit pid). Interrupted recovery is absorbed
+      //    by the next boot's snapshot path.
+      //  - normal detach Quit: the fresh daemon LIVING ON is the desired
+      //    end state (it holds the recovered sessions; next launch reuses
+      //    it) — killing it would break tmux-style persistence.
+      if (freshInfo.spawned && (rep.isFullShutdown?.() ?? false)) {
+        rep.killVerifiedPid(freshInfo.pid);
+      }
       return null;
     }
     const freshClient = this.deps.createClient(freshInfo.pipeName, freshInfo.authToken);
@@ -375,14 +392,16 @@ export class DaemonRespawnController {
       return null;
     }
     if (this.disposed) {
-      // dispose() landed during connect()/ping (Codex code-review #1b): a
-      // detached fresh daemon must not survive a "shut down completely" —
-      // kill what we just made before bailing. Any window narrower than
-      // this (dispose after this check) is covered by before-quit's
-      // pid-file kill, which runs AFTER dispose and the fresh daemon has
-      // already written daemon.pid at acquireLock.
+      // dispose() landed during connect()/ping (Codex code-review #1b).
+      // Kill the fresh daemon ONLY for a full shutdown (see the disposed
+      // check above — a normal detach Quit wants it alive). Any window
+      // narrower than this (dispose after this check) is covered by
+      // before-quit's pid-file kill, which runs AFTER dispose and the
+      // fresh daemon has already written daemon.pid at acquireLock.
       await freshClient.disconnect().catch(() => { /* best-effort */ });
-      if (freshInfo.spawned) rep.killVerifiedPid(freshInfo.pid);
+      if (freshInfo.spawned && (rep.isFullShutdown?.() ?? false)) {
+        rep.killVerifiedPid(freshInfo.pid);
+      }
       return null;
     }
     this.deps.logger.info(

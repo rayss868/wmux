@@ -752,6 +752,43 @@ describe('DaemonRespawnController stale-daemon replacement', () => {
     expect(h.deps.onInstall).toHaveBeenCalledTimes(1);
   });
 
+  it('dispose landing at the fresh spawn kills the new daemon ONLY on full shutdown', async () => {
+    // Codex delta review: dispose() fires on EVERY quit (before-quit calls
+    // it ahead of the detach-vs-teardown branch), so the kill must be gated
+    // on the full-shutdown signal — a detach Quit wants the fresh daemon
+    // alive with the recovered sessions.
+    const runScenario = async (fullShutdown: boolean) => {
+      let ensureCall = 0;
+      const hooks = makeReplacementHooks({
+        isFullShutdown: () => fullShutdown,
+      });
+      const h = makeHarness({
+        replacement: hooks,
+        config: { healthIntervalMs: 0 },
+        ensureDaemonImpl: async () => {
+          ensureCall++;
+          if (ensureCall === 1) {
+            return { pid: 4242, authToken: 't', pipeName: 'p', spawned: false };
+          }
+          // dispose lands exactly between the fresh spawn resolving and the
+          // controller's disposed check.
+          h.controller.dispose();
+          return { pid: 5000, authToken: 't2', pipeName: 'p', spawned: true };
+        },
+      });
+      const oldClient = new FakeDaemonClient();
+      oldClient.rpcImpl = async () => OLD_PONG;
+      h.clientQueue.push(oldClient); // fresh client never gets created
+      const result = await h.controller.bootstrap();
+      expect(result).toBeNull();
+      expect(h.deps.onInstall).not.toHaveBeenCalled();
+      return hooks.killCalls;
+    };
+
+    expect(await runScenario(true)).toEqual([5000]);  // full shutdown: kill
+    expect(await runScenario(false)).toEqual([]);      // detach quit: leave alive
+  });
+
   it('dispose during replacement cancels before the fresh spawn (before-quit race)', async () => {
     let ensureCall = 0;
     // Object-typed gate instead of a closed-over `let`: TS control-flow

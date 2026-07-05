@@ -968,6 +968,10 @@ app.on('ready', async () => {
       },
       checkLiveness: checkProcessLiveness,
       killVerifiedPid: (pid) => killVerifiedDaemonPid(pid, { definitiveOnly: true }),
+      // dispose() fires on every quit; only a tray "Shut down completely"
+      // may kill a freshly spawned replacement daemon (detach Quit wants
+      // it left alive with the recovered sessions).
+      isFullShutdown: () => fullShutdownRequested,
     },
   });
   markBoot('daemon-bootstrap-start');
