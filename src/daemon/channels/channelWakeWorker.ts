@@ -134,6 +134,15 @@ interface NudgeTrackerEntry {
 const keyOf = (ws: string, e: { channelId: string; memberId: string }): string =>
   `${e.channelId}|${ws}|${e.memberId}`;
 
+/** Single initializer for tracker entries — recordExternalNudge and tickOnce
+ *  must stay in lockstep when the ledger state grows a field (ship review). */
+const freshTrackerState = (): NudgeTrackerEntry => ({
+  mentionNudges: 0,
+  lastMentionNudgeAt: 0,
+  plainNudgedAtSeq: -1,
+  lastExhaustedAnnounceAt: 0,
+});
+
 const sanitizeLine = (s: string): string =>
   // eslint-disable-next-line no-control-regex
   s.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, NUDGE_MAX_LEN);
@@ -184,6 +193,34 @@ export class ChannelWakeWorker {
   }
 
   /**
+   * Shared nudge ledger (remediation 2a-2): the RENDERER just pasted a channel
+   * mention into this member's pane (its Stop-hook delivery path). Count it
+   * against the same per-(channel, member) budget this worker's own injections
+   * use, so the worker's next action lands on the NEXT backoff slot instead of
+   * an immediate duplicate paste — while an unacked mention still escalates to
+   * exhaustion (the human handoff is a feature, not a bug). The tracker entry
+   * is cleared by the normal ack path (unread hits 0 on a later tick).
+   *
+   * Returns false without recording when the (channel, member) tuple is not a
+   * REAL membership row of that workspace (3-specialist ship-review consensus:
+   * unvalidated keys are never enumerated by the unread sweep, so they would
+   * live for the daemon's lifetime — an unbounded-growth vector for any caller
+   * that can reach the RPC).
+   */
+  recordExternalNudge(channelId: string, workspaceId: string, memberId: string): boolean {
+    const known = this.deps
+      .unreadFor(workspaceId)
+      .some((e) => e.channelId === channelId && e.memberId === memberId);
+    if (!known) return false;
+    const key = keyOf(workspaceId, { channelId, memberId });
+    const state = this.tracker.get(key) ?? freshTrackerState();
+    state.mentionNudges += 1;
+    state.lastMentionNudgeAt = this.deps.now();
+    this.tracker.set(key, state);
+    return true;
+  }
+
+  /**
    * Every scheduled entry point goes through here: a sweep runs on a bare
    * timer, so ANY dep throw (a PTY write racing session death, corrupted
    * channel state) would otherwise become an uncaught exception and take
@@ -210,12 +247,7 @@ export class ChannelWakeWorker {
           this.tracker.delete(key);
           continue;
         }
-        const state = this.tracker.get(key) ?? {
-          mentionNudges: 0,
-          lastMentionNudgeAt: 0,
-          plainNudgedAtSeq: -1,
-          lastExhaustedAnnounceAt: 0,
-        };
+        const state = this.tracker.get(key) ?? freshTrackerState();
 
         const wantMention = entry.mentionUnread > 0;
         if (wantMention) {

@@ -65,6 +65,11 @@ const CHANNEL_MUTATING_METHODS: ReadonlySet<string> = new Set<string>([
   // same-user pipe client could forge another member's receipt). The renderer
   // drives it on channel read; route it through this pinned, pipe-unreachable path.
   'a2a.channel.ack',
+  // Shared nudge ledger (remediation 2a-2): the renderer reports a mention
+  // paste it delivered so the daemon wake worker's re-nudge budget counts it
+  // (no immediate double-paste). Renderer-only for the same reason as kick —
+  // a forgeable pipe caller could suppress another member's re-nudges (#113).
+  'a2a.channel.nudgeRecorded',
   // R2 — system cleanup / registry writes. Same humans-only convention as
   // kick: deliberately absent from the pipe router, reachable only via this
   // renderer-only path. purge is the system action that sweeps dead member

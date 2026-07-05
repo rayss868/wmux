@@ -425,3 +425,47 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
     expect(pickTargetWithPrincipal(sessions, 'ws-b', 'codex', undefined, undefined)?.id).toBe('b');
   });
 });
+
+describe('recordExternalNudge (2a-2 shared nudge ledger)', () => {
+  it('counts a renderer paste as a spent slot — the worker backs off instead of double-pasting, then retries', () => {
+    const h = makeHarness();
+    h.setSessions([session({ id: 'pty-1', lastDetectedAgent: 'codex', lastActivityMs: 0 })]);
+    h.setEntries([entry({ memberId: 'codex', mentionUnread: 1 })]);
+    h.setNow(1_000_000);
+    // Renderer reports its paste before the worker's first sweep.
+    h.worker.recordExternalNudge('ch-1', 'ws-b', 'codex');
+    h.worker.tickOnce();
+    // Slot 0 was consumed by the renderer; slot-1 backoff (60s) not yet elapsed.
+    expect(h.writes).toHaveLength(0);
+    // After the backoff elapses the worker retries (unacked mention escalates).
+    h.setNow(1_000_000 + MENTION_NUDGE_BACKOFF_MS[1]);
+    h.worker.tickOnce();
+    expect(h.writes.length).toBeGreaterThan(0);
+  });
+
+  it('external records alone can exhaust the budget → human handoff still fires', () => {
+    const h = makeHarness();
+    h.setSessions([session({ id: 'pty-1', lastDetectedAgent: 'codex', lastActivityMs: 0 })]);
+    h.setEntries([entry({ memberId: 'codex', mentionUnread: 1 })]);
+    for (let i = 0; i < MENTION_NUDGE_CAP; i++) h.worker.recordExternalNudge('ch-1', 'ws-b', 'codex');
+    h.worker.tickOnce();
+    expect(h.writes).toHaveLength(0);
+    expect(h.broadcasts.some((b) => b['type'] === 'channel.nudgeExhausted')).toBe(true);
+  });
+});
+
+describe('recordExternalNudge — membership validation (unbounded-growth guard)', () => {
+  it('rejects tuples that are not live membership rows; accepts and debits real ones', () => {
+    const h = makeHarness();
+    h.setEntries([entry({ memberId: 'codex', mentionUnread: 1 })]);
+    expect(h.worker.recordExternalNudge('ch-bogus', 'ws-b', 'codex')).toBe(false);
+    expect(h.worker.recordExternalNudge('ch-1', 'ws-b', 'forged-member')).toBe(false);
+    expect(h.worker.recordExternalNudge('ch-1', 'ws-b', 'codex')).toBe(true);
+    // Only the accepted record spent a slot: the next sweep is in backoff
+    // (rejected keys must not have created tracker entries of their own).
+    h.setSessions([session({})]);
+    h.setNow(1_000_000);
+    h.worker.tickOnce();
+    expect(h.writes).toHaveLength(0);
+  });
+});

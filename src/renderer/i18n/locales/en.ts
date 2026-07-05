@@ -692,6 +692,8 @@ export const en = {
   'channels.sendTooltip': 'Send',
   'channels.postFailed': 'Post failed',
   'channels.mentionDropped': 'These @mentions did not land (not a channel member): {names}',
+  'channels.mentionUnmatched': 'These @mentions matched no one — not delivered: {names}',
+  'channels.mentionNoMatch': 'No agents to mention',
 } as const;
 
 export type TranslationKey = keyof typeof en;

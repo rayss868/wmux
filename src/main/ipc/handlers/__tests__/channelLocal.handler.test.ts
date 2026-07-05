@@ -96,6 +96,9 @@ describe('channelLocal.handler — CHANNEL_MUTATE_LOCAL', () => {
       // in the first-party GUI can eject another member.
       'a2a.channel.kick',
       'a2a.channel.ack',
+      // shared nudge ledger (2a-2): renderer-only for the same reason as kick —
+      // a forgeable pipe caller could suppress another member's re-nudges.
+      'a2a.channel.nudgeRecorded',
     ]) {
       rpc.mockClear();
       const r = await handler(fakeEvent, method, { verifiedWorkspaceId: 'ws-ceo' });

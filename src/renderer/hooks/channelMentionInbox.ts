@@ -37,6 +37,11 @@ import type { ChannelMessage } from '../../shared/channels';
 import type { Task, Message, Part, Artifact, TaskState, PaneLeaf } from '../../shared/types';
 import { resolveSenderPaneAddress } from './a2aAddressing';
 
+/** Reserved GUI member id — the human seat (one per workspace, no PTY). Mirrors
+ *  the daemon's reserved identity (a2a.channel.rpc.ts spoof reject) and the UI
+ *  (ChannelMembers UI_MEMBER_ID). A mention of THIS member targets the HUMAN. */
+const HUMAN_MEMBER_ID = 'local-ui';
+
 /** Dependencies injected so the routing logic stays a pure, unit-testable
  *  function (no store / window coupling). The hook wires these to the real
  *  store actions + EventBus publisher. */
@@ -70,6 +75,12 @@ export interface MentionInboxDeps {
   isHandled: (taskId: string) => boolean;
   /** Record that this mention was routed (persisted). */
   markHandled: (taskId: string) => void;
+  /** Durable "this mention's nudge was actually PASTED" check (remediation 2d).
+   *  Routed ≠ delivered: a pane-targeted mention that was routed but still HELD
+   *  (busy agent) when the app reloaded must be re-routed, or it is silently
+   *  lost. Optional for back-compat with tests/callers that don't wire it —
+   *  absent behaves like the pre-2d strict handled guard. */
+  isDeliveredPersisted?: (handledKey: string) => boolean;
 }
 
 /** Deterministic, per-target task id for a channel mention — idempotent across
@@ -98,8 +109,17 @@ export function routeChannelMentionToInbox(
   selfLeaves: PaneLeaf[],
   deps: MentionInboxDeps,
 ): string[] {
-  // Only act on mentions of THIS workspace.
-  const selfMentions = (message.mentions ?? []).filter((m) => m.workspaceId === selfWorkspaceId);
+  // Only act on mentions of THIS workspace — and NEVER on a mention of the
+  // human seat (memberId 'local-ui'). The a2a inbox is an AGENT delivery
+  // channel (consumed via a2a_task_query); a human is reached by the GUI dock
+  // badge (appendMessageFromEvent, independent of this task). Dogfood RCA
+  // 2026-07-05: a Phase-2b regression pasted "@local-ui …" into the single
+  // live agent pane of the human's workspace — an agent then "answered" a
+  // greeting meant for the person, feeding the loop. A human mention creates
+  // NO inbox task (badge only); it can never reach an agent PTY.
+  const selfMentions = (message.mentions ?? []).filter(
+    (m) => m.workspaceId === selfWorkspaceId && m.memberId !== HUMAN_MEMBER_ID,
+  );
   if (selfMentions.length === 0) return [];
   // R1 — same-workspace posts. A post authored INSIDE this workspace may still
   // legitimately mention a SIBLING agent pane (pane1 → pane2); only a TRUE
@@ -171,10 +191,20 @@ export function routeChannelMentionToInbox(
     if (seen.has(taskId)) continue;
     seen.add(taskId);
     // Skip if already routed — in THIS session (getTask, live store) OR a prior
-    // one (isHandled, persisted). The persisted check is what stops a reload's
-    // boot-replay from resurrecting a completed mention task (A3): after a reload
-    // the store is empty so getTask misses, but isHandled still remembers.
-    if (deps.getTask(taskId) || deps.isHandled(handledKey)) continue;
+    // one (persisted sets). 2d split (held-mention loss fix):
+    //   - delivered (nudge actually pasted, persisted) → always skip.
+    //   - handled-but-NOT-delivered:
+    //       · ws-level mention (no mn.paneId) → skip (route-time semantics —
+    //         badge-only tasks would otherwise resurrect on every boot).
+    //       · PANE-targeted mention → RE-ROUTE after a reload. This is the
+    //         mention that was routed, then HELD (busy agent), then lost when
+    //         the reload emptied the in-memory task store. Known trade-off: a
+    //         pane mention the agent consumed via a2a_task_query WITHOUT a
+    //         paste (rare — the auto-paste usually wins) can re-route once
+    //         after a reboot; a duplicate ping beats a silently lost one.
+    if (deps.getTask(taskId)) continue;
+    if (deps.isDeliveredPersisted?.(handledKey)) continue;
+    if (deps.isHandled(handledKey) && (!mn.paneId || !deps.isDeliveredPersisted)) continue;
 
     const parts: Part[] = [{ kind: 'text', text: message.text }];
     const history: Message[] = [
@@ -188,6 +218,20 @@ export function routeChannelMentionToInbox(
           source: 'channel-mention',
           channelId: message.channelId,
           seq: message.seq,
+          // 2d + 2a-2: carried so the FLUSH side can (a) persist the durable
+          // delivered mark under the same key the route guard checks, and
+          // (b) report the nudge to the daemon wake worker's shared ledger
+          // keyed by the mentioned member row. mn.memberId may be absent
+          // (workspace-level mention) — the ledger report is skipped then.
+          handledKey,
+          ...(mn.memberId ? { mentionMemberId: mn.memberId } : {}),
+          // F1 (adversarial review): marks a task whose mention PINNED a pane at
+          // post time. Only such a task may use the 2b degraded single-agent
+          // delivery — a ws-level mention BY CONSTRUCTION (human mention with
+          // member_id omitted, deliberate workspace ping) must never be pasted
+          // into "the one live agent"; that is how a message meant for the
+          // human reached an agent PTY (greeting-loop RCA).
+          ...(mn.paneId ? { mentionPaneId: mn.paneId } : {}),
         },
       },
     ];

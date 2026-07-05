@@ -347,3 +347,83 @@ describe('routeChannelMentionToInbox', () => {
     expect(published).toHaveLength(0);
   });
 });
+
+describe('2d — delivered-vs-handled route guard + metadata stamps', () => {
+  const leaves2d = [leaf('pane-A', [surface('s1', 'pty-1')])];
+  const paneMsg = makeMessage({
+    workspaceId: 'ws-sender',
+    mentions: [
+      { workspaceId: 'ws-me', name: 'me', memberId: 'w1-1(claude)', paneId: 'pane-A', ptyId: 'pty-1' },
+    ],
+  });
+
+  it('handled + NOT delivered + pane-targeted → re-routes (held-mention loss fix)', () => {
+    const { deps, created } = makeDeps({ isDeliveredPersisted: () => false });
+    deps.markHandled(channelMentionTaskId('ch-1', 5, 'pane-A')); // prior-session route
+    const ids = routeChannelMentionToInbox(paneMsg, 'ws-me', leaves2d, deps);
+    expect(ids).toHaveLength(1);
+    expect(created).toHaveLength(1);
+  });
+
+  it('delivered (persisted) → never re-routes', () => {
+    const { deps, created } = makeDeps({ isDeliveredPersisted: () => true });
+    const ids = routeChannelMentionToInbox(paneMsg, 'ws-me', leaves2d, deps);
+    expect(ids).toHaveLength(0);
+    expect(created).toHaveLength(0);
+  });
+
+  it('handled ws-level mention keeps route-time semantics (no badge resurrection)', () => {
+    const wsMsg = makeMessage({ mentions: [{ workspaceId: 'ws-me', name: 'me' }] });
+    const { deps, created } = makeDeps({ isDeliveredPersisted: () => false });
+    deps.markHandled(channelMentionTaskId('ch-1', 5));
+    expect(routeChannelMentionToInbox(wsMsg, 'ws-me', leaves2d, deps)).toHaveLength(0);
+    expect(created).toHaveLength(0);
+  });
+
+  it('without isDeliveredPersisted wired, handled blocks (pre-2d back-compat)', () => {
+    const { deps, created } = makeDeps();
+    deps.markHandled(channelMentionTaskId('ch-1', 5, 'pane-A'));
+    expect(routeChannelMentionToInbox(paneMsg, 'ws-me', leaves2d, deps)).toHaveLength(0);
+    expect(created).toHaveLength(0);
+  });
+
+  it('stamps handledKey + mentionMemberId into the task history metadata', () => {
+    const { deps, created } = makeDeps({ isDeliveredPersisted: () => false });
+    routeChannelMentionToInbox(paneMsg, 'ws-me', leaves2d, deps);
+    const md = created[0]?.history[0]?.metadata as Record<string, unknown>;
+    expect(md['handledKey']).toBe(channelMentionTaskId('ch-1', 5, 'pane-A'));
+    expect(md['mentionMemberId']).toBe('w1-1(claude)');
+    // F1: 2b degraded-delivery eligibility marker (pane pinned at post time)
+    expect(md['mentionPaneId']).toBe('pane-A');
+  });
+});
+
+describe('RCA 2026-07-05 — human (local-ui) mentions never enter the agent inbox', () => {
+  const leaves = [leaf('pane-A', [surface('s1', 'pty-1')])];
+
+  it('a @local-ui mention creates NO inbox task (dock badge only, never an agent PTY)', () => {
+    const msg = makeMessage({
+      workspaceId: 'ws-sender',
+      mentions: [{ workspaceId: 'ws-me', name: 'Me', memberId: 'local-ui' }],
+    });
+    const { deps, created } = makeDeps();
+    expect(routeChannelMentionToInbox(msg, 'ws-me', leaves, deps)).toEqual([]);
+    expect(created).toHaveLength(0);
+  });
+
+  it('an agent mention in the SAME workspace still routes (human filter is memberId-specific)', () => {
+    const msg = makeMessage({
+      workspaceId: 'ws-sender',
+      mentions: [
+        { workspaceId: 'ws-me', name: 'Me', memberId: 'local-ui' },
+        { workspaceId: 'ws-me', name: 'w1-1(claude)', memberId: 'w1-1(claude)', paneId: 'pane-A', ptyId: 'pty-1' },
+      ],
+    });
+    const { deps, created } = makeDeps();
+    const ids = routeChannelMentionToInbox(msg, 'ws-me', leaves, deps);
+    expect(ids).toHaveLength(1);
+    expect(created).toHaveLength(1);
+    // the created task targets the agent pane, not the human
+    expect(created[0]?.to.paneId).toBe('pane-A');
+  });
+});

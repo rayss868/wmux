@@ -7,6 +7,8 @@ import {
   UNKNOWN_STATUS_GRACE_MS,
   OUTPUT_QUIET_MS,
   MAX_UNKNOWN_HOLD_MS,
+  RUNNING_STALE_MS,
+  KNOWN_STABLE_MS,
 } from '../channelMentionPasteGate';
 
 describe('isMentionPasteBusy', () => {
@@ -49,20 +51,45 @@ describe('isMentionPasteBusy', () => {
     const s = createPasteGateState();
     // Unknown at attach → held.
     expect(isMentionPasteBusy(undefined, 'p', 0, s)).toBe(true);
-    // 'running' broadcast lands before the grace elapses → still busy, and the
-    // grace clock is cleared so a later flap re-arms fresh.
+    // 'running' broadcast lands before the grace elapses → still busy. The unknown
+    // clock is NOT cleared on this sub-KNOWN_STABLE_MS blip (flap guard): a 1-tick
+    // known sample must not re-arm the unknown window / hold ceiling, so
+    // firstUnknownAt is retained until the status proves stable.
     expect(isMentionPasteBusy('running', 'p', 1000, s)).toBe(true);
-    expect(s.firstUnknownAt.has('p')).toBe(false);
+    expect(s.firstUnknownAt.has('p')).toBe(true);
   });
 
-  it('resets the grace clock when status resolves then goes unknown again', () => {
+  // The flap fix (task 2c-②): a known status only clears the unknown clock after
+  // it has held for KNOWN_STABLE_MS. Replaces the old "brief resolve clears the
+  // clock immediately" test, which encoded the pre-fix behavior.
+  it('clears the unknown clock only after a STABLE known status (>= KNOWN_STABLE_MS)', () => {
     const s = createPasteGateState();
-    isMentionPasteBusy(undefined, 'p', 0, s); // arm at 0
-    isMentionPasteBusy('waiting', 'p', 500, s); // resolve → clears clock
-    // Unknown again at t=1000 re-arms; grace measured from 1000, not 0.
-    expect(isMentionPasteBusy(undefined, 'p', 1000, s)).toBe(true);
-    expect(isMentionPasteBusy(undefined, 'p', 1000 + UNKNOWN_STATUS_GRACE_MS - 1, s)).toBe(true);
-    expect(isMentionPasteBusy(undefined, 'p', 1000 + UNKNOWN_STATUS_GRACE_MS, s)).toBe(false);
+    isMentionPasteBusy(undefined, 'p', 0, s); // arm the unknown clock at 0
+    // A brief known blip does NOT clear the clock (flap guard).
+    isMentionPasteBusy('waiting', 'p', 500, s); // known streak starts at 500
+    expect(s.firstUnknownAt.has('p')).toBe(true); // still armed
+    // Once the known status has persisted KNOWN_STABLE_MS it is a real resolution.
+    isMentionPasteBusy('waiting', 'p', 500 + KNOWN_STABLE_MS, s); // stable → clears
+    expect(s.firstUnknownAt.has('p')).toBe(false);
+    // Unknown again re-arms fresh; grace is measured from the re-arm, not t=0.
+    const t = 500 + KNOWN_STABLE_MS + 1000;
+    expect(isMentionPasteBusy(undefined, 'p', t, s)).toBe(true);
+    expect(isMentionPasteBusy(undefined, 'p', t + UNKNOWN_STATUS_GRACE_MS - 1, s)).toBe(true);
+    expect(isMentionPasteBusy(undefined, 'p', t + UNKNOWN_STATUS_GRACE_MS, s)).toBe(false);
+  });
+
+  it('a transient known blip does NOT reset the unknown-hold ceiling (flap fix)', () => {
+    const s = createPasteGateState();
+    // Arm the unknown clock at t=0.
+    isMentionPasteBusy(undefined, 'p', 0, s);
+    // Deep into the hold, one stray 'running' sample lands (a detector blip).
+    isMentionPasteBusy('running', 'p', MAX_UNKNOWN_HOLD_MS - 5000, s);
+    // The blip did NOT clear the clock (streak < KNOWN_STABLE_MS) …
+    expect(s.firstUnknownAt.has('p')).toBe(true);
+    // … so the ceiling is still measured from t=0 and fires on schedule. Under the
+    // old clear-on-known behavior the blip would have re-armed the clock and
+    // pushed delivery a full MAX_UNKNOWN_HOLD later — a silent extra hold.
+    expect(isMentionPasteBusy(undefined, 'p', MAX_UNKNOWN_HOLD_MS, s)).toBe(false);
   });
 
   it('honors a custom grace window', () => {
@@ -166,5 +193,106 @@ describe('isMentionPasteBusy', () => {
     expect(s.lastOutputAt.has('dead')).toBe(false);
     expect(s.firstUnknownAt.has('live')).toBe(true);
     expect(s.lastOutputAt.has('live')).toBe(true);
+  });
+
+  // ── Stale-running guard (task 2c-①, RCA 2026-07-05): a hung 'running' agent
+  // that emits nothing must not pin the mention forever; a thinking agent that
+  // keeps repainting its status line must stay held (regression guard 941a639).
+
+  it('a hung running agent (output-quiet for RUNNING_STALE_MS) delivers as stale', () => {
+    const s = createPasteGateState();
+    // First 'running' sight with no prior output anchors the observation start at 0.
+    expect(isMentionPasteBusy('running', 'p', 0, s)).toBe(true);
+    expect(s.lastOutputAt.get('p')).toBe(0); // anchored
+    // Still 'running' but quiet for < RUNNING_STALE_MS → held.
+    expect(isMentionPasteBusy('running', 'p', RUNNING_STALE_MS - 1, s)).toBe(true);
+    // Quiet for >= RUNNING_STALE_MS → treat as hung, deliver.
+    expect(isMentionPasteBusy('running', 'p', RUNNING_STALE_MS, s)).toBe(false);
+  });
+
+  it('a thinking running agent that keeps emitting stays held past RUNNING_STALE_MS (regression: 941a639)', () => {
+    const s = createPasteGateState();
+    // First 'running' sight anchors the observation start at 0.
+    expect(isMentionPasteBusy('running', 'p', 0, s)).toBe(true);
+    // The agent repaints its status line ~1s; each real (non-CPR) chunk refreshes
+    // the anchor. Advance well past RUNNING_STALE_MS in 1s steps.
+    let t = 0;
+    while (t < RUNNING_STALE_MS + 10_000) {
+      t += 1000;
+      notePtyOutput(s, 'p', t); // real output refreshes lastOutputAt
+      // Total elapsed since attach exceeds RUNNING_STALE_MS, but the anchor is
+      // never older than 1s → NOT stale → still held. A frozen anchor would have
+      // delivered mid-turn (the 941a639 bug).
+      expect(isMentionPasteBusy('running', 'p', t, s)).toBe(true);
+    }
+    // The anchor really is fresh (last refresh == last t), not the t=0 seed.
+    expect(s.lastOutputAt.get('p')).toBe(t);
+  });
+
+  it('honors a custom running-stale window', () => {
+    const s = createPasteGateState();
+    // grace/quiet/maxHold left default (undefined); staleMs = 1000.
+    isMentionPasteBusy('running', 'p', 0, s, undefined, undefined, undefined, 1000);
+    expect(s.lastOutputAt.get('p')).toBe(0); // anchored on first sight
+    expect(isMentionPasteBusy('running', 'p', 999, s, undefined, undefined, undefined, 1000)).toBe(true);
+    expect(isMentionPasteBusy('running', 'p', 1000, s, undefined, undefined, undefined, 1000)).toBe(false);
+  });
+
+  it('notePtyOutput skips DSR/CPR-only chunks (idle cursor answers are not activity)', () => {
+    const s = createPasteGateState();
+    // A lone cursor-position report / device-status query → NOT activity → no stamp.
+    notePtyOutput(s, 'p', 100, '\x1b[24;80R');
+    expect(s.lastOutputAt.has('p')).toBe(false);
+    notePtyOutput(s, 'p', 100, '\x1b[6n');
+    expect(s.lastOutputAt.has('p')).toBe(false);
+    // Several concatenated cursor sequences → still only chatter → no stamp.
+    notePtyOutput(s, 'p', 100, '\x1b[6n\x1b[24;80R');
+    expect(s.lastOutputAt.has('p')).toBe(false);
+    // Real output (even with a trailing CPR) IS activity → stamp.
+    notePtyOutput(s, 'p', 200, '\x1b[24;80Rhello');
+    expect(s.lastOutputAt.get('p')).toBe(200);
+    // Omitting data preserves the original always-stamp behavior.
+    notePtyOutput(s, 'p', 300);
+    expect(s.lastOutputAt.get('p')).toBe(300);
+  });
+
+  it('prunePasteGateState drops dead ptys from the stableKnownSince map too', () => {
+    const s = createPasteGateState();
+    // Populate all three maps for both ptys.
+    isMentionPasteBusy(undefined, 'live', 0, s);
+    isMentionPasteBusy(undefined, 'dead', 0, s);
+    notePtyOutput(s, 'live', 10);
+    notePtyOutput(s, 'dead', 10);
+    isMentionPasteBusy('running', 'live', 20, s); // stamps stableKnownSince
+    isMentionPasteBusy('running', 'dead', 20, s);
+    expect(s.stableKnownSince.has('dead')).toBe(true);
+
+    prunePasteGateState(s, new Set(['live']));
+
+    // Dead pty gone from ALL three maps; live pty retained in stableKnownSince.
+    expect(s.firstUnknownAt.has('dead')).toBe(false);
+    expect(s.lastOutputAt.has('dead')).toBe(false);
+    expect(s.stableKnownSince.has('dead')).toBe(false);
+    expect(s.stableKnownSince.has('live')).toBe(true);
+  });
+});
+
+describe('notePtyOutput — remainder judging (adversarial review F11b)', () => {
+  it('an empty chunk is not activity', () => {
+    const st = createPasteGateState();
+    notePtyOutput(st, 'p', 1_000, '');
+    expect(st.lastOutputAt.has('p')).toBe(false);
+  });
+
+  it('CPR echo mixed with real bytes still counts as activity', () => {
+    const st = createPasteGateState();
+    notePtyOutput(st, 'p', 1_000, '\x1b[24;80Rhello');
+    expect(st.lastOutputAt.get('p')).toBe(1_000);
+  });
+
+  it('multiple CPR sequences with nothing else are not activity', () => {
+    const st = createPasteGateState();
+    notePtyOutput(st, 'p', 1_000, '\x1b[24;80R\x1b[6n\x1b[1;1R');
+    expect(st.lastOutputAt.has('p')).toBe(false);
   });
 });

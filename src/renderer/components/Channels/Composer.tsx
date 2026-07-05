@@ -169,6 +169,127 @@ export function detectMentionToken(
   return null;
 }
 
+// ─── Typed @-token promotion (submit-time) ──────────────────────────────
+
+/** The mention row a candidate contributes — identical in shape to the row
+ *  `applyMention` pushes into `picked`, so an auto-promoted (never-clicked)
+ *  token and a dropdown-selected one are indistinguishable downstream. */
+function candidateMention(c: MentionCandidate): ChannelMention {
+  return { workspaceId: c.workspaceId, paneId: c.paneId, ptyId: c.ptyId, name: c.insertToken };
+}
+
+/** Dedup identity for a mention row: a pane is addressed by (workspaceId,
+ *  paneId) — the same key `applyMention` dedups on. */
+function mentionKey(m: { workspaceId: string; paneId?: string }): string {
+  return `${m.workspaceId}\u0000${m.paneId ?? ''}`;
+}
+
+/** True when `idx` sits at a token boundary: end-of-string, or a char that
+ *  cannot be part of an insert token. Auto names are `w<n>-<n>(<slug>)` —
+ *  letters, digits, `-`, `(`, `)` (underscore folded in defensively). A
+ *  trailing token char means the typed run is LONGER than the candidate token
+ *  (`@w1-2(claude)x`), so it is not an exact-token match. */
+function isTokenBoundary(text: string, idx: number): boolean {
+  if (idx >= text.length) return true;
+  return !/[A-Za-z0-9()_-]/.test(text[idx]);
+}
+
+/**
+ * P2e — submit-time promotion of hand-typed @tokens (audit C-C1/C-C2). Scans
+ * `text` for `@<insertToken>` runs that EXACTLY match a candidate's insert token
+ * (the same token the dropdown inserts, `@${insertToken} `) and promotes them
+ * into the mentions payload even when the user never opened the dropdown — the
+ * silent-drop bug where a typed @token shipped as plain text (no mention fired,
+ * no warning). Matching is longest-token-first so a token that is a prefix of
+ * another (`w1-2` vs `w1-2(claude)`) never shadows the longer one. `picked`
+ * (dropdown selections) is folded into the same token table and deduped against,
+ * so a token that was both clicked and typed appears once, and a picked mention
+ * whose @token was deleted from the body is dropped (it no longer scans).
+ * `unmatched` collects `@runs` (with the leading `@`) that match no candidate so
+ * the caller can warn "did not match anyone — not delivered".
+ *
+ * PURE + exported for unit tests (the packaged Electron UI can't be automated).
+ *
+ * v1 scope: @tokens inside fenced code blocks / inline code are NOT
+ * distinguished — a `@w1-2(claude)` written inside `code` still promotes. The
+ * only structural filter is the `@` word boundary (start-of-line or after
+ * whitespace, never mid-word, so `a@b` emails are skipped) — mirroring
+ * detectMentionToken.
+ */
+export function promoteTypedMentions(
+  text: string,
+  candidates: MentionCandidate[],
+  picked: ChannelMention[],
+): { mentions: ChannelMention[]; unmatched: string[] } {
+  // token → row to emit. Candidates auto-promote; picked overwrite so a dropdown
+  // selection's exact row wins on a token collision (identical shape anyway).
+  const byToken = new Map<string, ChannelMention>();
+  for (const c of candidates) {
+    if (!byToken.has(c.insertToken)) byToken.set(c.insertToken, candidateMention(c));
+  }
+  for (const m of picked) byToken.set(m.name, m);
+  // Longest first so `w1-2(claude)` is tried before the prefix `w1-2`.
+  const tokens = [...byToken.keys()].sort((a, b) => b.length - a.length);
+
+  const mentions: ChannelMention[] = [];
+  const seenMention = new Set<string>();
+  const unmatched: string[] = [];
+  const seenRun = new Set<string>();
+
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '@') continue;
+    // Email guard only: skip when the preceding char could be an email
+    // local-part ([A-Za-z0-9._%+-]) — `a@b` never triggers. Everything else
+    // (start, whitespace, punctuation, CJK) scans: requiring whitespace
+    // silently dropped mentions typed flush against Korean text or "cc:@…"
+    // — including dropdown-PICKED ones (adversarial review F10).
+    const prev = i > 0 ? text[i - 1] : '';
+    if (prev !== '' && /[A-Za-z0-9._%+-]/.test(prev)) continue;
+
+    let hit: string | null = null;
+    for (const tok of tokens) {
+      if (text.startsWith(`@${tok}`, i) && isTokenBoundary(text, i + 1 + tok.length)) {
+        hit = tok;
+        break;
+      }
+    }
+    if (hit) {
+      const row = byToken.get(hit)!;
+      const k = mentionKey(row);
+      if (!seenMention.has(k)) {
+        seenMention.add(k);
+        mentions.push(row);
+      }
+      i += hit.length; // skip past the matched token
+      continue;
+    }
+    // No candidate matched — capture the typed run (`@` + non-whitespace) for the
+    // "did not match anyone" warning. A bare `@` (nothing after it) is ignored.
+    let j = i + 1;
+    while (j < text.length && !/\s/.test(text[j])) j++;
+    const run = text.slice(i, j);
+    if (run.length > 1 && !seenRun.has(run)) {
+      seenRun.add(run);
+      unmatched.push(run);
+    }
+    i = j - 1;
+  }
+
+  // Explicit dropdown selections survive by the lenient legacy rule: if the
+  // @token still appears ANYWHERE in the body, keep the mention — the user
+  // clicked it on purpose; only deleting the token from the body drops it
+  // (adversarial review F10: the boundary scan alone regressed this).
+  for (const m of picked) {
+    const k = mentionKey(m);
+    if (!seenMention.has(k) && text.includes(`@${m.name}`)) {
+      seenMention.add(k);
+      mentions.push(m);
+    }
+  }
+
+  return { mentions, unmatched };
+}
+
 // ─── Pure view (props-driven) ───────────────────────────────────────────
 
 const EMPTY_CANDIDATES: MentionCandidate[] = [];
@@ -207,6 +328,10 @@ export function ComposerContent({
   const candidates = mentionCandidates ?? EMPTY_CANDIDATES;
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Inline one-line warning for typed @tokens that matched no one on the last
+  // send (post still went out — mirrors the droppedMentions warn path). Outlives
+  // resetAfterSend so the sender sees which pings were lost.
+  const [warning, setWarning] = useState<string | null>(null);
   const [inFlight, setInFlight] = useState(false);
   // The in-progress `@` token under the caret (null = dropdown closed) and
   // the highlighted option within it.
@@ -233,6 +358,15 @@ export function ComposerContent({
   }, [token, candidates]);
 
   const dropdownOpen = token !== null && matches.length > 0 && !inFlight && !disabled;
+  // Open-intent but nothing matches (typing `@zzz`, or a channel with no live
+  // agent panes): show a "no agents to mention" hint instead of rendering
+  // nothing, so the user knows the @token won't resolve to anyone. A query
+  // containing whitespace can never become an insert token (auto names are
+  // single-word), so the hint collapses then — without that gate, any sentence
+  // with a word-initial '@' ("meet @ noon tomorrow…") pinned the hint open for
+  // the rest of the line (ship design review).
+  const dropdownEmpty =
+    token !== null && !/\s/.test(token.query) && matches.length === 0 && !inFlight && !disabled;
 
   const resetAfterSend = useCallback(() => {
     setText('');
@@ -247,13 +381,28 @@ export function ComposerContent({
       if (!canSend) return;
       setInFlight(true);
       setError(null);
+      setWarning(null);
       try {
-        // Attach only mentions whose @name token still survives in the body;
-        // the daemon re-validates against live membership.
-        const mentions = picked.filter((m) => text.includes(`@${m.name}`));
+        // Promote hand-typed @tokens (matching a candidate's insert token) into
+        // the payload even if never dropdown-selected, and keep the picked
+        // mentions whose @token still survives in the body. The daemon
+        // re-validates against live membership. `unmatched` = typed @tokens that
+        // resolved to no candidate.
+        const { mentions, unmatched } = promoteTypedMentions(text, candidates, picked);
         const result = await onSubmit(trimmed, mentions);
         if (result.ok) {
           resetAfterSend();
+          // The post shipped; if some typed @tokens matched no one, warn inline
+          // (one line, warn style) — the message still sent, but those pings
+          // never landed. Set AFTER the reset so it outlives the cleared body.
+          if (unmatched.length > 0) {
+            setWarning(
+              (
+                t('channels.mentionUnmatched') ||
+                'These @mentions matched no one — not delivered: {names}'
+              ).replace('{names}', unmatched.join(', ')),
+            );
+          }
           inputRef.current?.focus();
         } else {
           setError(result.errorMessage ?? t('channels.postFailed') ?? 'Post failed');
@@ -264,7 +413,7 @@ export function ComposerContent({
         setInFlight(false);
       }
     },
-    [canSend, onSubmit, trimmed, text, picked, resetAfterSend, t],
+    [canSend, onSubmit, trimmed, text, picked, candidates, resetAfterSend, t],
   );
 
   const applyMention = useCallback(
@@ -296,6 +445,14 @@ export function ComposerContent({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // Escape must dismiss the empty-state hint too, not just a populated
+      // dropdown (ship design review: the hint had no dismiss path).
+      if (dropdownEmpty && e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setToken(null);
+        return;
+      }
       if (dropdownOpen) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
@@ -336,7 +493,7 @@ export function ComposerContent({
         }
       }
     },
-    [dropdownOpen, matches, activeIdx, applyMention, canSend, handleSubmit],
+    [dropdownOpen, dropdownEmpty, matches, activeIdx, applyMention, canSend, handleSubmit],
   );
 
   const handleChange = useCallback(
@@ -344,10 +501,11 @@ export function ComposerContent({
       const value = e.target.value;
       setText(value);
       if (error) setError(null);
+      if (warning) setWarning(null);
       setToken(detectMentionToken(value, e.target.selectionStart ?? value.length));
       setActiveIdx(0);
     },
-    [error],
+    [error, warning],
   );
 
   return (
@@ -366,6 +524,16 @@ export function ComposerContent({
           {...tokenAttrs('danger', 'text')}
         >
           {error}
+        </div>
+      )}
+      {warning && (
+        <div
+          role="status"
+          data-channel-composer-warning
+          className="text-[10px] font-mono text-[var(--accent-yellow)]"
+          {...tokenAttrs('warning', 'text')}
+        >
+          {warning}
         </div>
       )}
       <div className="relative flex items-end gap-2">
@@ -405,6 +573,18 @@ export function ComposerContent({
                 )}
               </button>
             ))}
+          </div>
+        )}
+        {dropdownEmpty && (
+          <div
+            data-channel-mention-empty
+            role="status"
+            className="absolute bottom-full left-0 mb-1 z-20 w-56 rounded-md shadow-xl py-1.5 px-3 text-[11px] font-mono bg-[var(--bg-surface)] text-[var(--text-sub)]"
+            style={{ border: '1px solid var(--border-soft)' }}
+            {...tokenAttrs('bgSurface', 'bg')}
+            {...tokenAttrs('textSub', 'text')}
+          >
+            {t('channels.mentionNoMatch') || 'No agents to mention'}
           </div>
         )}
         <textarea

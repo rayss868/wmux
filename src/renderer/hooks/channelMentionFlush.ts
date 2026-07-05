@@ -60,7 +60,12 @@ function singleLine(s: string): string {
  * channel/sender context instead.
  */
 export function buildChannelMentionNudge(
-  tasks: Array<Pick<Task, 'id'> & { metadata: Pick<Task['metadata'], 'title'> }>,
+  tasks: Array<
+    Pick<Task, 'id'> & {
+      metadata: Pick<Task['metadata'], 'title'> & { to?: Task['metadata']['to'] };
+      history?: Task['history'];
+    }
+  >,
 ): string {
   // B7: the nudge is pasted into a live agent's prompt and AUTO-SUBMITTED (the
   // trailing \r in submitBracketedPasteToPty), so it must NOT interpolate
@@ -73,14 +78,65 @@ export function buildChannelMentionNudge(
   // title without the delimiter would otherwise paste the WHOLE title into the
   // auto-submitted nudge — re-validate the `#channel` shape and fall back safely.
   const rawChannelLabel = tasks[0]?.metadata.title.split(' — mention from ')[0] ?? '';
-  const channelLabel = /^#[a-z0-9-]+$/u.test(rawChannelLabel) ? rawChannelLabel : '`#channel`';
+  const validLabel = /^#[a-z0-9-]+$/u.test(rawChannelLabel);
+  const channelLabel = validLabel ? rawChannelLabel : '`#channel`';
+  // 2a-1 (shared-completion audit): the nudge used to point ONLY at
+  // a2a_task_query — nothing ever told the agent to advance its CHANNEL cursor,
+  // so the wake worker kept re-nudging (and eventually false-"exhausted") an
+  // agent that had already replied. Close the loop with an explicit ack command.
+  // Injection-safe by construction: channel name is regex-validated above, seq
+  // is a server-assigned integer from route-time metadata, and the member id is
+  // allow-listed to quote-free chars before being single-quoted.
+  const seqs = tasks
+    .map((t) => {
+      const md = t.history?.[0]?.metadata as Record<string, unknown> | undefined;
+      const s = md?.['seq'];
+      return typeof s === 'number' && Number.isSafeInteger(s) && s > 0 ? s : null;
+    })
+    .filter((s): s is number => s !== null);
+  const sameChannel = tasks.every(
+    (t) => (t.metadata.title.split(' — mention from ')[0] ?? '') === rawChannelLabel,
+  );
+  const memberIds = new Set(
+    tasks.map((t) => {
+      const md = t.history?.[0]?.metadata as Record<string, unknown> | undefined;
+      const m = md?.['mentionMemberId'];
+      return typeof m === 'string' ? m : '';
+    }),
+  );
+  const soleMemberId = memberIds.size === 1 ? [...memberIds][0] : '';
+  // --member pins the ACK to the mentioned member's cursor — only safe when
+  // every task in the group is still addressed to that member's OWN pane. A
+  // degraded delivery may land on a DIFFERENT agent; acking the intended
+  // member's cursor from there would erase their unread and stop the wake
+  // worker's retry toward them (adversarial review F4). Un-pinned groups ack
+  // the delivering agent's own row instead (the CLI resolves it).
+  const allPanePinned = tasks.every((t) => !!t.metadata.to?.paneId);
+  const memberFlag =
+    allPanePinned && soleMemberId && /^[A-Za-z0-9()._-]+$/.test(soleMemberId)
+      ? ` --member '${soleMemberId}'`
+      : '';
+  const ackHint =
+    validLabel && sameChannel && seqs.length === tasks.length && seqs.length > 0
+      ? `then ack: wmux channel ack ${channelLabel.slice(1)} ${Math.max(...seqs)}${memberFlag}`
+      : 'then ack: wmux channel unread';
+  // Dogfood RCA 2026-07-05 (no-signal greeting loop): the nudge used to say
+  // "read + reply", which — pasted and AUTO-SUBMITTED into the agent's prompt —
+  // forced a reply to EVERY mention, so a greeting drew a greeting, which
+  // @-mentioned the peer, which drew another greeting… with no stop condition.
+  // ack (above) ends the MECHANICAL re-nudge of one message; this reply-gate
+  // ends the SEMANTIC loop: acknowledge/greeting mentions are read + acked but
+  // NOT answered. Reply is now the agent's judgement (a real question/task),
+  // not a reflex. The peer/human still gets nothing to reply to → the chain dies.
+  const replyGate =
+    'Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.';
   if (tasks.length === 1) {
     return singleLine(
-      `[wmux-channel] new mention in ${channelLabel} — run a2a_task_query role:agent to read`,
+      `[wmux-channel] mention in ${channelLabel} — read: a2a_task_query role:agent, ${ackHint}. ${replyGate}`,
     );
   }
   return singleLine(
-    `[wmux-channel] ${tasks.length} new channel mentions — run a2a_task_query role:agent to read`,
+    `[wmux-channel] ${tasks.length} channel mentions — read: a2a_task_query role:agent, ${ackHint}. ${replyGate}`,
   );
 }
 
@@ -92,19 +148,44 @@ export function buildChannelMentionNudge(
  *     ptyId snapshot (`to.ptyId`) still matches the pane's live pty. A restarted
  *     pane (its pty replaced, a successor agent now holding it) fails closed to
  *     null so we never paste the old mention into the wrong agent (codex R5).
- *   - ws-level task (no paneId) → null. A ws-level chmention is EITHER a
- *     human/legacy mention OR a degraded pane-target whose pane vanished
- *     (`routeChannelMentionToInbox` strips paneId on a gone/changed pane to
- *     avoid wrong-pane delivery). We cannot tell them apart, so auto-pasting to
- *     the active pane would reintroduce exactly that wrong-pane delivery
- *     (codex P2). ws-level tasks stay queued (dock badge) for the human or a
- *     self-driven `a2a_task_query` — they are never auto-pasted.
+ *   - ws-level task (no paneId): delivered ONLY when the workspace has EXACTLY
+ *     ONE live agent pane (2b — mirrors the wake worker's `eligible.length ===
+ *     1` discipline: never guess between two agents). A ws-level chmention is
+ *     EITHER a human/legacy mention OR a degraded pane-target whose pane
+ *     vanished/restarted (`routeChannelMentionToInbox` strips paneId on a
+ *     gone/changed pane). With a single live agent there is no wrong pane to
+ *     hit — and this closes the zero-delivery hole where an attached-Claude
+ *     workspace's ws-level mention had NO active delivery path at all (the
+ *     wake worker declines attached Claude; this path used to decline
+ *     everything ws-level). Multi-agent workspaces keep the conservative
+ *     queue-only behavior (dock badge + self-driven `a2a_task_query`).
  * Returns null when there is no validated pane target — the caller leaves the
  * task queued.
  */
-export function resolveTaskTargetPty(task: Task, leaves: PaneLeaf[]): string | null {
+export function resolveTaskTargetPty(
+  task: Task,
+  leaves: PaneLeaf[],
+  agentPtys?: ReadonlySet<string>,
+): string | null {
   const to = task.metadata.to;
-  if (!to.paneId) return null;
+  if (!to.paneId) {
+    // 2b applies ONLY to a DEGRADED pane target: the mention pinned a pane at
+    // post time (mentionPaneId stamped at route time) but the pane restarted /
+    // vanished before delivery. A ws-level mention BY CONSTRUCTION (human
+    // mention, member_id omitted over MCP, deliberate workspace ping) stays
+    // badge-only — auto-pasting it into "the one live agent" is how a message
+    // meant for the human reached an agent PTY (adversarial review F1).
+    const md = task.history?.[0]?.metadata as Record<string, unknown> | undefined;
+    if (typeof md?.['mentionPaneId'] !== 'string' || !md['mentionPaneId']) return null;
+    if (!agentPtys || agentPtys.size === 0) return null;
+    const candidates: string[] = [];
+    for (const leaf of leaves) {
+      for (const s of leaf.surfaces) {
+        if (s.ptyId && agentPtys.has(s.ptyId)) candidates.push(s.ptyId);
+      }
+    }
+    return candidates.length === 1 ? candidates[0] : null;
+  }
   if (to.ptyId) {
     // Resolve by the route-time ptyId snapshot, NOT paneId+active-surface: a pane
     // can hold several terminal surfaces and resolvePaneAddress(paneId-only) picks
@@ -150,6 +231,16 @@ export interface FlushMentionDeps {
   /** Record a delivered auto-nudge toward the rate cap (after a successful
    *  deliverNudge). Optional (paired with isRateLimited). */
   recordNudge?: (ptyId: string) => void;
+  /** 2b: ptys currently hosting a DETECTED agent (surfaceAgent keys ∩ live leaf
+   *  ptys), used only by the ws-level single-agent delivery rule. Optional —
+   *  absent keeps the conservative "ws-level never auto-pastes" behavior. */
+  agentPtys?: ReadonlySet<string>;
+  /** 2a-2/2d: called after a successful paste with the tasks it covered.
+   *  The wiring persists the durable delivered mark AND reports the nudge to
+   *  the daemon wake worker's shared ledger (so the worker's re-nudge budget
+   *  counts the renderer's paste instead of double-pasting). Best-effort:
+   *  a throw here must not affect delivery bookkeeping. */
+  onNudgeDelivered?: (ptyId: string, tasks: Task[]) => void;
 }
 
 export interface FlushOpts {
@@ -181,7 +272,7 @@ export function flushMentions(
   // Group by resolved target pty so multiple mentions to one pane = one paste.
   const byPty = new Map<string, Task[]>();
   for (const task of tasks) {
-    const ptyId = resolveTaskTargetPty(task, selfLeaves);
+    const ptyId = resolveTaskTargetPty(task, selfLeaves, deps.agentPtys);
     if (!ptyId) continue; // human / dead / stale pane → leave queued, no paste
     if (opts.onlyPtyId && ptyId !== opts.onlyPtyId) continue; // other pane's Stop
     // ALWAYS gate on the CURRENT busy status, even on the Stop path: lifecycle
@@ -218,6 +309,13 @@ export function flushMentions(
       for (const t of group) {
         deps.markDelivered(t.id);
         delivered.push(t.id);
+      }
+      // 2a-2/2d side effects AFTER the marks — isolated so a throw here can
+      // never make an already-pasted group look undelivered (double paste).
+      try {
+        deps.onNudgeDelivered?.(ptyId, group);
+      } catch (hookErr) {
+        console.warn(`[channelMentionFlush] onNudgeDelivered hook failed for pty ${ptyId}:`, hookErr);
       }
     } catch (err) {
       // Best-effort: a bad pty must not abort other panes' delivery. Log for

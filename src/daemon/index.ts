@@ -1681,6 +1681,36 @@ function registerRpcHandlers(
     return channelService.ack({ channelId, verifiedWorkspaceId, uptoSeq, ...(memberId !== undefined ? { memberId } : {}) });
   });
 
+  // Shared nudge ledger (remediation 2a-2) — the renderer reports a mention
+  // paste it just delivered, so the wake worker's re-nudge budget/backoff
+  // counts it and does not immediately double-paste the same member. Exposed
+  // to callers ONLY via the renderer-local mutate path (channelLocal.handler);
+  // the MAIN pipe router (a2a.channel.rpc.ts) deliberately does NOT register
+  // it — a forgeable pipe caller could otherwise suppress ANOTHER member's
+  // re-nudges. Direct daemon-pipe reachability bottoms out at the same
+  // same-user ceiling as kick/purge (#113, documented residual).
+  pipeServer.onRpc('a2a.channel.nudgeRecorded', async (rawParams) => {
+    const params = (rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams)
+      ? rawParams
+      : {}) as Record<string, unknown>;
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    const memberId =
+      typeof params['memberId'] === 'string' && params['memberId'].length > 0 ? params['memberId'] : '';
+    if (!channelId || !memberId) {
+      return { ok: false, error: { code: 'INVALID_PARAMS', message: 'channelId and memberId are required' } };
+    }
+    if (!verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    // Best-effort by design: `recorded:false` means the ledger did not change
+    // (worker not booted yet, or the tuple is not a live membership row — the
+    // worker validates before inserting so bogus keys cannot grow its map).
+    const recorded = channelWakeWorkerRef?.recordExternalNudge(channelId, verifiedWorkspaceId, memberId) ?? false;
+    return { ok: true, recorded };
+  });
+
   // Channels v2 — per-member unread summary (durable-inbox read model).
   // Read-only; the wake worker computes the same numbers in-process, this
   // RPC is the CLI/agent surface.
