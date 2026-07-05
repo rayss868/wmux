@@ -46,6 +46,7 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { DaemonClient } from '../../DaemonClient';
+import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { sendToRenderer } from './_bridge';
 
 type GetWindow = () => BrowserWindow | null;
@@ -134,6 +135,28 @@ export function registerA2aChannelRpc(
           error: {
             code: 'NOT_AUTHORIZED',
             message: "'local-ui' is a reserved GUI identity and cannot be used from the pipe",
+          },
+        };
+      }
+    }
+    // P5 — 'ws-human' is the reserved VIRTUAL workspace of the unified human
+    // identity. Only the renderer-local mutate path may ACT as it; a pipe
+    // caller claiming it as its own identity would impersonate the human's
+    // seat (post as "Me", join/create/ack the human's row). Reject the claim
+    // on caller-identity refs only:
+    //   - `invitedMember` is deliberately EXEMPT — inviting the human seat is
+    //     a TARGET identity (pre-P5 capability parity: any member could invite
+    //     the human's workspace).
+    //   - Reads keep the documented process-boundary residual: the renderer's
+    //     own reads ride this router scoped to ws-human.
+    for (const key of ['member', 'createdBy', 'sender'] as const) {
+      const ref = base[key] as Record<string, unknown> | undefined;
+      if (ref && typeof ref === 'object' && ref.workspaceId === HUMAN_WORKSPACE_ID) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: `'${HUMAN_WORKSPACE_ID}' is the reserved human workspace and cannot be claimed from the pipe`,
           },
         };
       }

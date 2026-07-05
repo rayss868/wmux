@@ -689,3 +689,86 @@ describe('a2a.channel.rpc — events.poll per-recipient scoping (PROTOCOL §2.8)
     expect(mine[0].channelId).toBe('ch-2');
   });
 });
+
+describe('a2a.channel.rpc — P5 reserved human workspace (ws-human) guard', () => {
+  it('REJECTS a pipe post claiming ws-human as the sender (human-seat impersonation)', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-spoof-post',
+      method: 'a2a.channel.post',
+      params: {
+        channelId: CHANNEL_ID,
+        sender: { workspaceId: 'ws-human', memberId: 'me2', memberName: 'Me' },
+        text: 'hi from "the human"',
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string; message: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+      expect(r.error?.message).toContain('ws-human');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+
+  it('REJECTS a pipe join claiming ws-human as the member', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-spoof-join',
+      method: 'a2a.channel.join',
+      params: {
+        channelId: CHANNEL_ID,
+        member: { workspaceId: 'ws-human', memberId: 'agent', memberName: 'A' },
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+    expect(daemon.rpc).not.toHaveBeenCalled();
+  });
+
+  it('ALLOWS inviting the human seat (invitedMember=ws-human is a target, not a caller)', async () => {
+    let received: Record<string, unknown> = {};
+    const daemon = makeFakeDaemon((_m, params) => {
+      received = params as Record<string, unknown>;
+      return { ok: true, value: null };
+    });
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-invite-human',
+      method: 'a2a.channel.invite',
+      params: {
+        channelId: CHANNEL_ID,
+        invitedMember: { workspaceId: 'ws-human', memberId: 'local-ui2', memberName: 'Me' },
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    expect(daemon.rpc).toHaveBeenCalledTimes(1);
+    expect((received.invitedMember as Record<string, unknown>).workspaceId).toBe('ws-human');
+  });
+
+  it('ALLOWS a no-PTY read scoped to ws-human (the renderer reads ride this router)', async () => {
+    let received: Record<string, unknown> = {};
+    const daemon = makeFakeDaemon((_m, params) => {
+      received = params as Record<string, unknown>;
+      return { ok: true, value: [] };
+    });
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({
+      id: 'p5-read-human',
+      method: 'a2a.channel.list',
+      params: { verifiedWorkspaceId: 'ws-human' },
+    });
+    expect(res.ok).toBe(true);
+    expect(received.verifiedWorkspaceId).toBe('ws-human');
+  });
+});

@@ -34,13 +34,9 @@
 // one post (one seq) get distinct task ids instead of colliding.
 
 import type { ChannelMessage } from '../../shared/channels';
+import { HUMAN_MEMBER_ID } from '../../shared/channels';
 import type { Task, Message, Part, Artifact, TaskState, PaneLeaf } from '../../shared/types';
 import { resolveSenderPaneAddress } from './a2aAddressing';
-
-/** Reserved GUI member id — the human seat (one per workspace, no PTY). Mirrors
- *  the daemon's reserved identity (a2a.channel.rpc.ts spoof reject) and the UI
- *  (ChannelMembers UI_MEMBER_ID). A mention of THIS member targets the HUMAN. */
-const HUMAN_MEMBER_ID = 'local-ui';
 
 /** Dependencies injected so the routing logic stays a pure, unit-testable
  *  function (no store / window coupling). The hook wires these to the real

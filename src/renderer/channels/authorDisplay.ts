@@ -29,9 +29,7 @@ export interface ChannelAuthorDisplay {
   hue: number;
 }
 
-/** The reserved GUI member id (one human seat per workspace). Matches the
- *  daemon's reserved identity — see a2a.channel.rpc.ts (pipe spoof reject). */
-const HUMAN_MEMBER_ID = 'local-ui';
+import { HUMAN_MEMBER_ID } from '../../shared/channels';
 
 /** Deterministic workspaceId → hue. The same workspace always renders the
  *  same badge color across sessions; distinct workspaces usually differ. */
