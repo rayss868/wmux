@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A2A 완료증거 검증기 코어 (§6.M P1, PR-A).** completed/failed 전이에 첨부될 구조화 증거(`CompletionEvidence`)의 스키마와 순수 검증기(`shared/completionEvidence.ts`)를 도입 — 게이트=구조(summary+well-formed items+새니타이즈+DoS 캡), verified≥1은 거부 요건이 아니라 `verifiedItemCount` 등급으로 정직 산출(세탁 불가). 경로 새니타이즈(콜론·선행 구분자·`..`·C0 일괄 거부, 무디코드 리터럴 계약)와 untrusted-wire 정규화 가드(plain-object+hasOwn+새 객체 복사) 포함. 아직 어디에도 배선되지 않음(게이트 활성은 PR-B, envelope PR4 이후).
 - **A2A 완료증거 생산·운반 시작 (§6.M P1, PR-D′).** ClaudeWorker 가 스폰된 Claude 런 결과를 정직한 완료증거로 생산하고(성공/실패 모두 `inspection`+`unverified` 자기보고 — run-success 를 verified 로 승격·세탁하지 않음), MCP `a2a_task_update` 가 `evidence` 파라미터로 운반하며(계약은 description 에 고정, 기존 artifact 채널과 병존), 렌더러 브릿지가 untrusted-wire 를 정규화해(오염 shape 는 `completion_evidence_malformed` 로 저장 전 차단, recordedBy 등 서버 전용 스탬프 드롭) 스토어 `TaskStatus.evidence` 에 저장한다. 아직 거부 게이트는 없음(additive-inert — 게이트 활성은 PR-B, envelope PR4 이후).
+- **이벤트 로그 프리미티브 (envelope PR1).** append-only 세그먼트 NDJSON 로그(`daemon/eventlog/AppendOnlyLog`)와 공통 이벤트 봉투 스키마(`shared/eventlog` — PROTOCOL, additive-only)를 도입 — 채널·A2A 정본을 크래시-안전 로그로 옮기는 §6.L 재배선의 기반. fsync 코얼레싱(그룹 커밋), 배치 단위 롤백(단일 ftruncate), 부트 전방 스캔 복구(최초 불량 절단·부분 승격 금지), lamport/seq 고수위 재개(재사용 금지·gap 허용), 절단 실패 시 fail-stop(조용한 좌표 발산으로 커밋 데이터를 잃지 않음). `machine-id` 민팅·복구와 atomicWrite `durable` 옵션(fsync 시퀀스) 포함. 아직 어떤 서비스도 배선되지 않음(재배선은 후속 PR).
 
 ## [3.17.0] — 2026-07-06
 
