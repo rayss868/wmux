@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.0] — 2026-07-06
+
 ### Added
 
 - **wmux now updates its own background daemon — no manual restart.** When an upgraded app reconnects to a daemon left running by an older version, it replaces it automatically: the old daemon suspends every session durably (scrollback, running commands, agent conversations), a current-version daemon starts, and your panes restore themselves — scrollback replayed, supervised commands relaunched, agents resumed. Same session preservation as a full quit-and-restart, without the quit. A brief "Updating the background daemon" toast explains the pause. The 3.16.0 stale-daemon banner remains as the fallback for the cases the replacement deliberately refuses (a NEWER daemon is never downgraded; a daemon that won't shut down cleanly is left running rather than force-killed pre-save).
