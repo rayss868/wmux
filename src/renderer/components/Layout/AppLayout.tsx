@@ -843,9 +843,16 @@ export default function AppLayout() {
     const offDisconnected = window.electronAPI.daemon.onDisconnected(() => {
       setDaemonModeActive(false);
     });
+    // B′ stale-daemon auto-replacement started: without this toast the pane
+    // freeze + scrollback replay during suspend→respawn→recover reads as an
+    // unexplained glitch.
+    const offReplacing = window.electronAPI.daemon.onReplacing(() => {
+      useStore.getState().pushToast({ level: 'info', message: t('daemon.replacingToast') });
+    });
     return () => {
       offConnected();
       offDisconnected();
+      offReplacing();
     };
   }, []);
 

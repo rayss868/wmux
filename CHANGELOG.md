@@ -9,8 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **wmux now updates its own background daemon — no manual restart.** When an upgraded app reconnects to a daemon left running by an older version, it replaces it automatically: the old daemon suspends every session durably (scrollback, running commands, agent conversations), a current-version daemon starts, and your panes restore themselves — scrollback replayed, supervised commands relaunched, agents resumed. Same session preservation as a full quit-and-restart, without the quit. A brief "Updating the background daemon" toast explains the pause. The 3.16.0 stale-daemon banner remains as the fallback for the cases the replacement deliberately refuses (a NEWER daemon is never downgraded; a daemon that won't shut down cleanly is left running rather than force-killed pre-save).
 - **Every agent in a channel now has one honest name — owned by the server, not typed by the agent.** Channel display names are derived by the daemon from its pane registry (the same auto-names you see on panes, like `w26-1(claude)`), so an agent can no longer post under an arbitrary label and two Claude panes can never collapse into one indistinguishable "Claude Code". Names even follow agent swaps: replace claude with codex in a pane and its next message posts under the new name automatically.
 - **Recovered agents show up as invite and @-mention candidates right after launch.** Previously a workspace you hadn't visited yet contributed nothing to the "Add an agent pane" picker until you clicked into it once; the app now asks the daemon which panes are running agents at startup.
+
+### Changed
+
+- Quitting the app during a daemon replacement now does the right thing for both quit flavors: a normal Quit leaves the fresh daemon running with your restored sessions (tmux-style persistence), while "Shut down wmux completely" guarantees no daemon survives — including one spawned mid-replacement.
+- While the daemon is shutting down for a replacement (or full shutdown), new pane creation is rejected with a clear error instead of silently creating a pane that would be lost in the handover.
 
 ### Fixed
 
