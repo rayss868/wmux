@@ -39,6 +39,14 @@ export interface AppendOnlyLogOptions {
   fsync?: (fd: number) => void | Promise<void>;
   /** 롤 임계(기본 4MB). 테스트가 작은 값으로 롤을 강제. */
   maxSegmentBytes?: number;
+  /**
+   * 부트 hwm 하한(§3-4 클램프). 컴팩션이 스냅샷 반영 세그먼트를 절단해 빈(또는 전무한)
+   * 세그먼트만 남으면 스캔이 hwm을 실제보다 낮게 복원해 lamport/seq가 **재사용**된다
+   * (§6.L 함정 위반) — 이 하한이 그 창을 닫는다: open()이 스캔 hwm을 max(스캔, 하한)로
+   * 클램프. **PR3 배선 계약: manifest.snapshotLamport를 반드시 lamport 하한으로 전달하라**
+   * (seq 하한은 영속 좌표가 생기기 전까지 동일 값 전달 허용 — seq ≥ lamport 발급 특성상 보수적).
+   */
+  hwmFloor?: { lamport: number; seq: number };
 }
 
 interface PendingRecord {
@@ -68,6 +76,7 @@ export class AppendOnlyLog {
   private readonly dir: string;
   private readonly fsyncFd: (fd: number) => void | Promise<void>;
   private readonly maxSegmentBytes: number;
+  private readonly hwmFloor?: { lamport: number; seq: number };
 
   private fd = -1;
   private activeSegNum = 0;
@@ -95,6 +104,7 @@ export class AppendOnlyLog {
   constructor(options: AppendOnlyLogOptions) {
     this.dir = options.dir;
     this.maxSegmentBytes = options.maxSegmentBytes ?? DEFAULT_MAX_SEGMENT_BYTES;
+    this.hwmFloor = options.hwmFloor;
     this.fsyncFd =
       options.fsync ??
       ((fd) =>
@@ -136,6 +146,7 @@ export class AppendOnlyLog {
       this.fd = this.createSegment(this.activeSegPath);
       this.committedOffset = 0;
       this.currentOffset = 0;
+      this.applyHwmFloor(); // §3-4: 컴팩션-전소 후에도 하한이 재사용을 차단
       this.opened = true;
       return;
     }
@@ -172,7 +183,22 @@ export class AppendOnlyLog {
     this.fd = fs.openSync(this.activeSegPath, 'a');
     this.committedOffset = scan.validEnd;
     this.currentOffset = scan.validEnd;
+    this.applyHwmFloor(); // §3-4 하한 클램프
     this.opened = true;
+  }
+
+  /**
+   * §3-4 하한 클램프: hwm = max(스캔 복원값, hwmFloor). 컴팩션이 세그먼트를 절단해
+   * 스캔이 도달 못 하는 과거 발급분을 하한(스냅샷 좌표)이 대변한다 — 재사용 금지 불변식.
+   */
+  private applyHwmFloor(): void {
+    if (!this.hwmFloor) return;
+    if (this.hwmFloor.lamport > this.hwmLamport) {
+      this.hwmLamport = this.hwmFloor.lamport;
+    }
+    if (this.hwmFloor.seq > this.hwmSeq) {
+      this.hwmSeq = this.hwmFloor.seq;
+    }
   }
 
   /**

@@ -93,6 +93,14 @@ export interface AtomicReadOptions<T> {
 
   /** Injectable clock for tests. Defaults to `Date.now`. */
   clock?: () => number;
+
+  /**
+   * validate 거부 시 격리(quarantine) 이동 여부(기본 true — 기존 동작 불변).
+   * false면 손상 파일을 **절대 이동·수정하지 않고** null만 반환한다 — genesis·reseed처럼
+   * "어떤 경로도 수정·삭제하지 않는다"(envelope-design §6.2 불변 계약) 아티팩트의
+   * read 경로용. `.bak` 폴백 체인은 동일하게 동작한다.
+   */
+  quarantineOnCorruption?: boolean;
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────
@@ -394,7 +402,10 @@ export async function atomicReadJSON<T>(
       // `isQuarantineEligible`), though it cannot normally reach
       // this branch because the fallback iterates only
       // `BACKUP_SUFFIXES`.
-      if (isQuarantineEligible(targetPath, p)) {
+      if (
+        (opts.quarantineOnCorruption ?? true) &&
+        isQuarantineEligible(targetPath, p)
+      ) {
         try {
           await quarantineFile(p, 'validate rejected parsed payload', {
             clock: opts.clock,
@@ -540,7 +551,10 @@ export function atomicReadJSONSync<T>(
 
     if (opts.validate && !opts.validate(parsed)) {
       // T6 sync counterpart — see `atomicReadJSON` for the rationale.
-      if (isQuarantineEligible(targetPath, p)) {
+      if (
+        (opts.quarantineOnCorruption ?? true) &&
+        isQuarantineEligible(targetPath, p)
+      ) {
         try {
           quarantineFileSync(p, 'validate rejected parsed payload', {
             clock: opts.clock,
