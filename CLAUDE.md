@@ -15,3 +15,20 @@ Key routing rules:
 - Design system, brand → invoke design-consultation
 - Visual audit, design polish → invoke design-review
 - Architecture review → invoke plan-eng-review
+
+## Versioning & release (owner decision, 2026-07-05)
+
+- **PRs never bump the version.** `package.json` stays at the last released
+  version on every feature branch. Do NOT let /ship (or any workflow) bump
+  MAJOR/MINOR/PATCH, claim version slots, or prefix PR titles with `vX.Y.Z`.
+- CHANGELOG: each PR adds its user-facing entries under `## [Unreleased]`
+  at the top (Keep a Changelog). Merge conflicts there are append-merges.
+- **Release = explicit user action**: bump `package.json` version, rename
+  `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, run
+  `node scripts/gen-api-reference.mjs` (the generated header bakes the
+  version — the CI drift guard enforces this), commit `chore(release)`,
+  then push a `v*` tag (installer builds hang off the tag).
+- Consequence accepted with this decision: same-version dev builds are not
+  distinguishable by semver, so the stale-daemon auto-replacement triggers
+  only on (a) pre-B′ daemons (missing version field) and (b) release-to-
+  release upgrades and (c) `CHANNELS_EPOCH` bumps — not on every dev rebuild.

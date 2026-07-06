@@ -160,6 +160,9 @@ export class PTYManager {
     // pane-level A2A fail-closed. The ptyId equals the pid-map content here, so
     // the env hint and a verified walk resolve to the same logical pane (WI-002).
     identity[ENV_KEYS.PTY_ID] = id;
+    // 1d: default channel member id = the pane's ptyId, symmetric with the
+    // daemon-mode stamp in pty.handler (see ENV_KEYS.MEMBER_ID rationale).
+    identity[ENV_KEYS.MEMBER_ID] = id;
     const env = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale());
 
     // Detect shell type and inject hook

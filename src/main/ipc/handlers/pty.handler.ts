@@ -351,6 +351,10 @@ export function registerPTYHandlers(
       const identity: Record<string, string> = {};
       if (options?.workspaceId) identity[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
       if (options?.surfaceId) identity[ENV_KEYS.SURFACE_ID] = options.surfaceId;
+      // 1d: default channel member id = the pane's session id (mirrors the
+      // daemon's WMUX_PTY_ID stamp). Forced identity, so a profile cannot
+      // spoof another pane's member id.
+      identity[ENV_KEYS.MEMBER_ID] = sessionId;
       const resolvedEnv = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale());
 
       // Create session via daemon RPC. `env` is the FULLY-RESOLVED child env;

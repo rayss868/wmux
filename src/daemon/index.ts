@@ -2758,9 +2758,34 @@ async function main(): Promise<void> {
   // SAME constant when it has no in-app Company, so optimistic rows and the
   // daemon's authoritative rows share one companyId.
   const channelStateWriter = new ChannelStateWriter(wmuxDir);
+  // Principal registry (R2). Like channels, it writes its own file
+  // (principals.json), so registry corruption does not spill into
+  // session/channel state. The constructor backfills every pane-agent to stale
+  // + seeds human:me (on restart the daemon cannot prove pane liveness, so only
+  // a renderer re-registration brings it back to live). Constructed BEFORE the
+  // channel service since 1b injects its display lookup below.
+  const principalStateWriter = new PrincipalStateWriter(wmuxDir);
+  const principalService = new PrincipalService({ writer: principalStateWriter });
   const channelService = new ChannelService({
     writer: channelStateWriter,
     companyId: DEFAULT_COMPANY_ID,
+    // 1b (server-owned roster identity): member rows derive their display
+    // name from the principal registry at create/join/invite time.
+    resolvePrincipalDisplay: (principalId) => principalService.find(principalId)?.display,
+    // 1b/1d bridge (review F1/F2): CLI self-joins resolve their pane
+    // principal from the verified pty so the seat gets the registry
+    // display / canonical auto-name instead of an opaque ptyId. O(n) over
+    // a small registry, called once per join.
+    resolvePrincipalByPtyId: (ptyId) => {
+      const rec = principalService.list().find((r) => r.ptyId === ptyId);
+      return rec
+        ? {
+            id: rec.id,
+            ...(rec.display ? { display: rec.display } : {}),
+            ...(rec.memberId ? { memberId: rec.memberId } : {}),
+          }
+        : undefined;
+    },
     // U5 archive-authz (KTD-F): the CEO override is gated on this field.
     // The renderer owns `Company.ceoWorkspaceId` today; the daemon does
     // not have a copy, so we pass `undefined` (creator-only archive)
@@ -2793,14 +2818,6 @@ async function main(): Promise<void> {
       }
     },
   });
-
-  // Principal registry (R2). Like channels, it writes its own file
-  // (principals.json), so registry corruption does not spill into
-  // session/channel state. The constructor backfills every pane-agent to stale
-  // + seeds human:me (on restart the daemon cannot prove pane liveness, so only
-  // a renderer re-registration brings it back to live).
-  const principalStateWriter = new PrincipalStateWriter(wmuxDir);
-  const principalService = new PrincipalService({ writer: principalStateWriter });
 
   // Channels v2 Step 3a — the wake worker (see channelWakeWorker.ts for the
   // full strategy stack + safety rules). Adapters keep it decoupled: session
