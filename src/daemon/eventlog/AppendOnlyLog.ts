@@ -8,7 +8,7 @@
  *     부트 재개값이 max일 때 첫 신규값이 정확히 max+1(오프바이원 없음).
  *   - fsync 코얼레싱(그룹커밋, §2.5): in-flight 배리어 동안 도착분은 다음 배리어로
  *     배치. 성공·실패의 단위가 모두 배치다.
- *   - 배치 단일 롤백(§2.4-4): write/fsync 실패 시 ftruncate(committedOffset) **1회**로
+ *   - 배치 단일 롤백(§2.4-4): write/fsync 실패 시 truncate(committedOffset) **1회**로(경로 기반)
  *     미커밋 전량 물리 제거 + 배치 Promise 전원 false. 순서의존 null 매장 불가.
  *   - 부트 전방 스캔·최초 불량 절단(§2.6): 활성 세그먼트를 앞에서부터 검증, 최초
  *     불량 줄에서 절단. 커밋 프리픽스는 완전·연속 보장. 남은 valid tail은 at-least-once로
@@ -289,7 +289,7 @@ export class AppendOnlyLog {
     }
 
     if (!ok) {
-      this.rollbackBatch(); // §2.4-4 단일 ftruncate + 전원 false
+      this.rollbackBatch(); // §2.4-4 단일 truncate + 전원 false
       this.fsyncInFlight = false;
       this.maybeStartFsync();
       return;
@@ -307,14 +307,26 @@ export class AppendOnlyLog {
   }
 
   /**
-   * §2.4-4 배치 단일 롤백. ftruncate(committedOffset) **한 번**으로 미커밋 전량
+   * §2.4-4 배치 단일 롤백. truncate(committedOffset) **한 번**으로 미커밋 전량
    * (배리어 + 그 뒤 대기분)을 물리 제거하고 전원 false. hwm은 되돌리지 않는다
    * (§3 함정: gap 허용, 재사용 금지).
+   *
+   * 절단은 **경로 기반 close→truncate→reopen**이다: Windows에서 'a'(append)
+   * 모드 fd는 ftruncate가 EPERM으로 실패한다(append-only 핸들엔 SetEndOfFile
+   * 권한이 없음 — CI windows 레인 실증). 이 시퀀스는 append 임계구역(동기)
+   * 안에서 완결되므로 원자성은 유지된다.
    */
   private rollbackBatch(): void {
     this.rollbackEpoch++;
     try {
-      fs.ftruncateSync(this.fd, this.committedOffset);
+      try {
+        fs.closeSync(this.fd);
+      } catch {
+        /* noop — 이미 닫혔어도 경로 truncate는 진행 */
+      }
+      this.fd = -1;
+      fs.truncateSync(this.activeSegPath, this.committedOffset);
+      this.fd = fs.openSync(this.activeSegPath, 'a');
       this.currentOffset = this.committedOffset;
     } catch {
       // 절단 실패를 삼키고 계속 쓰면 committedOffset과 물리 EOF가 발산해, 이후

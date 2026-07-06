@@ -125,7 +125,8 @@ describe('T-fsync실패 주입', () => {
     });
     log.open();
 
-    const ftruncSpy = vi.spyOn(fs, 'ftruncateSync');
+    // 절단은 경로 기반(close→truncate→reopen — win32 'a' fd ftruncate EPERM 회피).
+    const truncSpy = vi.spyOn(fs, 'truncateSync');
     const results = await Promise.all([
       log.append(draft({ n: 1 })),
       log.append(draft({ n: 2 })),
@@ -134,9 +135,9 @@ describe('T-fsync실패 주입', () => {
 
     // 배치 Promise 전원 false.
     expect(results).toEqual([false, false, false]);
-    // 단일 ftruncate로 배치 전체 물리 제거(순서의존 null 매장 없음).
-    expect(ftruncSpy).toHaveBeenCalledTimes(1);
-    expect(ftruncSpy).toHaveBeenCalledWith(expect.any(Number), 0);
+    // 단일 truncate로 배치 전체 물리 제거(순서의존 null 매장 없음).
+    expect(truncSpy).toHaveBeenCalledTimes(1);
+    expect(truncSpy).toHaveBeenCalledWith(expect.any(String), 0);
     // 디스크에 롤백 이벤트 없음.
     expect(log.readAllRecords()).toEqual([]);
 
@@ -148,7 +149,7 @@ describe('T-fsync실패 주입', () => {
     expect(recs).toHaveLength(1);
     expect(recs[0].lamport).toBe(4);
     log.close();
-    ftruncSpy.mockRestore();
+    truncSpy.mockRestore();
 
     // 재부트 replay에 롤백 이벤트 미출현.
     const log2 = new AppendOnlyLog({ dir });
@@ -330,8 +331,8 @@ describe('fail-stop: 롤백 ftruncate 실패 (3모델 합의)', () => {
     await log.append(draft({ n: 1 })); // 커밋
 
     failSync = true;
-    const ftruncSpy = vi
-      .spyOn(fs, 'ftruncateSync')
+    const truncSpy = vi
+      .spyOn(fs, 'truncateSync')
       .mockImplementationOnce(() => {
         throw new Error('inject truncate failure');
       });
@@ -345,7 +346,7 @@ describe('fail-stop: 롤백 ftruncate 실패 (3모델 합의)', () => {
     expect(r3).toBe(false);
     expect(fs.statSync(seg(1)).size).toBe(sizeBefore); // 추가 바이트 0
     log.close();
-    ftruncSpy.mockRestore();
+    truncSpy.mockRestore();
 
     // 재개는 reopen — 절단 못 한 tail(n:2)은 valid 줄이라 at-least-once 승격(§2.6 계약).
     const log2 = new AppendOnlyLog({ dir, fsync: syncOk });
@@ -400,12 +401,12 @@ describe('비동기 배리어 인터리빙 (코얼레싱 계약)', () => {
     await untilGates(gates, 1);
     const p2 = log.append(draft({ n: 2 })); // late-arrival — 배리어1 밖
 
-    const ftruncSpy = vi.spyOn(fs, 'ftruncateSync');
+    const truncSpy = vi.spyOn(fs, 'truncateSync');
     gates[0].reject(new Error('inject barrier failure'));
     await expect(p1).resolves.toBe(false);
     await expect(p2).resolves.toBe(false); // 후속 대기분 포함 전원 false(§2.4-4)
-    expect(ftruncSpy).toHaveBeenCalledTimes(1); // 단일 ftruncate
-    ftruncSpy.mockRestore();
+    expect(truncSpy).toHaveBeenCalledTimes(1); // 단일 truncate(경로 기반)
+    truncSpy.mockRestore();
 
     const p3 = log.append(draft({ n: 3 }));
     await untilGates(gates, 2);
