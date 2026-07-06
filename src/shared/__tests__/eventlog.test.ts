@@ -13,13 +13,13 @@ describe('makeEnvelope', () => {
     },
   };
 
-  it('발급 필드(eventId·wallClock)를 채우고 순서 필드(lamport·seq)는 비운다', () => {
+  it('업무 필드만 조립하고 발급 필드(eventId·wallClock·lamport·origin.seq)는 전부 비운다', () => {
     const d = makeEnvelope(base);
-    expect(typeof d.eventId).toBe('string');
-    expect(d.eventId.length).toBeGreaterThan(0);
-    expect(typeof d.wallClock).toBe('number');
     expect(d.origin).toEqual({ machineId: 'm1', daemonEpoch: 1 });
-    // 순서 필드는 append 소관 — 초안에 존재하지 않는다.
+    // 발급 필드 4종은 전부 append 소관 — 초안에 존재하지 않는다
+    // (draft 재사용 재시도가 동일 eventId를 두 번 커밋하지 못하게).
+    expect('eventId' in d).toBe(false);
+    expect('wallClock' in d).toBe(false);
     expect('lamport' in d).toBe(false);
     expect('seq' in d.origin).toBe(false);
     expect(d.domain).toBe('channel');
@@ -40,7 +40,10 @@ describe('makeEnvelope', () => {
     expect(withOpt.causalRefs).toEqual(['e1', 'e2']);
   });
 
-  it('eventId는 호출마다 유일', () => {
-    expect(makeEnvelope(base).eventId).not.toBe(makeEnvelope(base).eventId);
+  it('입력 origin 객체를 변형하지 않는다(방어적 복사)', () => {
+    const origin = { machineId: 'm1', daemonEpoch: 1 };
+    const d = makeEnvelope({ ...base, origin });
+    expect(d.origin).not.toBe(origin);
+    expect(origin).toEqual({ machineId: 'm1', daemonEpoch: 1 });
   });
 });

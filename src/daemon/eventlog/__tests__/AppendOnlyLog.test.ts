@@ -273,3 +273,193 @@ describe('T-lamport 재개', () => {
     log.close();
   });
 });
+
+// ── 패널 반영: 발급 필드·fail-stop·비동기 배리어·롤·close 계약 ─────────────
+
+/** 수동 게이트 async fsync — await 창의 late-arrival 인터리빙을 결정적으로 재현. */
+function gatedFsync(): {
+  fsync: () => Promise<void>;
+  gates: Array<{ resolve: () => void; reject: (e: Error) => void }>;
+} {
+  const gates: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+  return {
+    gates,
+    fsync: () =>
+      new Promise<void>((resolve, reject) => {
+        gates.push({ resolve, reject });
+      }),
+  };
+}
+
+/** 마이크로태스크를 펌핑해 배리어 시작(gates 채워짐)을 기다린다. */
+async function untilGates(gates: unknown[], n: number): Promise<void> {
+  for (let i = 0; i < 50 && gates.length < n; i++) {
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.resolve();
+  }
+  expect(gates.length).toBeGreaterThanOrEqual(n);
+}
+
+describe('발급 필드 @ append (eventId 유일성)', () => {
+  it('같은 draft를 재사용(재시도 모사)해도 커밋 레코드마다 eventId 신규 발급', async () => {
+    const log = new AppendOnlyLog({ dir, fsync: syncOk });
+    log.open();
+    const d = draft({ n: 1 });
+    expect('eventId' in d).toBe(false); // draft엔 발급 필드 없음
+    await log.append(d);
+    await log.append(d);
+    const recs = log.readAllRecords();
+    expect(recs).toHaveLength(2);
+    expect(typeof recs[0].eventId).toBe('string');
+    expect(typeof recs[0].wallClock).toBe('number');
+    expect(recs[0].eventId).not.toBe(recs[1].eventId); // 전역 유일성 유지
+    log.close();
+  });
+});
+
+describe('fail-stop: 롤백 ftruncate 실패 (3모델 합의)', () => {
+  it('절단 실패 → broken: 배치 false + 이후 append 즉시 false·무기록, reopen으로 재개', async () => {
+    let failSync = false;
+    const log = new AppendOnlyLog({
+      dir,
+      fsync: () => {
+        if (failSync) throw new Error('inject fsync');
+      },
+    });
+    log.open();
+    await log.append(draft({ n: 1 })); // 커밋
+
+    failSync = true;
+    const ftruncSpy = vi
+      .spyOn(fs, 'ftruncateSync')
+      .mockImplementationOnce(() => {
+        throw new Error('inject truncate failure');
+      });
+    const r2 = await log.append(draft({ n: 2 }));
+    expect(r2).toBe(false);
+
+    // broken — 좌표 불변식 붕괴 상태로는 어떤 write도 하지 않는다.
+    failSync = false;
+    const sizeBefore = fs.statSync(seg(1)).size;
+    const r3 = await log.append(draft({ n: 3 }));
+    expect(r3).toBe(false);
+    expect(fs.statSync(seg(1)).size).toBe(sizeBefore); // 추가 바이트 0
+    log.close();
+    ftruncSpy.mockRestore();
+
+    // 재개는 reopen — 절단 못 한 tail(n:2)은 valid 줄이라 at-least-once 승격(§2.6 계약).
+    const log2 = new AppendOnlyLog({ dir, fsync: syncOk });
+    log2.open();
+    expect(log2.readAllRecords().map((r) => r.lamport)).toEqual([1, 2]);
+    expect(log2.lamportHwm).toBe(2);
+    log2.close();
+  });
+});
+
+describe('fail-closed: 부트 복구 절단 실패 (3모델 합의)', () => {
+  it('절단 불가면 open()이 throw — 불량 tail 위에 열지 않는다', () => {
+    fs.writeFileSync(seg(1), envLine(1, 1) + 'GARBAGE-tail\n');
+    const truncSpy = vi.spyOn(fs, 'truncateSync').mockImplementation(() => {
+      /* 절단이 조용히 무효인 최악 케이스 모사 */
+    });
+    const log = new AppendOnlyLog({ dir });
+    expect(() => log.open()).toThrow(/복구 절단 실패/);
+    truncSpy.mockRestore();
+  });
+});
+
+describe('비동기 배리어 인터리빙 (코얼레싱 계약)', () => {
+  it('배리어 성공 경계에서 롤 — 지속 부하에서도 세그먼트가 임계에서 롤된다', async () => {
+    const { fsync, gates } = gatedFsync();
+    const log = new AppendOnlyLog({ dir, fsync, maxSegmentBytes: 1 });
+    log.open();
+
+    const p1 = log.append(draft({ n: 1 }));
+    await untilGates(gates, 1); // 배리어1 in-flight
+    const p2 = log.append(draft({ n: 2 })); // await 창 도착 → 다음 배리어로
+
+    gates[0].resolve();
+    await expect(p1).resolves.toBe(true);
+    // 배리어1 성공 시점엔 unsynced(p2) 비어있지 않아 롤 없음 → 배리어2로.
+    await untilGates(gates, 2);
+    gates[1].resolve();
+    await expect(p2).resolves.toBe(true);
+
+    // 배리어2 성공 경계(unsynced 빔)에서 롤 성사 — 기아 없음.
+    expect(log.activeSegment).toContain('00000002');
+    expect(log.readAllRecords().map((r) => r.lamport)).toEqual([1, 2]);
+    log.close();
+  });
+
+  it('배리어 실패는 await 창 도착분까지 전원 false + 단일 ftruncate, 이후 정상 재개', async () => {
+    const { fsync, gates } = gatedFsync();
+    const log = new AppendOnlyLog({ dir, fsync });
+    log.open();
+
+    const p1 = log.append(draft({ n: 1 }));
+    await untilGates(gates, 1);
+    const p2 = log.append(draft({ n: 2 })); // late-arrival — 배리어1 밖
+
+    const ftruncSpy = vi.spyOn(fs, 'ftruncateSync');
+    gates[0].reject(new Error('inject barrier failure'));
+    await expect(p1).resolves.toBe(false);
+    await expect(p2).resolves.toBe(false); // 후속 대기분 포함 전원 false(§2.4-4)
+    expect(ftruncSpy).toHaveBeenCalledTimes(1); // 단일 ftruncate
+    ftruncSpy.mockRestore();
+
+    const p3 = log.append(draft({ n: 3 }));
+    await untilGates(gates, 2);
+    gates[1].resolve();
+    await expect(p3).resolves.toBe(true);
+    expect(log.readAllRecords().map((r) => r.payload)).toEqual([{ n: 3 }]);
+    log.close();
+  });
+
+  it('close()는 미확정 append를 false로 확정한다(영구 pending 없음)', async () => {
+    const log = new AppendOnlyLog({
+      dir,
+      fsync: () => new Promise<void>(() => {}), // 영구 대기 배리어
+    });
+    log.open();
+    const p = log.append(draft({ n: 1 }));
+    await Promise.resolve(); // 배리어 시작
+    log.close();
+    await expect(p).resolves.toBe(false);
+  });
+});
+
+describe('스캔 스키마 가드', () => {
+  it('발급 필드 없는 JSON 줄({})은 최초 불량 — 이후 절단, hwm 미오염', () => {
+    fs.writeFileSync(seg(1), envLine(1, 1) + '{}\n' + envLine(3, 3));
+    const log = new AppendOnlyLog({ dir });
+    log.open();
+    expect(log.readAllRecords().map((r) => r.lamport)).toEqual([1]);
+    expect(log.lamportHwm).toBe(1);
+    log.close();
+  });
+});
+
+describe('롤 open-then-swap', () => {
+  it('신규 세그먼트 개방 실패 시 현 세그먼트 유지(append 계속 성공), 다음 경계에서 롤', async () => {
+    const log = new AppendOnlyLog({ dir, fsync: syncOk, maxSegmentBytes: 1 });
+    log.open();
+    const openSpy = vi.spyOn(fs, 'openSync');
+    openSpy.mockImplementationOnce(() => {
+      throw new Error('inject roll open failure');
+    });
+
+    const r1 = await log.append(draft({ n: 1 })); // 배리어 성공 경계의 롤 시도가 실패
+    expect(r1).toBe(true);
+    expect(log.activeSegment).toContain('00000001'); // 상태 불변 — 현 세그먼트 유지
+
+    const r2 = await log.append(draft({ n: 2 })); // 다음 경계(append 시점)에서 롤 성사
+    expect(r2).toBe(true);
+    // r1은 seg1에 남고(스왑 실패 시 상태 불변), r2는 롤 성사 후 seg2에 기록.
+    expect(fs.readFileSync(seg(1), 'utf8')).toContain('"lamport":1');
+    expect(fs.readFileSync(seg(1), 'utf8')).not.toContain('"lamport":2');
+    expect(fs.readFileSync(seg(2), 'utf8')).toContain('"lamport":2');
+    expect(log.readAllRecords().map((r) => r.lamport)).toEqual([1, 2]);
+    openSpy.mockRestore();
+    log.close();
+  });
+});

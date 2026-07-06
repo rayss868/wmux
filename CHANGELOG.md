@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **이벤트 로그 프리미티브 (envelope PR1).** append-only 세그먼트 NDJSON 로그(`daemon/eventlog/AppendOnlyLog`)와 공통 이벤트 봉투 스키마(`shared/eventlog` — PROTOCOL, additive-only)를 도입 — 채널·A2A 정본을 크래시-안전 로그로 옮기는 §6.L 재배선의 기반. fsync 코얼레싱(그룹 커밋), 배치 단위 롤백(단일 ftruncate), 부트 전방 스캔 복구(최초 불량 절단·부분 승격 금지), lamport/seq 고수위 재개(재사용 금지·gap 허용), 절단 실패 시 fail-stop(조용한 좌표 발산으로 커밋 데이터를 잃지 않음). `machine-id` 민팅·복구와 atomicWrite `durable` 옵션(fsync 시퀀스) 포함. 아직 어떤 서비스도 배선되지 않음(재배선은 후속 PR).
+
 ## [3.17.0] — 2026-07-06
 
 ### Added

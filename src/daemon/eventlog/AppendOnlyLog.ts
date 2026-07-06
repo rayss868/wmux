@@ -20,6 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { randomUUID } from 'node:crypto';
 
 import type { EventEnvelope, EventEnvelopeDraft } from '../../shared/eventlog';
 
@@ -85,6 +86,11 @@ export class AppendOnlyLog {
   // 이미 false 처리된 배리어를 이중 resolve/커밋하지 않도록 가드.
   private rollbackEpoch = 0;
   private opened = false;
+  // fail-stop 마커(3모델 패널): 롤백 ftruncate 실패 = "committedOffset == 물리
+  // EOF" 좌표 불변식 붕괴. 이 상태로 계속 쓰면 이후 true 커밋이 불량 tail 뒤에
+  // 붙어 다음 복구·롤백이 커밋 레코드를 관통 절단한다(조용한 acked 데이터 손실).
+  // → 이후 append는 전부 즉시 false. 재개는 reopen(새 인스턴스 open)으로만.
+  private broken = false;
 
   constructor(options: AppendOnlyLogOptions) {
     this.dir = options.dir;
@@ -140,7 +146,10 @@ export class AppendOnlyLog {
     this.activeSegPath = this.segPath(activeNum);
 
     const scan = this.forwardScanFile(this.activeSegPath);
-    this.truncateFile(this.activeSegPath, scan.validEnd);
+    // §2.6 절단은 best-effort가 아니다(3모델 패널): 불량 tail이 남은 파일 위에
+    // 'a' 모드로 열면 이후 커밋이 tail 뒤에 붙고, 다음 부트 스캔이 tail에서
+    // 멈춰 그 커밋들을 폐기한다(acked 유실). 실패 = open 실패.
+    this.truncateFileStrict(this.activeSegPath, scan.validEnd);
 
     if (scan.records.length > 0) {
       this.hwmLamport = scan.maxLamport;
@@ -177,6 +186,11 @@ export class AppendOnlyLog {
       );
     }
     return new Promise<boolean>((resolve) => {
+      // fail-stop 상태(좌표 불변식 붕괴)에선 어떤 write도 안전하지 않다 — 즉시 false.
+      if (this.broken) {
+        resolve(false);
+        return;
+      }
       try {
         this.rollIfNeeded();
 
@@ -184,8 +198,12 @@ export class AppendOnlyLog {
         // 불필요한 gap을 피한다(재사용 금지 불변식은 어느 경로든 유지).
         const lamport = this.hwmLamport + 1;
         const seq = this.hwmSeq + 1;
+        // §1 "@ append": eventId·wallClock도 여기서 발급 — draft를 재시도로
+        // 재사용해도 커밋 레코드마다 eventId가 신규라 전역 유일성이 유지된다.
         const full: EventEnvelope = {
           ...draft,
+          eventId: randomUUID(),
+          wallClock: Date.now(),
           lamport,
           origin: { ...draft.origin, seq },
         };
@@ -217,8 +235,17 @@ export class AppendOnlyLog {
     return out;
   }
 
-  /** fd 닫기. PR1 테스트는 append를 await하므로 unsynced는 통상 비어있다. */
+  /**
+   * fd 닫기. 미확정(unsynced) append는 **전원 false로 확정**한다 — resolve(true)만이
+   * 내구 보장이라는 계약의 종료면이며, pending promise가 영구 미해결로 새지 않는다
+   * (패널 C2). 디스크에 남은 미fsync 줄은 다음 open의 valid-tail 승격(§2.6
+   * at-least-once)으로 흡수될 수 있다. flush-후-close(graceful shutdown)는 서비스
+   * 배선(PR3, §6.4b) 소관. in-flight 배리어는 epoch 가드로 무효화된다.
+   */
   close(): void {
+    this.rollbackEpoch++;
+    const pending = this.unsynced.splice(0, this.unsynced.length);
+    for (const rec of pending) rec.resolve(false);
     if (this.fd >= 0) {
       try {
         fs.closeSync(this.fd);
@@ -233,7 +260,7 @@ export class AppendOnlyLog {
   // ── 내부: fsync 코얼레싱 ────────────────────────────────────────────
 
   private maybeStartFsync(): void {
-    if (this.fsyncInFlight || this.unsynced.length === 0) return;
+    if (this.broken || this.fsyncInFlight || this.unsynced.length === 0) return;
     this.fsyncInFlight = true;
     // 마이크로태스크로 지연해 동기 버스트(같은 tick의 다수 append)를 한 배리어로
     // 코얼레싱한다(§2.5). 이후 tick 도착분은 in-flight 배리어의 다음으로 배치.
@@ -273,6 +300,9 @@ export class AppendOnlyLog {
     const done = this.unsynced.splice(0, barrierCount);
     for (const rec of done) rec.resolve(true);
     this.fsyncInFlight = false;
+    // §2.8 롤 기아 방지(패널 X3): 배리어 성공 직후도 배치 경계다 — append 시점에
+    // unsynced가 영영 안 비는 지속 부하에서도 여기서 롤이 성사된다.
+    if (this.unsynced.length === 0) this.rollIfNeeded();
     this.maybeStartFsync();
   }
 
@@ -285,10 +315,14 @@ export class AppendOnlyLog {
     this.rollbackEpoch++;
     try {
       fs.ftruncateSync(this.fd, this.committedOffset);
+      this.currentOffset = this.committedOffset;
     } catch {
-      // 절단 실패는 at-least-once로 흡수(§2.6-c) — false 계약은 유지.
+      // 절단 실패를 삼키고 계속 쓰면 committedOffset과 물리 EOF가 발산해, 이후
+      // true 커밋이 불량 tail 뒤에 붙고 다음 롤백/부트가 그 커밋을 관통 절단한다
+      // (3모델 패널 합의 — §2.6-c의 재부트 승격 계약은 이 in-process desync를
+      // 커버하지 않는다). → fail-stop. 이미 쓰인 tail은 다음 open의 스캔이 처리.
+      this.broken = true;
     }
-    this.currentOffset = this.committedOffset;
     const failed = this.unsynced.splice(0, this.unsynced.length);
     for (const rec of failed) rec.resolve(false);
   }
@@ -297,17 +331,30 @@ export class AppendOnlyLog {
 
   private rollIfNeeded(): void {
     // §2.8: 롤은 배치 경계(unsynced 비었을 때)에서만 — batchStartOffset이 항상
-    // 단일 파일 좌표이도록. 배치가 미결이면 현 세그먼트에 계속 쓰고 다음 배치에서 롤.
+    // 단일 파일 좌표이도록. 배치가 미결이면 현 세그먼트에 계속 쓰고 다음 경계에서 롤
+    // (append 시점 + 배리어 성공 직후 양쪽에서 시도 — 지속 부하 기아 방지).
+    if (this.broken) return;
     if (this.unsynced.length > 0) return;
     if (this.currentOffset <= this.maxSegmentBytes) return;
+    // open-then-swap(패널 C6): 새 세그먼트 개방이 성공한 뒤에만 상태를 전환한다.
+    // 실패하면 현 세그먼트를 그대로 계속 사용(상태 불변, 다음 경계에서 재시도) —
+    // 구 fd를 먼저 닫으면 개방 실패 시 fd 없는 반쪽 상태가 남는다.
+    const nextNum = this.activeSegNum + 1;
+    const nextPath = this.segPath(nextNum);
+    let nextFd: number;
+    try {
+      nextFd = this.createSegment(nextPath);
+    } catch {
+      return;
+    }
     try {
       fs.closeSync(this.fd);
     } catch {
       /* noop */
     }
-    this.activeSegNum += 1;
-    this.activeSegPath = this.segPath(this.activeSegNum);
-    this.fd = this.createSegment(this.activeSegPath);
+    this.fd = nextFd;
+    this.activeSegNum = nextNum;
+    this.activeSegPath = nextPath;
     this.committedOffset = 0;
     this.currentOffset = 0;
   }
@@ -402,13 +449,17 @@ export class AppendOnlyLog {
         break;
       }
       const rec = parsed as EventEnvelope;
-      if (typeof rec.lamport === 'number' && rec.lamport > maxLamport) {
-        maxLamport = rec.lamport;
+      // 최소 스키마 가드(패널 C5): 발급 필드가 없는 줄({} 등 비-envelope JSON)은
+      // 최초 불량으로 절단 — hwm·replay에 정체불명 레코드가 승격되지 않게.
+      if (
+        typeof rec.lamport !== 'number' ||
+        typeof rec.eventId !== 'string' ||
+        typeof rec.origin?.seq !== 'number'
+      ) {
+        break;
       }
-      const seq = rec.origin?.seq;
-      if (typeof seq === 'number' && seq > maxSeq) {
-        maxSeq = seq;
-      }
+      if (rec.lamport > maxLamport) maxLamport = rec.lamport;
+      if (rec.origin.seq > maxSeq) maxSeq = rec.origin.seq;
       records.push(rec);
       validEnd = nl + 1;
       offset = nl + 1;
@@ -417,13 +468,20 @@ export class AppendOnlyLog {
     return { validEnd, maxLamport, maxSeq, records };
   }
 
-  private truncateFile(filePath: string, size: number): void {
-    try {
-      if (fs.statSync(filePath).size > size) {
-        fs.truncateSync(filePath, size);
-      }
-    } catch {
-      // best-effort
+  /**
+   * §2.6 부트 복구 절단 — **검증형**(best-effort 금지, 3모델 패널). 절단이
+   * 실패하면 "커밋 프리픽스 = 파일 전체" 불변식을 수립할 수 없으므로 open을
+   * 실패시킨다(불량 tail 위에 열어 이후 커밋을 유실시키는 것보다 낫다).
+   */
+  private truncateFileStrict(filePath: string, size: number): void {
+    if (fs.statSync(filePath).size > size) {
+      fs.truncateSync(filePath, size);
+    }
+    const after = fs.statSync(filePath).size;
+    if (after !== size) {
+      throw new Error(
+        `AppendOnlyLog.open: 복구 절단 실패 — ${filePath} 크기 ${after} != validEnd ${size}`,
+      );
     }
   }
 }

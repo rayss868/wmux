@@ -15,8 +15,6 @@
  * 스키마는 PR5 소관 — 여기서 만들지 않는다.
  */
 
-import { randomUUID } from 'node:crypto';
-
 /**
  * 이벤트 도메인 (§1). 로그는 도메인 무지 — 스코프 밖 값도 미해석 통과.
  * Q1 재배선 대상은 'channel'·'a2a'뿐이고 나머지는 미래 소비자용 예약 슬롯.
@@ -68,7 +66,12 @@ export interface AuthContext {
  * 전용으로 순서에 절대 관여하지 않는다(§1 D10).
  */
 export interface EventEnvelope {
-  /** §1 D9: randomUUID() v4. 레코드 정체성(≠ idempotencyKey). */
+  /**
+   * §1 D9: randomUUID() v4. 레코드 정체성(≠ idempotencyKey). **append 임계구역에서
+   * 발급** — draft에 있으면 재시도가 같은 draft를 재사용할 때 서로 다른 두 커밋
+   * 레코드가 동일 eventId를 갖게 되어(at-least-once 승격과 조합) 전역 유일성이
+   * 깨진다(3모델 패널). 그래서 draft에는 존재하지 않는다.
+   */
   eventId: string;
   origin: EventOrigin;
   /** §1 D6: 데몬 전역 논리시계, 표시 순서의 정본. append가 발급(pre-increment). */
@@ -86,17 +89,23 @@ export interface EventEnvelope {
 }
 
 /**
- * makeEnvelope 산출물 — 순서 필드(lamport, origin.seq)는 제외된 초안.
+ * makeEnvelope 산출물 — 발급 필드(eventId·lamport·wallClock·origin.seq)가 전부
+ * 제외된 초안.
  *
- * lamport와 origin.seq는 AppendOnlyLog.append가 자신의 임계구역에서
- * hwm 기반으로 발급한다(§3). 서비스는 나머지 필드만 채워 draft를 만들고
- * append에 넘긴다 — 발급 주체가 로그 단독임을 타입으로 강제한다.
+ * 네 필드 모두 AppendOnlyLog.append가 자신의 임계구역에서 발급한다(§1 "@ append",
+ * §3). lamport/seq는 hwm 임계구역이 필요해서, eventId/wallClock은 draft 재사용
+ * 재시도가 동일 eventId를 두 번 커밋하지 못하게(레코드마다 신규 발급). 서비스는
+ * 업무 필드만 채워 draft를 만들고 append에 넘긴다 — 발급 주체가 로그 단독임을
+ * 타입으로 강제한다.
  */
-export type EventEnvelopeDraft = Omit<EventEnvelope, 'lamport' | 'origin'> & {
+export type EventEnvelopeDraft = Omit<
+  EventEnvelope,
+  'eventId' | 'lamport' | 'wallClock' | 'origin'
+> & {
   origin: Omit<EventOrigin, 'seq'>;
 };
 
-/** makeEnvelope 입력. eventId·wallClock은 팩토리가 발급한다. */
+/** makeEnvelope 입력. 발급 필드는 전부 append 소관이라 여기 없다. */
 export interface MakeEnvelopeInput {
   domain: EventDomain;
   payload: unknown;
@@ -108,17 +117,15 @@ export interface MakeEnvelopeInput {
 }
 
 /**
- * envelope 초안 팩토리 (§1, §5). eventId(randomUUID)·wallClock(Date.now)을
- * 확정하고, 순서 필드는 append가 채우도록 비운다.
+ * envelope 초안 팩토리 (§1, §5). 업무 필드를 조립하고 옵셔널을 정돈한다.
+ * 발급 필드(eventId·lamport·wallClock·origin.seq)는 전부 append가 채운다.
  */
 export function makeEnvelope(input: MakeEnvelopeInput): EventEnvelopeDraft {
   const draft: EventEnvelopeDraft = {
-    eventId: randomUUID(),
     origin: {
       machineId: input.origin.machineId,
       daemonEpoch: input.origin.daemonEpoch,
     },
-    wallClock: Date.now(),
     authContext: {
       principalId: input.authContext.principalId,
       verifiedWorkspaceId: input.authContext.verifiedWorkspaceId,
