@@ -648,6 +648,7 @@ export interface TaskStatus {
   state: TaskState;
   message?: Message;
   timestamp: string; // ISO 8601
+  evidence?: CompletionEvidence; // additive — completed/failed 전이의 구조화 증거(§6.M P1)
 }
 
 /** Valid state transitions for A2A tasks */
@@ -669,6 +670,45 @@ export function validateTransition(from: TaskState, to: TaskState): boolean {
 
 /** Terminal states — tasks in these states are eligible for GC */
 export const TERMINAL_STATES: readonly TaskState[] = ['completed', 'failed', 'canceled'];
+
+// --- 완료증거 (§6.M P1 — completed/failed 전이의 구조화 증거) ---
+
+/**
+ * 완료증거 아이템 — discriminated union. status가 kind별 닫힌 enum이라
+ * 오타·위장 status(예: command+verified)가 well-formed로 통과할 수 없다.
+ * "검증됨" 판정 = (command && passed) | (inspection|artifact && verified) —
+ * shared/completionEvidence.ts isVerifiedItem. 검증 여부는 전이 게이트가 아니라
+ * completed의 "검증 등급"(verifiedItemCount)으로 정직 표기된다.
+ */
+export type EvidenceItem =
+  | {
+      kind: 'command'; // 실행된 명령 — 검증됨 = status 'passed'
+      status: 'passed' | 'failed';
+      summary: string; // 필수·비어있지 않음 — 이 아이템이 무엇을 검증했나
+      command: string; // 필수 — 무엇을 실행했나
+      output?: string; // 출력 발췌(캡: EVIDENCE_MAX_STR_BYTES)
+    }
+  | {
+      kind: 'inspection' | 'artifact'; // 점검/산출물 — 검증됨 = status 'verified'
+      status: 'verified' | 'unverified';
+      summary: string; // 필수·비어있지 않음
+      location?: string; // 대상 위치(선택)
+      output?: string;
+    };
+
+/**
+ * completed/failed 전이에 첨부되는 구조화 완료증거 — 전이 API의 별도 1급 입력
+ * (자유서술 message에 태우지 않는다: message는 전이 후 append라 원자적 게이팅 불가).
+ * recordedBy/recordedAt는 wire에서 드롭되고(normalizeCompletionEvidenceWire)
+ * 정본 writer가 authContext로 스탬프한다(클라 위조 불가).
+ */
+export interface CompletionEvidence {
+  summary: string; // 필수·비어있지 않음(completed=전이 요약 / failed=실패 사유)
+  items: EvidenceItem[]; // completed → ≥1 well-formed / failed → 선택(제공 시 형태 검증 동일)
+  files?: string[]; // 상대경로만(isSafeRelPath). 캡: EVIDENCE_MAX_FILES
+  recordedBy?: string; // 서버 전용 스탬프 — wire 값은 normalize에서 드롭
+  recordedAt?: string; // 서버 전용 스탬프(ISO 8601) — wire 값은 normalize에서 드롭
+}
 
 // --- Artifact ---
 

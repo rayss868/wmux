@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { BrowserWindow } from 'electron';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
+import type { CompletionEvidence } from '../../shared/types';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -41,7 +42,8 @@ export class ClaudeWorker {
     cwd?: string,
   ): Promise<void> {
     if (this.isFull) {
-      await this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', 'Worker at capacity');
+      const reason = 'Worker at capacity';
+      await this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
       return;
     }
 
@@ -103,7 +105,8 @@ export class ClaudeWorker {
     proc.on('error', (err) => {
       console.error(`[ClaudeWorker] spawn error for task ${taskId}:`, err);
       this.sessions.delete(taskId);
-      this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', `Spawn error: ${err.message}`);
+      const reason = `Spawn error: ${err.message}`;
+      this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
     });
 
     proc.on('close', (code) => {
@@ -111,7 +114,8 @@ export class ClaudeWorker {
       if (!sess) return; // already handled via processLine 'result'
       this.sessions.delete(taskId);
       if (code !== 0) {
-        this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', `Process exited with code ${code}`);
+        const reason = `Process exited with code ${code}`;
+        this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
       }
     });
   }
@@ -143,7 +147,27 @@ export class ClaudeWorker {
         ? `Error: ${resultText}`
         : resultText;
 
-      this.updateTaskStatus(session.taskId, receiverWorkspaceId, status, statusMessage);
+      // (A′) 정직 증거: run 결과를 unverified 자기보고로만 표기한다 — CLI가 스스로
+      // 성공을 보고했을 뿐 우리가 독립 검증한 게 아니므로 절대 command/passed(verified)로
+      // 승격하지 않는다(설계 §⑥ CL1: run-success 세탁이 P2 의존성 술어를 오염 못 하게).
+      const evidence: CompletionEvidence = isError
+        ? {
+            summary: `Error: ${resultText.trim() || 'agent run failed'}`,
+            items: [{ kind: 'inspection', status: 'unverified', summary: 'claude CLI run reported error' }],
+          }
+        : {
+            // C7: 빈 result 텍스트가 빈 summary 자기거부로 이어지지 않게 기본값을 준다.
+            summary: resultText.trim() || 'agent run completed (empty result text)',
+            items: [{
+              kind: 'inspection',
+              status: 'unverified',
+              summary: 'claude CLI run exited success (self-reported; no independent verification)',
+              location: 'claude -p (stream-json)',
+              output: `session=${session.sessionId ?? '?'} cost=$${costUsd?.toFixed(4) ?? '?'}`,
+            }],
+          };
+
+      this.updateTaskStatus(session.taskId, receiverWorkspaceId, status, statusMessage, evidence);
 
       console.log(`[ClaudeWorker] task=${session.taskId} ${status} cost=$${costUsd?.toFixed(4) ?? '?'}`);
     }
@@ -157,6 +181,7 @@ export class ClaudeWorker {
     workspaceId: string,
     status: string,
     message?: string,
+    evidence?: CompletionEvidence,
   ): Promise<void> {
     try {
       await sendToRenderer(this.getWindow, 'a2a.task.update', {
@@ -164,6 +189,7 @@ export class ClaudeWorker {
         workspaceId,
         status,
         ...(message ? { message } : {}),
+        ...(evidence ? { evidence } : {}),
       });
     } catch (err) {
       console.error(`[ClaudeWorker] Failed to update task ${taskId}:`, err);

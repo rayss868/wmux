@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createA2aSlice, type A2aSlice } from '../a2aSlice';
-import type { Message } from '../../../../shared/types';
+import type { Message, CompletionEvidence } from '../../../../shared/types';
 import type { PaneAddress } from '../../../hooks/a2aAddressing';
 
 type TestState = A2aSlice;
@@ -233,6 +233,49 @@ describe('a2aSlice — updateTaskStatus transitions (P3 message clarity)', () =>
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/Permission denied/);
     expect(r.error).not.toMatch(/Invalid transition/); // permission fires first
+  });
+});
+
+describe('a2aSlice — updateTaskStatus 완료증거 저장 (§6.M P1 PR-D′, additive)', () => {
+  let store: ReturnType<typeof createTestStore>;
+  let taskId: string;
+
+  const evidence: CompletionEvidence = {
+    summary: 'done',
+    items: [{ kind: 'inspection', status: 'unverified', summary: 'self-reported' }],
+  };
+
+  beforeEach(() => {
+    store = createTestStore();
+    taskId = store.getState().createA2aTask({
+      title: 'Test',
+      from: { workspaceId: 'ws-sender', name: 'Sender' },
+      to: { workspaceId: 'ws-receiver', name: 'Receiver' },
+      history: [makeMessage('hello')],
+      artifacts: [],
+    });
+  });
+
+  it('전이 성공 시 evidence 를 task.status.evidence 에 verbatim 저장', () => {
+    store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
+    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, evidence);
+    expect(r.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.evidence).toEqual(evidence);
+  });
+
+  it('evidence 미제공 시 status.evidence 필드 부재 (additive: 없으면 안 붙음)', () => {
+    store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
+    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver');
+    expect(r.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status).not.toHaveProperty('evidence');
+  });
+
+  it('전이 거부 시 evidence 는 저장되지 않음 (게이트가 아니라 전이 성공에 종속)', () => {
+    // submitted -> completed 는 구조 전이 거부 → evidence 를 넘겨도 status 는 그대로.
+    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, evidence);
+    expect(r.ok).toBe(false);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('submitted');
+    expect(store.getState().a2aTasks[taskId].status).not.toHaveProperty('evidence');
   });
 });
 
