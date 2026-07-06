@@ -464,3 +464,50 @@ describe('롤 open-then-swap', () => {
     log.close();
   });
 });
+
+// ── hwmFloor(§3-4 클램프, 패널 C): 컴팩션-후 재사용 차단 ───────────────────
+
+describe('hwmFloor 하한 클램프', () => {
+  it('빈 세그먼트만 잔존(컴팩션 절단 모사) + floor{5,5} → hwm 5, 첫 신규 6', async () => {
+    // 컴팩션이 비어있지-않은 세그먼트를 전부 절단하고 빈 활성 세그먼트만 남은 상태.
+    fs.writeFileSync(seg(3), '');
+    const log = new AppendOnlyLog({
+      dir,
+      fsync: syncOk,
+      hwmFloor: { lamport: 5, seq: 5 },
+    });
+    log.open();
+    // floor 없인 스캔 hwm=0 → lamport/seq 재사용(§6.L 함정). floor가 차단.
+    expect(log.lamportHwm).toBe(5);
+    expect(log.seqHwm).toBe(5);
+
+    const ok = await log.append(draft({ n: 'post-compaction' }));
+    expect(ok).toBe(true);
+    const recs = log.readAllRecords();
+    expect(recs.map((r) => r.lamport)).toEqual([6]); // 첫 신규 = floor+1
+    expect(recs[0].origin.seq).toBe(6);
+    log.close();
+  });
+
+  it('세그먼트 전무(first-boot 경로)에서도 floor 적용', async () => {
+    const log = new AppendOnlyLog({
+      dir,
+      fsync: syncOk,
+      hwmFloor: { lamport: 7, seq: 7 },
+    });
+    log.open();
+    expect(log.lamportHwm).toBe(7);
+    await log.append(draft({ n: 1 }));
+    expect(log.readAllRecords().map((r) => r.lamport)).toEqual([8]);
+    log.close();
+  });
+
+  it('스캔 hwm이 floor보다 크면 스캔 값 우선(클램프는 하한일 뿐)', () => {
+    fs.writeFileSync(seg(1), envLine(9, 9));
+    const log = new AppendOnlyLog({ dir, hwmFloor: { lamport: 5, seq: 5 } });
+    log.open();
+    expect(log.lamportHwm).toBe(9);
+    expect(log.seqHwm).toBe(9);
+    log.close();
+  });
+});

@@ -202,6 +202,16 @@ export interface MigrateOptions {
   readLegacyState: () => ChannelState | null;
   /** genesis 재로드 검증(§6.1-3). PR3: ChannelStateWriter.isChannelState. */
   validateProjection: (data: unknown) => boolean;
+  /**
+   * A(3모델 패널): 마이그레이션 완결 직후, 워터마크 스탬프된 레거시 상태를 channels.json에
+   * 되쓰는 훅. **PR3 배선 계약: ChannelStateWriter durable 저장에 연결하라.** 이 되쓰기가
+   * 없으면 첫 dual-write 전 부트의 evaluateWatermark가 absent→downgrade로 오발동한다
+   * (pristine 창). 훅 미주입(레거시 호출자) 시에도 반환값 legacyStamped로 저장 의무가
+   * 호출자에게 전달된다. 훅 실패는 완결을 되돌리지 않는다(manifest가 이미 표지 — warn만).
+   */
+  writeLegacyStamped?: (
+    stamped: ChannelState & { eventLogWatermark: EventLogWatermark },
+  ) => void;
   clock?: () => number;
 }
 
@@ -211,6 +221,11 @@ export interface MigrateResult {
   machineId: string;
   /** (c) 분기에서 격리된 세그먼트 경로(보존, 삭제 아님). */
   quarantined: string[];
+  /**
+   * A: 워터마크 스탬프된 레거시 상태(변환·재구성 완결 경로에서 생성). 호출자는 이를
+   * channels.json에 durable 저장해야 pristine 창이 닫힌다(훅이 이미 수행했어도 동일 값).
+   */
+  legacyStamped?: ChannelState & { eventLogWatermark: EventLogWatermark };
 }
 
 /** 변환 실패 = 마이그레이션 중단(레거시 무손상). manifest 미기록 → 다음 부트가 재시도. */
@@ -245,6 +260,10 @@ export function runMigration(opts: MigrateOptions): MigrateResult {
   }
   if (detection.kind === 'quarantine-and-migrate') {
     const quarantined = quarantineSegments(opts.eventsDir, opts.clock ?? Date.now);
+    // G②(§6.1-1(c)): 격리는 보존이지 복구가 아니다 — 수동 복구 대상임을 명시 고지.
+    console.warn(
+      `[migrateToEventLog] 커밋 세그먼트 격리됨 — events/quarantine/ 수동 복구 대상: ${quarantined.join(', ')}`,
+    );
     return convertAndActivate(opts, quarantined);
   }
   // detection.kind === 'migrate'
@@ -257,6 +276,7 @@ function reconstructManifest(opts: MigrateOptions): MigrateResult {
   const genesis = store.load<ChannelState>(
     GENESIS_CHANNEL_REF,
     opts.validateProjection,
+    { preserveOnCorruption: true }, // G①: genesis는 read 경로도 이동 금지(§6.2)
   );
   if (!genesis) {
     // 판정 후 경합으로 genesis가 사라진 극단 — fail-safe로 재변환.
@@ -272,11 +292,33 @@ function reconstructManifest(opts: MigrateOptions): MigrateResult {
     activeSegment: highestSegmentNum(opts.eventsDir),
   };
   writeManifest(opts.eventsDir, manifest);
+  // A: (b)도 완결 경로 — pristine 창을 동일하게 닫는다. 재변환은 아니므로 레거시 읽기는
+  // 훅이 있을 때만(스탬프 목적 READ, 기존 "재변환 없음" 계약과 별개 축). 실패는 warn만
+  // (manifest가 이미 완료 표지 — 되돌리지 않는다).
+  let legacyStamped:
+    | (ChannelState & { eventLogWatermark: EventLogWatermark })
+    | undefined;
+  if (opts.writeLegacyStamped) {
+    try {
+      const legacy = opts.readLegacyState() ?? EMPTY_CHANNEL_STATE;
+      legacyStamped = stampWatermark(
+        stripWatermark(legacy) as ChannelState,
+        manifest.snapshotLamport,
+      );
+      opts.writeLegacyStamped(legacyStamped);
+    } catch (err) {
+      console.warn(
+        '[migrateToEventLog] 재구성 후 워터마크 스탬프 실패(완결 유지, 첫 dual-write까지 pristine 창 잔존):',
+        err,
+      );
+    }
+  }
   return {
     detection: 'reconstruct-manifest',
     manifest,
     machineId,
     quarantined: [],
+    legacyStamped,
   };
 }
 
@@ -315,6 +357,7 @@ function convertAndActivate(
   const check = store.load<ChannelState>(
     GENESIS_CHANNEL_REF,
     opts.validateProjection,
+    { preserveOnCorruption: true }, // G①: genesis는 read 경로도 이동 금지(§6.2)
   );
   if (!check) {
     throw new MigrationError(
@@ -333,11 +376,27 @@ function convertAndActivate(
   };
   writeManifest(opts.eventsDir, manifest);
 
+  // 6. A(3모델 패널): 완결 직후 레거시에 워터마크 스탬프(lamport 0 = genesis 베이스라인) —
+  // 첫 dual-write 전 부트의 absent 오발동(pristine 창)을 닫는다. 훅 실패는 완결을
+  // 되돌리지 않는다(warn — 다음 dual-write가 스탬프를 회복).
+  const legacyStamped = stampWatermark(projection, 0);
+  if (opts.writeLegacyStamped) {
+    try {
+      opts.writeLegacyStamped(legacyStamped);
+    } catch (err) {
+      console.warn(
+        '[migrateToEventLog] 마이그레이션 후 워터마크 스탬프 실패(완결 유지, 첫 dual-write까지 pristine 창 잔존):',
+        err,
+      );
+    }
+  }
+
   return {
     detection: quarantined.length > 0 ? 'quarantine-and-migrate' : 'migrate',
     manifest,
     machineId,
     quarantined,
+    legacyStamped,
   };
 }
 
@@ -350,23 +409,35 @@ export interface ReseedOptions {
   downgradeState: ChannelState;
   /** 로그 append(PR3: AppendOnlyLog.append 바인딩). 마커 lamport 발급을 위해 선행 호출. */
   append: (draft: EventEnvelopeDraft) => Promise<boolean>;
-  /** append 직후 마커의 lamport(PR3: () => log.lamportHwm). */
-  lamportAfterAppend: () => number;
+  /** 현재 lamport hwm 읽기(PR3: () => log.lamportHwm). race 어서션(D)과 마커 lamport 확정에 사용. */
+  lamportHwm: () => number;
   origin: Omit<EventOrigin, 'seq'>;
   authContext: AuthContext;
   validateProjection: (data: unknown) => boolean;
+  /**
+   * A(3모델 패널): reseed 완결 시 markerLamport로 스탬프된 레거시 상태를 channels.json에
+   * 되쓰는 훅(PR3: ChannelStateWriter durable 저장). 이 되쓰기가 없으면 stale 워터마크가
+   * 다음 부트마다 같은 hash-mismatch를 재검출해 reseed-{n}이 부트마다 증식한다.
+   */
+  writeLegacyStamped?: (
+    stamped: ChannelState & { eventLogWatermark: EventLogWatermark },
+  ) => void;
   /** 재작성할 활성 projection 스냅샷 참조명(§6.4c ③). 기본 channel.json. */
   activeProjectionRef?: string;
   clock?: () => number;
 }
 
 export interface ReseedResult {
+  /** 완결 여부(마커+스냅샷+manifest 전부). false면 스냅샷·manifest 부작용 0 — 다음 부트 재시도. */
+  ok: boolean;
+  /** ok=false의 사유. append-failed = 마커 미커밋 / lamport-race = 부트-단독 전제 위반(D). */
+  failReason?: 'append-failed' | 'lamport-race';
   reseedRef: string;
   markerLamport: number;
   stateHash: string;
   manifest: EventLogManifest;
-  /** 마커 append 성공 여부. false면 reseed 미완(정본에 감지 사실 미기록 → 재시도). */
-  appended: boolean;
+  /** A: markerLamport로 스탬프된 레거시 상태 — 호출자가 저장해야 reseed 재검출 루프가 닫힌다. */
+  legacyStamped?: ChannelState & { eventLogWatermark: EventLogWatermark };
 }
 
 /**
@@ -376,6 +447,10 @@ export interface ReseedResult {
  * 순서(계약): 마커의 lamport가 스냅샷의 snapshotLamport이므로 **마커를 먼저 append**해 lamport를
  * 확정한 뒤 reseed·활성 스냅샷을 쓰고, **manifest write로 원자적 완료**(§6.1-4 동형). 스펙 §6.4c의
  * 나열 순서(스냅샷①/마커②)는 lamport 의존성을 만족시키려면 마커 선행으로 정정된다.
+ *
+ * 전제(코드로 강제 — D): **부트 단독 실행**. 동시 append가 끼면 hwm이 마커의 lamport가 아니게
+ * 되어 reseed snapshotLamport가 마커 이후 이벤트를 건너뛴다(replay 유실) → before+1 어서션
+ * 위반 시 중단(failReason='lamport-race', 스냅샷·manifest 미기록 — 다음 부트 재시도).
  */
 export async function performReseed(opts: ReseedOptions): Promise<ReseedResult> {
   const clock = opts.clock ?? Date.now;
@@ -388,6 +463,16 @@ export async function performReseed(opts: ReseedOptions): Promise<ReseedResult> 
 
   const n = opts.manifest.reseedRefs.length + 1;
   const ref = reseedRef(n);
+  const failResult = (
+    failReason: 'append-failed' | 'lamport-race',
+  ): ReseedResult => ({
+    ok: false,
+    failReason,
+    reseedRef: ref,
+    markerLamport: 0,
+    stateHash,
+    manifest: opts.manifest,
+  });
 
   // 마커 먼저 append → lamport 확정. 마커 payload는 감지 사실을 감사 가능하게 남긴다.
   const marker: EventEnvelopeDraft = makeEnvelope({
@@ -401,18 +486,21 @@ export async function performReseed(opts: ReseedOptions): Promise<ReseedResult> 
     origin: opts.origin,
     authContext: opts.authContext,
   });
+  const before = opts.lamportHwm(); // D: race 어서션 기준점
   const appended = await opts.append(marker);
   if (!appended) {
     // 마커 커밋 실패 → 정본에 감지 사실이 안 남으면 무성 폐기 위반 → reseed 중단(재시도 대상).
-    return {
-      reseedRef: ref,
-      markerLamport: 0,
-      stateHash,
-      manifest: opts.manifest,
-      appended: false,
-    };
+    return failResult('append-failed');
   }
-  const markerLamport = opts.lamportAfterAppend();
+  const markerLamport = opts.lamportHwm();
+  if (markerLamport !== before + 1) {
+    // D: 부트-단독 전제 위반(동시 append 개입) — hwm이 마커의 lamport라는 보장이 깨졌다.
+    // 이대로 진행하면 snapshotLamport가 마커 이후 이벤트를 건너뛰어 replay 유실 → 중단.
+    console.warn(
+      `[migrateToEventLog] reseed lamport race 감지(before=${before}, after=${markerLamport}) — 중단, 다음 부트 재시도`,
+    );
+    return failResult('lamport-race');
+  }
 
   // reseed 스냅샷(genesis급 immutable) + 활성 projection 스냅샷 재작성 — 둘 다 snapshotLamport=markerLamport.
   store.writeDurableSync(ref, cleanState, markerLamport, opts.validateProjection);
@@ -432,7 +520,28 @@ export async function performReseed(opts: ReseedOptions): Promise<ReseedResult> 
   };
   writeManifest(opts.eventsDir, manifest);
 
-  return { reseedRef: ref, markerLamport, stateHash, manifest, appended: true };
+  // A: stale 워터마크 갱신 — markerLamport로 재스탬프해 되쓴다. 실패는 warn만(완결 유지;
+  // 미갱신 시 다음 부트가 1회 더 reseed하고 그때 재시도된다 — 무한 증식과 구별되는 관측 가능 잔여).
+  const legacyStamped = stampWatermark(cleanState, markerLamport);
+  if (opts.writeLegacyStamped) {
+    try {
+      opts.writeLegacyStamped(legacyStamped);
+    } catch (err) {
+      console.warn(
+        '[migrateToEventLog] reseed 후 워터마크 재스탬프 실패(완결 유지, 다음 부트 재검출 1회 잔여):',
+        err,
+      );
+    }
+  }
+
+  return {
+    ok: true,
+    reseedRef: ref,
+    markerLamport,
+    stateHash,
+    manifest,
+    legacyStamped,
+  };
 }
 
 // ── 내부 헬퍼 ──────────────────────────────────────────────────────────
@@ -445,9 +554,11 @@ function genesisValid(
   eventsDir: string,
   validateProjection: (d: unknown) => boolean,
 ): boolean {
+  // G①: 감지 단계의 genesis 검사도 read 경로 이동 금지(§6.2 불변 계약).
   return (
-    snapshotStoreFor(eventsDir).load(GENESIS_CHANNEL_REF, validateProjection) !==
-    null
+    snapshotStoreFor(eventsDir).load(GENESIS_CHANNEL_REF, validateProjection, {
+      preserveOnCorruption: true,
+    }) !== null
   );
 }
 
@@ -506,11 +617,25 @@ function highestSegmentNum(eventsDir: string): number {
   return Math.max(...files.map((f) => Number(SEGMENT_RE.exec(f)![1])));
 }
 
-/** 빈 세그먼트 존재 보장(§6.1-2). 있으면 최고 번호를 활성으로, 없으면 00000001을 생성. */
+/**
+ * 빈 세그먼트 존재 보장(§6.1-2). 없으면 00000001 생성. 기존 세그먼트는 **전부 빈 것일 때만**
+ * 재사용한다(B③ 방어심층): 비어있지-않은 세그먼트를 활성으로 채택하면 그 외래 이벤트
+ * (lamport>0)가 genesis 위 replay에 적용된다 — (c) 경로에선 quarantineSegments의 잔존 0
+ * 검증이 선차단하지만, 어떤 경로로든 이 지점에 도달한 비정상은 중단이 정답이다.
+ */
 function ensureEmptySegment(eventsDir: string): number {
   fs.mkdirSync(eventsDir, { recursive: true });
   const files = listSegmentFiles(eventsDir);
-  if (files.length > 0) return highestSegmentNum(eventsDir);
+  if (files.length > 0) {
+    for (const f of files) {
+      if (!isFileEmpty(path.join(eventsDir, f))) {
+        throw new MigrationError(
+          `비어있지-않은 세그먼트(${f})를 활성으로 채택 불가 — 마이그레이션 중단(레거시 무손상)`,
+        );
+      }
+    }
+    return highestSegmentNum(eventsDir);
+  }
   const seg = path.join(eventsDir, segmentName(1));
   const fd = fs.openSync(seg, 'a'); // 생성 + append 개방
   fs.closeSync(fd);
@@ -521,13 +646,20 @@ function ensureEmptySegment(eventsDir: string): number {
 /**
  * (c) 분기: 비정상 세그먼트를 events/quarantine/으로 **격리(보존, 삭제 아님)**. 이름 충돌은
  * 클록 접미로 회피. §2.1 레이아웃의 quarantine/ 좌표를 따른다(read-time corrupted/와 목적 구분).
+ *
+ * B(3모델 패널): 격리 실패는 **중단**이다(best-effort 금지) — 실패를 삼키고 재변환을 진행하면
+ * 격리 못 한 비어있지-않은 세그먼트가 활성으로 채택돼 외래 이벤트가 genesis 위 replay에
+ * 적용된다(검증 단계는 genesis만 재로드해 못 잡음). 중단 시 레거시·세그먼트 무손상,
+ * manifest 미기록 → 다음 부트 재시도.
  */
 function quarantineSegments(eventsDir: string, clock: () => number): string[] {
   const qdir = path.join(eventsDir, 'quarantine');
   try {
     fs.mkdirSync(qdir, { recursive: true });
-  } catch {
-    return [];
+  } catch (err) {
+    throw new MigrationError(
+      `quarantine 디렉토리 생성 실패 — 마이그레이션 중단(레거시 무손상): ${String(err)}`,
+    );
   }
   const moved: string[] = [];
   const ts = clock();
@@ -535,12 +667,21 @@ function quarantineSegments(eventsDir: string, clock: () => number): string[] {
     const dest = path.join(qdir, `${f}.${ts}.bak`);
     try {
       fs.renameSync(path.join(eventsDir, f), dest);
-      moved.push(dest);
-    } catch {
-      // best-effort — 격리 실패는 삼키되(보존 목적) 재변환은 진행.
+    } catch (err) {
+      throw new MigrationError(
+        `세그먼트 격리 실패(${f}) — 마이그레이션 중단(레거시·세그먼트 무손상): ${String(err)}`,
+      );
     }
+    moved.push(dest);
   }
   fsyncDir(eventsDir);
+  // B②: 격리 후 잔존 0 검증 — 잔존이 있으면 재변환의 빈-세그먼트 전제가 깨진다.
+  const residual = listSegmentFiles(eventsDir);
+  if (residual.length > 0) {
+    throw new MigrationError(
+      `격리 후 세그먼트 잔존(${residual.join(', ')}) — 마이그레이션 중단(레거시 무손상)`,
+    );
+  }
   return moved;
 }
 

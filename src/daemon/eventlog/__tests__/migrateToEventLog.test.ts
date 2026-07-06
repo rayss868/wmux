@@ -228,6 +228,35 @@ describe('T-마이그레이션 왕복', () => {
     expect(second.machineId).toBe(first.machineId); // 재민팅 없음
     expect(reader).not.toHaveBeenCalled(); // 재변환 없음(레거시 재읽기 안 함)
   });
+
+  it('A(pristine 창 봉쇄): 완결 직후 스탬프된 상태로 evaluateWatermark → unchanged', () => {
+    fs.writeFileSync(channelsPath, JSON.stringify(legacyWithMembers()));
+    const writer = new ChannelStateWriter(wmuxDir);
+    const stampedWrites: unknown[] = [];
+    const result = runMigration({
+      ...migrateOpts(() => writer.load()),
+      writeLegacyStamped: (s) => stampedWrites.push(s),
+    });
+
+    // 훅이 lamport 0(genesis 베이스라인) 워터마크로 되쓰기를 수행.
+    expect(stampedWrites).toHaveLength(1);
+    expect(result.legacyStamped).toBeDefined();
+    expect(result.legacyStamped!.eventLogWatermark.lamport).toBe(0);
+    expect(stampedWrites[0]).toEqual(result.legacyStamped);
+    // 첫 dual-write 전 부트 판정 = unchanged — absent 오발동(pristine 창) 봉쇄.
+    expect(evaluateWatermark(result.legacyStamped).kind).toBe('unchanged');
+  });
+
+  it('A(훅 미주입 레거시 호출자): 동작 유지 + 반환값에 legacyStamped 포함(저장 의무 전달)', () => {
+    fs.writeFileSync(channelsPath, JSON.stringify(legacyWithMembers()));
+    const writer = new ChannelStateWriter(wmuxDir);
+    const result = runMigration(migrateOpts(() => writer.load())); // 훅 없음
+
+    expect(result.detection).toBe('migrate');
+    expect(readManifest(eventsDir)).not.toBeNull(); // 완결 유지
+    expect(result.legacyStamped).toBeDefined();
+    expect(evaluateWatermark(result.legacyStamped).kind).toBe('unchanged');
+  });
 });
 
 // ── T-genesis ──────────────────────────────────────────────────────────
@@ -362,7 +391,17 @@ describe('T-manifest크래시 3분기', () => {
     });
     expect(detection.kind).toBe('quarantine-and-migrate');
 
+    // G②(§6.1-1(c)): 격리 실행 시 수동 복구 대상임을 console.warn으로 명시 고지.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = runMigration(migrateOpts(() => writer.load()));
+    expect(
+      warnSpy.mock.calls.some(
+        (args) =>
+          String(args[0]).includes('격리') &&
+          String(args[0]).includes('수동 복구'),
+      ),
+    ).toBe(true);
+    warnSpy.mockRestore();
     expect(result.detection).toBe('quarantine-and-migrate');
     expect(result.quarantined.length).toBe(1);
     // 격리 파일이 보존(삭제 아님) + 내용 그대로.
@@ -375,6 +414,50 @@ describe('T-manifest크래시 3분기', () => {
     // 재변환 완결.
     expect(readManifest(eventsDir)).not.toBeNull();
     expect(fs.statSync(path.join(eventsDir, '00000001.ndjson')).size).toBe(0);
+  });
+
+  it('B(격리 실패 = 중단): rename 실패 주입 → MigrationError + 레거시·세그먼트 무손상 + manifest 미기록', () => {
+    fs.writeFileSync(channelsPath, JSON.stringify(legacyWithMembers()));
+    const writer = new ChannelStateWriter(wmuxDir);
+    runMigration(migrateOpts(() => writer.load()));
+
+    // (c) 상태 구성: manifest 소실 + 비어있지-않은 세그먼트.
+    fs.rmSync(manifestPath(eventsDir), { force: true });
+    fs.rmSync(`${manifestPath(eventsDir)}.bak`, { force: true });
+    const segPath = path.join(eventsDir, '00000001.ndjson');
+    const foreignLine = '{"lamport":1,"eventId":"x","origin":{"seq":1}}\n';
+    fs.writeFileSync(segPath, foreignLine);
+    const legacyBefore = fs.readFileSync(channelsPath, 'utf8');
+
+    // 세그먼트 파일 rename만 실패 주입(다른 rename — atomicWrite tmp 등 — 은 통과).
+    const realRename = fs.renameSync;
+    const renameSpy = vi
+      .spyOn(fs, 'renameSync')
+      .mockImplementation((src, dest) => {
+        if (/\d{8}\.ndjson$/.test(String(src))) {
+          throw new Error('inject rename failure');
+        }
+        return realRename(src, dest);
+      });
+
+    expect(() => runMigration(migrateOpts(() => writer.load()))).toThrow(
+      MigrationError,
+    );
+    renameSpy.mockRestore();
+
+    // 무손상: 세그먼트 원위치·원내용, 레거시 불변, manifest 미기록(다음 부트 재시도).
+    expect(fs.readFileSync(segPath, 'utf8')).toBe(foreignLine);
+    expect(fs.readFileSync(channelsPath, 'utf8')).toBe(legacyBefore);
+    expect(fs.existsSync(manifestPath(eventsDir))).toBe(false);
+
+    // 재시도(주입 해제) → 격리 성공 + 완결. 외래 이벤트가 replay에 오염되지 않음
+    // (활성 세그먼트가 빈 것으로 재생성 — B③ 전제).
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const retry = runMigration(migrateOpts(() => writer.load()));
+    warnSpy.mockRestore();
+    expect(retry.detection).toBe('quarantine-and-migrate');
+    expect(readManifest(eventsDir)).not.toBeNull();
+    expect(fs.statSync(segPath).size).toBe(0);
   });
 
   it('§6.1-4 직후 크래시(manifest 있음, 첫 append 전) → 재마이그레이션 미발생', () => {
@@ -448,15 +531,16 @@ describe('T-다운그레이드 워터마크', () => {
     expect(verdict.kind).toBe('downgrade-write');
     expect(verdict).toMatchObject({ reason: 'hash-mismatch' });
 
-    // reseed 실행: 마커 append + reseed 스냅샷 + manifest 편입.
+    // reseed 실행: 마커 append + reseed 스냅샷 + manifest 편입 + 워터마크 재스탬프(A).
     const log = new AppendOnlyLog({ dir: eventsDir, fsync: syncOk });
     log.open();
+    const stampedWrites: unknown[] = [];
     const reseed = await performReseed({
       eventsDir,
       manifest: migrated.manifest,
       downgradeState: oldDaemonWrite as unknown as ChannelState,
       append: (d) => log.append(d),
-      lamportAfterAppend: () => log.lamportHwm,
+      lamportHwm: () => log.lamportHwm,
       origin: { machineId: migrated.machineId, daemonEpoch: 1 },
       authContext: {
         principalId: 'p',
@@ -464,11 +548,23 @@ describe('T-다운그레이드 워터마크', () => {
         trustTier: 'trusted',
       },
       validateProjection: isChannelStateLike,
+      writeLegacyStamped: (s) => stampedWrites.push(s),
     });
 
-    expect(reseed.appended).toBe(true);
+    expect(reseed.ok).toBe(true);
     expect(reseed.reseedRef).toBe('reseed-1.json');
     expect(reseed.markerLamport).toBe(1);
+
+    // A(루프 봉쇄): 재스탬프된 상태가 훅으로 되써지고, 재부트 판정이 unchanged —
+    // 같은 hash-mismatch를 재검출해 reseed-{n}이 증식하는 경로가 닫힌다.
+    expect(stampedWrites).toHaveLength(1);
+    expect(reseed.legacyStamped).toBeDefined();
+    expect(reseed.legacyStamped!.eventLogWatermark.lamport).toBe(1);
+    expect(evaluateWatermark(reseed.legacyStamped).kind).toBe('unchanged');
+    // 재스탬프본은 구-데몬 내용(ch-old)을 보존하고 워터마크만 신선하다.
+    expect(
+      reseed.legacyStamped!.channels.some((c) => c.id === 'ch-old'),
+    ).toBe(true);
     // 로그에 reseed 마커 1건.
     const markers = log.readAllRecords();
     expect(markers).toHaveLength(1);
@@ -504,6 +600,79 @@ describe('T-다운그레이드 워터마크', () => {
     expect(fallback!.snapshotLamport).toBe(1);
     expect(fallback!.projection.channels.some((c) => c.id === 'ch-old')).toBe(
       true,
+    );
+  });
+
+  it('D(append 실패): 마커 미커밋 → reseed 중단·부작용 0(스냅샷·manifest·훅 전부 미실행)', async () => {
+    fs.writeFileSync(channelsPath, JSON.stringify(legacyWithMembers()));
+    const writer = new ChannelStateWriter(wmuxDir);
+    const migrated = runMigration(migrateOpts(() => writer.load()));
+    const manifestBefore = fs.readFileSync(manifestPath(eventsDir), 'utf8');
+
+    const stampedWrites: unknown[] = [];
+    const reseed = await performReseed({
+      eventsDir,
+      manifest: migrated.manifest,
+      downgradeState: writer.load(),
+      append: async () => false, // 마커 커밋 실패 주입
+      lamportHwm: () => 0,
+      origin: { machineId: migrated.machineId, daemonEpoch: 1 },
+      authContext: {
+        principalId: 'p',
+        verifiedWorkspaceId: 'ws-a',
+        trustTier: 'trusted',
+      },
+      validateProjection: isChannelStateLike,
+      writeLegacyStamped: (s) => stampedWrites.push(s),
+    });
+
+    expect(reseed.ok).toBe(false);
+    expect(reseed.failReason).toBe('append-failed');
+    // 부작용 0: reseed 스냅샷 없음, manifest 불변, 훅 미호출.
+    const store = new SnapshotStore(path.join(eventsDir, SNAPSHOT_DIRNAME));
+    expect(fs.existsSync(store.snapshotPath('reseed-1.json'))).toBe(false);
+    expect(fs.readFileSync(manifestPath(eventsDir), 'utf8')).toBe(
+      manifestBefore,
+    );
+    expect(stampedWrites).toHaveLength(0);
+    expect(reseed.legacyStamped).toBeUndefined();
+  });
+
+  it('D(lamport race): hwm이 before+1이 아니면 중단(부트-단독 전제 위반) — 부작용 0', async () => {
+    fs.writeFileSync(channelsPath, JSON.stringify(legacyWithMembers()));
+    const writer = new ChannelStateWriter(wmuxDir);
+    const migrated = runMigration(migrateOpts(() => writer.load()));
+    const manifestBefore = fs.readFileSync(manifestPath(eventsDir), 'utf8');
+
+    // 동시 append 개입 모사: 마커 append 사이 hwm이 2 전진(0 → 2).
+    let hwm = 0;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const reseed = await performReseed({
+      eventsDir,
+      manifest: migrated.manifest,
+      downgradeState: writer.load(),
+      append: async () => {
+        hwm += 2; // 마커 + 끼어든 이벤트
+        return true;
+      },
+      lamportHwm: () => hwm,
+      origin: { machineId: migrated.machineId, daemonEpoch: 1 },
+      authContext: {
+        principalId: 'p',
+        verifiedWorkspaceId: 'ws-a',
+        trustTier: 'trusted',
+      },
+      validateProjection: isChannelStateLike,
+    });
+    warnSpy.mockRestore();
+
+    expect(reseed.ok).toBe(false);
+    expect(reseed.failReason).toBe('lamport-race');
+    // 부작용 0: 스냅샷·manifest 미기록(다음 부트 재시도).
+    const store = new SnapshotStore(path.join(eventsDir, SNAPSHOT_DIRNAME));
+    expect(fs.existsSync(store.snapshotPath('reseed-1.json'))).toBe(false);
+    expect(fs.readFileSync(manifestPath(eventsDir), 'utf8')).toBe(
+      manifestBefore,
     );
   });
 });
