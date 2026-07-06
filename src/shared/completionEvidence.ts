@@ -82,6 +82,14 @@ export function validateCompletionEvidence(
   if (typeof ev.summary !== 'string' || ev.summary.trim() === '') {
     return { ok: false, code: to === 'completed' ? 'completion_evidence_empty_summary' : 'failure_reason_missing' };
   }
+  // 권위 검증기는 타입 표기를 신뢰하지 않는다 — items가 비배열(예: {})이면 아래
+  // for..of가 verdict 대신 TypeError를 던져 게이트가 예외로 붕괴한다. fail-closed.
+  if (ev.items !== undefined && !Array.isArray(ev.items)) {
+    return { ok: false, code: 'completion_evidence_invalid_item' };
+  }
+  if (ev.files !== undefined && !Array.isArray(ev.files)) {
+    return { ok: false, code: 'completion_evidence_bad_file_path' };
+  }
   if (!withinCaps(ev)) return { ok: false, code: 'completion_evidence_too_large' }; // E12
   for (const f of ev.files ?? []) {
     if (!isSafeRelPath(f)) return { ok: false, code: 'completion_evidence_bad_file_path' };
@@ -176,7 +184,10 @@ export function normalizeCompletionEvidenceWire(v: unknown): CompletionEvidence 
   let files: string[] | undefined;
   if (Object.hasOwn(v, 'files')) {
     if (!Array.isArray(v.files) || v.files.length > EVIDENCE_MAX_FILES) return null;
-    if (v.files.some((f) => typeof f !== 'string')) return null;
+    // 경로 새니타이즈를 wire에서도 강제한다(권위 검증기와 이중) — 게이트가 아직
+    // 배선되지 않은 additive-inert 창에서도 비상대 경로('/etc/x', 'a/../b')가
+    // 스토어 레코드로 영속되지 못하게(isTaskState 선례: 저장 전 검증).
+    if ((v.files as unknown[]).some((f) => !isSafeRelPath(f))) return null;
     files = [...(v.files as string[])];
   }
   const out: CompletionEvidence = { summary: v.summary, items, ...(files ? { files } : {}) };

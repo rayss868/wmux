@@ -885,18 +885,37 @@ server.tool(
     evidence: z
       .object({
         summary: z.string().describe('Required, non-empty. For completed: the completion summary. For failed: the failure reason.'),
+        // kind별 discriminated union — normalize 계약과 1:1 (command는 command 필수 +
+        // passed|failed, inspection/artifact는 verified|unverified). zod가 통과시킨
+        // 아이템이 normalize에서 malformed로 죽는 조합을 스키마 단계에서 제거한다.
         items: z
           .array(
-            z.object({
-              kind: z.enum(['command', 'inspection', 'artifact']),
-              status: z.enum(['passed', 'failed', 'verified', 'unverified']),
-              summary: z.string(),
-              command: z.string().optional().describe('Required for kind:"command" — what was run.'),
-              location: z.string().optional(),
-              output: z.string().optional(),
-            }),
+            z.discriminatedUnion('kind', [
+              z.object({
+                kind: z.literal('command'),
+                status: z.enum(['passed', 'failed']),
+                summary: z.string(),
+                command: z.string().describe('What was run.'),
+                output: z.string().optional(),
+              }),
+              z.object({
+                kind: z.literal('inspection'),
+                status: z.enum(['verified', 'unverified']),
+                summary: z.string(),
+                location: z.string().optional(),
+                output: z.string().optional(),
+              }),
+              z.object({
+                kind: z.literal('artifact'),
+                status: z.enum(['verified', 'unverified']),
+                summary: z.string(),
+                location: z.string().optional(),
+                output: z.string().optional(),
+              }),
+            ]),
           )
-          .describe('completed requires >=1 well-formed item; failed may omit but any provided item is shape-checked.'),
+          .optional()
+          .describe('completed requires >=1 well-formed item; failed may omit (summary alone is a valid failure report).'),
         files: z.array(z.string()).optional().describe('Repository-relative paths only.'),
       })
       .optional()
