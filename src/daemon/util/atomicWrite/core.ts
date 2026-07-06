@@ -59,6 +59,16 @@ export interface AtomicWriteOptions {
    * T6 uses this for quarantine timestamps.
    */
   clock?: () => number;
+
+  /**
+   * durable 쓰기 (envelope-design §2.3 D13). true면 crash-safe 시퀀스를 강제한다:
+   *   tmp write → tmp fd fsync → rename → 부모 디렉토리 fsync.
+   * 기본 경로(false/미지정)는 fsync 없는 write+rename로 **1비트도 불변**이다 —
+   * 스냅샷엔 충분하지만 정본(manifest 등)엔 전원손실 내구를 위해 durable이 필요하다.
+   * win32는 디렉토리 fsync 미지원이라 4단계를 스킵한다(§2.3 win32 잔여, 파일 자체
+   * FlushFileBuffers까지만 보장).
+   */
+  durable?: boolean;
 }
 
 export interface AtomicReadOptions<T> {
@@ -129,6 +139,49 @@ function ensureDirSync(filePath: string): void {
 async function ensureDir(filePath: string): Promise<void> {
   const dir = path.dirname(filePath);
   await fsp.mkdir(dir, { recursive: true });
+}
+
+/**
+ * durable 경로의 부모 디렉토리 fsync (§2.3-4). rename(디렉토리 엔트리)을 내구화한다.
+ * win32는 디렉토리 핸들 fsync를 지원하지 않으므로 스킵(§2.3 win32 잔여). 실패는
+ * best-effort로 흡수한다 — 파일 자체는 이미 tmp fsync로 내구화됐다.
+ */
+async function fsyncParentDir(dir: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  let dh: fsp.FileHandle | undefined;
+  try {
+    dh = await fsp.open(dir, 'r');
+    await dh.sync();
+  } catch {
+    // best-effort
+  } finally {
+    if (dh) {
+      try {
+        await dh.close();
+      } catch {
+        /* noop */
+      }
+    }
+  }
+}
+
+function fsyncParentDirSync(dir: string): void {
+  if (process.platform === 'win32') return;
+  let dirFd = -1;
+  try {
+    dirFd = fs.openSync(dir, 'r');
+    fs.fsyncSync(dirFd);
+  } catch {
+    // best-effort
+  } finally {
+    if (dirFd >= 0) {
+      try {
+        fs.closeSync(dirFd);
+      } catch {
+        /* noop */
+      }
+    }
+  }
 }
 
 function serialise(data: unknown): string {
@@ -228,7 +281,18 @@ export async function atomicWriteJSON(
   try {
     // 1. Write to temp file. mode:0o600 is a no-op on Windows, but
     //    matches the StateWriter's POSIX intent.
-    await fsp.writeFile(tmp, json, { encoding: 'utf-8', mode: 0o600 });
+    if (opts.durable) {
+      // §2.3-1,2: rename 전에 tmp 내용을 fsync해 디스크에 내구화한다.
+      const fh = await fsp.open(tmp, 'w', 0o600);
+      try {
+        await fh.writeFile(json, { encoding: 'utf-8' });
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+    } else {
+      await fsp.writeFile(tmp, json, { encoding: 'utf-8', mode: 0o600 });
+    }
 
     // 2. When rotation is enabled we shift the existing numbered
     //    slots BEFORE overwriting `.bak` so nothing is lost:
@@ -252,6 +316,11 @@ export async function atomicWriteJSON(
 
     // 4. Atomic rename tmp → target.
     await fsp.rename(tmp, targetPath);
+
+    // 5. §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
+    if (opts.durable) {
+      await fsyncParentDir(path.dirname(targetPath));
+    }
   } catch (err) {
     // Best-effort tmp cleanup so we don't leak partial files.
     await unlinkIfExists(tmp);
@@ -387,7 +456,18 @@ export function atomicWriteJSONSync(
   const json = serialise(data);
 
   try {
-    fs.writeFileSync(tmp, json, { encoding: 'utf-8', mode: 0o600 });
+    if (opts.durable) {
+      // §2.3-1,2: rename 전에 tmp 내용을 fsync해 디스크에 내구화한다.
+      const fd = fs.openSync(tmp, 'w', 0o600);
+      try {
+        fs.writeFileSync(fd, json, { encoding: 'utf-8' });
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } else {
+      fs.writeFileSync(tmp, json, { encoding: 'utf-8', mode: 0o600 });
+    }
 
     // Shift the numbered slots up when rotation is enabled so the
     // upcoming `.bak` overwrite does not drop a generation. See the
@@ -406,6 +486,11 @@ export function atomicWriteJSONSync(
     }
 
     fs.renameSync(tmp, targetPath);
+
+    // §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
+    if (opts.durable) {
+      fsyncParentDirSync(path.dirname(targetPath));
+    }
   } catch (err) {
     unlinkIfExistsSync(tmp);
     throw err;
