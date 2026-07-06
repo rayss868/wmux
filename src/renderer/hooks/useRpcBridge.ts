@@ -4,7 +4,8 @@ import { resolveStartupCwd, shellDisplayName, withDefaultShell, withWorkspacePro
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
 import { validateMessage } from '../../shared/types';
-import type { Message, Part, TaskState, Artifact, AgentSkill, Task } from '../../shared/types';
+import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEvidence } from '../../shared/types';
+import { normalizeCompletionEvidenceWire } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
@@ -1783,6 +1784,19 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       }
     }
 
+    // 완료증거(evidence)는 사람용 message와 분리된 기계용 1급 입력이다. 전이 적용
+    // 전에 untrusted-wire를 정규화한다 — 실패(null)면 오염된 shape가 스토어에 닿기
+    // 전에 차단한다(거부 게이트가 아니라 위생: 저장 자체가 오염이므로. recordedBy 등
+    // 서버 전용 스탬프·미지 키는 normalize가 드롭한다).
+    let evidence: CompletionEvidence | undefined;
+    if (params.evidence !== undefined) {
+      const normalized = normalizeCompletionEvidenceWire(params.evidence);
+      if (!normalized) {
+        return { error: 'a2a.task.update: completion_evidence_malformed: evidence must be a plain object with string summary and well-formed items' };
+      }
+      evidence = normalized;
+    }
+
     // S-C2: resolve the caller's own pane ONCE, up front, so the SAME pane-level
     // decision drives BOTH the status-transition authz (P2) and the message
     // append role/delivery below — no split ws-vs-pane model across the two store
@@ -1800,7 +1814,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // ── Apply the status transition ──
     let transitioned = false;
     if (nextState) {
-      const result = store.updateTaskStatus(taskId, nextState, workspaceId, callerAddrUpdate);
+      const result = store.updateTaskStatus(taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence);
       if (!result.ok) return { error: `a2a.task.update: ${result.error}` };
       transitioned = true;
     }

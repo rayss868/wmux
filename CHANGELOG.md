@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A2A 완료증거 검증기 코어 (§6.M P1, PR-A).** completed/failed 전이에 첨부될 구조화 증거(`CompletionEvidence`)의 스키마와 순수 검증기(`shared/completionEvidence.ts`)를 도입 — 게이트=구조(summary+well-formed items+새니타이즈+DoS 캡), verified≥1은 거부 요건이 아니라 `verifiedItemCount` 등급으로 정직 산출(세탁 불가). 경로 새니타이즈(콜론·선행 구분자·`..`·C0 일괄 거부, 무디코드 리터럴 계약)와 untrusted-wire 정규화 가드(plain-object+hasOwn+새 객체 복사) 포함. 아직 어디에도 배선되지 않음(게이트 활성은 PR-B, envelope PR4 이후).
+- **A2A 완료증거 생산·운반 시작 (§6.M P1, PR-D′).** ClaudeWorker 가 스폰된 Claude 런 결과를 정직한 완료증거로 생산하고(성공/실패 모두 `inspection`+`unverified` 자기보고 — run-success 를 verified 로 승격·세탁하지 않음), MCP `a2a_task_update` 가 `evidence` 파라미터로 운반하며(계약은 description 에 고정, 기존 artifact 채널과 병존), 렌더러 브릿지가 untrusted-wire 를 정규화해(오염 shape 는 `completion_evidence_malformed` 로 저장 전 차단, recordedBy 등 서버 전용 스탬프 드롭) 스토어 `TaskStatus.evidence` 에 저장한다. 아직 거부 게이트는 없음(additive-inert — 게이트 활성은 PR-B, envelope PR4 이후).
+
 ## [3.17.0] — 2026-07-06
 
 ### Added

@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import type { Task, Message, TaskState, Artifact, AgentSkill } from '../../../shared/types';
+import type { Task, Message, TaskState, Artifact, AgentSkill, CompletionEvidence } from '../../../shared/types';
 import { generateId, validateTransition, TERMINAL_STATES, VALID_TRANSITIONS } from '../../../shared/types';
 import type { PaneAddress } from '../../hooks/a2aAddressing';
 import { isChannelMentionTask } from '../../hooks/channelMentionFlush';
@@ -57,7 +57,7 @@ export interface A2aSlice {
   // task is pinned to a specific receiver pane (`to.paneId`), the status update
   // is restricted to THAT pane. Absent (headless worker / token client / env-hint
   // fallback) ⇒ ws-granular authz, unchanged.
-  updateTaskStatus: (taskId: string, state: TaskState, callerWorkspaceId: string, callerAddr?: PaneAddress | null, statusMessage?: Message) => { ok: boolean; error?: string };
+  updateTaskStatus: (taskId: string, state: TaskState, callerWorkspaceId: string, callerAddr?: PaneAddress | null, statusMessage?: Message, evidence?: CompletionEvidence) => { ok: boolean; error?: string };
   addTaskArtifact: (taskId: string, artifact: Artifact) => void;
   cancelTask: (taskId: string, callerWorkspaceId: string) => { ok: boolean; error?: string };
   queryTasks: (
@@ -150,7 +150,7 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     }
   }),
 
-  updateTaskStatus: (taskId, newState, callerWorkspaceId, callerAddr, statusMessage) => {
+  updateTaskStatus: (taskId, newState, callerWorkspaceId, callerAddr, statusMessage, evidence) => {
     const task = get().a2aTasks[taskId];
     if (!task) {
       return { ok: false, error: `Task not found: ${taskId}` };
@@ -186,7 +186,10 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     set((state: StoreState) => {
       const t = state.a2aTasks[taskId];
       if (t) {
-        t.status = { state: newState, message: statusMessage, timestamp: isoNow() };
+        // additive: 완료증거는 전이 성공 시 status에 verbatim 저장한다(§6.M P1 PR-D′).
+        // evidence 검증·거부 로직은 여기 두지 않는다 — 구조 게이트는 validateTransition
+        // 현행 유지, 완료증거 게이트 활성은 후속(PR-B, envelope PR4 이후).
+        t.status = { state: newState, message: statusMessage, timestamp: isoNow(), ...(evidence ? { evidence } : {}) };
         t.metadata.updatedAt = isoNow();
       }
     });

@@ -873,7 +873,7 @@ server.tool(
 // 5. a2a_task_update — Update task status
 server.tool(
   'a2a_task_update',
-  'Update a task\'s status. Only the receiver workspace can change it. Transitions follow a state machine — you cannot jump straight from submitted to completed: take submitted -> working FIRST, then working -> completed/failed/input-required. Terminal states (completed/failed/canceled) are final and reject any further update (no resurrection). A rejected transition returns an error listing the allowed next states. Optionally attach artifacts on completion.',
+  'Update a task\'s status. Only the receiver workspace can change it. Transitions follow a state machine — you cannot jump straight from submitted to completed: take submitted -> working FIRST, then working -> completed/failed/input-required. Terminal states (completed/failed/canceled) are final and reject any further update (no resurrection). A rejected transition returns an error listing the allowed next states. Optionally attach artifacts on completion. status:"completed" requires evidence (a completion-evidence gate is coming — attach it now to be compliant immediately): summary + >=1 item (command|inspection|artifact). status:"failed" should carry evidence.summary (the failure reason). A verified item is command+passed or inspection/artifact+verified; when zero, the completion is still accepted but reported at an unverified grade (verifiedItemCount=0). Rejections come back as completion_evidence_* reason codes.',
   {
     task_id: z.string().describe('Task ID to update'),
     status: z
@@ -882,8 +882,46 @@ server.tool(
     message: z.string().optional().describe('Optional status message'),
     artifact_name: z.string().optional().describe('Artifact name (for completed tasks)'),
     artifact_data: z.record(z.string(), z.unknown()).optional().describe('Artifact data payload'),
+    evidence: z
+      .object({
+        summary: z.string().describe('Required, non-empty. For completed: the completion summary. For failed: the failure reason.'),
+        // kind별 discriminated union — normalize 계약과 1:1 (command는 command 필수 +
+        // passed|failed, inspection/artifact는 verified|unverified). zod가 통과시킨
+        // 아이템이 normalize에서 malformed로 죽는 조합을 스키마 단계에서 제거한다.
+        items: z
+          .array(
+            z.discriminatedUnion('kind', [
+              z.object({
+                kind: z.literal('command'),
+                status: z.enum(['passed', 'failed']),
+                summary: z.string(),
+                command: z.string().describe('What was run.'),
+                output: z.string().optional(),
+              }),
+              z.object({
+                kind: z.literal('inspection'),
+                status: z.enum(['verified', 'unverified']),
+                summary: z.string(),
+                location: z.string().optional(),
+                output: z.string().optional(),
+              }),
+              z.object({
+                kind: z.literal('artifact'),
+                status: z.enum(['verified', 'unverified']),
+                summary: z.string(),
+                location: z.string().optional(),
+                output: z.string().optional(),
+              }),
+            ]),
+          )
+          .optional()
+          .describe('completed requires >=1 well-formed item; failed may omit (summary alone is a valid failure report).'),
+        files: z.array(z.string()).optional().describe('Repository-relative paths only.'),
+      })
+      .optional()
+      .describe('Structured completion evidence. status:"completed" requires it (summary + >=1 item: command|inspection|artifact); status:"failed" should carry evidence.summary (the failure reason). Verified items = command+passed or inspection/artifact+verified; zero verified => completion is accepted but graded unverified (verifiedItemCount=0). Rejections return completion_evidence_* reason codes.'),
   },
-  async ({ task_id, status, message, artifact_name, artifact_data }) => {
+  async ({ task_id, status, message, artifact_name, artifact_data, evidence }) => {
     const wsId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId: wsId, taskId: task_id, status };
     // S-C2: include our OWN ptyId so the renderer can compute per-pane role +
@@ -895,6 +933,9 @@ server.tool(
     const senderPtyId = getTaskSenderPtyId();
     if (senderPtyId) params.senderPtyId = senderPtyId;
     if (message) params.message = message;
+    // 완료증거는 artifact_name/artifact_data(A2A-spec 산출물 채널)와 병존하는 별도
+    // wmux 완료계약 채널 — 권위 정규화·검증은 렌더러/데몬이 수행(여긴 통과만).
+    if (evidence) params.evidence = evidence;
     if (artifact_name) {
       params.artifact = {
         name: artifact_name,
