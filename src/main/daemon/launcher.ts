@@ -6,7 +6,7 @@ import * as crypto from 'crypto';
 import { app, dialog } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
-import { DAEMON_EXIT_ALREADY_RUNNING } from '../../shared/constants';
+import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../../shared/constants';
 import { markBoot } from '../util/bootTrace';
 import { classifyTasklistOutput, classifyKillOutcome, type ProcessLiveness } from '../../shared/processLiveness';
 
@@ -81,7 +81,7 @@ export type { ProcessLiveness };
  * (Defect 1): tasklist stalls on a loaded box → false "dead" → ensureDaemon
  * skips ping/reuse and spawns a second daemon over the live one.
  */
-function checkProcessLiveness(pid: number): ProcessLiveness {
+export function checkProcessLiveness(pid: number): ProcessLiveness {
   if (process.platform === 'win32') {
     let stdout: string | null = null;
     try {
@@ -211,12 +211,16 @@ function getProcessCommandLine(pid: number): string | null {
   } catch { return null; }
 }
 
-interface DaemonPingResult {
+export interface DaemonPingResult {
   status?: string;
   pid?: number;
   uptime?: number;
   sessions?: number;
   eventLoopLagMs?: number;
+  // B′ auto-replace additives. A pre-B′ daemon omits both; a B′ daemon always
+  // sends spawnedByVersion (sentinel 'unknown' when its spawn env was bare).
+  spawnedByVersion?: string;
+  channelsEpoch?: number;
 }
 
 /**
@@ -484,6 +488,11 @@ function spawnDaemon(): Promise<number> {
     }
     // Clear Electron-specific vars that interfere with plain Node
     delete env.ELECTRON_NO_ASAR;
+    // B′ auto-replace: stamp the spawning app's version UNCONDITIONALLY —
+    // `{...process.env}` above may carry an inherited value when this app
+    // itself runs inside a daemon-spawned PTY (wmux-in-wmux dogfood), and an
+    // inherited stale version would poison the staleness gate.
+    env[ENV_KEYS.SPAWNED_BY_VERSION] = app.getVersion();
 
     const child = spawn(nodePath, [daemonScript], {
       detached: true,
@@ -851,16 +860,49 @@ export function killDaemonByPidFile(): boolean {
     const wmuxDir = getWmuxDir();
     const pidStr = fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim();
     const pid = parseInt(pidStr, 10);
+    // Before-quit mode: indeterminate verification still proceeds — this
+    // path runs seconds after we were actively talking to that PID, so
+    // reuse is near-impossible and an orphan is the worse outcome.
+    return killVerifiedDaemonPid(pid, { definitiveOnly: false });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * B′ auto-replace backstop: SIGKILL an EXPLICIT daemon PID after verifying it
+ * still belongs to wmux. Two differences from `killDaemonByPidFile` — both
+ * load-bearing for the replacement path (Codex #5 + Claude #6):
+ *
+ *  - The PID is the one captured when the shutdown was acked, NEVER re-read
+ *    from daemon.pid. Between ack and backstop another app instance may have
+ *    already spawned a replacement daemon and rewritten the pid file; a
+ *    file-read here would SIGKILL the fresh daemon.
+ *  - `definitiveOnly: true` refuses to kill when the image or cmdline lookup
+ *    is indeterminate (null — AV blocking tasklist/ps/WMI). The replacement
+ *    path deliberately waits up to ~5s after asking the daemon to die, which
+ *    is long enough for PID reuse to stop being "near-impossible"; the
+ *    before-quit relaxation does not transfer. A refused kill degrades to
+ *    the respawn-budget machinery, never to a blind SIGKILL.
+ *
+ * Best-effort: never throws. Returns true only when a verified daemon was
+ * signalled.
+ */
+export function killVerifiedDaemonPid(
+  pid: number,
+  opts: { definitiveOnly: boolean },
+): boolean {
+  try {
     if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false;
     // Only a confirmed-dead PID skips the kill (already gone). `unknown`
-    // proceeds — this backstop runs seconds after we were talking to the
-    // daemon, so an orphan is the worse outcome; the image/cmdline guards
-    // below still prevent killing an unrelated PID-reuse victim.
+    // proceeds to verification — the image/cmdline guards below decide.
     if (checkProcessLiveness(pid) === 'dead') return false;
 
     const expectedImage = path.basename(process.execPath);
     const image = getProcessImageName(pid);
-    if (image !== null && image.toLowerCase() !== expectedImage.toLowerCase()) {
+    if (image === null) {
+      if (opts.definitiveOnly) return false; // indeterminate — refuse
+    } else if (image.toLowerCase() !== expectedImage.toLowerCase()) {
       return false; // definitive: a different program owns this PID now
     }
     const cmdline = getProcessCommandLine(pid);
@@ -871,7 +913,9 @@ export function killDaemonByPidFile(): boolean {
       'daemon/index.js',
       'daemon\\index.js',
     ];
-    if (cmdline !== null && !markers.some((m) => cmdline.includes(m))) {
+    if (cmdline === null) {
+      if (opts.definitiveOnly) return false; // indeterminate — refuse
+    } else if (!markers.some((m) => cmdline.includes(m))) {
       return false; // definitive: same image but not our daemon script
     }
 

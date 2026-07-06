@@ -50,6 +50,7 @@
 - **리스크:** 낮음(렌더러 전용). **이것만 먼저 머지하면 사용자 1순위 불만이 즉시 해소된다.**
 
 ### 1b. 로스터 소유 memberName (PR-B, 데몬 additive)
+> **상태: 구현 완료 (2026-07-05, `feat/channels-roster-identity`).** 1c/1d/4d와 함께 3모델 리뷰 2라운드(코드+델타, 재현 실증 2건 수정) 통과. post-시점 principal display refresh 포함(스냅샷이 아니라 current). 세부는 브랜치 커밋 로그.
 - **변경:**
   - `shared/channels.ts` `ChannelMember`에 `memberName?: string` **additive**(version 1 유지, `principalId`/`lastReadSeq` 선례).
   - `ChannelService.ts` create/join/invite(585-617, 763-776, 1017-1046)에서 member 행에 `memberName`을 **principal.display에서 파생**해 저장(principalId 있으면 registry 조회, 없으면 memberId).
@@ -149,6 +150,7 @@
 - **검증:** 유닛 — emptySince 7d 초과 채널이 인터벌에 purge.
 
 ### 4d. (도그푸드 2026-07-05 추가) 부팅 직후 미방문 워크스페이스의 에이전트가 초대 후보에 안 뜸
+> **상태: 구현 완료 (2026-07-05, `feat/channels-roster-identity`).** 부팅 hydration이 데몬 AgentDetector에서 pull(시도-1회 캐시로 재연결 fan-out 방지). GUI 도그푸드 잔여.
 - **증상:** `npm start` 시 이미 살아있는(복원된) Claude pane이 있는데 "에이전트 판 추가" 목록이 비어 있음 — 그 워크스페이스를 한 번 방문해야 후보로 등장.
 - **원인:** 후보 판정이 `surfaceAgent[ptyId]?.name`(렌더러 감지, `useNotificationListener`→`setSurfaceAgent`)에만 의존. 감지는 터미널 mount/출력에서 발화하므로 미방문 워크스페이스는 영영 미감지. 데몬은 세션에 `lastDetectedAgent`를 이미 알고 있고(wake worker가 그걸 씀), R2 principal 레지스트리(`principals.json`)에도 agentSlug·ptyId가 있는데 렌더러 부팅 하이드레이션이 이를 후보 소스로 안 씀.
 - **수정 방향:** 부팅 시 principal 레지스트리(또는 데몬 세션 레코드)의 pane-agent들을 후보/`surfaceAgent`에 시드 — liveness stale은 회색 후보로. 방문 시 실감지가 덮어씀.

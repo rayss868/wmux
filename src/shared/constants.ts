@@ -265,6 +265,22 @@ export const ENV_KEYS = {
   AUTH_TOKEN: 'WMUX_AUTH_TOKEN',
   SHELL_HOOK: 'WMUX_SHELL_HOOK',
   SHELL_HOOK_ACTIVE: 'WMUX_SHELL_HOOK_ACTIVE',
+  // 1d (roster identity): default channel member id for CLI/agent tooling
+  // inside the pane. Stamped at spawn with the pane's ptyId — the only
+  // spawn-time-stable unique pane coordinate (the pretty auto-name
+  // 'w26-1(claude)' cannot exist yet: agent detection runs after spawn).
+  // `wmux channel join` defaults to this instead of the colliding literal
+  // 'agent', so two CLI agents in different panes never share a member id;
+  // display prettiness comes from the daemon-derived roster memberName (1b),
+  // and ghost-vs-roster drift is absorbed by the 1c single-row mapping.
+  MEMBER_ID: 'WMUX_MEMBER_ID',
+  // B′ daemon auto-replace: the app version that spawned this daemon, injected
+  // UNCONDITIONALLY (overwriting any inherited value) by launcher.spawnDaemon()
+  // and echoed back in daemon.ping as `spawnedByVersion`. Unconditional
+  // assignment matters: in wmux-in-wmux dogfood the dev app itself runs inside
+  // a daemon-spawned PTY, so a conditional (??=) injection would inherit the
+  // OLD daemon's version and poison the staleness gate.
+  SPAWNED_BY_VERSION: 'WMUX_SPAWNED_BY_VERSION',
 } as const;
 
 // Auth token file path — written by wmux main process, read by MCP server

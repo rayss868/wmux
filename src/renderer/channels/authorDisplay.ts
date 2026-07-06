@@ -98,7 +98,7 @@ export interface RosterMemberLabel {
  * workspace's name.
  */
 export function rosterMemberLabel(
-  member: { workspaceId: string; memberId: string },
+  member: { workspaceId: string; memberId: string; memberName?: string | null },
   selfWorkspaceId: string | null,
   selfMemberId: string,
   workspaceLabel: string,
@@ -112,5 +112,11 @@ export function rosterMemberLabel(
     // Another workspace's human seat — the workspace is its identity.
     return { primary: workspaceLabel, showWorkspaceSuffix: false };
   }
-  return { primary: member.memberId, showWorkspaceSuffix: true };
+  // 1b: prefer the SERVER-derived roster name (this is the replacement the
+  // module header anticipated). GUI-added rows are unchanged (their memberId
+  // IS the auto-name the daemon derives), but a CLI-joined row whose
+  // memberId is the opaque spawn-stamped ptyId now reads as its registry
+  // display instead (review F1).
+  const memberName = typeof member.memberName === 'string' ? member.memberName.trim() : '';
+  return { primary: memberName || member.memberId, showWorkspaceSuffix: true };
 }

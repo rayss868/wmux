@@ -668,6 +668,8 @@ export const en = {
   'channels.joinedToast': 'Added {workspace} to #{channel}',
   'channels.daemonStaleBanner':
     'Channels were updated, but the background daemon is still running the old version. Quit wmux fully and start it again to finish the update.',
+  'daemon.replacingToast':
+    'Updating the background daemon to this version — panes may pause briefly and restore automatically.',
   'channels.alreadyMemberToast': '{workspace} is already in #{channel}',
   'channels.joinFailedToast': "Couldn't add {workspace} to the channel",
   'channels.leftToast': 'Left #{channel}',

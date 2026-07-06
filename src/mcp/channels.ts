@@ -67,7 +67,15 @@ const topicSchema = z
 
 const memberIdSchema = z.string().describe('Agent member id within the workspace (e.g. "lead", "backend").');
 
-const memberNameSchema = z.string().describe('Display name shown in the channel UI.');
+// 1b (server-owned roster identity): display names are derived DAEMON-side
+// from the roster row (principal registry display, else the memberId), so the
+// client-supplied value is only a fallback for posts that match no roster row.
+// Optional for wire compat — existing agents that still send it are ignored
+// whenever a roster row exists.
+const memberNameSchema = z
+  .string()
+  .optional()
+  .describe('Optional display-name fallback. The daemon derives the shown name from the channel roster (server-owned); this value is used only when the post matches no roster row.');
 
 /** Helper: convert the typed `{ ok, ... } | { ok: false, error }` envelope
  *  into an MCP tool result with `isError` set on the failure branch. The
@@ -153,7 +161,9 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         createdBy: {
           workspaceId,
           memberId: member_id,
-          memberName: member_name,
+          // 1b: optional — the daemon derives the roster row's memberName
+          // itself; this survives only as the legacy message-snapshot fallback.
+          ...(member_name !== undefined ? { memberName: member_name } : {}),
         },
       };
       if (topic !== undefined) params['topic'] = topic;
@@ -194,7 +204,8 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         sender: {
           workspaceId,
           memberId: member_id,
-          memberName: member_name,
+          // 1b: optional fallback — the daemon renders from the roster row.
+          ...(member_name !== undefined ? { memberName: member_name } : {}),
         },
         text,
       };
@@ -232,7 +243,8 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         member: {
           workspaceId,
           memberId: member_id,
-          memberName: member_name,
+          // 1b: optional — the roster row's memberName is daemon-derived.
+          ...(member_name !== undefined ? { memberName: member_name } : {}),
         },
         includeHistory: include_history !== false,
       };
@@ -327,7 +339,10 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       member_id: z
         .string()
         .describe('Member id for the INVITED workspace within the channel (e.g. "lead", "backend") — identifies the invitee, not the caller.'),
-      member_name: z.string().describe('Display name for the INVITED member shown in the channel UI — the invitee, not the caller.'),
+      member_name: z
+        .string()
+        .optional()
+        .describe('Optional display-name fallback for the INVITED member — the daemon derives the shown name from the roster (server-owned).'),
       include_history: z
         .boolean()
         .optional()
@@ -342,7 +357,8 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         invitedMember: {
           workspaceId: invited_workspace_id,
           memberId: member_id,
-          memberName: member_name,
+          // 1b: optional — the roster row's memberName is daemon-derived.
+          ...(member_name !== undefined ? { memberName: member_name } : {}),
         },
         includeHistory: include_history !== false,
       });
