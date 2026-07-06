@@ -285,10 +285,13 @@ describe('pickTarget — never guess', () => {
   });
 
   it('falls back to the ONLY eligible session when no slug matches', () => {
+    // The attached claude is deferred to the renderer, leaving a single
+    // eligible pane 'b'. The fallback target must host an agent to receive
+    // the nudge (a bare shell is excluded — see the agent-less shell test).
     const target = pickTarget(
       [
         session({ id: 'a', lastDetectedAgent: 'claude', attached: true }),
-        session({ id: 'b', lastDetectedAgent: undefined }),
+        session({ id: 'b', lastDetectedAgent: 'codex' }),
       ],
       'ws-b',
       'reviewer',
@@ -333,9 +336,11 @@ describe('pickTarget — never guess', () => {
     const attachedClaude = session({ id: 'a', lastDetectedAgent: 'claude', attached: true });
     const shell = session({ id: 'b', lastDetectedAgent: undefined });
     expect(pickTarget([attachedClaude, shell], 'ws-b', 'claude')).toBeNull();
-    // …while a DIFFERENT member still falls back to that only eligible pane
-    // (it may well be where that agent actually runs, sans detection).
-    expect(pickTarget([attachedClaude, shell], 'ws-b', 'codex')?.id).toBe('b');
+    // …and a DIFFERENT member does NOT fall back to that agent-less shell
+    // either: the single-pane fallback now requires a detected agent, so a
+    // bare shell hands off to polling (null) rather than eating a mis-typed
+    // nudge (2026-07-05 dogfood regression guard).
+    expect(pickTarget([attachedClaude, shell], 'ws-b', 'codex')).toBeNull();
   });
 
   it('never targets a session from another workspace', () => {
@@ -347,13 +352,46 @@ describe('pickTarget — never guess', () => {
     // but renders nothing and the pre-crash agent process is gone. Live
     // dogfood showed the worker burning mention nudges into that void.
     expect(pickTarget([session({ id: 'a', deferred: true })], 'ws-b', 'codex')).toBeNull();
-    // …and a deferred slug-match must not shadow a live fallback either.
+    // …and a deferred slug-match must not shadow a live fallback either. The
+    // live pane 'b' hosts an agent (a bare shell would not be nudged).
     const target = pickTarget(
-      [session({ id: 'a', deferred: true, lastDetectedAgent: 'codex' }), session({ id: 'b', lastDetectedAgent: undefined })],
+      [session({ id: 'a', deferred: true, lastDetectedAgent: 'codex' }), session({ id: 'b', lastDetectedAgent: 'opencode' })],
       'ws-b',
       'codex',
     );
     expect(target?.id).toBe('b');
+  });
+
+  it('never nudges an agent-less shell — the single-pane fallback requires a detected agent (dogfood 2026-07-05)', () => {
+    // Live -dev proof: the member's real claude pane was ATTACHED (deferred to
+    // the renderer Stop-hook path), leaving a bare zsh (lastDetectedAgent none)
+    // as the lone "eligible" pane. The old fallback auto-submitted
+    // `wmux channel read ch-… --since N` into that shell, which ran the pasted
+    // hint as a command. A shell with no agent is never a wake target.
+    expect(
+      pickTarget(
+        [
+          session({ id: 'shell', lastDetectedAgent: undefined }),
+          session({ id: 'claude', lastDetectedAgent: 'claude', attached: true }),
+        ],
+        'ws-b',
+        'reviewer',
+      ),
+    ).toBeNull();
+  });
+
+  it('an agent-less shell as the ONLY live pane hands off to polling (null), never a shell nudge', () => {
+    expect(pickTarget([session({ id: 'shell', lastDetectedAgent: undefined })], 'ws-b', 'codex')).toBeNull();
+    // An empty-string agent counts as no agent too (truthy guard).
+    expect(pickTarget([session({ id: 'shell', lastDetectedAgent: '' })], 'ws-b', 'codex')).toBeNull();
+  });
+
+  it('the single-pane fallback still fires when that pane hosts an agent (detached claude or a non-matching slug)', () => {
+    // Detached claude — headless, the worker is the only delivery path.
+    expect(pickTarget([session({ id: 'a', lastDetectedAgent: 'claude' })], 'ws-b', 'reviewer')?.id).toBe('a');
+    // A different agent slug than the member id still gets the fallback: it is
+    // a real agent pane, just not slug-matched.
+    expect(pickTarget([session({ id: 'a', lastDetectedAgent: 'opencode' })], 'ws-b', 'reviewer')?.id).toBe('a');
   });
 });
 
@@ -376,13 +414,14 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
 
   it('a stale principal (undefined ptyId) falls back to the existing heuristic', () => {
     const target = pickTargetWithPrincipal(
-      [session({ id: 'only', lastDetectedAgent: undefined })],
+      [session({ id: 'only', lastDetectedAgent: 'codex' })],
       'ws-b',
       'w2-1(codex)',
       PID,
       () => undefined,
     );
-    // Fallback rule 3: the only eligible session.
+    // Fallback rule 3: the only eligible agent session (a bare shell would
+    // hand off to polling — see the agent-required fallback test).
     expect(target?.id).toBe('only');
   });
 
@@ -423,6 +462,66 @@ describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
   it('behaves identically to the existing pickTarget when principalId/lookup fn are absent', () => {
     const sessions = [session({ id: 'b', lastDetectedAgent: 'codex' })];
     expect(pickTargetWithPrincipal(sessions, 'ws-b', 'codex', undefined, undefined)?.id).toBe('b');
+  });
+
+  it('a principal DIRECT HIT on an agent-less session falls through to the heuristic (no shell nudge)', () => {
+    // Codex micro-pass on the shell-nudge fix: a registry row's ptyId can
+    // outlive the agent (agent exits, pane keeps its shell, row stays live
+    // until the next upsert/purge). The direct-hit branch must carry the
+    // same agent-required discipline as the fallback.
+    const PID3 = 'pane:ws-b/pY';
+    // Direct hit points at a session with NO detected agent; the only other
+    // pane is also agent-less → null overall.
+    expect(
+      pickTargetWithPrincipal(
+        [session({ id: 'was-agent-now-shell', lastDetectedAgent: undefined })],
+        'ws-b',
+        'w2-1(codex)',
+        PID3,
+        () => 'was-agent-now-shell',
+      ),
+    ).toBeNull();
+    // Direct hit agent-less, but the heuristic SLUG-MATCHES a real agent
+    // pane → the fall-through still delivers. (With an auto-name memberId
+    // the two-pane case stays null — the heuristic never guesses between a
+    // shell and an unmatched agent pane; that ambiguity rule is unchanged.)
+    expect(
+      pickTargetWithPrincipal(
+        [
+          session({ id: 'was-agent-now-shell', lastDetectedAgent: undefined }),
+          session({ id: 'real-agent', lastDetectedAgent: 'codex' }),
+        ],
+        'ws-b',
+        'codex',
+        PID3,
+        () => 'was-agent-now-shell',
+      )?.id,
+    ).toBe('real-agent');
+  });
+
+  it('the heuristic fallback carries the same agent-required discipline (no shell nudge)', () => {
+    const PID2 = 'pane:ws-b/pX';
+    // Stale principal → heuristic fallback; the only pane is an agent-less
+    // shell → null (never auto-submit into a bare shell).
+    expect(
+      pickTargetWithPrincipal(
+        [session({ id: 'shell', lastDetectedAgent: undefined })],
+        'ws-b',
+        'w2-1(codex)',
+        PID2,
+        () => undefined,
+      ),
+    ).toBeNull();
+    // …but a lone AGENT pane still gets the fallback nudge.
+    expect(
+      pickTargetWithPrincipal(
+        [session({ id: 'agent', lastDetectedAgent: 'codex' })],
+        'ws-b',
+        'w2-1(codex)',
+        PID2,
+        () => undefined,
+      )?.id,
+    ).toBe('agent');
   });
 });
 

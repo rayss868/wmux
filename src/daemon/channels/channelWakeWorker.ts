@@ -129,6 +129,11 @@ interface NudgeTrackerEntry {
   plainNudgedAtSeq: number;
   /** Epoch ms of the last exhaustion announcement (0 = never). */
   lastExhaustedAnnounceAt: number;
+  /** Last time we LOGGED that no eligible agent pane exists for this key —
+   *  the null-target hold would otherwise be fully silent (no nudge, no
+   *  budget spend, no exhaustion handoff), which is exactly the invisible
+   *  infinite-hold class the delivery audit flagged. Log-only, slow cadence. */
+  lastNoTargetAnnounceAt: number;
 }
 
 const keyOf = (ws: string, e: { channelId: string; memberId: string }): string =>
@@ -141,6 +146,7 @@ const freshTrackerState = (): NudgeTrackerEntry => ({
   lastMentionNudgeAt: 0,
   plainNudgedAtSeq: -1,
   lastExhaustedAnnounceAt: 0,
+  lastNoTargetAnnounceAt: 0,
 });
 
 const sanitizeLine = (s: string): string =>
@@ -287,7 +293,23 @@ export class ChannelWakeWorker {
           entry.principalId,
           this.deps.livePtyIdOf?.bind(this.deps),
         );
-        if (!target) continue; // ambiguity / no live pane / claude-only → polling fallback
+        if (!target) {
+          // Ambiguity / no live pane / claude-only / agent-less shells →
+          // polling fallback. Surface the silent hold on a slow cadence so a
+          // member that can never be targeted (e.g. its agent exited and only
+          // bare shells remain) is visible in the log instead of stalling
+          // invisibly with zero budget spend (Codex micro-pass, 2026-07-05).
+          const never = state.lastNoTargetAnnounceAt === 0;
+          if (never || this.deps.now() - state.lastNoTargetAnnounceAt >= EXHAUSTED_REANNOUNCE_MS) {
+            state.lastNoTargetAnnounceAt = this.deps.now();
+            this.tracker.set(key, state);
+            this.deps.log(
+              'info',
+              `[wake] no eligible agent pane for ${key} (${entry.unread} unread) — holding for detection/poll`,
+            );
+          }
+          continue;
+        }
         if (this.deps.now() - target.lastActivityMs < WAKE_QUIET_MS) continue; // busy — retry next tick
 
         // A failed write must not burn the nudge budget (G5 spirit: never
@@ -347,8 +369,10 @@ export class ChannelWakeWorker {
  *     eligible like any agent (headless has no other delivery path —
  *     Codex round-3);
  *  2. eligible session whose detected agent slug === memberId;
- *  3. else the ONLY eligible session in the workspace;
- *  4. else null (multi-pane ambiguity falls back to polling).
+ *  3. else the ONLY eligible session in the workspace — but ONLY when it
+ *     actually hosts a detected agent; a bare shell is never nudged
+ *     (2026-07-05 dogfood, see the guard below);
+ *  4. else null (multi-pane ambiguity / agent-less shell falls back to polling).
  */
 /**
  * R2 — direct principal targeting. When the member row has a principalId and
@@ -377,9 +401,17 @@ export function pickTargetWithPrincipal(
       const s = sessions.find((x) => x.id === ptyId && x.deferred !== true);
       if (s && s.workspaceId === workspaceId) {
         if (s.lastDetectedAgent === 'claude' && s.attached === true) return null;
-        return s;
+        // Same agent-required discipline as the heuristic fallback (Codex
+        // micro-pass on the 2026-07-05 shell-nudge fix): a registry row's
+        // ptyId can outlive the agent — the agent exits, the pane keeps its
+        // shell, the row stays live until the next upsert/purge. A direct
+        // hit on a session with NO detected agent must not auto-submit into
+        // that bare shell; fall through to the heuristic (which now refuses
+        // agent-less panes too).
+        if (s.lastDetectedAgent) return s;
       }
-      // Session gone / workspace mismatch → heuristic fallback (never guess).
+      // Session gone / workspace mismatch / agent-less pane → heuristic
+      // fallback (never guess).
     }
   }
   return pickTarget(sessions, workspaceId, memberId);
@@ -405,6 +437,15 @@ export function pickTarget(
     (s) => s.lastDetectedAgent === memberId && s.lastDetectedAgent === 'claude' && s.attached === true,
   );
   if (ownedByRenderer) return null;
-  if (eligible.length === 1) return eligible[0];
+  // Single-pane fallback — but ONLY if that pane actually hosts an agent to
+  // receive the nudge. A bare shell with no detected agent (lastDetectedAgent
+  // undefined/empty) is NOT a wake target: live -dev dogfood 2026-07-05 caught
+  // the worker auto-submitting `wmux channel read ch-… --since N` into an
+  // agent-less zsh — the member's real Claude pane was ATTACHED, so it deferred
+  // to the renderer Stop-hook path and left the shell as the lone "eligible"
+  // pane; the pasted hint (text + Enter) then ran as a shell command. If the
+  // only eligible pane is such a shell, hand off to polling (null) — the same
+  // philosophy as the budget-exhausted human handoff, never a guess.
+  if (eligible.length === 1 && Boolean(eligible[0].lastDetectedAgent)) return eligible[0];
   return null;
 }
