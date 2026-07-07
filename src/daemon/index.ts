@@ -12,7 +12,10 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec } from './channels';
+import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
+import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
+import { SnapshotStore, SNAPSHOT_DIRNAME } from './eventlog/SnapshotStore';
+import { runMigration, evaluateWatermark, performReseed, stampWatermark } from './eventlog/migrateToEventLog';
 import { PrincipalService, PrincipalStateWriter } from './principals';
 import { isPrincipalUpsertInput } from '../shared/principals';
 import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
@@ -2493,6 +2496,10 @@ let lanLinkServerRef: LanLinkServer | null = null;
 // Channels v2 — wake worker handle for shutdown + the emit fast path.
 let channelWakeWorkerRef: ChannelWakeWorker | null = null;
 
+// 이벤트로그(PR3) — projection 스냅샷 스토어. shutdown 경로가 pending 스냅샷을
+// durable로 flush(dispose)할 수 있도록 모듈 레벨 핸들 유지(§6.4b).
+let channelSnapshotStoreRef: SnapshotStore | null = null;
+
 // === State builder ===
 
 /** Cached boot ID — populated at startup via initBootId() */
@@ -2668,6 +2675,12 @@ async function shutdown(
   stateWriter.dispose();
   channelStateWriter.dispose();
   principalStateWriter.dispose();
+  // 이벤트로그 스냅샷 flush(§6.4b) — pending projection 스냅샷을 durable로 소진.
+  try {
+    channelSnapshotStoreRef?.dispose();
+  } catch (err) {
+    log('warn', 'channel snapshot store dispose failed:', err);
+  }
 
   // Stop IPC server — skipped when the caller (e.g., daemon.shutdown RPC)
   // still needs the pipe to flush its ack.
@@ -2758,6 +2771,82 @@ async function main(): Promise<void> {
   // SAME constant when it has no in-app Company, so optimistic rows and the
   // daemon's authoritative rows share one companyId.
   const channelStateWriter = new ChannelStateWriter(wmuxDir);
+  // ── 이벤트로그 부트 게이트 (envelope-design §6.1·§6.4 — PR3 배선) ──────────
+  // 순서: 마이그레이션 감지→변환→검증→활성(runMigration, §6.1) → 로그 open(스캔
+  // 복구+hwm 복원, §3) → 워터마크 판정(+필요 시 reseed, §6.4c) → dual-write
+  // 스탬프/durable 활성(§6.4b·c). 이후 ChannelService가 로그 커밋 경로로 구동된다.
+  const eventsDir = path.join(wmuxDir, 'events');
+  const channelsJsonPath = path.join(wmuxDir, 'channels.json');
+  let channelEventLogDeps: ChannelServiceEventLog | undefined;
+  try {
+    const migration = runMigration({
+      eventsDir,
+      // 레거시 부재(진짜 first-boot)는 null. 존재 시 기존 로더(리퍼·프로토타입
+      // 가드 포함)로 READ만 한다 — 변환은 레거시를 절대 쓰지 않는다(§6.1-2).
+      readLegacyState: () =>
+        fs.existsSync(channelsJsonPath) ? channelStateWriter.load() : null,
+      validateProjection: (d) => ChannelStateWriter.isChannelState(d),
+      // 완결 직후 워터마크 스탬프 되쓰기(§6.4c pristine 창 봉합) — durable(§2.3).
+      writeLegacyStamped: (stamped) => {
+        channelStateWriter.saveImmediate(stamped, { durable: true });
+      },
+    });
+    let manifest = migration.manifest;
+    const channelEventLog = new AppendOnlyLog({
+      dir: eventsDir,
+      // §3-4 하한 클램프(PR2 배선 계약): 컴팩션-전소 부트에서도 스냅샷 좌표가
+      // lamport/seq 재사용을 차단한다.
+      hwmFloor: { lamport: manifest.snapshotLamport, seq: manifest.snapshotLamport },
+    });
+    channelEventLog.open();
+    const channelSnapshots = new SnapshotStore(path.join(eventsDir, SNAPSHOT_DIRNAME));
+    channelSnapshotStoreRef = channelSnapshots;
+    // 워터마크 부트 판정(§6.4c) — 기존 로그-활성 부트에서만. 신규 마이그레이션은
+    // 방금 genesis를 떴으므로 다운그레이드 창이 없고, 파일 부재는 reseed 대상이 아니다.
+    if (migration.detection === 'active' && fs.existsSync(channelsJsonPath)) {
+      const raw = channelStateWriter.load();
+      const verdict = evaluateWatermark(raw);
+      if (verdict.kind === 'downgrade-write') {
+        log('warn', `channels.json 구-데몬 쓰기 감지(${verdict.reason}) — legacy-reseed 수행(§6.4c)`);
+        const reseed = await performReseed({
+          eventsDir,
+          manifest,
+          downgradeState: raw,
+          append: (draft) => channelEventLog.append(draft),
+          lamportHwm: () => channelEventLog.lamportHwm,
+          origin: { machineId: migration.machineId, daemonEpoch: CHANNELS_EPOCH },
+          // 데몬 자체 발행 감사 마커 — authz 비관여(§7 스탬핑 완전형은 PR5).
+          authContext: { principalId: 'daemon', verifiedWorkspaceId: 'daemon', trustTier: 'trusted' },
+          validateProjection: (d) => ChannelStateWriter.isChannelState(d),
+          writeLegacyStamped: (stamped) => {
+            channelStateWriter.saveImmediate(stamped, { durable: true });
+          },
+        });
+        if (reseed.ok) manifest = reseed.manifest;
+        else log('warn', `legacy-reseed 미완(${reseed.failReason ?? 'unknown'}) — 다음 부트 재시도`);
+      }
+    }
+    // 이후 모든 dual-write가 write-시점 워터마크(lamport+stateHash)를 싣고(§6.4c),
+    // shutdown flush는 durable로 승격된다(§6.4b).
+    channelStateWriter.enableEventLogDualWrite({
+      stamp: (s) => stampWatermark(s, channelEventLog.lamportHwm),
+      durableFlush: true,
+    });
+    channelEventLogDeps = {
+      log: channelEventLog,
+      snapshots: channelSnapshots,
+      genesisRef: manifest.genesisRef,
+      reseedRefs: manifest.reseedRefs,
+      machineId: migration.machineId,
+    };
+    log('info', `event log active (detection=${migration.detection}, lamport hwm=${channelEventLog.lamportHwm}, seg=${manifest.activeSegment})`);
+  } catch (err) {
+    // fail-open: 마이그레이션 중단(§6.1-3)은 레거시 무손상·manifest 미기록이므로,
+    // 이번 부트는 레거시 커밋 경로로 계속하고 다음 부트가 재시도한다(가용성 우선).
+    // 조용히 로그 모드로 진행하는 것(§6.1-1 (c) fail-safe 위반)이 아니라 그 반대다.
+    log('error', 'event log boot gate failed — legacy channels.json commit path for this boot:', err);
+    channelSnapshotStoreRef = null;
+  }
   // Principal registry (R2). Like channels, it writes its own file
   // (principals.json), so registry corruption does not spill into
   // session/channel state. The constructor backfills every pane-agent to stale
@@ -2768,6 +2857,8 @@ async function main(): Promise<void> {
   const principalService = new PrincipalService({ writer: principalStateWriter });
   const channelService = new ChannelService({
     writer: channelStateWriter,
+    // 이벤트로그 커밋 경로(§5) — 부트 게이트 성공 시에만. 실패 시 레거시 경로 유지.
+    ...(channelEventLogDeps ? { eventLog: channelEventLogDeps } : {}),
     companyId: DEFAULT_COMPANY_ID,
     // 1b (server-owned roster identity): member rows derive their display
     // name from the principal registry at create/join/invite time.
