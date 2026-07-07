@@ -19,7 +19,9 @@ describe('useRpcBridge — a2a.task.update 완료증거 배선 (소스-구조)',
   }
 
   it('import 로 normalizeCompletionEvidenceWire 를 끌어온다', () => {
-    expect(src).toMatch(/import \{ normalizeCompletionEvidenceWire \} from '\.\.\/\.\.\/shared\/completionEvidence'/);
+    // PR-C 가 같은 import 에 isVerifiedItem 을 추가하므로 named-import 목록에
+    // 관용적으로 매칭한다(정확 브레이스 매칭은 순서·동반 import 에 취약).
+    expect(src).toMatch(/import \{[^}]*\bnormalizeCompletionEvidenceWire\b[^}]*\} from '\.\.\/\.\.\/shared\/completionEvidence'/);
   });
 
   it('전이 전에 params.evidence 를 wire normalize 하고, null 이면 completion_evidence_malformed 로 전이 미적용', () => {
@@ -40,6 +42,35 @@ describe('useRpcBridge — a2a.task.update 완료증거 배선 (소스-구조)',
   it('정규화된 evidence 를 store.updateTaskStatus 로 전달한다', () => {
     const block = region("method === 'a2a\\.task\\.update'", "method === 'a2a\\.task\\.cancel'");
     expect(block).toMatch(/store\.updateTaskStatus\(taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence\)/);
+  });
+});
+
+/**
+ * §6.M P1 PR-C — emitA2aTaskEvent(주 a2a.task 방출자 — teardown/채널멘션은 별도
+ * 경로다)가 **종단 전이(completed/failed)**에서 task.status.evidence의
+ * verifiedItemCount 를 파생해 publishA2aTask 로 전달하는 배선을 잠근다. useRpcBridge 는
+ * import 불가라 소스-구조 어서션으로 확인한다(위 배선 테스트와 동일 패턴).
+ */
+describe('useRpcBridge — emitA2aTaskEvent verifiedItemCount 파생 (§6.M PR-C, 소스-구조)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'useRpcBridge.ts'), 'utf-8');
+
+  it('isVerifiedItem 을 completionEvidence 에서 끌어온다', () => {
+    expect(src).toMatch(/import \{[^}]*\bisVerifiedItem\b[^}]*\} from '\.\.\/\.\.\/shared\/completionEvidence'/);
+  });
+
+  it('종단 전이(completed/failed)에서만 evidence 로부터 파생해 publishA2aTask 로 전달한다', () => {
+    const m = src.match(/function emitA2aTaskEvent\([\s\S]*?\n\}/);
+    expect(m).not.toBeNull();
+    const fn = m![0];
+    // state 게이트(리뷰 Codex+GLM): completed/failed 일 때만 파생 — working 이벤트가
+    // 등급을 달고 나가지 않게. evidence 게이트만으론 비종단 전이가 등급을 실을 수 있다.
+    expect(fn).toMatch(/effectiveState === 'completed' \|\| effectiveState === 'failed'/);
+    expect(fn).toMatch(/task\.status\.evidence/);
+    expect(fn).toMatch(/\.filter\(isVerifiedItem\)\.length/);
+    // items 방어(?.): 타입상 배열이나 폴백 wire 변형에서 undefined면 부재로 안전.
+    expect(fn).toMatch(/evidence\?\.items/);
+    // 파생 카운트를 publishA2aTask 마지막 인자로 전달(messagePreview 자리는 undefined).
+    expect(fn).toMatch(/publishA2aTask\([\s\S]*undefined,\s*verifiedItemCount\)/);
   });
 });
 

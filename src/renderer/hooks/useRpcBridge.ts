@@ -5,7 +5,7 @@ import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEvidence } from '../../shared/types';
-import { normalizeCompletionEvidenceWire } from '../../shared/completionEvidence';
+import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
@@ -363,7 +363,20 @@ function emitA2aTaskEvent(
   // from/to are validated non-empty at the publish trust boundary too, but
   // skip locally to avoid emitting a degenerate (third-party-blind) pointer.
   if (!from || !to || !taskId) return;
-  publishA2aTask(from, to, taskId, state ?? task.status.state, kind);
+  // verifiedItemCount(§6.M PR-C)는 **종단 전이(completed/failed)**의 등급이다.
+  // 데몬은 비종단 전이(working)에도 evidence를 수용하므로(PR-B else-if), evidence
+  // 존재만으로 파생하면 working 이벤트가 등급을 달고 나가 계약("completed/failed
+  // only")을 깬다(리뷰 Codex+GLM) — state로 게이트한다. evidence 자체는 데몬 커밋
+  // 경로(committedTask)와 렌더러 폴백 경로 양쪽이 task.status.evidence에 싣는 단일
+  // 정본이라 소스는 경로 무관 일관하다. items 방어(?.): 타입상 배열이나 폴백 wire
+  // 변형에서 undefined면 부재로 안전 처리(크래시 금지).
+  const effectiveState = state ?? task.status.state;
+  const evidence = task.status.evidence;
+  const verifiedItemCount =
+    (effectiveState === 'completed' || effectiveState === 'failed') && evidence?.items
+      ? evidence.items.filter(isVerifiedItem).length
+      : undefined;
+  publishA2aTask(from, to, taskId, effectiveState, kind, undefined, verifiedItemCount);
 }
 
 // ---------------------------------------------------------------------------

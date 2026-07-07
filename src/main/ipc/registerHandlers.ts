@@ -54,6 +54,11 @@ const A2A_PREVIEW_MAX = 200;
  *   - `state`/`kind` are validated against their enums; an invalid value is a
  *     reject (not a silent coercion) so a forged shape can't smuggle state.
  *   - `messagePreview`, if present, is coerced to a string and truncated.
+ *   - `verifiedItemCount`, if present, is included ONLY when a non-negative
+ *     integer (§6.M PR-C grade). Strings/negatives/floats/other types are
+ *     dropped — a forged or malformed value never rides through onto the event
+ *     (this is the boundary Codex flagged: without it the renderer could emit
+ *     the field but the server would silently strip it).
  * The renderer object is NEVER spread — only these fields cross the boundary.
  *
  * Exported so the dual-party scoping suite (events.rpc.test.ts) can assert the
@@ -91,6 +96,18 @@ export function buildA2aTaskEmitInput(
   const preview = obj['messagePreview'];
   if (preview !== undefined && preview !== null) {
     emit['messagePreview'] = String(preview).slice(0, A2A_PREVIEW_MAX);
+  }
+
+  // §6.M PR-C: verified evidence-item count. Strict — only a non-negative
+  // integer crosses. No coercion: a forged string/negative/float/NaN is
+  // dropped so it can never masquerade as a grade on the event.
+  const verifiedItemCount = obj['verifiedItemCount'];
+  if (
+    typeof verifiedItemCount === 'number' &&
+    Number.isInteger(verifiedItemCount) &&
+    verifiedItemCount >= 0
+  ) {
+    emit['verifiedItemCount'] = verifiedItemCount;
   }
 
   return emit;
