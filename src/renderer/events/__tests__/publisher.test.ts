@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { publishA2aTask } from '../publisher';
 import { isVerifiedItem } from '../../../shared/completionEvidence';
-import type { EvidenceItem } from '../../../shared/types';
+import type { EvidenceItem, TaskState } from '../../../shared/types';
 
 // publisher.publish()는 window.electronAPI.events.publish로 위임한다. node 테스트
 // 환경엔 window가 없으므로 globalThis.window에 목을 심어 방출 페이로드를 포착한다
@@ -64,9 +64,12 @@ describe('evidence 등급 파생 → 방출 (관측 계약, §6.M PR-C)', () => 
   const verified: EvidenceItem = { kind: 'command', status: 'passed', summary: 'ok', command: 'npm test' };
   const unverified: EvidenceItem = { kind: 'inspection', status: 'unverified', summary: 'self-reported' };
 
-  function emitFor(items: EvidenceItem[] | undefined): Record<string, unknown> {
-    const verifiedItemCount = items ? items.filter(isVerifiedItem).length : undefined;
-    publishA2aTask('ws-from', 'ws-to', 't1', 'completed', 'updated', undefined, verifiedItemCount);
+  // emitA2aTaskEvent 파생식과 동형: **종단 전이(completed/failed) + evidence** 일 때만
+  // 파생(state 게이트 — 리뷰 Codex+GLM). 비종단 전이는 evidence가 있어도 등급 미방출.
+  function emitFor(items: EvidenceItem[] | undefined, state: TaskState = 'completed'): Record<string, unknown> {
+    const isTerminal = state === 'completed' || state === 'failed';
+    const verifiedItemCount = isTerminal && items ? items.filter(isVerifiedItem).length : undefined;
+    publishA2aTask('ws-from', 'ws-to', 't1', state, 'updated', undefined, verifiedItemCount);
     return published[published.length - 1];
   }
 
@@ -80,5 +83,15 @@ describe('evidence 등급 파생 → 방출 (관측 계약, §6.M PR-C)', () => 
 
   it('evidence 부재(created/cancelled/working) → 필드 부재', () => {
     expect(emitFor(undefined)).not.toHaveProperty('verifiedItemCount');
+  });
+
+  it('working 전이 + evidence → 필드 부재 (종단 전이만 등급, 리뷰 Codex+GLM)', () => {
+    // 데몬은 비종단 전이에도 evidence를 수용하지만(PR-B else-if), 등급은 completed/
+    // failed 만 방출한다 — working 이벤트가 등급을 달고 나가면 계약 위반.
+    expect(emitFor([verified], 'working')).not.toHaveProperty('verifiedItemCount');
+  });
+
+  it('failed 전이 + evidence → 등급 방출(종단 전이)', () => {
+    expect(emitFor([unverified], 'failed').verifiedItemCount).toBe(0);
   });
 });

@@ -46,7 +46,8 @@ describe('useRpcBridge — a2a.task.update 완료증거 배선 (소스-구조)',
 });
 
 /**
- * §6.M P1 PR-C — emitA2aTaskEvent(단일 a2a.task 방출자)가 task.status.evidence 에서
+ * §6.M P1 PR-C — emitA2aTaskEvent(주 a2a.task 방출자 — teardown/채널멘션은 별도
+ * 경로다)가 **종단 전이(completed/failed)**에서 task.status.evidence의
  * verifiedItemCount 를 파생해 publishA2aTask 로 전달하는 배선을 잠근다. useRpcBridge 는
  * import 불가라 소스-구조 어서션으로 확인한다(위 배선 테스트와 동일 패턴).
  */
@@ -57,13 +58,17 @@ describe('useRpcBridge — emitA2aTaskEvent verifiedItemCount 파생 (§6.M PR-C
     expect(src).toMatch(/import \{[^}]*\bisVerifiedItem\b[^}]*\} from '\.\.\/\.\.\/shared\/completionEvidence'/);
   });
 
-  it('evidence 유무로 verifiedItemCount 를 파생해 publishA2aTask 로 전달한다(단일 퍼널)', () => {
+  it('종단 전이(completed/failed)에서만 evidence 로부터 파생해 publishA2aTask 로 전달한다', () => {
     const m = src.match(/function emitA2aTaskEvent\([\s\S]*?\n\}/);
     expect(m).not.toBeNull();
     const fn = m![0];
-    // evidence 있으면 filter(isVerifiedItem).length, 없으면 undefined(부재)로 파생.
+    // state 게이트(리뷰 Codex+GLM): completed/failed 일 때만 파생 — working 이벤트가
+    // 등급을 달고 나가지 않게. evidence 게이트만으론 비종단 전이가 등급을 실을 수 있다.
+    expect(fn).toMatch(/effectiveState === 'completed' \|\| effectiveState === 'failed'/);
     expect(fn).toMatch(/task\.status\.evidence/);
     expect(fn).toMatch(/\.filter\(isVerifiedItem\)\.length/);
+    // items 방어(?.): 타입상 배열이나 폴백 wire 변형에서 undefined면 부재로 안전.
+    expect(fn).toMatch(/evidence\?\.items/);
     // 파생 카운트를 publishA2aTask 마지막 인자로 전달(messagePreview 자리는 undefined).
     expect(fn).toMatch(/publishA2aTask\([\s\S]*undefined,\s*verifiedItemCount\)/);
   });

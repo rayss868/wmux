@@ -259,9 +259,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // the workspace while inspecting can't leave a stale overlay dangling.
       if (state.inspectModeActive) resetInspectState(state);
       });
-      // Same funnel as the normal status path (publishA2aTask) so the failure is
-      // visible cross-process, not only to same-process queryTasks (review A8 P1).
-      for (const f of failed) publishA2aTask(f.from, f.to, f.id, 'failed', 'updated');
+      // Cross-process failure pointer (publishA2aTask), so the teardown is
+      // visible beyond same-process queryTasks (review A8 P1). NOTE: this is a
+      // SECOND a2a.task emitter — emitA2aTaskEvent is the primary one but not the
+      // only one (§6.M PR-C review, Codex). Teardown force-fail carries no
+      // verified evidence (the receiver is gone; the daemon-native force-fail
+      // synthesizes evidence with items:[] → grade 0), so stamp verifiedItemCount
+      // = 0 here to keep the cross-process event consistent with the daemon canon.
+      for (const f of failed) publishA2aTask(f.from, f.to, f.id, 'failed', 'updated', undefined, 0);
       // R2: clean up the dead workspace's channel member rows + principals (a
       // cross-cutting teardown at the same spot as the a2a force-fail).
       // Fire-and-forget — cleanup is idempotent, and even if it fails the stale

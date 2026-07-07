@@ -363,15 +363,20 @@ function emitA2aTaskEvent(
   // from/to are validated non-empty at the publish trust boundary too, but
   // skip locally to avoid emitting a degenerate (third-party-blind) pointer.
   if (!from || !to || !taskId) return;
-  // verifiedItemCount(§6.M PR-C)는 task.status.evidence에서 파생한다 — 데몬 커밋
-  // 경로(committedTask)와 렌더러 폴백 경로 양쪽이 evidence를 여기 싣는 단일 정본이라
-  // 경로 무관 일관하다. evidence는 completed/failed 전이에만 실리므로 created/
-  // cancelled/working 스냅샷엔 자연히 undefined(부재) — 호출처별 분기가 불필요하다.
+  // verifiedItemCount(§6.M PR-C)는 **종단 전이(completed/failed)**의 등급이다.
+  // 데몬은 비종단 전이(working)에도 evidence를 수용하므로(PR-B else-if), evidence
+  // 존재만으로 파생하면 working 이벤트가 등급을 달고 나가 계약("completed/failed
+  // only")을 깬다(리뷰 Codex+GLM) — state로 게이트한다. evidence 자체는 데몬 커밋
+  // 경로(committedTask)와 렌더러 폴백 경로 양쪽이 task.status.evidence에 싣는 단일
+  // 정본이라 소스는 경로 무관 일관하다. items 방어(?.): 타입상 배열이나 폴백 wire
+  // 변형에서 undefined면 부재로 안전 처리(크래시 금지).
+  const effectiveState = state ?? task.status.state;
   const evidence = task.status.evidence;
-  const verifiedItemCount = evidence
-    ? evidence.items.filter(isVerifiedItem).length
-    : undefined;
-  publishA2aTask(from, to, taskId, state ?? task.status.state, kind, undefined, verifiedItemCount);
+  const verifiedItemCount =
+    (effectiveState === 'completed' || effectiveState === 'failed') && evidence?.items
+      ? evidence.items.filter(isVerifiedItem).length
+      : undefined;
+  publishA2aTask(from, to, taskId, effectiveState, kind, undefined, verifiedItemCount);
 }
 
 // ---------------------------------------------------------------------------
