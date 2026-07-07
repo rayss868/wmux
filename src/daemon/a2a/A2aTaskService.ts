@@ -475,9 +475,13 @@ export class A2aTaskService {
   // ── GC (projection 레벨, 로그 절단 아님) ────────────────────────────
 
   /**
-   * 30분 초과 종단 태스크 제거 + 하드캡 초과 시 오래된 것부터 축출(종단 우선).
-   * a2aSlice.gcTerminalTasks와 동형 — 정본은 로그이므로 여기 GC는 캐시 바운드다
-   * (컴팩션이 로그 상주분을 별도로 바운드; §9). 로그를 절단하지 않는다.
+   * 30분 초과 종단 태스크 제거 + 하드캡 초과 시 **오래된 종단분만** 축출.
+   *
+   * a2aSlice(UI 캐시)의 GC와 달리 **비종단(활성) 태스크는 절대 축출하지 않는다**
+   * (패널 델타): 이건 데몬 정본 projection이라 활성 태스크를 지우면 라이브
+   * 태스크를 잃는다(query/transition이 'task not found'). 종단분만으로 캡에 못
+   * 미치면 projection은 캡을 넘긴 채 유지된다 — 활성 작업 보존이 정답이고, 실제
+   * 동시 태스크 수가 자연 바운드다. 로그 상주분 절단은 §9 컴팩션 몫(여기 아님).
    */
   gcTerminalTasks(): void {
     const now = this.now();
@@ -492,12 +496,11 @@ export class A2aTaskService {
     }
     if (this.tasks.size <= GC_MAX_TASKS) return;
     let toRemove = this.tasks.size - GC_MAX_TASKS;
-    const oldestFirst = [...this.tasks.values()].sort(
-      (a, b) => new Date(a.metadata.updatedAt).getTime() - new Date(b.metadata.updatedAt).getTime(),
-    );
-    const isTerminal = (t: Task) => (TERMINAL_STATES as readonly string[]).includes(t.status.state);
-    const order = [...oldestFirst.filter(isTerminal), ...oldestFirst.filter((t) => !isTerminal(t))];
-    for (const task of order) {
+    // 종단 태스크만 축출 후보 — 활성은 절대 지우지 않는다(정본 무결성).
+    const terminalOldest = [...this.tasks.values()]
+      .filter((t) => (TERMINAL_STATES as readonly string[]).includes(t.status.state))
+      .sort((a, b) => new Date(a.metadata.updatedAt).getTime() - new Date(b.metadata.updatedAt).getTime());
+    for (const task of terminalOldest) {
       if (toRemove <= 0) break;
       this.tasks.delete(task.id);
       this.idempotency.delete(task.id);

@@ -259,3 +259,65 @@ describe('a2a.task.query 병합 (패널 D)', () => {
     expect(byId.get('t2-restart-survivor')).toBeDefined(); // 데몬-only(재시작 생존분) 추가
   });
 });
+
+describe('a2a.task.query 델타: status 필터는 병합 후 적용(D override 보존)', () => {
+  it('필터=working인데 데몬 정본=completed(더 최신)면 stale working이 결과에서 빠진다', async () => {
+    const worker = makeWorker();
+    sendToRendererMock.mockResolvedValueOnce({
+      workspaceId: 'ws-r',
+      tasks: [{ id: 't1', status: { state: 'working', timestamp: '2026-07-07T00:00:00.000Z' },
+        metadata: { updatedAt: '2026-07-07T00:00:00.000Z', to: { workspaceId: 'ws-r' } } }],
+    });
+    const daemonCalls: Array<Record<string, unknown>> = [];
+    const router = setupRouterWithDaemon(worker, async (method, params) => {
+      if (method === 'a2a.task.query') {
+        daemonCalls.push(params);
+        return { ok: true, tasks: [{ id: 't1', status: { state: 'completed', timestamp: '2026-07-07T00:05:00.000Z' },
+          metadata: { updatedAt: '2026-07-07T00:05:00.000Z', to: { workspaceId: 'ws-r' } } }] };
+      }
+      return { ok: false, error: 'unexpected' };
+    });
+
+    const res = await router.dispatch({ id: 'q1', method: 'a2a.task.query', params: { workspaceId: 'ws-r', status: 'working' } });
+    const tasks = ((res as { result: unknown }).result as { tasks: Array<Record<string, unknown>> }).tasks;
+    // 데몬 override로 t1이 completed가 됐고 필터=working이라 결과에서 제외돼야 한다.
+    expect(tasks).toHaveLength(0);
+    // 데몬 조회는 status 무필터로 나갔다(정본을 필터로 숨기지 않기 위해).
+    expect(daemonCalls[0]).not.toHaveProperty('status');
+  });
+});
+
+describe('a2a.task.cancel 델타: terminal no-op은 거짓 cancelled 이벤트를 방출하지 않는다', () => {
+  it('데몬이 completed(멱등 no-op) 반환 → 렌더러 cancel 라운드트립 없이 ok만', async () => {
+    sendToRendererMock.mockClear();
+    const worker = makeWorker();
+    const router = setupRouterWithDaemon(worker, async (method) => {
+      if (method === 'a2a.task.cancel') {
+        return { ok: true, task: { id: 't1', status: { state: 'completed', timestamp: 'x' } } };
+      }
+      return { ok: false, error: 'unexpected' };
+    });
+    const res = await router.dispatch({ id: 'c1', method: 'a2a.task.cancel', params: { taskId: 't1', workspaceId: 'ws-r' } });
+    expect((res as { ok: boolean }).ok).toBe(true);
+    expect(worker.cancel).toHaveBeenCalledWith('t1'); // 워커는 여전히 취소
+    // 종단 no-op → 렌더러 a2a.task.cancel(daemonCommitted) 미발행(거짓 이벤트 없음).
+    const cancelSends = sendToRendererMock.mock.calls.filter((c) => c[1] === 'a2a.task.cancel');
+    expect(cancelSends).toHaveLength(0);
+  });
+
+  it('데몬이 canceled(실취소) 반환 → 렌더러 daemonCommitted 발행', async () => {
+    sendToRendererMock.mockClear();
+    sendToRendererMock.mockResolvedValue({ ok: true, taskId: 't2' });
+    const worker = makeWorker();
+    const router = setupRouterWithDaemon(worker, async (method) => {
+      if (method === 'a2a.task.cancel') {
+        return { ok: true, task: { id: 't2', status: { state: 'canceled', timestamp: 'x' } } };
+      }
+      return { ok: false, error: 'unexpected' };
+    });
+    await router.dispatch({ id: 'c2', method: 'a2a.task.cancel', params: { taskId: 't2', workspaceId: 'ws-r' } });
+    const cancelSends = sendToRendererMock.mock.calls.filter((c) => c[1] === 'a2a.task.cancel');
+    expect(cancelSends).toHaveLength(1);
+    expect((cancelSends[0][2] as { daemonCommitted?: boolean }).daemonCommitted).toBe(true);
+  });
+});

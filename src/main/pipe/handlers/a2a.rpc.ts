@@ -320,9 +320,13 @@ export function registerA2aRpc(
       const ms = Date.parse(params.updatedSince.trim());
       if (!Number.isNaN(ms)) updatedSince = new Date(ms).toISOString();
     }
+    // status 필터는 데몬 조회에 넣지 않는다(패널 델타): 데몬 정본이 필터 밖 상태이면
+    // (예: 렌더러 stale=working인데 데몬 정본=completed, 필터=working) 데몬 조회가 그
+    // 태스크를 빼버려 same-id override가 불가능해진다. 데몬은 status 무필터로 받아
+    // 병합해 정본을 덮은 뒤, 최종 merged에 status 필터를 적용한다. role(불변)·
+    // updatedSince(커서)는 override 문제가 없어 데몬 조회에 유지.
     const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.query', {
       workspaceId: params.workspaceId,
-      ...(typeof params.status === 'string' ? { status: params.status } : {}),
       ...(typeof params.role === 'string' ? { role: params.role } : {}),
       ...(updatedSince ? { updatedSince } : {}),
     });
@@ -348,7 +352,14 @@ export function registerA2aRpc(
     });
     const seen = new Set(rendererTasks.map((t) => t.id));
     merged.push(...daemonTasks.filter((t) => !seen.has(t.id)));
-    return { ...(rendererRes as Record<string, unknown>), tasks: merged };
+    // 데몬 무필터 조회분(override·append)에 최종 status 필터를 적용한다 —
+    // 렌더러는 이미 status로 걸렀지만, 데몬 override로 상태가 바뀐 태스크(stale
+    // working→canonical completed)와 데몬-only 추가분은 여기서 걸러져야 한다.
+    const statusFilter = typeof params.status === 'string' ? params.status : undefined;
+    const finalTasks = statusFilter
+      ? merged.filter((t) => (isRecord(t.status) ? t.status.state : undefined) === statusFilter)
+      : merged;
+    return { ...(rendererRes as Record<string, unknown>), tasks: finalTasks };
   });
 
   // task.update — 데몬 정본 게이트 선행(envelope PR4 C12 대칭 경로).
@@ -455,11 +466,22 @@ export function registerA2aRpc(
     });
     if (gate.kind === 'reject') return { error: gate.error };
     if (gate.kind === 'ok') {
-      return sendToRenderer(getWindow, 'a2a.task.cancel', {
-        ...params,
-        daemonCommitted: true,
-        committedTask: gate.result.task,
-      });
+      // G(패널 델타): 데몬이 실제로 canceled로 전이했을 때만 렌더러 cancelled 이벤트를
+      // 태운다. 이미 종단(completed/failed)인 태스크의 멱등 no-op(데몬 G 수정)은 상태
+      // 변화가 없는데, 렌더러 cancel 핸들러는 daemonCommitted 시 무조건 state:'canceled'
+      // 이벤트를 하드코딩 방출한다(useRpcBridge :1951) → completed 태스크에 거짓 'canceled'
+      // 이벤트. no-op이면 렌더러 라운드트립 없이 ok만 반환(캐시 표류는 query 병합이 수렴).
+      const committed = isRecord(gate.result.task) ? gate.result.task : undefined;
+      const committedState =
+        committed && isRecord(committed.status) ? committed.status.state : undefined;
+      if (committedState === 'canceled') {
+        return sendToRenderer(getWindow, 'a2a.task.cancel', {
+          ...params,
+          daemonCommitted: true,
+          committedTask: gate.result.task,
+        });
+      }
+      return { ok: true, taskId };
     }
     return sendToRenderer(getWindow, 'a2a.task.cancel', params);
   });

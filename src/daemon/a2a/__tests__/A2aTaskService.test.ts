@@ -381,3 +381,18 @@ describe('G(패널) idempotent cancel', () => {
     log.close();
   });
 });
+
+describe('A 델타: 하드캡은 종단만 축출 — 활성 태스크는 정본에서 잃지 않는다', () => {
+  it('캡(500) 초과가 전부 non-terminal이면 축출 0(모두 생존)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    for (let i = 0; i < 502; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      await svc.createTask({ id: `t-${i}`, title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-r', name: 'R' } });
+    }
+    expect(svc.taskCount).toBe(502);
+    svc.gcTerminalTasks(); // 종단 후보 0 → 하드캡이 활성을 지우지 않는다
+    expect(svc.taskCount).toBe(502); // 정본 무결(활성 보존)
+    log.close();
+  });
+});
