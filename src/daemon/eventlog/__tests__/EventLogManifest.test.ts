@@ -8,6 +8,7 @@ import {
   writeManifest,
   manifestPath,
   isEventLogManifest,
+  pingFormatVersionField,
   EVENTLOG_FORMAT_VERSION,
   type EventLogManifest,
 } from '../EventLogManifest';
@@ -78,5 +79,29 @@ describe('isEventLogManifest 가드', () => {
     expect(
       isEventLogManifest({ ...sample(), futureField: 'x', keyId: 'k' }),
     ).toBe(true);
+  });
+});
+
+// ── §6.4a daemon.ping의 eventLogFormatVersion additive 필드 ─────────────
+describe('pingFormatVersionField (§6.4a)', () => {
+  it('로그 활성(active=formatVersion) → 필드 노출(값=활성 formatVersion)', () => {
+    expect(pingFormatVersionField(EVENTLOG_FORMAT_VERSION)).toEqual({
+      eventLogFormatVersion: EVENTLOG_FORMAT_VERSION,
+    });
+    // 활성 manifest.formatVersion을 그대로 노출 — 미래 세대도 실값 전달(하드코딩 아님).
+    expect(pingFormatVersionField(2)).toEqual({ eventLogFormatVersion: 2 });
+  });
+
+  it('로그 비활성(undefined — 레거시 폴백/마이그레이션 미완) → 필드 부재', () => {
+    const field = pingFormatVersionField(undefined);
+    expect(field).toEqual({});
+    expect('eventLogFormatVersion' in field).toBe(false);
+  });
+
+  it('스프레드 additive 계약: 부재 시 응답 객체에 키가 안 생긴다(부재 = 레거시 세대)', () => {
+    const active = { status: 'ok', ...pingFormatVersionField(EVENTLOG_FORMAT_VERSION) };
+    const legacy = { status: 'ok', ...pingFormatVersionField(undefined) };
+    expect(active.eventLogFormatVersion).toBe(EVENTLOG_FORMAT_VERSION);
+    expect('eventLogFormatVersion' in legacy).toBe(false);
   });
 });

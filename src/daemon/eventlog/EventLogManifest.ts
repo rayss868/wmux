@@ -17,6 +17,20 @@ import { atomicWriteJSONSync, atomicReadJSONSync } from '../util/atomicWrite';
 /** 현 manifest 포맷 세대. 스키마 마이그레이션 시에만 bump(부트마다 불변). */
 export const EVENTLOG_FORMAT_VERSION = 1;
 
+/**
+ * daemon.ping의 `eventLogFormatVersion` additive 필드(§6.4a). 로그가 durable 활성
+ * (active = 활성 manifest.formatVersion)이면 필드를 싣고, 비활성(active=undefined —
+ * 레거시 폴백/마이그레이션 미완, channelEventLogDeps null 경로)이면 필드를 뺀다.
+ * **필드 부재 = pre-envelope 데몬 = 레거시 세대**: B′(#342) 자동 교체 로직이 "자기가
+ * 모르는 formatVersion 데몬을 만나면 재사용·교체 안 하고 fail-closed"하는 판정 입력이다
+ * (B′ 판정 로직 자체는 PR5 밖 — ping이 값을 노출하는 것까지가 PR5 몫).
+ */
+export function pingFormatVersionField(
+  active: number | undefined,
+): { eventLogFormatVersion?: number } {
+  return active !== undefined ? { eventLogFormatVersion: active } : {};
+}
+
 const MANIFEST_FILE = 'manifest.json';
 
 /**
