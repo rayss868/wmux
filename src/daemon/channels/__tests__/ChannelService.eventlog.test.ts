@@ -332,3 +332,132 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
     h.log.close();
   });
 });
+
+// ─── 패널 반영: trim 역사 가드(CL-3) + 로그 모드 시멘틱 파리티(CL-4 확장) ─────
+
+import { applyChannelEvent } from '../channelEvents';
+
+describe('replay trim 역사 가드 (패널 CL-3)', () => {
+  it('보존 범위 이전의 과거 post(seq < nextSeq, msgs에 없음) 재적용은 전체 no-op', () => {
+    const state: ChannelState = JSON.parse(JSON.stringify(EMPTY_CHANNEL_STATE));
+    state.channels.push({
+      id: 'ch-1', name: 'g', visibility: 'public', createdBy: 'ws-1',
+      createdAt: 1, nextSeq: 101, companyId: 'co',
+    } as unknown as ChannelState['channels'][number]);
+    // 히스토리 캡이 seq 100만 보존한 상태 모사(50은 이미 절단됨).
+    state.messages['ch-1'] = [
+      { seq: 100, workspaceId: 'ws-1', memberId: 'm-1', memberName: 'a', text: 'newest', ts: 100 } as unknown as NonNullable<ChannelState['messages']['x']>[number],
+    ];
+    const before = JSON.parse(JSON.stringify(state));
+    applyChannelEvent(state, {
+      kind: 'post', channelId: 'ch-1',
+      message: { seq: 50, workspaceId: 'ws-1', memberId: 'm-1', memberName: 'a', text: 'trimmed-old', ts: 50 },
+    });
+    // 순서 붕괴·보존분 축출·커서/멱등 부작용 전무.
+    expect(state).toEqual(before);
+  });
+
+  it('nextSeq 이상의 신규 post는 정상 적용(가드가 신규를 막지 않음)', () => {
+    const state: ChannelState = JSON.parse(JSON.stringify(EMPTY_CHANNEL_STATE));
+    state.channels.push({
+      id: 'ch-1', name: 'g', visibility: 'public', createdBy: 'ws-1',
+      createdAt: 1, nextSeq: 101, companyId: 'co',
+    } as unknown as ChannelState['channels'][number]);
+    state.messages['ch-1'] = [];
+    applyChannelEvent(state, {
+      kind: 'post', channelId: 'ch-1',
+      message: { seq: 101, workspaceId: 'ws-1', memberId: 'm-1', memberName: 'a', text: 'new', ts: 101 },
+    });
+    expect(state.messages['ch-1'].map((m) => m.seq)).toEqual([101]);
+    expect(state.channels[0].nextSeq).toBe(102);
+  });
+});
+
+describe('로그 모드 시멘틱 파리티 — 핵심 표면 (패널 CL-4 확장)', () => {
+  it('per-member 커서: 한 멤버의 ack가 다른 멤버 unread에 불간섭 + 재부트 후 유지', async () => {
+    const h = makeHarness();
+    const created = await h.svc.create({
+      name: 'cur', visibility: 'public',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!created.ok) throw new Error('create failed');
+    const chId = created.channel.id;
+    expect((await h.svc.join({
+      channelId: chId, member: { workspaceId: 'ws-2', memberId: 'm-2' },
+      includeHistory: true, verifiedWorkspaceId: 'ws-2',
+    })).ok).toBe(true);
+    expect((await h.svc.join({
+      channelId: chId, member: { workspaceId: 'ws-3', memberId: 'm-3' },
+      includeHistory: true, verifiedWorkspaceId: 'ws-3',
+    })).ok).toBe(true);
+    expect((await h.svc.post({
+      channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
+      text: 'one', verifiedWorkspaceId: 'ws-1',
+    })).ok).toBe(true);
+    expect((await h.svc.post({
+      channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
+      text: 'two', verifiedWorkspaceId: 'ws-1',
+    })).ok).toBe(true);
+    expect((await h.svc.ack({
+      channelId: chId, verifiedWorkspaceId: 'ws-2', uptoSeq: 2, memberId: 'm-2',
+    })).ok).toBe(true);
+
+    const rows = stateOf(h.svc).members[chId];
+    // 발신자 m-1은 자기 발신 자동 읽음(라이브 시멘틱) — 파리티 대상은 제3의
+    // 비-ack 멤버 m-3의 불간섭이다.
+    const m3Before = rows.find((r) => r.memberId === 'm-3')?.lastReadSeq;
+    expect(rows.find((r) => r.memberId === 'm-2')?.lastReadSeq).toBe(2);
+    expect(m3Before).not.toBe(2); // 타 멤버 ack가 m-3 커서에 불간섭
+
+    // 재부트(스냅샷 없음 → genesis+replay) 후 커서 보존.
+    h.log.close();
+    const h2 = makeHarness();
+    const rows2 = stateOf(h2.svc).members[chId];
+    expect(rows2.find((r) => r.memberId === 'm-2')?.lastReadSeq).toBe(2);
+    expect(rows2.find((r) => r.memberId === 'm-3')?.lastReadSeq).toBe(m3Before);
+    h2.log.close();
+  });
+
+  it('existence-hiding: 비멤버 list()에 private 채널 비노출 — 재부트 후에도', async () => {
+    const h = makeHarness();
+    const created = await h.svc.create({
+      name: 'secret', visibility: 'private',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    expect(created.ok).toBe(true);
+    expect(h.svc.list('ws-1').map((c) => c.name)).toContain('secret');
+    expect(h.svc.list('ws-9').map((c) => c.name)).not.toContain('secret');
+    h.log.close();
+    const h2 = makeHarness();
+    expect(h2.svc.list('ws-9').map((c) => c.name)).not.toContain('secret');
+    expect(h2.svc.list('ws-1').map((c) => c.name)).toContain('secret');
+    h2.log.close();
+  });
+
+  it('멱등 재시도: 동일 clientMsgId 재post → 메시지 1건 — 재부트 리플레이 후에도 1건', async () => {
+    const h = makeHarness();
+    const created = await h.svc.create({
+      name: 'g', visibility: 'public',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!created.ok) throw new Error('create failed');
+    const chId = created.channel.id;
+    const p1 = await h.svc.post({
+      channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
+      text: 'once', verifiedWorkspaceId: 'ws-1', clientMsgId: 'dup-1',
+    });
+    const p2 = await h.svc.post({
+      channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
+      text: 'once', verifiedWorkspaceId: 'ws-1', clientMsgId: 'dup-1',
+    });
+    expect(p1.ok && p2.ok).toBe(true);
+    expect(stateOf(h.svc).messages[chId]).toHaveLength(1);
+    h.log.close();
+    const h2 = makeHarness();
+    expect(stateOf(h2.svc).messages[chId]).toHaveLength(1); // 로그에도 1건(멱등 no-append)
+    h2.log.close();
+  });
+});

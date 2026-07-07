@@ -192,6 +192,11 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
       const seq = p.message.seq;
       // 멱등: 같은 seq가 이미 있으면(스냅샷 선반영·승격 재출현) 재적용 no-op.
       if (msgs.some((m) => m.seq === seq)) return;
+      // trim된 역사 가드(패널 CL-3): seq < nextSeq인데 msgs에 없다 = 히스토리 캡이
+      // 이미 절단한 과거 post다. 재적용하면 tail에 붙어 순서가 깨지고, 캡 trim이
+      // 진짜 보존분을 앞에서 축출한다. 스냅샷이 그 효과(커서·멱등 포함)를 이미
+      // 반영했으므로 전체 no-op.
+      if (seq < ch.nextSeq) return;
       msgs.push({ ...p.message });
       // nextSeq 전진(라이브의 nextSeq++와 동치 — replay는 seq+1로 클램프 전진).
       if (ch.nextSeq <= seq) ch.nextSeq = seq + 1;

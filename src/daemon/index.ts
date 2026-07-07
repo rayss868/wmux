@@ -15,6 +15,7 @@ import { coerceLanLinkPatch } from '../shared/lanlink';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
 import { SnapshotStore, SNAPSHOT_DIRNAME } from './eventlog/SnapshotStore';
+import { readManifest } from './eventlog/EventLogManifest';
 import { runMigration, evaluateWatermark, performReseed, stampWatermark } from './eventlog/migrateToEventLog';
 import { PrincipalService, PrincipalStateWriter } from './principals';
 import { isPrincipalUpsertInput } from '../shared/principals';
@@ -2778,7 +2779,13 @@ async function main(): Promise<void> {
   const eventsDir = path.join(wmuxDir, 'events');
   const channelsJsonPath = path.join(wmuxDir, 'channels.json');
   let channelEventLogDeps: ChannelServiceEventLog | undefined;
+  // 로그 정본 플래그(패널 CL-1): manifest가 durable 활성인 순간부터 레거시
+  // channels.json 폴백은 로그-only 커밋을 유기하는 split-brain이다. fail-open은
+  // manifest 생성 "전"의 마이그레이션 실패(레거시 무손상·§6.1-3)에만 허용한다.
+  let logCanonical = false;
   try {
+    // 기존 부트에서 이미 활성이면(runMigration 자체가 던져도) fail-closed 대상.
+    logCanonical = readManifest(eventsDir) !== null;
     const migration = runMigration({
       eventsDir,
       // 레거시 부재(진짜 first-boot)는 null. 존재 시 기존 로더(리퍼·프로토타입
@@ -2791,6 +2798,9 @@ async function main(): Promise<void> {
         channelStateWriter.saveImmediate(stamped, { durable: true });
       },
     });
+    // runMigration 반환 = manifest durable 활성(신규·기존 불문). 이 지점부터 실패는
+    // 레거시로 계속할 수 없다(위 플래그 주석).
+    logCanonical = true;
     let manifest = migration.manifest;
     const channelEventLog = new AppendOnlyLog({
       dir: eventsDir,
@@ -2841,6 +2851,14 @@ async function main(): Promise<void> {
     };
     log('info', `event log active (detection=${migration.detection}, lamport hwm=${channelEventLog.lamportHwm}, seg=${manifest.activeSegment})`);
   } catch (err) {
+    if (logCanonical) {
+      // fail-closed(패널 CL-1, 2-MODEL): 로그가 정본으로 활성된 뒤의 실패(open 절단
+      // 실패·스냅샷 스토어 등)에서 레거시 커밋 경로로 계속하면, 로그에만 커밋된
+      // 최신 채널 상태를 버리고 stale channels.json 위에 새 mutation을 쌓는
+      // split-brain이 된다. 데몬 부트를 실패시키는 것이 조용한 데이터 유실보다 낫다.
+      log('error', 'event log boot gate failed AFTER manifest activation — fail-closed:', err);
+      throw err;
+    }
     // fail-open: 마이그레이션 중단(§6.1-3)은 레거시 무손상·manifest 미기록이므로,
     // 이번 부트는 레거시 커밋 경로로 계속하고 다음 부트가 재시도한다(가용성 우선).
     // 조용히 로그 모드로 진행하는 것(§6.1-1 (c) fail-safe 위반)이 아니라 그 반대다.
