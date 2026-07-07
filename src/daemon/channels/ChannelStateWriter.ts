@@ -186,7 +186,11 @@ export class ChannelStateWriter {
         const epochAtStart = this.immediateEpoch;
         try {
           // 스탬프는 write 시점(직렬화 직전)에 적용 — §6.4c 해시-내용 일치.
-          await atomicWriteJSON(this.filePath, this.applyStamp(payload), {
+          // 비동기 경로는 스탬프(해시 계산)와 직렬화 사이에 await(ensureDir)가
+          // 있어, 그 사이 커밋이 라이브 참조를 변형하면 해시≠기록내용으로 다음
+          // 부트가 허위 downgrade-write를 감지한다(Codex INFO-8) — 스탬프 전에
+          // 클론으로 고정해 해시와 내용을 같은 스냅숏에 묶는다.
+          await atomicWriteJSON(this.filePath, this.applyStamp(structuredClone(payload)), {
             validate: ChannelStateWriter.isChannelState,
             rotationEnabled: true,
           });
