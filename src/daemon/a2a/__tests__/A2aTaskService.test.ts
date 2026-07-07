@@ -575,4 +575,47 @@ describe('PR-B 완료증거 게이트', () => {
     expect(rec?.forced).toBe('workspace_removed');
     expect(rec?.evidence?.items).toHaveLength(0); // 게이트 미경유(합성 evidence 그대로)
   });
+
+  it('순서 고정(리뷰 GLM): pane-authz 거부가 게이트보다 먼저 — sibling pane + evidence 부재는 pane 에러', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-p',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R', paneId: 'pane-B' },
+    });
+    const working = await svc.transition({ taskId: 'task-p', to: 'working', callerWorkspaceId: 'ws-receiver' });
+    expect(working.ok).toBe(true);
+    // 일부러 evidence 없이 — 게이트가 authz 앞으로 회귀하면 completion_evidence_missing이 먼저 나온다.
+    const r = await svc.transition({
+      taskId: 'task-p',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      callerAddr: { paneId: 'pane-A' },
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('caller pane is not the addressed receiver pane');
+    expect(!r.ok && r.error).not.toContain('completion_evidence');
+  });
+
+  it('비종단 전이 + evidence(리뷰 GLM): 게이트 비대상이나 수용 + verifiedItemCount 산출은 유지', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-w',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R' },
+    });
+    const r = await svc.transition({
+      taskId: 'task-w',
+      to: 'working',
+      callerWorkspaceId: 'ws-receiver',
+      evidence: { summary: 'progress', items: [{ kind: 'command', status: 'passed', summary: 'lint', command: 'npm run lint' }] },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.verifiedItemCount).toBe(1); // else-if 분기(비종단 카운트) 회귀 가드
+    expect(svc.getTask('task-w')?.status.evidence?.summary).toBe('progress');
+  });
 });

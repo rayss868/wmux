@@ -873,7 +873,7 @@ server.tool(
 // 5. a2a_task_update — Update task status
 server.tool(
   'a2a_task_update',
-  'Update a task\'s status. Only the receiver workspace can change it. Transitions follow a state machine — you cannot jump straight from submitted to completed: take submitted -> working FIRST, then working -> completed/failed/input-required. Terminal states (completed/failed/canceled) are final and reject any further update (no resurrection). A rejected transition returns an error listing the allowed next states. Optionally attach artifacts on completion. status:"completed" requires evidence (enforced by a completion-evidence gate): summary + >=1 item (command|inspection|artifact). status:"failed" should carry evidence.summary (the failure reason). A verified item is command+passed or inspection/artifact+verified; when zero, the completion is still accepted but reported at an unverified grade (verifiedItemCount=0). Rejections come back as completion_evidence_* reason codes.',
+  'Update a task\'s status. Only the receiver workspace can change it. Transitions follow a state machine — you cannot jump straight from submitted to completed: take submitted -> working FIRST, then working -> completed/failed/input-required. Terminal states (completed/failed/canceled) are final and reject any further update (no resurrection). A rejected transition returns an error listing the allowed next states. Optionally attach artifacts on completion. status:"completed" requires evidence (enforced by a completion-evidence gate): summary + >=1 item (command|inspection|artifact). status:"failed" requires evidence.summary (the failure reason). A verified item is command+passed or inspection/artifact+verified; when zero, the completion is still accepted but reported at an unverified grade (verifiedItemCount=0). Rejections come back as completion_evidence_* reason codes (failed without a reason: failure_reason_missing).',
   {
     task_id: z.string().describe('Task ID to update'),
     status: z
@@ -919,7 +919,7 @@ server.tool(
         files: z.array(z.string()).optional().describe('Repository-relative paths only.'),
       })
       .optional()
-      .describe('Structured completion evidence. status:"completed" requires it (summary + >=1 item: command|inspection|artifact); status:"failed" should carry evidence.summary (the failure reason). Verified items = command+passed or inspection/artifact+verified; zero verified => completion is accepted but graded unverified (verifiedItemCount=0). Rejections return completion_evidence_* reason codes.'),
+      .describe('Structured completion evidence. status:"completed" requires it (summary + >=1 item: command|inspection|artifact); status:"failed" requires evidence.summary (the failure reason). Verified items = command+passed or inspection/artifact+verified; zero verified => completion is accepted but graded unverified (verifiedItemCount=0). Rejections return completion_evidence_* reason codes (failed without a reason: failure_reason_missing).'),
   },
   async ({ task_id, status, message, artifact_name, artifact_data, evidence }) => {
     const wsId = await requireWorkspaceId();

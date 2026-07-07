@@ -2,7 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Task, Message, TaskState, Artifact, AgentSkill, CompletionEvidence } from '../../../shared/types';
 import { generateId, validateTransition, TERMINAL_STATES, VALID_TRANSITIONS } from '../../../shared/types';
-import { validateCompletionEvidence } from '../../../shared/completionEvidence';
+import { validateCompletionEvidence, normalizeCompletionEvidenceWire } from '../../../shared/completionEvidence';
 import type { PaneAddress } from '../../hooks/a2aAddressing';
 import { isChannelMentionTask } from '../../hooks/channelMentionFlush';
 
@@ -225,6 +225,19 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
         : `'${from}' is a terminal state with no further transitions`;
       return { ok: false, error: `Invalid transition: ${from} -> ${newState}. ${guidance}.` };
     }
+    // 완료증거 정규화(§6.M — 데몬 transition과 구조 동형, 리뷰 GLM+Claude): 이 writer는
+    // 브릿지 normalize를 신뢰하지 않고 재검증한다. 유일 프로덕션 호출자(useRpcBridge)가
+    // 먼저 normalize하지만, 브릿지를 우회한 미래 호출이 데몬(malformed 거부)과 다른
+    // 판정을 받으면 안 된다 — 미지 kind·비plain 객체는 여기서도 malformed로 죽고,
+    // recordedBy 등 서버 전용 스탬프·미지 키는 저장 전 드롭된다.
+    let normalizedEvidence: CompletionEvidence | undefined;
+    if (evidence !== undefined) {
+      const normalized = normalizeCompletionEvidenceWire(evidence);
+      if (!normalized) {
+        return { ok: false, error: 'completion_evidence_malformed: evidence must be a plain object with string summary and well-formed items' };
+      }
+      normalizedEvidence = normalized;
+    }
     // 완료증거 게이트(§6.M PR-B — 폴백 writer). 데몬 게이트만으로는 우회 0이 아니다:
     // pane-핀 태스크 + senderPtyId 호출자는 데몬이 'pane-authz deferred'로 soft-defer해
     // 이 writer가 최종 판정자가 되고(S-C2), 데몬 미가용 degrade에서도 동일하다. 데몬과
@@ -233,7 +246,7 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     // (applyDaemonTaskUpdate)은 **절대 게이트하지 않는다**(C6 — force-fail 커밋 거부 =
     // split-brain). 브릿지(useRpcBridge)가 'a2a.task.update: ' 접두를 붙이므로 코드:힌트만 반환.
     if (newState === 'completed' || newState === 'failed') {
-      const verdict = validateCompletionEvidence(newState, evidence);
+      const verdict = validateCompletionEvidence(newState, normalizedEvidence);
       if (!verdict.ok) {
         return { ok: false, error: `${verdict.code}: ${evidenceGateHint(verdict.code)}` };
       }
@@ -241,9 +254,9 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     set((state: StoreState) => {
       const t = state.a2aTasks[taskId];
       if (t) {
-        // additive: 완료증거는 전이 성공 시 status에 verbatim 저장한다.
-        // 게이트(PR-B)는 validateTransition 뒤·set 앞에서 이미 판정했다(위).
-        t.status = { state: newState, message: statusMessage, timestamp: isoNow(), ...(evidence ? { evidence } : {}) };
+        // additive: 완료증거는 전이 성공 시 status에 저장한다(normalize 산출물 —
+        // 게이트(PR-B)는 validateTransition 뒤·set 앞에서 이미 판정했다(위)).
+        t.status = { state: newState, message: statusMessage, timestamp: isoNow(), ...(normalizedEvidence ? { evidence: normalizedEvidence } : {}) };
         t.metadata.updatedAt = isoNow();
       }
     });
