@@ -2,14 +2,64 @@ import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import type { ClaudeWorker } from '../../a2a/ClaudeWorker';
+import type { DaemonClient } from '../../DaemonClient';
 import * as fs from 'fs';
 import { getPidMapDir } from '../../../shared/constants';
+import { validateMessage } from '../../../shared/types';
 import { defaultSnapshot } from '../../pty/portWatch';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
 
 type GetWindow = () => BrowserWindow | null;
+
+// ─── envelope PR4: A2A 태스크 데몬 정본 게이트 ─────────────────────────
+// 전이·취소·생성의 정본은 데몬 A2aTaskService(append-only 로그)다. 이 헬퍼가
+// 데몬 커밋을 시도하고 결과를 3분류한다:
+//   ok          — 데몬 게이트(권한·VALID_TRANSITIONS) 통과 + 로그 커밋. 렌더러는
+//                 committedTask를 **verbatim 적용**해야 한다(§6.M C6).
+//   reject      — 데몬 명시 거부(불법 전이 등). 렌더러를 건드리지 않고 그대로
+//                 반환한다 — 렌더러가 재판정하면 split-brain.
+//   unavailable — 데몬 미가용/로그 미개방/태스크 미시드('task not found': 렌더러-
+//                 로컬 생성 태스크 등). 기존 렌더러-검증 경로로 폴백(컨틴전시) —
+//                 A2A는 역사적으로 best-effort 비내구라 degrade가 파국이 아니다.
+type DaemonTaskGate =
+  | { kind: 'ok'; result: Record<string, unknown> }
+  | { kind: 'reject'; error: string }
+  | { kind: 'unavailable' };
+
+// soft 분류 마커: 'pane-authz deferred'는 S-C2 페인 게이트를 렌더러(페인 트리
+// 소유자)가 판정하도록 데몬이 의도적으로 미루는 신호다 — 거부가 아니라 폴백.
+const A2A_DAEMON_SOFT_ERRORS = ['task log unavailable', 'task not found', 'pane-authz deferred'];
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** task.metadata.updatedAt(ISO-8601, 사전순=시간순). 부재 시 '' — 항상 최소값. */
+function taskUpdatedAt(t: Record<string, unknown>): string {
+  const meta = isRecord(t.metadata) ? t.metadata : undefined;
+  return typeof meta?.updatedAt === 'string' ? meta.updatedAt : '';
+}
+
+async function daemonTaskRpc(
+  getDaemonClient: (() => DaemonClient | null) | undefined,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<DaemonTaskGate> {
+  const dc = getDaemonClient?.();
+  if (!dc) return { kind: 'unavailable' };
+  try {
+    const res = await dc.rpc(method, params);
+    if (isRecord(res) && res.ok === true) return { kind: 'ok', result: res };
+    const error = isRecord(res) && typeof res.error === 'string' ? res.error : `${method}: daemon rejected`;
+    if (A2A_DAEMON_SOFT_ERRORS.some((s) => error.includes(s))) return { kind: 'unavailable' };
+    return { kind: 'reject', error };
+  } catch {
+    // 파이프 단절/타임아웃 — 렌더러 폴백(soft).
+    return { kind: 'unavailable' };
+  }
+}
 
 /** Validate an RPC-supplied caller pid. Anything non-positive / non-integer is
  *  ignored (older MCP build, or junk) → the handler keeps its legacy behavior. */
@@ -39,8 +89,9 @@ export function registerA2aRpc(
   router: RpcRouter,
   getWindow: GetWindow,
   claudeWorker: ClaudeWorker,
-  opts: { snapshot?: SnapshotFn } = {},
+  opts: { snapshot?: SnapshotFn; getDaemonClient?: () => DaemonClient | null } = {},
 ): void {
+  const getDaemonClient = opts.getDaemonClient;
   // Server-side process-tree snapshot for handshake identity resolution. Shared
   // across CONCURRENT handshakes (in-flight coalescing) so the multi-agent launch
   // burst triggers ONE Win32_Process spawn, not one per agent. The MCP side
@@ -236,19 +287,150 @@ export function registerA2aRpc(
     return { mappings, entries, resolved };
   });
 
-  // A2A protocol — passthrough to renderer
+  // A2A protocol — whoami/discover/broadcast/skills는 렌더러 소유 그대로.
   router.register('a2a.whoami', (params) => sendToRenderer(getWindow, 'a2a.whoami', params));
   router.register('a2a.discover', (params) => sendToRenderer(getWindow, 'a2a.discover', params));
-  router.register('a2a.task.query', (params) => sendToRenderer(getWindow, 'a2a.task.query', params));
-  router.register('a2a.task.update', (params) => sendToRenderer(getWindow, 'a2a.task.update', params));
   router.register('a2a.broadcast', (params) => sendToRenderer(getWindow, 'a2a.broadcast', params));
   router.register('meta.setSkills', (params) => sendToRenderer(getWindow, 'meta.setSkills', params));
+
+  // task.query — 데몬 정본 + 렌더러 캐시 병합(envelope PR4).
+  // 렌더러: 렌더러-로컬 생성 태스크(채널멘션 chmention-* 등)와 세션 내 증분
+  // 히스토리를 보유. 데몬: 재시작을 생존한 정본 태스크를 보유(내구화의 가치).
+  // 병합 규칙(패널 D): 같은 id면 **데몬이 더 최신일 때 데몬 status/updatedAt 우선**.
+  // 데몬 커밋 후 렌더러가 daemonCommitted를 적용하기 전 크래시/불달이면 렌더러
+  // 캐시가 stale인데, 렌더러-무조건-우선은 그 stale이 정본을 영영 가린다. 데몬이
+  // 더 최신이면 status/updatedAt만 데몬 값으로 덮고, 렌더러 전용 증분(history·
+  // artifacts)은 보존한다(§6.F — 증분 히스토리는 아직 데몬 비내구). 데몬-only
+  // id(재시작 생존분)는 추가. 데몬 미가용이면 현행 렌더러-only와 동일.
+  router.register('a2a.task.query', async (params) => {
+    let rendererRes: unknown = null;
+    try {
+      rendererRes = await sendToRenderer(getWindow, 'a2a.task.query', params);
+    } catch (err) {
+      rendererRes = null; // 렌더러 미가용(early boot) — 데몬 단독 응답 시도
+      if (!getDaemonClient?.()) throw err; // 양쪽 다 없으면 현행대로 전파
+    }
+    // 렌더러의 구조화 검증 에러(workspaceId 누락·불량 커서)는 계약 그대로 반환 —
+    // 데몬-only 응답으로 대체하면 오늘의 에러 계약이 사라진다.
+    if (isRecord(rendererRes) && typeof rendererRes.error === 'string') return rendererRes;
+    // 커서는 렌더러와 동일하게 canonical UTC ISO로 정규화해 데몬에 전달한다
+    // (데몬 projection의 사전순 비교 건전성 — useRpcBridge A9와 동일 이유).
+    let updatedSince: string | undefined;
+    if (typeof params.updatedSince === 'string' && params.updatedSince.trim()) {
+      const ms = Date.parse(params.updatedSince.trim());
+      if (!Number.isNaN(ms)) updatedSince = new Date(ms).toISOString();
+    }
+    // status 필터는 데몬 조회에 넣지 않는다(패널 델타): 데몬 정본이 필터 밖 상태이면
+    // (예: 렌더러 stale=working인데 데몬 정본=completed, 필터=working) 데몬 조회가 그
+    // 태스크를 빼버려 same-id override가 불가능해진다. 데몬은 status 무필터로 받아
+    // 병합해 정본을 덮은 뒤, 최종 merged에 status 필터를 적용한다. role(불변)·
+    // updatedSince(커서)는 override 문제가 없어 데몬 조회에 유지.
+    const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.query', {
+      workspaceId: params.workspaceId,
+      ...(typeof params.role === 'string' ? { role: params.role } : {}),
+      ...(updatedSince ? { updatedSince } : {}),
+    });
+    if (gate.kind !== 'ok') return rendererRes;
+    const daemonTasks = Array.isArray(gate.result.tasks) ? (gate.result.tasks as Array<Record<string, unknown>>) : [];
+    const rendererOk = isRecord(rendererRes) && Array.isArray(rendererRes.tasks);
+    if (!rendererOk) {
+      return { workspaceId: params.workspaceId, tasks: daemonTasks };
+    }
+    const rendererTasks = (rendererRes as { tasks: Array<Record<string, unknown>> }).tasks;
+    const daemonById = new Map(daemonTasks.map((t) => [t.id, t]));
+    const merged = rendererTasks.map((rt) => {
+      const dt = daemonById.get(rt.id);
+      if (!dt) return rt;
+      // 데몬 정본이 렌더러 캐시보다 최신이면(렌더러가 daemonCommitted 미적용) status/
+      // updatedAt을 데몬 값으로 덮되 렌더러 전용 증분(history·artifacts)은 보존.
+      if (taskUpdatedAt(dt) > taskUpdatedAt(rt)) {
+        const rtMeta = isRecord(rt.metadata) ? rt.metadata : {};
+        const dtMeta = isRecord(dt.metadata) ? dt.metadata : {};
+        return { ...rt, status: dt.status, metadata: { ...rtMeta, updatedAt: dtMeta.updatedAt } };
+      }
+      return rt;
+    });
+    const seen = new Set(rendererTasks.map((t) => t.id));
+    merged.push(...daemonTasks.filter((t) => !seen.has(t.id)));
+    // 데몬 무필터 조회분(override·append)에 최종 status 필터를 적용한다 —
+    // 렌더러는 이미 status로 걸렀지만, 데몬 override로 상태가 바뀐 태스크(stale
+    // working→canonical completed)와 데몬-only 추가분은 여기서 걸러져야 한다.
+    const statusFilter = typeof params.status === 'string' ? params.status : undefined;
+    const finalTasks = statusFilter
+      ? merged.filter((t) => (isRecord(t.status) ? t.status.state : undefined) === statusFilter)
+      : merged;
+    return { ...(rendererRes as Record<string, unknown>), tasks: finalTasks };
+  });
+
+  // task.update — 데몬 정본 게이트 선행(envelope PR4 C12 대칭 경로).
+  // 데몬 ok → 렌더러에 daemonCommitted 마커 + committedTask로 verbatim 캐시 적용 +
+  // 메시지 배달/이벤트 방출(렌더러 UI 반응성 로직 보존). 데몬 reject → 렌더러
+  // 미접촉 반환(재판정 금지). 데몬 unavailable → 현행 렌더러-검증 경로 폴백.
+  router.register('a2a.task.update', async (params) => {
+    // 메시지 선검증(shared validateMessage — 렌더러와 동일 계약): 데몬 커밋 후
+    // 렌더러가 메시지를 거부해 캐시-데몬이 갈라지는 창을 닫는다.
+    if (typeof params.message === 'string') {
+      try { validateMessage(params.message); } catch (e) {
+        return { error: `a2a.task.update: ${e instanceof Error ? e.message : 'invalid'}` };
+      }
+    }
+    if (typeof params.status === 'string') {
+      const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.update', {
+        taskId: params.taskId,
+        workspaceId: params.workspaceId,
+        status: params.status,
+        // S-C2: 페인 신원 주장 여부를 데몬에 전달 — 페인 핀 태스크는 soft-defer로
+        // 렌더러 페인 게이트에 판정을 되돌린다(ptyId→pane 해석은 렌더러 소유).
+        ...(typeof params.senderPtyId === 'string' ? { senderPtyId: params.senderPtyId } : {}),
+        ...(params.evidence !== undefined ? { evidence: params.evidence } : {}),
+      });
+      if (gate.kind === 'reject') return { error: gate.error };
+      if (gate.kind === 'ok') {
+        return sendToRenderer(getWindow, 'a2a.task.update', {
+          ...params,
+          daemonCommitted: true,
+          committedTask: gate.result.task,
+        });
+      }
+      // unavailable → 폴백(아래 공통 경로)
+    }
+    return sendToRenderer(getWindow, 'a2a.task.update', params);
+  });
 
   // task.send: renderer validates, approval-gates execute:true, then stores +
   // delivers. Main only spawns the background worker after renderer reports that
   // the pre-create execute approval succeeded.
+  // envelope PR4: 렌더러 성공 후 데몬 A2aTaskService에 정본 미러-생성한다(주소
+  // 해석·승인 게이트 등 렌더러 UI 반응성 로직은 그대로). 워커 spawn **전에**
+  // await — 이후 전이(working/completed)가 데몬 게이트에서 태스크를 찾도록.
   router.register('a2a.task.send', async (params, ctx) => {
     const result = await sendToRenderer(getWindow, 'a2a.task.send', params);
+
+    // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
+    // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.
+    if (isRecord(result) && result.ok === true && isRecord(result.task) && !params.taskId) {
+      const t = result.task as { id?: unknown; metadata?: { title?: unknown; from?: unknown; to?: unknown }; history?: unknown };
+      if (typeof t.id === 'string' && isRecord(t.metadata)) {
+        const mirror = await daemonTaskRpc(getDaemonClient, 'a2a.task.create', {
+          id: t.id,
+          title: t.metadata.title,
+          from: t.metadata.from,
+          to: t.metadata.to,
+          ...(Array.isArray(t.history) ? { history: t.history } : {}),
+        });
+        // C(패널): 미러-생성 실패는 조용한 비내구 태스크가 된다(렌더러엔 있고 데몬엔
+        // 없음 → 재시작 미생존). 이후 전이는 'task not found'로 렌더러 폴백해 수렴하나,
+        // 침묵 손실은 관측 가능해야 한다(롤백/outbox는 §6.F 소관 — 여기선 경고만).
+        if (mirror.kind !== 'ok') {
+          console.warn(
+            `[a2a.rpc] daemon mirror-create failed for task ${t.id} — will not survive restart:`,
+            mirror.kind === 'reject' ? mirror.error : 'daemon unavailable',
+          );
+        }
+      }
+      // 내부 운반 필드 제거 — 파이프 호출자 응답 계약 불변.
+      delete (result as Record<string, unknown>).task;
+    }
 
     // execute → origin decision (LanLink PR-1, positive-allow):
     //   local  + execute + !taskId + approved → claudeWorker.execute()  ← only spawn
@@ -274,10 +456,33 @@ export function registerA2aRpc(
     return result;
   });
 
-  // task.cancel: cancel worker + update store
+  // task.cancel: cancel worker + 데몬 정본 커밋 + 렌더러 캐시/이벤트(envelope PR4).
   router.register('a2a.task.cancel', async (params) => {
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
     if (taskId) claudeWorker.cancel(taskId);
+    const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.cancel', {
+      taskId,
+      workspaceId: params.workspaceId,
+    });
+    if (gate.kind === 'reject') return { error: gate.error };
+    if (gate.kind === 'ok') {
+      // G(패널 델타): 데몬이 실제로 canceled로 전이했을 때만 렌더러 cancelled 이벤트를
+      // 태운다. 이미 종단(completed/failed)인 태스크의 멱등 no-op(데몬 G 수정)은 상태
+      // 변화가 없는데, 렌더러 cancel 핸들러는 daemonCommitted 시 무조건 state:'canceled'
+      // 이벤트를 하드코딩 방출한다(useRpcBridge :1951) → completed 태스크에 거짓 'canceled'
+      // 이벤트. no-op이면 렌더러 라운드트립 없이 ok만 반환(캐시 표류는 query 병합이 수렴).
+      const committed = isRecord(gate.result.task) ? gate.result.task : undefined;
+      const committedState =
+        committed && isRecord(committed.status) ? committed.status.state : undefined;
+      if (committedState === 'canceled') {
+        return sendToRenderer(getWindow, 'a2a.task.cancel', {
+          ...params,
+          daemonCommitted: true,
+          committedTask: gate.result.task,
+        });
+      }
+      return { ok: true, taskId };
+    }
     return sendToRenderer(getWindow, 'a2a.task.cancel', params);
   });
 }

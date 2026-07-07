@@ -302,10 +302,12 @@ let pluginHostLoader: PluginHostLoader | null = null;
 const mcpRegistrar = new McpRegistrar();
 const webviewCdpManager = new WebviewCdpManager(cdpPort);
 
-const claudeWorker = new ClaudeWorker(() => mainWindow);
-
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
+
+// envelope PR4 C12: 워커 전이는 데몬 A2aTaskService(정본 로그)에 먼저 커밋된다 —
+// getter 주입이라 앱-레디 이후 연결되는 daemonClient를 자연 추적한다.
+const claudeWorker = new ClaudeWorker(() => mainWindow, () => daemonClient);
 
 // Monotonic token guarding the async tray refresh. Bumped on every refresh
 // start and on window 'show', so a slow `daemon.listSessions` from an earlier
@@ -532,7 +534,7 @@ registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
-registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker);
+registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter, (clientName) => getPluginTrustStore().get(clientName));

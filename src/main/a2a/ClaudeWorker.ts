@@ -5,6 +5,12 @@ import type { CompletionEvidence } from '../../shared/types';
 
 type GetWindow = () => BrowserWindow | null;
 
+/** 데몬 커밋에 필요한 최소 RPC 표면(DaemonClient 만족 — 테스트 주입 용이). */
+export interface DaemonRpcLike {
+  rpc(method: string, params?: Record<string, unknown>): Promise<unknown>;
+}
+type GetDaemonClient = () => DaemonRpcLike | null;
+
 interface WorkerSession {
   proc: ChildProcess;
   taskId: string;
@@ -22,9 +28,13 @@ const MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10 MB
 export class ClaudeWorker {
   private readonly sessions = new Map<string, WorkerSession>();
   private readonly getWindow: GetWindow;
+  private readonly getDaemonClient: GetDaemonClient;
 
-  constructor(getWindow: GetWindow) {
+  constructor(getWindow: GetWindow, getDaemonClient?: GetDaemonClient) {
     this.getWindow = getWindow;
+    // envelope PR4 C12: 전이 정본은 데몬 로그 — 미주입(구 배선/테스트)이면 렌더러
+    // 직행 폴백만 남는다(현행 동작 보존).
+    this.getDaemonClient = getDaemonClient ?? (() => null);
   }
 
   get isFull(): boolean {
@@ -174,7 +184,17 @@ export class ClaudeWorker {
   }
 
   /**
-   * Update task status via the renderer store.
+   * 태스크 상태 전이 — **데몬 A2aTaskService 경유(envelope PR4 C12)**.
+   *
+   * 종전에는 sendToRenderer('a2a.task.update') 직행이었다 — a2aSlice가 캐시로
+   * 강등된 뒤 그 경로만 남으면 실행자 전이(working/failed/completed)가 데몬 로그에
+   * 영영 도달하지 않아 정본이 어디에도 없게 된다(패널 C12). 순서:
+   *   1) 데몬 커밋(evidence 동반, §6.M PR-D′ 배선 보존 + idempotencyKey 재시도 흡수).
+   *   2) 렌더러 캐시 갱신 — 데몬이 커밋했으면 daemonCommitted 마커 + committedTask로
+   *      verbatim 적용(C6), 아니면 현행 검증 경로 그대로(폴백). 어느 쪽이든 렌더러의
+   *      메시지 배달·단일 퍼널 이벤트 방출은 렌더러 핸들러가 수행한다(캐시 갱신 보장).
+   * 데몬 거부/미가용은 현행과 동일하게 삼키고 로그만 남긴다(렌더러 폴백이 같은
+   * 전이 그래프로 재판정 — 동형 게이트라 조용한 성공 위장이 없다).
    */
   private async updateTaskStatus(
     taskId: string,
@@ -183,6 +203,28 @@ export class ClaudeWorker {
     message?: string,
     evidence?: CompletionEvidence,
   ): Promise<void> {
+    let committedTask: unknown;
+    const dc = this.getDaemonClient();
+    if (dc) {
+      try {
+        const res = await dc.rpc('a2a.task.update', {
+          taskId,
+          workspaceId,
+          status,
+          ...(evidence ? { evidence } : {}),
+          // §4 멱등: 태스크당 상태 전이는 1회 — 재시도가 로그를 이중 커밋하지 않게.
+          idempotencyKey: `claude-worker:${taskId}:${status}`,
+        });
+        if (res && typeof res === 'object' && (res as { ok?: unknown }).ok === true) {
+          committedTask = (res as { task?: unknown }).task;
+        } else {
+          const errMsg = res && typeof res === 'object' ? (res as { error?: unknown }).error : undefined;
+          console.warn(`[ClaudeWorker] daemon transition not committed for ${taskId}:`, errMsg ?? res);
+        }
+      } catch (err) {
+        console.warn(`[ClaudeWorker] daemon transition unavailable for ${taskId}:`, err);
+      }
+    }
     try {
       await sendToRenderer(this.getWindow, 'a2a.task.update', {
         taskId,
@@ -190,6 +232,9 @@ export class ClaudeWorker {
         status,
         ...(message ? { message } : {}),
         ...(evidence ? { evidence } : {}),
+        ...(committedTask && typeof committedTask === 'object'
+          ? { daemonCommitted: true, committedTask }
+          : {}),
       });
     } catch (err) {
       console.error(`[ClaudeWorker] Failed to update task ${taskId}:`, err);

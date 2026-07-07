@@ -20,6 +20,10 @@ import { runMigration, evaluateWatermark, performReseed, stampWatermark } from '
 import { PrincipalService, PrincipalStateWriter } from './principals';
 import { isPrincipalUpsertInput } from '../shared/principals';
 import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
+// envelope PR4 (§5 D11): A2A 태스크 정본을 렌더러 인메모리에서 데몬 이벤트 로그로.
+// (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
+import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
+import { isTaskState, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
@@ -1044,6 +1048,8 @@ function registerRpcHandlers(
   channelService: ChannelService,
   principalService: PrincipalService,
   principalStateWriter: PrincipalStateWriter,
+  // envelope PR4: A2A 태스크 데몬 정본. 로그 개방 실패 시 null → 렌더러-only 폴백.
+  a2aTaskService: A2aTaskService | null,
 ): void {
   // daemon.createSession
   pipeServer.onRpc('daemon.createSession', async (params) => {
@@ -1913,12 +1919,106 @@ function registerRpcHandlers(
       typeof params['principalId'] === 'string' && params['principalId'].length > 0
         ? params['principalId']
         : undefined;
+    // B(패널·완료증거 §③ E10): whole-workspace purge(memberId·principalId 모두
+    // 부재)는 workspace 제거 teardown 신호다(workspaceSlice). 데몬이 이 사실을 아는
+    // 유일 지점이므로, 여기서 그 workspace로 향한 non-terminal A2A 태스크를 정본
+    // (로그)에서 force-fail한다 — 렌더러 캐시에서만 죽이면 재시작 시 restoreFromLog가
+    // 부활시켜 정본이 실제와 어긋난다. per-member purge(paneSlice)는 teardown이
+    // 아니므로 제외. 로그 커밋을 await해 응답 전 내구화(데몬 미가용 아님 — 동일 프로세스).
+    if (a2aTaskService && memberId === undefined && principalId === undefined) {
+      try {
+        const n = await a2aTaskService.failTasksForWorkspaceRemoved(
+          workspaceId,
+          'Receiver workspace was removed before this task completed.',
+        );
+        if (n > 0) log('info', `A2A: force-failed ${n} task(s) for removed workspace ${workspaceId}`);
+      } catch (err) {
+        log('warn', `A2A: failTasksForWorkspaceRemoved(${workspaceId}) failed:`, err);
+      }
+    }
     return channelService.purgeMembership({
       workspaceId,
       verifiedWorkspaceId,
       ...(memberId !== undefined ? { memberId } : {}),
       ...(principalId !== undefined ? { principalId } : {}),
     });
+  });
+
+  // ── A2A task registry (envelope PR4 §5 D11) ─────────────────────────
+  // 데몬 정본 A2A 태스크 서비스. main의 a2a.rpc.ts가 렌더러 delivery와 병행해 이
+  // 핸들러로 정본 상태(생성·전이·취소)를 커밋한다(dual-write 브리지 — D1). 정본은
+  // 데몬 로그, 렌더러 a2aSlice는 캐시로 강등. a2aTaskService가 null(로그 개방 실패)
+  // 이면 렌더러-only로 degrade한다 — A2A는 역사적으로 best-effort 비내구(a2aSlice
+  // 30분 GC)라 로그 부재가 파국이 아니다.
+  pipeServer.onRpc('a2a.task.create', async (rawParams) => {
+    if (!a2aTaskService) return { ok: false, error: 'a2a.task.create: task log unavailable' };
+    const p = rawParams as Record<string, unknown>;
+    const from = p.from as CreateTaskInput['from'] | undefined;
+    const to = p.to as CreateTaskInput['to'] | undefined;
+    if (!from?.workspaceId || !to?.workspaceId || typeof p.title !== 'string') {
+      return { ok: false, error: 'a2a.task.create: from{workspaceId}, to{workspaceId}, and title are required' };
+    }
+    return a2aTaskService.createTask({
+      ...(typeof p.id === 'string' ? { id: p.id } : {}),
+      title: p.title,
+      from,
+      to,
+      // 초기 히스토리(첫 메시지)는 생성 envelope에 실려 내구화된다. 이후 증분
+      // 히스토리(reply) 내구화는 §6.F 몫 — 전이·생성·취소가 이 PR의 로그 정본.
+      ...(Array.isArray(p.history) ? { history: p.history as Message[] } : {}),
+    });
+  });
+
+  pipeServer.onRpc('a2a.task.update', async (rawParams) => {
+    if (!a2aTaskService) return { ok: false, error: 'a2a.task.update: task log unavailable' };
+    const p = rawParams as Record<string, unknown>;
+    const taskId = typeof p.taskId === 'string' ? p.taskId : '';
+    const workspaceId = typeof p.workspaceId === 'string' ? p.workspaceId : '';
+    const status = typeof p.status === 'string' ? p.status : '';
+    if (!taskId || !workspaceId || !status) {
+      return { ok: false, error: 'a2a.task.update: taskId, workspaceId, and status are required' };
+    }
+    // 'canceled'는 a2a.task.cancel 전용(a2aSlice 현행 계약과 동형).
+    if (status === 'canceled') return { ok: false, error: 'a2a.task.update: use a2a.task.cancel instead' };
+    if (!isTaskState(status)) return { ok: false, error: `a2a.task.update: invalid status "${status}"` };
+    return a2aTaskService.transition({
+      taskId,
+      to: status,
+      callerWorkspaceId: workspaceId,
+      // S-C2: 페인 신원 주장 여부 — 페인 핀 태스크면 서비스가 soft-defer해 main이
+      // 렌더러 페인 게이트(오늘의 판정 지점)로 폴백한다(ptyId→pane 해석은 렌더러 소유).
+      callerHasPaneIdentity: typeof p.senderPtyId === 'string' && p.senderPtyId.trim() !== '',
+      // evidence는 서비스가 normalizeCompletionEvidenceWire로 재검증(sanitize) 후
+      // verbatim 저장한다 — 완료증거 게이트·거부는 Q1-4b/PR-B 소관(수용만).
+      ...(p.evidence !== undefined ? { evidence: p.evidence } : {}),
+      ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
+    });
+  });
+
+  pipeServer.onRpc('a2a.task.cancel', async (rawParams) => {
+    if (!a2aTaskService) return { ok: false, error: 'a2a.task.cancel: task log unavailable' };
+    const p = rawParams as Record<string, unknown>;
+    const taskId = typeof p.taskId === 'string' ? p.taskId : '';
+    const workspaceId = typeof p.workspaceId === 'string' ? p.workspaceId : '';
+    if (!taskId || !workspaceId) return { ok: false, error: 'a2a.task.cancel: taskId and workspaceId are required' };
+    return a2aTaskService.cancelTask({
+      taskId,
+      callerWorkspaceId: workspaceId,
+      ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
+    });
+  });
+
+  pipeServer.onRpc('a2a.task.query', async (rawParams) => {
+    if (!a2aTaskService) return { ok: false, error: 'a2a.task.query: task log unavailable' };
+    const p = rawParams as Record<string, unknown>;
+    const workspaceId = typeof p.workspaceId === 'string' ? p.workspaceId : '';
+    if (!workspaceId) return { ok: false, error: 'a2a.task.query: workspaceId is required' };
+    const tasks = a2aTaskService.queryTasks(workspaceId, {
+      ...(typeof p.status === 'string' && isTaskState(p.status) ? { status: p.status } : {}),
+      ...(p.role === 'user' || p.role === 'agent' ? { role: p.role } : {}),
+      ...(typeof p.updatedSince === 'string' && p.updatedSince ? { updatedSince: p.updatedSince } : {}),
+    });
+    return { ok: true, workspaceId, tasks };
   });
 
   // ── Principal registry (R2) ─────────────────────────────────────────
@@ -2929,6 +3029,40 @@ async function main(): Promise<void> {
     },
   });
 
+  // ── A2A 태스크 데몬 정본 (envelope PR4 §5 D11 — 공유 로그) ──────────────
+  // 채널과 **단일 AppendOnlyLog 인스턴스를 공유**한다(§2.1 단일 논리 스트림 —
+  // lamport는 데몬 전역 단일 시계. 같은 events/에 인스턴스를 둘 열면 hwm이
+  // 갈라져 lamport가 중복 발급된다). machineId도 게이트 산출물 재사용. 양쪽
+  // replay는 각자 domain 필터로 자기 레코드만 소비한다(ChannelService :2560,
+  // A2aTaskService.restoreFromLog). 부트 게이트가 비활성(레거시 fail-open)이면
+  // A2A도 렌더러-only degrade — a2aSlice 30분 GC의 역사적 best-effort와 동형.
+  let a2aTaskService: A2aTaskService | null = null;
+  if (channelEventLogDeps) {
+    try {
+      const svc = new A2aTaskService({
+        log: channelEventLogDeps.log,
+        origin: { machineId: channelEventLogDeps.machineId, daemonEpoch: CHANNELS_EPOCH },
+      });
+      svc.restoreFromLog(); // 크로스-재시작: 태스크 projection 복원(비내구→내구 전환의 핵심 가치)
+      a2aTaskService = svc;
+      // A(패널): projection GC 주기 배선 — 렌더러 a2aSlice(useRpcBridge 5분 타이머)와
+      // 동형. 이게 없으면 종단 태스크가 projection Map에 영구 적재된다(부트 GC는
+      // restoreFromLog가 1회 수행하나 런타임 누적은 주기 GC 몫). unref로 이벤트
+      // 루프를 붙잡지 않는다. 로그 상주분 절단은 §9 컴팩션 소관(별도).
+      const a2aGcInterval = setInterval(() => {
+        svc.gcTerminalTasks();
+      }, 5 * 60 * 1000);
+      a2aGcInterval.unref();
+      log('info', `A2A task service active (shared log, tasks=${svc.taskCount})`);
+    } catch (err) {
+      // 서비스 복원 실패는 파국이 아니다 — A2A는 역사적으로 best-effort 비내구.
+      // 렌더러-only로 degrade한다(a2aTaskService=null → 핸들러가 폴백 응답).
+      log('warn', 'A2A task service unavailable — degrading to renderer-only A2A:', err);
+    }
+  } else {
+    log('warn', 'A2A task service skipped — event log inactive this boot (legacy path)');
+  }
+
   // Channels v2 Step 3a — the wake worker (see channelWakeWorker.ts for the
   // full strategy stack + safety rules). Adapters keep it decoupled: session
   // views come from the manager's live list, the workspace binding is the
@@ -3150,6 +3284,7 @@ async function main(): Promise<void> {
     channelService,
     principalService,
     principalStateWriter,
+    a2aTaskService,
   );
 
   // 6. Wire events

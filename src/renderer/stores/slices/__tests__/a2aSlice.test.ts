@@ -461,3 +461,78 @@ describe('a2aSlice — pendingExecuteApproval', () => {
     expect(store.getState().a2aAutoApproveExecute).toBe(true);
   });
 });
+
+// ── envelope PR4(§6.M C6): 데몬 커밋의 캐시 verbatim 적용 ────────────────
+// 계약: applyDaemonTaskUpdate는 authz·validateTransition·evidence 어느 것도
+// 재실행하지 않는다 — 캐시가 재검증하면 데몬 force-fail 커밋(그래프 밖 전이)을
+// 거부해 split-brain이 난다. 기존 updateTaskStatus(검증 writer)는 데몬 미가용
+// 폴백으로 병존한다(위 스위트들이 그 시멘틱을 계속 고정).
+describe('a2aSlice — applyDaemonTaskUpdate (캐시 verbatim, C6)', () => {
+  function makeTask(id: string, state: string, updatedAt: string) {
+    return {
+      kind: 'task' as const,
+      id,
+      status: { state: state as import('../../../../shared/types').TaskState, timestamp: updatedAt },
+      history: [],
+      artifacts: [],
+      metadata: {
+        title: 'T',
+        from: { workspaceId: 'ws-sender', name: 'S' },
+        to: { workspaceId: 'ws-receiver', name: 'R' },
+        createdAt: updatedAt,
+        updatedAt,
+      },
+    };
+  }
+
+  it('그래프 밖 전이(submitted→failed, force-fail류)도 재검증 없이 수용한다', () => {
+    const store = createTestStore();
+    const id = store.getState().createA2aTask({
+      title: 'Test',
+      from: { workspaceId: 'ws-sender', name: 'Sender' },
+      to: { workspaceId: 'ws-receiver', name: 'Receiver' },
+      history: [makeMessage('hello')],
+      artifacts: [],
+    });
+    // 대조: 검증 writer는 이 전이를 거부한다(VALID_TRANSITIONS: submitted→failed 금지).
+    const rejected = store.getState().updateTaskStatus(id, 'failed', 'ws-receiver');
+    expect(rejected.ok).toBe(false);
+    // verbatim 적용 경로는 데몬 커밋을 그대로 수용한다.
+    store.getState().applyDaemonTaskUpdate(makeTask(id, 'failed', '2026-07-07T01:00:00.000Z'));
+    expect(store.getState().getTask(id)?.status.state).toBe('failed');
+    expect(store.getState().getTask(id)?.metadata.updatedAt).toBe('2026-07-07T01:00:00.000Z');
+  });
+
+  it('기존 태스크엔 status·updatedAt만 반영하고 렌더러 보유 히스토리를 보존한다', () => {
+    const store = createTestStore();
+    const id = store.getState().createA2aTask({
+      title: 'Test',
+      from: { workspaceId: 'ws-sender', name: 'Sender' },
+      to: { workspaceId: 'ws-receiver', name: 'Receiver' },
+      history: [makeMessage('hello')],
+      artifacts: [],
+    });
+    store.getState().addTaskMessage(id, makeMessage('increment'));
+    const committed = makeTask(id, 'working', '2026-07-07T02:00:00.000Z');
+    committed.status = {
+      ...committed.status,
+      evidence: { summary: 'ev', items: [] },
+    } as (typeof committed)['status'];
+    store.getState().applyDaemonTaskUpdate(committed);
+    const task = store.getState().getTask(id);
+    expect(task?.status.state).toBe('working');
+    // 데몬 커밋 evidence가 verbatim 실린다.
+    expect(task?.status.evidence?.summary).toBe('ev');
+    // 렌더러가 보유한 증분 히스토리(2건)는 데몬 스냅샷(0건)으로 덮이지 않는다.
+    expect(task?.history).toHaveLength(2);
+  });
+
+  it('캐시 미스(데몬 재시작 생존 태스크)는 스냅샷을 통째로 upsert한다', () => {
+    const store = createTestStore();
+    store.getState().applyDaemonTaskUpdate(makeTask('task-survivor', 'completed', '2026-07-07T03:00:00.000Z'));
+    const task = store.getState().getTask('task-survivor');
+    expect(task).toBeDefined();
+    expect(task?.status.state).toBe('completed');
+    expect(task?.metadata.to.workspaceId).toBe('ws-receiver');
+  });
+});
