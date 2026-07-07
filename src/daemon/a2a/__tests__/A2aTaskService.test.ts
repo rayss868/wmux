@@ -4,9 +4,11 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
-import { A2aTaskService } from '../A2aTaskService';
+import { A2aTaskService, type TransitionInput } from '../A2aTaskService';
 import type { A2aTaskTransitionPayload } from '../../../shared/a2aEventlog';
 import type { CompletionEvidence } from '../../../shared/types';
+import type { EventEnvelope } from '../../../shared/eventlog';
+import { panePrincipalId } from '../../../shared/principals';
 
 let dir: string;
 const syncOk = (): void => {};
@@ -47,6 +49,14 @@ function transitionRecords(log: AppendOnlyLog, taskId: string): A2aTaskTransitio
     .filter((r) => r.domain === 'a2a')
     .map((r) => r.payload as { kind?: string })
     .filter((p): p is A2aTaskTransitionPayload => p.kind === 'task.transition' && (p as A2aTaskTransitionPayload).taskId === taskId);
+}
+
+/** domain:'a2a' envelope(authContext 포함)을 payload.kind로 찾는다(§7 어서트용). */
+function a2aEnvelope(log: AppendOnlyLog, kind: string): EventEnvelope | undefined {
+  return log
+    .readAllRecords()
+    .filter((r) => r.domain === 'a2a')
+    .find((r) => (r.payload as { kind?: string }).kind === kind);
 }
 
 // ── T-A2A 전이 게이트: VALID_TRANSITIONS 데몬측 강제 ────────────────────
@@ -175,6 +185,93 @@ describe('T-A2A 로그 도달 + evidence 수용', () => {
       callerWorkspaceId: 'ws-receiver',
     });
     expect(headless.ok).toBe(true);
+  });
+});
+
+// ── T-A2A authContext 서버 유도(§7 PR5) ────────────────────────────────
+
+describe('T-A2A authContext 서버 유도(§7)', () => {
+  it('pane-핀 task 전이 → principalId = panePrincipalId(to.ws, to.paneId), trustTier=semi-trusted', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-pin',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R', paneId: 'pane-7' },
+    });
+    const r = await svc.transition({ taskId: 'task-pin', to: 'working', callerWorkspaceId: 'ws-receiver' });
+    expect(r.ok).toBe(true);
+    const env = a2aEnvelope(log, 'task.transition');
+    expect(env?.authContext.principalId).toBe(panePrincipalId('ws-receiver', 'pane-7'));
+    expect(env?.authContext.verifiedWorkspaceId).toBe('ws-receiver'); // 서버핀 authz 앵커
+    expect(env?.authContext.trustTier).toBe('semi-trusted');
+  });
+
+  it('ws-level task(pane 미핀) 전이 → principalId = verifiedWorkspaceId 폴백', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc); // to={ws-receiver}(paneId 없음) — working 전이가 append됨
+    const env = a2aEnvelope(log, 'task.transition');
+    expect(env?.authContext.principalId).toBe('ws-receiver'); // ws 폴백
+    expect(env?.authContext.verifiedWorkspaceId).toBe('ws-receiver');
+  });
+
+  it('발신자가 principalId/trustTier를 주장해도 무시 — 서버 유도값 우선', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-spoof',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R', paneId: 'pane-9' },
+    });
+    // PR5에서 TransitionInput의 principalId/trustTier 오버라이드 필드는 제거됐다 —
+    // 런타임에 임의 필드를 얹어도(위조 시뮬레이션) 서비스는 서버 유도값만 스탬프한다.
+    const spoofed = {
+      taskId: 'task-spoof',
+      to: 'working',
+      callerWorkspaceId: 'ws-receiver',
+      principalId: 'pane:evil/spoof',
+      trustTier: 'trusted',
+    } as unknown as TransitionInput;
+    const r = await svc.transition(spoofed);
+    expect(r.ok).toBe(true);
+    const env = a2aEnvelope(log, 'task.transition');
+    expect(env?.authContext.principalId).toBe(panePrincipalId('ws-receiver', 'pane-9')); // 'pane:evil/spoof' 아님
+    expect(env?.authContext.trustTier).toBe('semi-trusted'); // 'trusted' 아님
+  });
+
+  it('cancel(발신자) → principalId = 발신자(caller) 측 pane 좌표(수신 pane 아님)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-c',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S', paneId: 'pane-s' },
+      to: { workspaceId: 'ws-receiver', name: 'R', paneId: 'pane-r' },
+    });
+    const cancel = await svc.cancelTask({ taskId: 'task-c', callerWorkspaceId: 'ws-sender' });
+    expect(cancel.ok).toBe(true);
+    const env = a2aEnvelope(log, 'task.cancel');
+    // 취소 행위자 = 발신자 → from 측 pane 좌표(derivePrincipalId가 caller 측 선택).
+    expect(env?.authContext.principalId).toBe(panePrincipalId('ws-sender', 'pane-s'));
+    expect(env?.authContext.verifiedWorkspaceId).toBe('ws-sender');
+  });
+
+  it('create → principalId = 발신자(from) pane 좌표(create 행위자=sender)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-cr',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S', paneId: 'pane-s' },
+      to: { workspaceId: 'ws-receiver', name: 'R', paneId: 'pane-r' },
+    });
+    const env = a2aEnvelope(log, 'task.create');
+    expect(env?.authContext.principalId).toBe(panePrincipalId('ws-sender', 'pane-s'));
+    expect(env?.authContext.verifiedWorkspaceId).toBe('ws-sender');
+    expect(env?.authContext.trustTier).toBe('semi-trusted');
   });
 });
 

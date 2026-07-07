@@ -15,7 +15,7 @@ import { coerceLanLinkPatch } from '../shared/lanlink';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
 import { SnapshotStore, SNAPSHOT_DIRNAME } from './eventlog/SnapshotStore';
-import { manifestFileExists } from './eventlog/EventLogManifest';
+import { manifestFileExists, pingFormatVersionField } from './eventlog/EventLogManifest';
 import { runMigration, evaluateWatermark, performReseed, stampWatermark } from './eventlog/migrateToEventLog';
 import { PrincipalService, PrincipalStateWriter } from './principals';
 import { isPrincipalUpsertInput } from '../shared/principals';
@@ -1539,6 +1539,12 @@ function registerRpcHandlers(
     // the launcher's staleness gate compares them against the running app.
     // A pre-B′ daemon omits both — that absence is itself the gate's
     // "positively old" signal (see SPAWNED_BY_VERSION sentinel note).
+    // `eventLogFormatVersion` is additive (§6.4a): present only when the event
+    // log is durable-active (value = active manifest.formatVersion); absent when
+    // the daemon runs the legacy channels.json commit path (migration incomplete
+    // /fail-open). Its absence = pre-envelope legacy generation — the B′ gate
+    // treats an unknown formatVersion as fail-closed (B′ verdict itself is out of
+    // PR5 scope; exposing the value is PR5's part).
     return {
       status: 'ok',
       pid: process.pid,
@@ -1548,6 +1554,7 @@ function registerRpcHandlers(
       bootTrace: { jsStartEpochMs: DAEMON_BOOT.jsStartEpochMs, marks: DAEMON_BOOT.marks },
       spawnedByVersion: SPAWNED_BY_VERSION,
       channelsEpoch: CHANNELS_EPOCH,
+      ...pingFormatVersionField(activeEventLogFormatVersion),
     };
   });
 
@@ -2600,6 +2607,12 @@ let channelWakeWorkerRef: ChannelWakeWorker | null = null;
 // 이벤트로그(PR3) — projection 스냅샷 스토어. shutdown 경로가 pending 스냅샷을
 // durable로 flush(dispose)할 수 있도록 모듈 레벨 핸들 유지(§6.4b).
 let channelSnapshotStoreRef: SnapshotStore | null = null;
+// §6.4a: 활성 이벤트로그 formatVersion. manifest durable 활성(로그 모드) 시에만
+// main()이 세팅 — 레거시 폴백/마이그레이션 미완(channelEventLogDeps null 경로)이면
+// undefined로 남아 daemon.ping이 필드를 뺀다(부재 = pre-envelope 데몬 = 레거시
+// 세대). ping 핸들러(registerRpcHandlers 클로저)가 이 모듈 변수를 캡처해 읽는다 —
+// registerRpcHandlers 호출(main 말미)은 마이그레이션 블록보다 뒤라 값이 선행 세팅된다.
+let activeEventLogFormatVersion: number | undefined = undefined;
 
 // === State builder ===
 
@@ -2950,6 +2963,9 @@ async function main(): Promise<void> {
       reseedRefs: manifest.reseedRefs,
       machineId: migration.machineId,
     };
+    // §6.4a: 활성 formatVersion을 노출값으로 확정(로그 모드 활성 지점). fail-open
+    // 경로(catch)는 이 줄에 도달하지 않으므로 undefined로 남아 ping이 필드를 뺀다.
+    activeEventLogFormatVersion = manifest.formatVersion;
     log('info', `event log active (detection=${migration.detection}, lamport hwm=${channelEventLog.lamportHwm}, seg=${manifest.activeSegment})`);
   } catch (err) {
     if (logCanonical) {

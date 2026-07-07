@@ -15,8 +15,11 @@
  *     원본 결과 반환(동일 키 재시도 → 로그 1건).
  *   - 30분 GC 시멘틱은 projection 레벨 유지(a2aSlice 현행 준수, 로그 절단 아님).
  *
- * authContext 스탬핑의 정본화(서버핀 principalId/trustTier)는 envelope PR5 소관 —
- * 여기서는 호출자가 넘긴 verifiedWorkspaceId를 담고 나머지는 보수적 기본값을 쓴다.
+ * authContext 스탬핑(§7 PR5): verifiedWorkspaceId는 서버핀 authz 앵커(호출자 제공),
+ * principalId는 저장된 task 좌표에서 **서버 유도**한 display/routing 스탬프(위조 불가 —
+ * 발신자 주장값은 신뢰하지 않는다, §7:356), trustTier는 'semi-trusted' 고정(§7 표:
+ * A2A execute = 우리가 spawn한 ClaudeWorker). principalId/trustTier는 authz가 아니다 —
+ * 권한 앵커는 verifiedWorkspaceId뿐이다(§7:358).
  */
 
 import { makeEnvelope } from '../../shared/eventlog';
@@ -24,8 +27,8 @@ import type {
   AuthContext,
   EventEnvelope,
   EventEnvelopeDraft,
-  TrustTier,
 } from '../../shared/eventlog';
+import { panePrincipalId } from '../../shared/principals';
 import type {
   Artifact,
   CompletionEvidence,
@@ -100,17 +103,12 @@ export interface TransitionInput {
   evidence?: unknown;
   /** §4 멱등키(clientMsgId류). 재시도 흡수. */
   idempotencyKey?: string;
-  /** authContext 보강(PR5 전 임시): principalId/trustTier 오버라이드. */
-  principalId?: string;
-  trustTier?: TrustTier;
 }
 
 export interface CancelTaskInput {
   taskId: string;
   callerWorkspaceId: string;
   idempotencyKey?: string;
-  principalId?: string;
-  trustTier?: TrustTier;
 }
 
 export type OpErr = { ok: false; error: string };
@@ -255,8 +253,9 @@ export class A2aTaskService {
         metadata,
       };
       const payload: A2aTaskCreatePayload = { kind: 'task.create', task };
+      // create의 행위자 = 발신자(from) — principalId를 from pane 좌표에서 서버 유도.
       const committed = await this.log.append(
-        this.envelope(payload, input.from.workspaceId),
+        this.envelope(payload, input.from.workspaceId, this.derivePrincipalId(task, input.from.workspaceId)),
       );
       if (!committed) {
         return { ok: false, error: 'a2a.task.create: daemon log append failed (uncommitted)' };
@@ -334,9 +333,11 @@ export class A2aTaskService {
         ...(evidence ? { evidence } : {}),
         ...(verifiedItemCount !== undefined ? { verifiedItemCount } : {}),
       };
+      // transition의 행위자 = 수신자(authz가 callerWorkspaceId===to.workspaceId 강제) —
+      // principalId를 저장된 to pane 좌표에서 서버 유도(위조 불가).
       const authWs = input.callerWorkspaceId;
       const committed = await this.log.append(
-        this.envelope(payload, authWs, input.idempotencyKey, input.principalId, input.trustTier),
+        this.envelope(payload, authWs, this.derivePrincipalId(task, authWs), input.idempotencyKey),
       );
       if (!committed) {
         return { ok: false, error: 'a2a.task.update: daemon log append failed (uncommitted)' };
@@ -384,8 +385,10 @@ export class A2aTaskService {
         taskId: input.taskId,
         timestamp: this.isoNow(),
       };
+      // cancel의 행위자 = sender 또는 receiver — principalId를 caller 측 pane 좌표에서
+      // 서버 유도(derivePrincipalId가 callerWorkspaceId로 to/from 중 caller 측을 선택).
       const committed = await this.log.append(
-        this.envelope(payload, input.callerWorkspaceId, input.idempotencyKey, input.principalId, input.trustTier),
+        this.envelope(payload, input.callerWorkspaceId, this.derivePrincipalId(task, input.callerWorkspaceId), input.idempotencyKey),
       );
       if (!committed) {
         return { ok: false, error: 'a2a.task.cancel: daemon log append failed (uncommitted)' };
@@ -435,7 +438,11 @@ export class A2aTaskService {
           // 미적용). PR4는 evidence 수용만이므로 게이트 없이 그대로 저장된다.
           evidence: { summary: reason, items: [] },
         };
-        const committed = await this.log.append(this.envelope(payload, workspaceId));
+        // 데몬 강제-실패(teardown): 제거되는 수신 workspace를 authz 앵커로, principalId는
+        // 수신 pane 좌표에서 서버 유도(cur는 위 가드로 non-null).
+        const committed = await this.log.append(
+          this.envelope(payload, workspaceId, this.derivePrincipalId(cur, workspaceId)),
+        );
         if (!committed) return false;
         this.applyPayload(payload);
         return true;
@@ -523,33 +530,52 @@ export class A2aTaskService {
   private envelope(
     payload: unknown,
     verifiedWorkspaceId: string,
+    principalId: string,
     idempotencyKey?: string,
-    principalId?: string,
-    trustTier?: TrustTier,
   ): EventEnvelopeDraft {
     return makeEnvelope({
       domain: 'a2a',
       payload,
       origin: this.origin,
-      authContext: this.buildAuthContext(verifiedWorkspaceId, principalId, trustTier),
+      authContext: this.buildAuthContext(verifiedWorkspaceId, principalId),
       ...(idempotencyKey ? { idempotencyKey } : {}),
     });
   }
 
   /**
-   * authContext 조립. verifiedWorkspaceId(서버핀 authz 앵커)는 호출자 제공값.
-   * principalId/trustTier의 정본 스탬핑은 PR5 소관 — 여기선 보수적 기본값
-   * (trustTier='semi-trusted': A2A execute는 우리가 spawn한 ClaudeWorker, §7 표).
+   * principalId 서버 유도(§7). 행위자(caller)의 pane 좌표에서 유도한다 — caller가
+   * 수신자면 to.paneId, 발신자면 from.paneId. 둘 다 task 생성 시 서버 저장값이라
+   * 상태를 갱신하는 caller가 위조할 수 없다(§7:356 — 발신자가 넘긴 principalId는
+   * strip 대상). pane 미핀(ws-level task·헤드리스 ClaudeWorker)이면 verifiedWorkspaceId
+   * 폴백(ChannelService.authContextFor의 principalId ?? verifiedWorkspaceId와 동형).
+   * principalId는 display/routing 전용이라 이 유도가 어긋나도 authz는 불변이다
+   * (권한 앵커 = verifiedWorkspaceId, §7:358).
+   */
+  private derivePrincipalId(task: Task, verifiedWorkspaceId: string): string {
+    const { to, from } = task.metadata;
+    if (to.workspaceId === verifiedWorkspaceId && to.paneId) {
+      return panePrincipalId(to.workspaceId, to.paneId);
+    }
+    if (from.workspaceId === verifiedWorkspaceId && from.paneId) {
+      return panePrincipalId(from.workspaceId, from.paneId);
+    }
+    return verifiedWorkspaceId;
+  }
+
+  /**
+   * authContext 조립(§7 PR5). verifiedWorkspaceId = 서버핀 authz 앵커(호출자 제공).
+   * principalId = derivePrincipalId가 서버 유도한 display/routing 스탬프. trustTier =
+   * 'semi-trusted' 고정(§7 표: A2A execute는 우리가 spawn한 ClaudeWorker = 준신뢰) —
+   * 발신자 주장이 아니라 서버 결정으로 단일화한다.
    */
   private buildAuthContext(
     verifiedWorkspaceId: string,
-    principalId?: string,
-    trustTier?: TrustTier,
+    principalId: string,
   ): AuthContext {
     return {
-      principalId: principalId ?? '',
+      principalId,
       verifiedWorkspaceId,
-      trustTier: trustTier ?? 'semi-trusted',
+      trustTier: 'semi-trusted',
     };
   }
 

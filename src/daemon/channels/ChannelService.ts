@@ -2469,9 +2469,10 @@ export class ChannelService {
         machineId: this.eventLog.machineId,
         daemonEpoch: CHANNELS_EPOCH, // D8: 순서 비관여 provenance 스탬프
       },
-      // §7 스탬핑의 완전한 형태(서버핀 하류 배선)는 PR5 소관 — PR3는 서비스 경계가
-      // 이미 보유한 서버-해석 verifiedWorkspaceId(모든 mutation의 authz 앵커)와
-      // 최선의 principal 좌표(display/routing 전용)를 스탬프한다.
+      // §7 스탬핑(PR5 완성): 서비스 경계가 보유한 서버-해석 verifiedWorkspaceId(모든
+      // mutation의 authz 앵커, a2a.channel.rpc.ts:180-183 서버핀 하류)와 서버 결정
+      // principal 좌표(display/routing 전용, authz 아님 — 발신자 위조 copy는 상류
+      // a2a.channel.rpc.ts:108-120에서 strip)를 스탬프한다.
       authContext: this.authContextFor(auth),
     });
     const ok = await this.eventLog.log.append(draft);
