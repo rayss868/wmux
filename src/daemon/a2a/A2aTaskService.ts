@@ -214,7 +214,12 @@ export class A2aTaskService {
             ...(typeof p.verifiedItemCount === 'number' ? { verifiedItemCount: p.verifiedItemCount } : {}),
           }
         : { ok: true, task };
-    this.idempotencyRecord(p.taskId, rec.idempotencyKey, result);
+    this.idempotencyRecord(
+      p.taskId,
+      rec.idempotencyKey,
+      p.kind === 'task.transition' ? 'transition' : 'cancel',
+      result,
+    );
   }
 
   /**
@@ -302,10 +307,6 @@ export class A2aTaskService {
    */
   transition(input: TransitionInput): Promise<TransitionOk | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
-      // §4 멱등: 앞서 커밋된 동일 키면 append 없이 원본 결과.
-      const cached = this.idempotencyHit(input.taskId, input.idempotencyKey);
-      if (cached) return cached as TransitionOk;
-
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.update: task not found: ${input.taskId}` };
 
@@ -326,6 +327,12 @@ export class A2aTaskService {
       if (input.callerHasPaneIdentity && !input.callerAddr && task.metadata.to.paneId) {
         return { ok: false, error: 'a2a.task.update: pane-authz deferred to renderer (pane-pinned task)' };
       }
+      // §4 멱등: 앞서 커밋된 동일 키면 append 없이 원본 결과. 위치는 authz·soft-defer
+      // **뒤**(리뷰 codex 델타: 히트가 authz를 앞지르면 키를 아는 비참여자가 커밋 스냅샷을
+      // 재생 조회 — authz 우회), validateTransition **앞**(종단 재시도가 invalid
+      // transition으로 변질되지 않게). 정당한 재시도는 동일 입력이라 authz를 항상 재통과.
+      const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'transition');
+      if (cached) return cached as TransitionOk;
       // VALID_TRANSITIONS 데몬측 강제(성공 종단='completed').
       if (!validateTransition(task.status.state, input.to)) {
         const from = task.status.state;
@@ -392,7 +399,7 @@ export class A2aTaskService {
         ...(verifiedItemCount !== undefined ? { verifiedItemCount } : {}),
         task, // 커밋된 projection 스냅샷 — 캐시 verbatim 적용의 원본(C6)
       };
-      this.idempotencyRecord(input.taskId, input.idempotencyKey, result);
+      this.idempotencyRecord(input.taskId, input.idempotencyKey, 'transition', result);
       return result;
     });
   }
@@ -402,9 +409,6 @@ export class A2aTaskService {
    */
   cancelTask(input: CancelTaskInput): Promise<CancelOk | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
-      const cached = this.idempotencyHit(input.taskId, input.idempotencyKey);
-      if (cached) return cached as CancelOk;
-
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.cancel: task not found: ${input.taskId}` };
 
@@ -413,6 +417,10 @@ export class A2aTaskService {
       if (!isSender && !isReceiver) {
         return { ok: false, error: `a2a.task.cancel: caller ${input.callerWorkspaceId} is not sender or receiver` };
       }
+      // §4 멱등: transition과 대칭 — 히트는 authz 뒤(비참여자 키 재생 조회 차단),
+      // op 네임스페이스 분리(transition 키로 cancel 결과를 재생하지 못하게 — codex 델타).
+      const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'cancel');
+      if (cached) return cached as CancelOk;
       // G(패널): 이미 종단이면 멱등 no-op 성공 — 취소의 목적(종단 도달)이 이미
       // 충족됐다. reject하면 종전 렌더러 passthrough 경로 대비 회귀다(호출자는
       // 취소를 눌렀는데 에러를 받는다). 로그 append 없이 현 상태 반환.
@@ -436,7 +444,7 @@ export class A2aTaskService {
       }
       this.applyPayload(payload);
       const result: CancelOk = { ok: true, task };
-      this.idempotencyRecord(input.taskId, input.idempotencyKey, result);
+      this.idempotencyRecord(input.taskId, input.idempotencyKey, 'cancel', result);
       return result;
     });
   }
@@ -598,17 +606,24 @@ export class A2aTaskService {
     };
   }
 
+  /**
+   * 멱등 키는 op 네임스페이스로 분리 저장한다(codex 델타): transition과 cancel이 같은
+   * (taskId, key) 평면을 공유하면 한 op의 키로 다른 op의 캐시 결과를 재생할 수 있다
+   * (예: cancel 키 재사용 transition이 CancelOk를 TransitionOk로 오반환).
+   */
   private idempotencyHit(
     taskId: string,
     key: string | undefined,
+    op: 'transition' | 'cancel',
   ): TransitionOk | CancelOk | undefined {
     if (!key) return undefined;
-    return this.idempotency.get(taskId)?.get(key);
+    return this.idempotency.get(taskId)?.get(`${op}:${key}`);
   }
 
   private idempotencyRecord(
     taskId: string,
     key: string | undefined,
+    op: 'transition' | 'cancel',
     result: TransitionOk | CancelOk,
   ): void {
     if (!key) return;
@@ -617,7 +632,7 @@ export class A2aTaskService {
       stream = new Map();
       this.idempotency.set(taskId, stream);
     }
-    stream.set(key, result);
+    stream.set(`${op}:${key}`, result);
     // LRU: Map은 삽입 순서를 보존 — cap 초과 시 가장 오래된 키부터 축출.
     while (stream.size > IDEMPOTENCY_CAP) {
       const oldest = stream.keys().next().value as string | undefined;

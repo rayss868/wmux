@@ -618,4 +618,75 @@ describe('PR-B 완료증거 게이트', () => {
     expect(r.ok && r.verifiedItemCount).toBe(1); // else-if 분기(비종단 카운트) 회귀 가드
     expect(svc.getTask('task-w')?.status.evidence?.summary).toBe('progress');
   });
+
+  it('순서 고정(리뷰 codex 델타): soft-defer가 게이트보다 먼저 — 실파이프 경로(callerHasPaneIdentity, callerAddr 미해석)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-sd',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R', paneId: 'pane-B' },
+    });
+    const working = await svc.transition({ taskId: 'task-sd', to: 'working', callerWorkspaceId: 'ws-receiver' });
+    expect(working.ok).toBe(true);
+    // 데몬 파이프 핸들러는 callerAddr를 절대 해석하지 않는다(senderPtyId → callerHasPaneIdentity만).
+    // evidence 없이 — 게이트가 soft-defer 앞으로 회귀하면 completion_evidence_missing이 나와
+    // 도그푸드(렌더러 폴백 pane-authz 기대)가 깨진다. 이 테스트가 그 순서를 유닛으로 고정.
+    const r = await svc.transition({
+      taskId: 'task-sd',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      callerHasPaneIdentity: true,
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('pane-authz deferred');
+    expect(!r.ok && r.error).not.toContain('completion_evidence');
+  });
+
+  it('멱등 히트는 authz 뒤(리뷰 codex 델타): 키를 아는 비참여자가 커밋 스냅샷을 재생 조회할 수 없다', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    const ok = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      idempotencyKey: 'kR',
+      evidence: { summary: 'done', items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }] },
+    });
+    expect(ok.ok).toBe(true);
+    // 제3 워크스페이스가 (taskId, key)를 알아도 캐시 재생 대신 authz 거부를 받는다.
+    const intruder = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-intruder',
+      idempotencyKey: 'kR',
+    });
+    expect(intruder.ok).toBe(false);
+    expect(!intruder.ok && intruder.error).toContain('is not the receiver');
+  });
+
+  it('멱등 op 네임스페이스(리뷰 codex 델타): cancel 키로 transition 결과를 재생할 수 없다', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-x',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R' },
+    });
+    const canceled = await svc.cancelTask({ taskId: 'task-x', callerWorkspaceId: 'ws-sender', idempotencyKey: 'kC' });
+    expect(canceled.ok).toBe(true);
+    // 같은 키의 transition은 CancelOk를 오반환하지 않고 정직하게 판정된다(canceled는 종단).
+    const r = await svc.transition({
+      taskId: 'task-x',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      idempotencyKey: 'kC',
+      evidence: { summary: 'x', items: [{ kind: 'inspection', status: 'unverified', summary: 'y' }] },
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('invalid transition');
+  });
 });
