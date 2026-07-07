@@ -19,7 +19,9 @@ describe('useRpcBridge — a2a.task.update 완료증거 배선 (소스-구조)',
   }
 
   it('import 로 normalizeCompletionEvidenceWire 를 끌어온다', () => {
-    expect(src).toMatch(/import \{ normalizeCompletionEvidenceWire \} from '\.\.\/\.\.\/shared\/completionEvidence'/);
+    // PR-C 가 같은 import 에 isVerifiedItem 을 추가하므로 named-import 목록에
+    // 관용적으로 매칭한다(정확 브레이스 매칭은 순서·동반 import 에 취약).
+    expect(src).toMatch(/import \{[^}]*\bnormalizeCompletionEvidenceWire\b[^}]*\} from '\.\.\/\.\.\/shared\/completionEvidence'/);
   });
 
   it('전이 전에 params.evidence 를 wire normalize 하고, null 이면 completion_evidence_malformed 로 전이 미적용', () => {
@@ -40,6 +42,30 @@ describe('useRpcBridge — a2a.task.update 완료증거 배선 (소스-구조)',
   it('정규화된 evidence 를 store.updateTaskStatus 로 전달한다', () => {
     const block = region("method === 'a2a\\.task\\.update'", "method === 'a2a\\.task\\.cancel'");
     expect(block).toMatch(/store\.updateTaskStatus\(taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence\)/);
+  });
+});
+
+/**
+ * §6.M P1 PR-C — emitA2aTaskEvent(단일 a2a.task 방출자)가 task.status.evidence 에서
+ * verifiedItemCount 를 파생해 publishA2aTask 로 전달하는 배선을 잠근다. useRpcBridge 는
+ * import 불가라 소스-구조 어서션으로 확인한다(위 배선 테스트와 동일 패턴).
+ */
+describe('useRpcBridge — emitA2aTaskEvent verifiedItemCount 파생 (§6.M PR-C, 소스-구조)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'useRpcBridge.ts'), 'utf-8');
+
+  it('isVerifiedItem 을 completionEvidence 에서 끌어온다', () => {
+    expect(src).toMatch(/import \{[^}]*\bisVerifiedItem\b[^}]*\} from '\.\.\/\.\.\/shared\/completionEvidence'/);
+  });
+
+  it('evidence 유무로 verifiedItemCount 를 파생해 publishA2aTask 로 전달한다(단일 퍼널)', () => {
+    const m = src.match(/function emitA2aTaskEvent\([\s\S]*?\n\}/);
+    expect(m).not.toBeNull();
+    const fn = m![0];
+    // evidence 있으면 filter(isVerifiedItem).length, 없으면 undefined(부재)로 파생.
+    expect(fn).toMatch(/task\.status\.evidence/);
+    expect(fn).toMatch(/\.filter\(isVerifiedItem\)\.length/);
+    // 파생 카운트를 publishA2aTask 마지막 인자로 전달(messagePreview 자리는 undefined).
+    expect(fn).toMatch(/publishA2aTask\([\s\S]*undefined,\s*verifiedItemCount\)/);
   });
 });
 

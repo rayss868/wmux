@@ -541,6 +541,55 @@ describe('events.rpc — a2a.task dual-party scoping', () => {
   });
 });
 
+// §6.M PR-C: the publish trust boundary must let a well-formed verifiedItemCount
+// grade cross while dropping forged/malformed values. Without this, the renderer
+// could emit the field but the server would silently strip it — the event poller
+// could never distinguish an unverified completion (count 0) from a verified one.
+describe('events.rpc — a2a.task verifiedItemCount allow-list (§6.M PR-C)', () => {
+  const FROM = 'ws-sender';
+  const TO = 'ws-receiver';
+  const base = { type: 'a2a.task', from: FROM, to: TO, taskId: 't1', state: 'completed', kind: 'updated' };
+
+  beforeEach(() => {
+    eventBus.reset();
+  });
+
+  it('a non-negative integer rides through onto the emit shape', () => {
+    expect(buildA2aTaskEmitInput({ ...base, verifiedItemCount: 3 })?.['verifiedItemCount']).toBe(3);
+  });
+
+  it('0 is a meaningful grade (unverified completion) and is NOT dropped', () => {
+    // 0 distinguishes an unverified completion from an absent field — it must survive.
+    expect(buildA2aTaskEmitInput({ ...base, verifiedItemCount: 0 })?.['verifiedItemCount']).toBe(0);
+  });
+
+  it('forged / malformed values are dropped (string, negative, float, NaN, object, bool, null)', () => {
+    for (const bad of ['2', -1, 1.5, Number.NaN, {}, true, null] as unknown[]) {
+      const emit = buildA2aTaskEmitInput({ ...base, verifiedItemCount: bad });
+      // The publish itself still succeeds (other fields well-formed) — only the
+      // bad grade is stripped, never coerced.
+      expect(emit).not.toBeNull();
+      expect(emit as Record<string, unknown>).not.toHaveProperty('verifiedItemCount');
+    }
+  });
+
+  it('absent verifiedItemCount → field omitted (created pointer carries no grade)', () => {
+    const emit = buildA2aTaskEmitInput({ type: 'a2a.task', from: FROM, to: TO, taskId: 't1', state: 'submitted', kind: 'created' });
+    expect(emit).not.toBeNull();
+    expect(emit as Record<string, unknown>).not.toHaveProperty('verifiedItemCount');
+  });
+
+  it('end-to-end: a valid count rides through to the polled event for both parties', async () => {
+    expect(publishA2aTask({ ...base, verifiedItemCount: 2 })).toBe(true);
+    for (const caller of [FROM, TO]) {
+      const events = await pollEvents(setupRouter(), { workspaceId: caller });
+      const a2a = events.filter((e) => e.type === 'a2a.task') as unknown as Array<Record<string, unknown>>;
+      expect(a2a).toHaveLength(1);
+      expect(a2a[0]['verifiedItemCount']).toBe(2);
+    }
+  });
+});
+
 describe('events.rpc — notifications.read opt-in gate', () => {
   beforeEach(() => {
     eventBus.reset();

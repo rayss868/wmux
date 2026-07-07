@@ -330,6 +330,11 @@ export interface A2aTaskEvent extends WmuxEventBase {
    * first — do NOT render it raw.
    */
   messagePreview?: string;
+  /**
+   * 완료증거 검증 아이템 수(§6.M). completed/failed 전이에만 실림, 0=unverified 완료.
+   * pointer-only 원칙 유지 — 값 자체가 등급이라 body가 아님.
+   */
+  verifiedItemCount?: number;
 }
 
 import type { ChannelMessage } from './channels';

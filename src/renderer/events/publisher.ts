@@ -69,6 +69,11 @@ export function publishWorkspaceMetadataChanged(
  * and allow-lists the shape server-side, so a renderer-supplied workspaceId
  * that disagrees with `from` can never broaden scope. Emitting `from` as the
  * base here keeps the two in agreement on the happy path.
+ *
+ * `verifiedItemCount` (§6.M PR-C): count of verified completion-evidence items,
+ * attached on completed/failed transitions only. `0` is a meaningful signal
+ * (unverified completion), so it is included when present — the guard is
+ * `!== undefined`, NOT truthiness (same pattern as messagePreview).
  */
 export function publishA2aTask(
   from: string,
@@ -77,6 +82,7 @@ export function publishA2aTask(
   state: TaskState,
   kind: 'created' | 'updated' | 'cancelled',
   messagePreview?: string,
+  verifiedItemCount?: number,
 ): void {
   publish({
     type: 'a2a.task',
@@ -90,5 +96,8 @@ export function publishA2aTask(
     // explicitly opts in. Omitted otherwise so the body never rides a bare
     // events.subscribe poll.
     ...(messagePreview !== undefined ? { messagePreview } : {}),
+    // Grade pointer, not body: 0 = unverified completion (distinct from absent
+    // on created/cancelled) so `!== undefined` includes an honest 0.
+    ...(verifiedItemCount !== undefined ? { verifiedItemCount } : {}),
   });
 }

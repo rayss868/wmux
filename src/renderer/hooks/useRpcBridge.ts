@@ -5,7 +5,7 @@ import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEvidence } from '../../shared/types';
-import { normalizeCompletionEvidenceWire } from '../../shared/completionEvidence';
+import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
@@ -363,7 +363,15 @@ function emitA2aTaskEvent(
   // from/to are validated non-empty at the publish trust boundary too, but
   // skip locally to avoid emitting a degenerate (third-party-blind) pointer.
   if (!from || !to || !taskId) return;
-  publishA2aTask(from, to, taskId, state ?? task.status.state, kind);
+  // verifiedItemCount(§6.M PR-C)는 task.status.evidence에서 파생한다 — 데몬 커밋
+  // 경로(committedTask)와 렌더러 폴백 경로 양쪽이 evidence를 여기 싣는 단일 정본이라
+  // 경로 무관 일관하다. evidence는 completed/failed 전이에만 실리므로 created/
+  // cancelled/working 스냅샷엔 자연히 undefined(부재) — 호출처별 분기가 불필요하다.
+  const evidence = task.status.evidence;
+  const verifiedItemCount = evidence
+    ? evidence.items.filter(isVerifiedItem).length
+    : undefined;
+  publishA2aTask(from, to, taskId, state ?? task.status.state, kind, undefined, verifiedItemCount);
 }
 
 // ---------------------------------------------------------------------------
