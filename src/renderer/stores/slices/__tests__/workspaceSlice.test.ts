@@ -148,7 +148,11 @@ describe('removeWorkspace — A8: fail tasks delegated to a closed workspace', (
       artifacts: [],
     });
     store.getState().updateTaskStatus(done, 'working', wsB.id);
-    store.getState().updateTaskStatus(done, 'completed', wsB.id);
+    // 완료증거 게이트(PR-B) 활성 후 completed는 구조화 증거 필수 — 최소 컴플라이언트 증거 첨부.
+    store.getState().updateTaskStatus(done, 'completed', wsB.id, undefined, undefined, {
+      summary: 'done',
+      items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }],
+    });
     const toA = store.getState().createA2aTask({
       title: 'toA',
       from: { workspaceId: wsB.id, name: 'B' },

@@ -73,7 +73,13 @@ describe('T-A2A VALID_TRANSITIONS 데몬 강제', () => {
     const log = newLog();
     const svc = newService(log);
     await seedWorkingTask(svc);
-    const r = await svc.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver' });
+    // 완료증거 게이트(PR-B) 활성 후 completed는 구조화 증거 필수 — 최소 컴플라이언트 증거 첨부.
+    const r = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      evidence: { summary: 'done', items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }] },
+    });
     expect(r.ok).toBe(true);
     expect(svc.getTask('task-1')?.status.state).toBe('completed');
   });
@@ -125,12 +131,12 @@ describe('T-A2A 로그 도달 + evidence 수용', () => {
     expect(svc.getTask('task-1')?.status.evidence?.summary).toBe('built and tested');
   });
 
-  it('evidence 없는 completed도 수용(게이트 아님) — Q1-4b가 아직 거부하지 않음', async () => {
+  it('비종단 전이(working→input-required)는 evidence 없이 통과 — 게이트는 종단 전이 전용', async () => {
     const log = newLog();
     const svc = newService(log);
-    await seedWorkingTask(svc);
-    const r = await svc.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver' });
-    expect(r.ok).toBe(true); // 완료증거 게이트는 여기 없다(수용만)
+    await seedWorkingTask(svc); // submitted→working 자체가 evidence 없이 성공(게이트 비대상)
+    const r = await svc.transition({ taskId: 'task-1', to: 'input-required', callerWorkspaceId: 'ws-receiver' });
+    expect(r.ok).toBe(true); // completed/failed가 아니면 게이트 미호출
     expect(r.ok && r.verifiedItemCount).toBeUndefined();
   });
 
@@ -266,7 +272,7 @@ describe('A(패널) projection GC', () => {
     const svc = newServiceAt(log, () => clock);
     await svc.createTask({ id: 'done-1', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-r', name: 'R' } });
     await svc.transition({ taskId: 'done-1', to: 'working', callerWorkspaceId: 'ws-r' });
-    await svc.transition({ taskId: 'done-1', to: 'completed', callerWorkspaceId: 'ws-r', evidence: { summary: 'ok', items: [] } });
+    await svc.transition({ taskId: 'done-1', to: 'completed', callerWorkspaceId: 'ws-r', evidence: { summary: 'ok', items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }] } });
     await svc.createTask({ id: 'live-1', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-r', name: 'R' } });
     await svc.transition({ taskId: 'live-1', to: 'working', callerWorkspaceId: 'ws-r' });
 
@@ -283,7 +289,7 @@ describe('A(패널) projection GC', () => {
     const svc1 = newServiceAt(log1, () => t0);
     await svc1.createTask({ id: 'old-done', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-r', name: 'R' } });
     await svc1.transition({ taskId: 'old-done', to: 'working', callerWorkspaceId: 'ws-r' });
-    await svc1.transition({ taskId: 'old-done', to: 'completed', callerWorkspaceId: 'ws-r', evidence: { summary: 'ok', items: [] } });
+    await svc1.transition({ taskId: 'old-done', to: 'completed', callerWorkspaceId: 'ws-r', evidence: { summary: 'ok', items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }] } });
     log1.close();
 
     // 재시작이 31분 뒤라면: 로그는 영구지만 부트 GC가 오래된 종단분을 즉시 정리.
@@ -352,7 +358,7 @@ describe('E(패널) 크로스-재시작 멱등 재시드', () => {
     const svc1 = newService(log1);
     await seedWorkingTask(svc1); // submitted→working (키 없음)
     // completed를 멱등키와 함께 커밋.
-    await svc1.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver', idempotencyKey: 'kc', evidence: { summary: 'ok', items: [] } });
+    await svc1.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver', idempotencyKey: 'kc', evidence: { summary: 'ok', items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }] } });
     log1.close();
 
     const log2 = newLog();
@@ -372,7 +378,7 @@ describe('G(패널) idempotent cancel', () => {
     const log = newLog();
     const svc = newService(log);
     await seedWorkingTask(svc);
-    await svc.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver', evidence: { summary: 'ok', items: [] } });
+    await svc.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver', evidence: { summary: 'ok', items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }] } });
     const recBefore = log.readAllRecords().length;
     const cancel = await svc.cancelTask({ taskId: 'task-1', callerWorkspaceId: 'ws-sender' });
     expect(cancel.ok).toBe(true); // reject 아님(회귀 방지)
@@ -394,5 +400,293 @@ describe('A 델타: 하드캡은 종단만 축출 — 활성 태스크는 정본
     svc.gcTerminalTasks(); // 종단 후보 0 → 하드캡이 활성을 지우지 않는다
     expect(svc.taskCount).toBe(502); // 정본 무결(활성 보존)
     log.close();
+  });
+});
+
+// ── §6.M PR-B: 완료증거 게이트 활성(게이트=구조, verified=등급) ──────────────
+
+describe('PR-B 완료증거 게이트', () => {
+  it('T-gate-missing ★수용기준: evidence 없이 completed → completion_evidence_missing 거부, 상태·로그 불변', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    const recBefore = log.readAllRecords().length;
+    const r = await svc.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver' });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('completion_evidence_missing');
+    // projection working 유지(전이 미적용).
+    expect(svc.getTask('task-1')?.status.state).toBe('working');
+    // completed 전이 레코드 append 없음(정본 무오염).
+    expect(transitionRecords(log, 'task-1').find((p) => p.to === 'completed')).toBeUndefined();
+    expect(log.readAllRecords().length).toBe(recBefore);
+  });
+
+  it('completed + well-formed(command/passed 포함) → ok + verifiedItemCount + status.evidence 저장', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    const r = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      evidence: {
+        summary: 'built + tested',
+        items: [
+          { kind: 'command', status: 'passed', summary: 'unit', command: 'npm test' },
+          { kind: 'inspection', status: 'unverified', summary: 'eyeballed' },
+        ],
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.verifiedItemCount).toBe(1); // command/passed 1건만 verified(등급)
+    expect(svc.getTask('task-1')?.status.evidence?.summary).toBe('built + tested');
+  });
+
+  it('completed + unverified-only 아이템 → ok + verifiedItemCount=0 (E9 등급 — 세탁 불가)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    const r = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      evidence: { summary: 'done', items: [{ kind: 'inspection', status: 'unverified', summary: 'self-reported' }] },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.verifiedItemCount).toBe(0); // 정직 표기: 완료됐으나 미검증
+  });
+
+  it('completed + 빈 items → completion_evidence_no_items 거부', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    const r = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      evidence: { summary: 'x', items: [] },
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('completion_evidence_no_items');
+    expect(svc.getTask('task-1')?.status.state).toBe('working');
+  });
+
+  it('completed + 공백 summary → completion_evidence_empty_summary 거부', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    const r = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      evidence: { summary: '   ', items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }] },
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('completion_evidence_empty_summary');
+  });
+
+  it('completed + shape는 맞지만 빈 command 아이템 → completion_evidence_invalid_item (게이트가 잡음)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    // command 아이템의 shape(kind/status/command:string)는 normalize를 통과하나
+    // command가 빈 문자열이라 well-formed가 아니다 → 게이트가 invalid_item으로 거부.
+    const r = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      evidence: { summary: 'x', items: [{ kind: 'command', status: 'passed', summary: 'ok', command: '' }] },
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('completion_evidence_invalid_item');
+  });
+
+  it('failed + evidence 없음 → failure_reason_missing 거부', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    const r = await svc.transition({ taskId: 'task-1', to: 'failed', callerWorkspaceId: 'ws-receiver' });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('failure_reason_missing');
+    expect(svc.getTask('task-1')?.status.state).toBe('working');
+  });
+
+  it('failed + 사유 summary만(items 없음) → ok (비대칭 E3)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    const r = await svc.transition({
+      taskId: 'task-1',
+      to: 'failed',
+      callerWorkspaceId: 'ws-receiver',
+      evidence: { summary: 'build broke', items: [] },
+    });
+    expect(r.ok).toBe(true);
+    expect(svc.getTask('task-1')?.status.state).toBe('failed');
+    expect(r.ok && r.verifiedItemCount).toBe(0);
+  });
+
+  it('failed + malformed 아이템(미지 kind) → completion_evidence_malformed (normalize 단계에서 사멸)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    // 미지 kind는 normalizeCompletionEvidenceWire가 먼저 거부한다(X8 형태 위생) —
+    // 게이트의 completion_evidence_invalid_item에 도달하기 전에 malformed로 사멸.
+    const r = await svc.transition({
+      taskId: 'task-1',
+      to: 'failed',
+      callerWorkspaceId: 'ws-receiver',
+      evidence: { summary: 'reason', items: [{ kind: 'bogus', status: 'passed', summary: 'x' }] },
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('completion_evidence_malformed');
+    expect(svc.getTask('task-1')?.status.state).toBe('working');
+  });
+
+  it('게이트 거부는 멱등 캐시에 기록되지 않는다 — 같은 키로 evidence 붙여 재시도 → 성공', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    // evidence 없이 completed(같은 키) → 게이트 거부(append 전이라 멱등 미기록).
+    const rejected = await svc.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver', idempotencyKey: 'kX' });
+    expect(rejected.ok).toBe(false);
+    expect(svc.getTask('task-1')?.status.state).toBe('working'); // 상태 불변
+    // 같은 키로 컴플라이언트 evidence 재시도 → 캐시 미스라 정상 판정 → 성공(로드맵 마이그레이션 경로).
+    const ok = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      idempotencyKey: 'kX',
+      evidence: { summary: 'done', items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }] },
+    });
+    expect(ok.ok).toBe(true);
+    expect(svc.getTask('task-1')?.status.state).toBe('completed');
+  });
+
+  it('teardown force-fail은 완료증거 게이트를 우회한다 — items:[] 합성 evidence로 submitted→failed 커밋', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({ id: 'sub', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-gone', name: 'G' } });
+    // submitted→failed는 그래프상 불가하고 게이트도 별도지만, force-fail은 둘 다 우회한다.
+    const n = await svc.failTasksForWorkspaceRemoved('ws-gone', 'workspace removed');
+    expect(n).toBe(1);
+    expect(svc.getTask('sub')?.status.state).toBe('failed');
+    const rec = transitionRecords(log, 'sub').find((p) => p.to === 'failed');
+    expect(rec?.forced).toBe('workspace_removed');
+    expect(rec?.evidence?.items).toHaveLength(0); // 게이트 미경유(합성 evidence 그대로)
+  });
+
+  it('순서 고정(리뷰 GLM): pane-authz 거부가 게이트보다 먼저 — sibling pane + evidence 부재는 pane 에러', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-p',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R', paneId: 'pane-B' },
+    });
+    const working = await svc.transition({ taskId: 'task-p', to: 'working', callerWorkspaceId: 'ws-receiver' });
+    expect(working.ok).toBe(true);
+    // 일부러 evidence 없이 — 게이트가 authz 앞으로 회귀하면 completion_evidence_missing이 먼저 나온다.
+    const r = await svc.transition({
+      taskId: 'task-p',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      callerAddr: { paneId: 'pane-A' },
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('caller pane is not the addressed receiver pane');
+    expect(!r.ok && r.error).not.toContain('completion_evidence');
+  });
+
+  it('비종단 전이 + evidence(리뷰 GLM): 게이트 비대상이나 수용 + verifiedItemCount 산출은 유지', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-w',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R' },
+    });
+    const r = await svc.transition({
+      taskId: 'task-w',
+      to: 'working',
+      callerWorkspaceId: 'ws-receiver',
+      evidence: { summary: 'progress', items: [{ kind: 'command', status: 'passed', summary: 'lint', command: 'npm run lint' }] },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.verifiedItemCount).toBe(1); // else-if 분기(비종단 카운트) 회귀 가드
+    expect(svc.getTask('task-w')?.status.evidence?.summary).toBe('progress');
+  });
+
+  it('순서 고정(리뷰 codex 델타): soft-defer가 게이트보다 먼저 — 실파이프 경로(callerHasPaneIdentity, callerAddr 미해석)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-sd',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R', paneId: 'pane-B' },
+    });
+    const working = await svc.transition({ taskId: 'task-sd', to: 'working', callerWorkspaceId: 'ws-receiver' });
+    expect(working.ok).toBe(true);
+    // 데몬 파이프 핸들러는 callerAddr를 절대 해석하지 않는다(senderPtyId → callerHasPaneIdentity만).
+    // evidence 없이 — 게이트가 soft-defer 앞으로 회귀하면 completion_evidence_missing이 나와
+    // 도그푸드(렌더러 폴백 pane-authz 기대)가 깨진다. 이 테스트가 그 순서를 유닛으로 고정.
+    const r = await svc.transition({
+      taskId: 'task-sd',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      callerHasPaneIdentity: true,
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('pane-authz deferred');
+    expect(!r.ok && r.error).not.toContain('completion_evidence');
+  });
+
+  it('멱등 히트는 authz 뒤(리뷰 codex 델타): 키를 아는 비참여자가 커밋 스냅샷을 재생 조회할 수 없다', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    const ok = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      idempotencyKey: 'kR',
+      evidence: { summary: 'done', items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }] },
+    });
+    expect(ok.ok).toBe(true);
+    // 제3 워크스페이스가 (taskId, key)를 알아도 캐시 재생 대신 authz 거부를 받는다.
+    const intruder = await svc.transition({
+      taskId: 'task-1',
+      to: 'completed',
+      callerWorkspaceId: 'ws-intruder',
+      idempotencyKey: 'kR',
+    });
+    expect(intruder.ok).toBe(false);
+    expect(!intruder.ok && intruder.error).toContain('is not the receiver');
+  });
+
+  it('멱등 op 네임스페이스(리뷰 codex 델타): cancel 키로 transition 결과를 재생할 수 없다', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-x',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R' },
+    });
+    const canceled = await svc.cancelTask({ taskId: 'task-x', callerWorkspaceId: 'ws-sender', idempotencyKey: 'kC' });
+    expect(canceled.ok).toBe(true);
+    // 같은 키의 transition은 CancelOk를 오반환하지 않고 정직하게 판정된다(canceled는 종단).
+    const r = await svc.transition({
+      taskId: 'task-x',
+      to: 'completed',
+      callerWorkspaceId: 'ws-receiver',
+      idempotencyKey: 'kC',
+      evidence: { summary: 'x', items: [{ kind: 'inspection', status: 'unverified', summary: 'y' }] },
+    });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toContain('invalid transition');
   });
 });

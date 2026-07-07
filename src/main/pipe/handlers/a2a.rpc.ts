@@ -383,6 +383,9 @@ export function registerA2aRpc(
         // 렌더러 페인 게이트에 판정을 되돌린다(ptyId→pane 해석은 렌더러 소유).
         ...(typeof params.senderPtyId === 'string' ? { senderPtyId: params.senderPtyId } : {}),
         ...(params.evidence !== undefined ? { evidence: params.evidence } : {}),
+        // §4 멱등(리뷰 codex): 파이프 호출자의 키를 데몬까지 전달한다 — 없으면 커밋 후
+        // 응답 유실 재시도가 캐시 미스 → invalid transition(completed->completed)으로 변질.
+        ...(typeof params.idempotencyKey === 'string' ? { idempotencyKey: params.idempotencyKey } : {}),
       });
       if (gate.kind === 'reject') return { error: gate.error };
       if (gate.kind === 'ok') {
@@ -463,6 +466,8 @@ export function registerA2aRpc(
     const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.cancel', {
       taskId,
       workspaceId: params.workspaceId,
+      // §4 멱등(리뷰 codex): update 경로와 대칭 — 파이프 호출자 키를 데몬까지 전달.
+      ...(typeof params.idempotencyKey === 'string' ? { idempotencyKey: params.idempotencyKey } : {}),
     });
     if (gate.kind === 'reject') return { error: gate.error };
     if (gate.kind === 'ok') {

@@ -7,9 +7,11 @@
  *     envelope로 **먼저 커밋(append→true)한 뒤 projection에 적용**한다. append가
  *     false(배치 롤백)면 projection은 건드리지 않는다 — 로그가 정본이므로.
  *   - `VALID_TRANSITIONS`(types.ts) 데몬측 강제(성공 종단='completed').
- *   - 완료증거(evidence)는 §6.M PR-D′ 스키마를 **수용만** 한다:
- *     normalizeCompletionEvidenceWire로 재검증(sanitize) 후 verbatim 저장.
- *     **게이트·거부(verified≥1)는 넣지 않는다** — Q1-4b/PR-B 소관.
+ *   - 완료증거(evidence): §6.M PR-B 게이트 **활성**. 종단 전이(completed/failed)는
+ *     구조화 증거를 강제한다(validateCompletionEvidence) — completed=summary+≥1
+ *     well-formed 아이템, failed=summary(사유). normalizeCompletionEvidenceWire로
+ *     먼저 재검증(sanitize)한 뒤 게이트가 판정한다. verified≥1은 게이트가 아니라
+ *     completed의 **등급**(E9)이다 — verifiedItemCount는 정직 산출·표기만 한다.
  *   - per-task 직렬화(뮤텍스)로 collect→append→apply 일관성.
  *   - clientMsgId류 멱등(§4): (taskId, idempotencyKey) LRU — 재시도는 append 없이
  *     원본 결과 반환(동일 키 재시도 → 로그 1건).
@@ -38,6 +40,7 @@ import { validateTransition, VALID_TRANSITIONS, TERMINAL_STATES } from '../../sh
 import {
   isVerifiedItem,
   normalizeCompletionEvidenceWire,
+  validateCompletionEvidence,
 } from '../../shared/completionEvidence';
 import type {
   A2aTaskCancelPayload,
@@ -50,6 +53,33 @@ const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
 const GC_MAX_TASKS = 500;
 /** §4: 멱등 LRU cap/stream — 채널 상수(CHANNEL_IDEMPOTENCY_CAP=1000)와 동형. */
 const IDEMPOTENCY_CAP = 1000;
+
+/**
+ * 완료증거 게이트(§6.M PR-B) 거부 코드 → 사람용 액션 힌트(설계 §⑤). 코드는 기계 파싱용
+ * 안정 식별자, 힌트는 발신 에이전트가 무엇을 붙여 재시도할지 아는 사람용 문구다.
+ * shared/completionEvidence는 주석 외 불변(스키마는 envelope PR5 소유 — X9)이라
+ * 힌트 매핑은 강제 지점(데몬·렌더러 폴백)에 각각 로컬로 둔다.
+ */
+function evidenceGateHint(code: string): string {
+  switch (code) {
+    case 'completion_evidence_missing':
+      return "status 'completed' requires structured completion evidence (summary + >=1 well-formed item)";
+    case 'completion_evidence_empty_summary':
+      return "status 'completed' requires a non-empty evidence summary";
+    case 'completion_evidence_no_items':
+      return "status 'completed' requires >=1 well-formed evidence item (command|inspection|artifact)";
+    case 'completion_evidence_invalid_item':
+      return 'evidence has a malformed item (command items need a non-empty command; every item needs a non-empty summary)';
+    case 'completion_evidence_too_large':
+      return 'evidence exceeds size caps (items/strings/files/total bytes)';
+    case 'completion_evidence_bad_file_path':
+      return 'evidence.files must be repo-relative paths (no absolute, drive, ADS, url-scheme, or ".." segments)';
+    case 'failure_reason_missing':
+      return "status 'failed' requires an evidence summary (the failure reason)";
+    default:
+      return 'attach valid completion evidence and retry';
+  }
+}
 
 /** append + readAllRecords만 요구하는 최소 로그 인터페이스(AppendOnlyLog 만족). */
 export interface A2aLogLike {
@@ -184,7 +214,12 @@ export class A2aTaskService {
             ...(typeof p.verifiedItemCount === 'number' ? { verifiedItemCount: p.verifiedItemCount } : {}),
           }
         : { ok: true, task };
-    this.idempotencyRecord(p.taskId, rec.idempotencyKey, result);
+    this.idempotencyRecord(
+      p.taskId,
+      rec.idempotencyKey,
+      p.kind === 'task.transition' ? 'transition' : 'cancel',
+      result,
+    );
   }
 
   /**
@@ -267,15 +302,11 @@ export class A2aTaskService {
   }
 
   /**
-   * 상태 전이 — 데몬 정본 게이트. 권한 + VALID_TRANSITIONS 강제, evidence는 수용만.
+   * 상태 전이 — 데몬 정본 게이트. 권한 + VALID_TRANSITIONS + 완료증거 게이트(PR-B) 강제.
    * append(true) 후에만 projection 적용. 멱등키가 있으면 재시도 흡수(로그 1건).
    */
   transition(input: TransitionInput): Promise<TransitionOk | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
-      // §4 멱등: 앞서 커밋된 동일 키면 append 없이 원본 결과.
-      const cached = this.idempotencyHit(input.taskId, input.idempotencyKey);
-      if (cached) return cached as TransitionOk;
-
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.update: task not found: ${input.taskId}` };
 
@@ -296,6 +327,12 @@ export class A2aTaskService {
       if (input.callerHasPaneIdentity && !input.callerAddr && task.metadata.to.paneId) {
         return { ok: false, error: 'a2a.task.update: pane-authz deferred to renderer (pane-pinned task)' };
       }
+      // §4 멱등: 앞서 커밋된 동일 키면 append 없이 원본 결과. 위치는 authz·soft-defer
+      // **뒤**(리뷰 codex 델타: 히트가 authz를 앞지르면 키를 아는 비참여자가 커밋 스냅샷을
+      // 재생 조회 — authz 우회), validateTransition **앞**(종단 재시도가 invalid
+      // transition으로 변질되지 않게). 정당한 재시도는 동일 입력이라 authz를 항상 재통과.
+      const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'transition');
+      if (cached) return cached as TransitionOk;
       // VALID_TRANSITIONS 데몬측 강제(성공 종단='completed').
       if (!validateTransition(task.status.state, input.to)) {
         const from = task.status.state;
@@ -306,11 +343,11 @@ export class A2aTaskService {
         return { ok: false, error: `a2a.task.update: invalid transition ${from} -> ${input.to}. ${guidance}.` };
       }
 
-      // evidence 수용만(§6.M PR-D′): wire 재정규화(sanitize) 후 verbatim 저장.
-      // **완료증거 게이트(evidence 필수·verified≥1)는 없다** — Q1-4b/PR-B 소관.
-      // 단 malformed shape는 PR-D′가 이미 렌더러 wire 경계에서 거부하던 위생 계약
-      // (useRpcBridge completion_evidence_malformed)이므로 정본 게이트도 동형으로
-      // 거부한다 — 조용히 드롭하면 렌더러(거부)와 데몬(커밋)이 갈라진다(split).
+      // evidence 정규화(§6.M): untrusted wire를 재검증(sanitize)한다. malformed shape는
+      // 렌더러 wire 경계(useRpcBridge completion_evidence_malformed)와 동형으로 거부한다
+      // — 조용히 드롭하면 렌더러(거부)와 데몬(커밋)이 갈라진다(split). 미지 kind·타입
+      // 혼동 아이템은 여기서 malformed로 죽고, shape는 맞지만 well-formed가 아닌
+      // 아이템(빈 command 등)은 아래 게이트가 completion_evidence_invalid_item으로 잡는다.
       let evidence: CompletionEvidence | undefined;
       let verifiedItemCount: number | undefined;
       if (input.evidence !== undefined) {
@@ -322,7 +359,21 @@ export class A2aTaskService {
           };
         }
         evidence = normalized;
-        verifiedItemCount = normalized.items.filter(isVerifiedItem).length; // 감사 등급(게이트 아님)
+      }
+
+      // 완료증거 게이트(§6.M PR-B — 활성). 종단 전이(completed/failed)는 구조화 증거를
+      // 강제한다. pane-authz·불법 전이 거부(위)가 게이트보다 먼저라 게이트는 합법 전이에만
+      // 도달한다(기존 에러 메시지·도그푸드 어서션 보존). verified≥1은 게이트가 아니라
+      // 등급(E9) — verdict가 verifiedItemCount를 정직 산출한다(0 허용).
+      if (input.to === 'completed' || input.to === 'failed') {
+        const verdict = validateCompletionEvidence(input.to, evidence);
+        if (!verdict.ok) {
+          return { ok: false, error: `a2a.task.update: ${verdict.code}: ${evidenceGateHint(verdict.code)}` };
+        }
+        verifiedItemCount = verdict.verifiedItemCount;
+      } else if (evidence !== undefined) {
+        // 비종단 전이(working/input-required)는 게이트 비대상 — evidence 수용 + 등급 카운트만.
+        verifiedItemCount = evidence.items.filter(isVerifiedItem).length;
       }
 
       const payload: A2aTaskTransitionPayload = {
@@ -348,7 +399,7 @@ export class A2aTaskService {
         ...(verifiedItemCount !== undefined ? { verifiedItemCount } : {}),
         task, // 커밋된 projection 스냅샷 — 캐시 verbatim 적용의 원본(C6)
       };
-      this.idempotencyRecord(input.taskId, input.idempotencyKey, result);
+      this.idempotencyRecord(input.taskId, input.idempotencyKey, 'transition', result);
       return result;
     });
   }
@@ -358,9 +409,6 @@ export class A2aTaskService {
    */
   cancelTask(input: CancelTaskInput): Promise<CancelOk | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
-      const cached = this.idempotencyHit(input.taskId, input.idempotencyKey);
-      if (cached) return cached as CancelOk;
-
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.cancel: task not found: ${input.taskId}` };
 
@@ -369,6 +417,10 @@ export class A2aTaskService {
       if (!isSender && !isReceiver) {
         return { ok: false, error: `a2a.task.cancel: caller ${input.callerWorkspaceId} is not sender or receiver` };
       }
+      // §4 멱등: transition과 대칭 — 히트는 authz 뒤(비참여자 키 재생 조회 차단),
+      // op 네임스페이스 분리(transition 키로 cancel 결과를 재생하지 못하게 — codex 델타).
+      const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'cancel');
+      if (cached) return cached as CancelOk;
       // G(패널): 이미 종단이면 멱등 no-op 성공 — 취소의 목적(종단 도달)이 이미
       // 충족됐다. reject하면 종전 렌더러 passthrough 경로 대비 회귀다(호출자는
       // 취소를 눌렀는데 에러를 받는다). 로그 append 없이 현 상태 반환.
@@ -392,7 +444,7 @@ export class A2aTaskService {
       }
       this.applyPayload(payload);
       const result: CancelOk = { ok: true, task };
-      this.idempotencyRecord(input.taskId, input.idempotencyKey, result);
+      this.idempotencyRecord(input.taskId, input.idempotencyKey, 'cancel', result);
       return result;
     });
   }
@@ -431,8 +483,9 @@ export class A2aTaskService {
           to: 'failed',
           timestamp: this.isoNow(),
           forced: 'workspace_removed',
-          // 합성 완료증거(§③ E10): 실패 사유만(items 없음 — failed는 검증 불변식
-          // 미적용). PR4는 evidence 수용만이므로 게이트 없이 그대로 저장된다.
+          // 합성 완료증거(§③ E10): 실패 사유만(items 없음). force-fail은 완료증거
+          // 게이트(PR-B)를 **의도적으로 우회**하는 데몬 네이티브 진입점이라
+          // validateCompletionEvidence를 거치지 않는다 — 수신자 소멸 태스크를 그대로 커밋.
           evidence: { summary: reason, items: [] },
         };
         const committed = await this.log.append(this.envelope(payload, workspaceId));
@@ -553,17 +606,24 @@ export class A2aTaskService {
     };
   }
 
+  /**
+   * 멱등 키는 op 네임스페이스로 분리 저장한다(codex 델타): transition과 cancel이 같은
+   * (taskId, key) 평면을 공유하면 한 op의 키로 다른 op의 캐시 결과를 재생할 수 있다
+   * (예: cancel 키 재사용 transition이 CancelOk를 TransitionOk로 오반환).
+   */
   private idempotencyHit(
     taskId: string,
     key: string | undefined,
+    op: 'transition' | 'cancel',
   ): TransitionOk | CancelOk | undefined {
     if (!key) return undefined;
-    return this.idempotency.get(taskId)?.get(key);
+    return this.idempotency.get(taskId)?.get(`${op}:${key}`);
   }
 
   private idempotencyRecord(
     taskId: string,
     key: string | undefined,
+    op: 'transition' | 'cancel',
     result: TransitionOk | CancelOk,
   ): void {
     if (!key) return;
@@ -572,7 +632,7 @@ export class A2aTaskService {
       stream = new Map();
       this.idempotency.set(taskId, stream);
     }
-    stream.set(key, result);
+    stream.set(`${op}:${key}`, result);
     // LRU: Map은 삽입 순서를 보존 — cap 초과 시 가장 오래된 키부터 축출.
     while (stream.size > IDEMPOTENCY_CAP) {
       const oldest = stream.keys().next().value as string | undefined;

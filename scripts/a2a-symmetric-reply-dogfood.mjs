@@ -208,17 +208,22 @@ async function main() {
   check('P0/A5: task transitioned to working', task1c?.status?.state === 'working', `state=${task1c?.status?.state}`);
 
   // ── P2: a status update from a SIBLING pane (A, not the addressed B) is rejected ──
+  // 완료증거 게이트(PR-B)는 pane-authz 뒤에 온다. 순서 고정(리뷰 GLM): 일부러 evidence
+  // 없이 보낸다 — pane-authz가 먼저면 'addressed receiver pane', 게이트가 먼저로
+  // 회귀하면 'completion_evidence_missing'이 나와 아래 어서션이 실패한다.
   const u2 = sendResp(await rpcCall('a2a.task.update', {
     workspaceId: ws1, taskId: t1.taskId, status: 'completed', senderPtyId: surfA.ptyId,
   }));
-  check('★ P2: update from sibling pane A (not addressed B) is REJECTED',
-    !u2.ok && /addressed receiver pane/.test(u2.error || ''), `err=${u2.error}`);
+  check('★ P2: update from sibling pane A (not addressed B) is REJECTED by pane-authz (before the evidence gate)',
+    !u2.ok && /addressed receiver pane/.test(u2.error || '') && !/completion_evidence/.test(u2.error || ''), `err=${u2.error}`);
   const task1c2 = await getTask(ws1, t1.taskId);
   check('P2: task still working after the rejected sibling update', task1c2?.status?.state === 'working', `state=${task1c2?.status?.state}`);
 
   // ── P2: a status update from the ADDRESSED pane (B) is allowed ──
+  // 완료증거 게이트(PR-B) 활성 — completed는 구조화 증거 필수. 컴플라이언트 증거 첨부.
   const u3 = sendResp(await rpcCall('a2a.task.update', {
     workspaceId: ws1, taskId: t1.taskId, status: 'completed', senderPtyId: surfB.ptyId,
+    evidence: { summary: 'dogfood completion', items: [{ kind: 'inspection', status: 'unverified', summary: 'symmetric-reply dogfood transition' }] },
   }));
   check('★ P2: update from addressed pane B is ALLOWED', u3.ok, JSON.stringify(u3));
   const task1d = await getTask(ws1, t1.taskId);

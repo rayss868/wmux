@@ -1988,8 +1988,9 @@ function registerRpcHandlers(
       // S-C2: 페인 신원 주장 여부 — 페인 핀 태스크면 서비스가 soft-defer해 main이
       // 렌더러 페인 게이트(오늘의 판정 지점)로 폴백한다(ptyId→pane 해석은 렌더러 소유).
       callerHasPaneIdentity: typeof p.senderPtyId === 'string' && p.senderPtyId.trim() !== '',
-      // evidence는 서비스가 normalizeCompletionEvidenceWire로 재검증(sanitize) 후
-      // verbatim 저장한다 — 완료증거 게이트·거부는 Q1-4b/PR-B 소관(수용만).
+      // evidence는 서비스가 normalizeCompletionEvidenceWire로 재검증(sanitize)한 뒤
+      // 완료증거 게이트(PR-B)로 판정한다 — completed/failed는 구조화 증거 강제(거부는
+      // completion_evidence_* 사유코드로 호출자에 포워딩).
       ...(p.evidence !== undefined ? { evidence: p.evidence } : {}),
       ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
     });

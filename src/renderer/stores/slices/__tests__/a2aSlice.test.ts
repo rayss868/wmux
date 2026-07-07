@@ -75,7 +75,11 @@ describe('a2aSlice — createA2aTask idempotency (A3: no completed-task resurrec
     });
     // Drive it to a terminal state.
     store.getState().updateTaskStatus(id, 'working', 'ws-b');
-    store.getState().updateTaskStatus(id, 'completed', 'ws-b');
+    // 완료증거 게이트(PR-B) 활성 후 completed는 구조화 증거 필수 — 최소 컴플라이언트 증거 첨부.
+    store.getState().updateTaskStatus(id, 'completed', 'ws-b', undefined, undefined, {
+      summary: 'done',
+      items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }],
+    });
     expect(store.getState().a2aTasks[id].status.state).toBe('completed');
     // Re-delivery (reload / autoresponse re-flush) re-creates the SAME id. It
     // must NOT resurrect the completed task back to 'submitted'.
@@ -221,7 +225,10 @@ describe('a2aSlice — updateTaskStatus transitions (P3 message clarity)', () =>
 
   it('allows working -> completed, then rejects completed -> working as terminal', () => {
     store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
-    const done = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver');
+    const done = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, {
+      summary: 'done',
+      items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }],
+    });
     expect(done.ok).toBe(true);
     const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
     expect(r.ok).toBe(false);
@@ -263,9 +270,10 @@ describe('a2aSlice — updateTaskStatus 완료증거 저장 (§6.M P1 PR-D′, a
     expect(store.getState().a2aTasks[taskId].status.evidence).toEqual(evidence);
   });
 
-  it('evidence 미제공 시 status.evidence 필드 부재 (additive: 없으면 안 붙음)', () => {
-    store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
-    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver');
+  it('evidence 미제공 시 status.evidence 필드 부재 (additive: 없으면 안 붙음 — 비종단 전이)', () => {
+    // 완료증거 게이트(PR-B) 활성 후 completed는 evidence 필수라, additive-absent(없으면
+    // 안 붙음)는 게이트 비대상인 비종단 전이(working)로 확인한다.
+    const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
     expect(r.ok).toBe(true);
     expect(store.getState().a2aTasks[taskId].status).not.toHaveProperty('evidence');
   });
@@ -304,7 +312,10 @@ describe('a2aSlice — updateTaskStatus pane-granular authz (S-C2 P2)', () => {
     const taskId = makePaneTask();
     const working = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver'); // no callerAddr
     expect(working.ok).toBe(true);
-    const done = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver');
+    const done = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, {
+      summary: 'done',
+      items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }],
+    });
     expect(done.ok).toBe(true);
     expect(store.getState().a2aTasks[taskId].status.state).toBe('completed');
   });
@@ -534,5 +545,94 @@ describe('a2aSlice — applyDaemonTaskUpdate (캐시 verbatim, C6)', () => {
     expect(task).toBeDefined();
     expect(task?.status.state).toBe('completed');
     expect(task?.metadata.to.workspaceId).toBe('ws-receiver');
+  });
+});
+
+// ── §6.M PR-B: 완료증거 게이트 (폴백 writer) ──────────────────────────────
+// 데몬이 soft-defer(pane-핀 + senderPtyId, S-C2)하거나 미가용일 때 updateTaskStatus가
+// 최종 판정자다 — completed/failed에 구조화 증거를 강제한다. 데몬 커밋의 verbatim
+// 적용(applyDaemonTaskUpdate)은 절대 게이트하지 않는다(C6 — force-fail 커밋 거부 = split).
+describe('a2aSlice — updateTaskStatus 완료증거 게이트 (§6.M PR-B, 폴백 writer)', () => {
+  let store: ReturnType<typeof createTestStore>;
+  let taskId: string;
+
+  const compliant: CompletionEvidence = {
+    summary: 'done',
+    items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }],
+  };
+
+  beforeEach(() => {
+    store = createTestStore();
+    taskId = store.getState().createA2aTask({
+      title: 'Test',
+      from: { workspaceId: 'ws-sender', name: 'Sender' },
+      to: { workspaceId: 'ws-receiver', name: 'Receiver' },
+      history: [makeMessage('hello')],
+      artifacts: [],
+    });
+    store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
+  });
+
+  it('completed + evidence 없음 → completion_evidence_missing 거부, 상태 불변', () => {
+    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/completion_evidence_missing/);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('working'); // 미전이
+  });
+
+  it('completed + 컴플라이언트 evidence → 통과 + evidence 저장', () => {
+    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, compliant);
+    expect(r.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('completed');
+    expect(store.getState().a2aTasks[taskId].status.evidence).toEqual(compliant);
+  });
+
+  it('failed + evidence 없음 → failure_reason_missing 거부', () => {
+    const r = store.getState().updateTaskStatus(taskId, 'failed', 'ws-receiver');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/failure_reason_missing/);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('working');
+  });
+
+  it('failed + 사유 summary만(items 없음) → 통과 (비대칭 E3)', () => {
+    const r = store.getState().updateTaskStatus(taskId, 'failed', 'ws-receiver', undefined, undefined, { summary: 'build broke', items: [] });
+    expect(r.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('failed');
+  });
+
+  it('malformed evidence(미지 kind)는 폴백 writer도 데몬과 동형으로 malformed 거부(리뷰 GLM+Claude)', () => {
+    // 브릿지 normalize를 우회한 직접 호출 가정 — writer 자체 normalize가 방어심층.
+    const hostile = { summary: 'x', items: [{ kind: 'bogus', status: 'passed', summary: 'y' }] } as unknown as CompletionEvidence;
+    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, hostile);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/completion_evidence_malformed/);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('working');
+  });
+
+  it('writer 자체 normalize가 서버 전용 스탬프(recordedBy)를 저장 전 드롭한다', () => {
+    const withStamp = { ...compliant, recordedBy: 'forged:principal' } as CompletionEvidence;
+    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, withStamp);
+    expect(r.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.evidence?.recordedBy).toBeUndefined();
+  });
+
+  it('applyDaemonTaskUpdate는 evidence 없는 데몬 force-fail 커밋도 verbatim 적용(게이트 미경유, C6)', () => {
+    // 폴백 writer는 completed/failed를 게이트하지만, 데몬이 이미 판정해 커밋한 force-fail
+    // 스냅샷(evidence 없음)은 재검증 없이 그대로 반영한다 — 재검증하면 split-brain.
+    store.getState().applyDaemonTaskUpdate({
+      kind: 'task',
+      id: taskId,
+      status: { state: 'failed', timestamp: '2026-07-08T00:00:00.000Z' },
+      history: [],
+      artifacts: [],
+      metadata: {
+        title: 'Test',
+        from: { workspaceId: 'ws-sender', name: 'Sender' },
+        to: { workspaceId: 'ws-receiver', name: 'Receiver' },
+        createdAt: '2026-07-08T00:00:00.000Z',
+        updatedAt: '2026-07-08T00:00:00.000Z',
+      },
+    });
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('failed'); // evidence 없이도 수용
   });
 });
