@@ -42,7 +42,13 @@ import {
   HUMAN_MEMBER_ID,
 } from '../../shared/channels';
 import { HUMAN_SELF_PRINCIPAL_ID } from '../../shared/principals';
-import type { ChannelStateWriter } from './ChannelStateWriter';
+import { CHANNELS_EPOCH, EMPTY_CHANNEL_STATE } from '../../shared/channels';
+import { makeEnvelope, type AuthContext } from '../../shared/eventlog';
+import { ChannelStateWriter, reapEmptyChannels } from './ChannelStateWriter';
+import { applyChannelEvent, type ChannelEventPayload } from './channelEvents';
+import type { AppendOnlyLog } from '../eventlog/AppendOnlyLog';
+import type { SnapshotStore } from '../eventlog/SnapshotStore';
+import { CHANNEL_PROJECTION_REF } from '../eventlog/SnapshotStore';
 
 /**
  * Event payload emitted by the service after a successful post. The
@@ -127,12 +133,40 @@ export interface ChannelError {
   message: string;
 }
 
+/**
+ * 이벤트로그 백엔드(envelope-design §5, PR3 — 옵셔널 additive).
+ *
+ * 지정되면 커밋 지점이 saveOrFail(전체상태 동기 write)에서 log.append(envelope)로
+ * 반전된다(D1 단계적 반전): 로그가 정본, channels.json은 워터마크 스탬프된 debounced
+ * dual-write 캐시(§6.4), snapshot/channel.json은 부트 가속 스냅샷(§5). 부트는
+ * 스냅샷 폴백 체인 + `lamport > snapshotLamport` tail replay로 시드한다.
+ *
+ * 미지정(레거시/테스트) 시 기존 saveOrFail 커밋 경로가 1비트 불변으로 유지된다 —
+ * §10 T-파리티(기존 채널 테스트 무변경 통과)의 전제.
+ */
+export interface ChannelServiceEventLog {
+  /** 열린(open() 완료) append-only 로그. 데몬 부트 게이트가 소유. */
+  log: AppendOnlyLog;
+  /** `events/snapshot/` 스토어(부트 시드 + debounced 스냅샷). */
+  snapshots: SnapshotStore;
+  /** manifest.genesisRef — 폴백 체인의 바닥(§6.2). */
+  genesisRef: string;
+  /** manifest.reseedRefs — 폴백 체인의 중간 단계(§6.4c). */
+  reseedRefs: string[];
+  /** origin.machineId(§8). */
+  machineId: string;
+  /** 빈 채널 reaper TTL(시간). 기본 CHANNEL_EMPTY_TTL_HOURS_DEFAULT. */
+  emptyChannelTtlHours?: number;
+}
+
 export interface ChannelServiceDeps {
   /** The persistence layer. `saveImmediate` returns false on write failure
    *  (U1) and the post path surfaces that as `PERSIST_FAILED`. The full
    *  `ChannelStateWriter` is required because we read `load()` at
    *  construction to seed in-memory state. */
   writer: ChannelStateWriter;
+  /** 이벤트로그 백엔드(§5). 부재 시 레거시 커밋 경로(테스트·구 배선) 불변. */
+  eventLog?: ChannelServiceEventLog;
   /** Company this daemon's channels belong to. Channels are company-bounded
    *  by design (see plan KTD10). */
   companyId: string;
@@ -363,6 +397,7 @@ interface IdempotencyEntry {
 
 export class ChannelService {
   private readonly writer: ChannelStateWriter;
+  private readonly eventLog?: ChannelServiceEventLog;
   private state: ChannelState;
   private readonly mutexes = new Map<string, Promise<void>>();
   private readonly idempotency = new Map<string, Map<string, IdempotencyEntry>>();
@@ -406,10 +441,18 @@ export class ChannelService {
 
   constructor(deps: ChannelServiceDeps) {
     this.writer = deps.writer;
-    // Seed from the writer. The writer's `load()` runs the empty-channel
-    // reaper and prototype-pollution guards before we get the data, so
-    // the service can trust the shape.
-    this.state = this.writer.load();
+    this.eventLog = deps.eventLog;
+    if (deps.eventLog) {
+      // 로그 모드 부트(§5): 스냅샷 폴백 체인(최신→.bak→reseed→genesis)으로 시드하고
+      // `lamport > snapshotLamport`인 채널 레코드만 tail replay. channels.json은
+      // 더 이상 시드 원천이 아니다(워터마크 판정·dual-write 대상일 뿐 — §6.4).
+      this.state = this.seedFromEventLog(deps.eventLog);
+    } else {
+      // Seed from the writer. The writer's `load()` runs the empty-channel
+      // reaper and prototype-pollution guards before we get the data, so
+      // the service can trust the shape.
+      this.state = this.writer.load();
+    }
     this.companyId = deps.companyId;
     this.ceoWorkspaceId = deps.ceoWorkspaceId;
     this.emit = deps.emit;
@@ -750,7 +793,15 @@ export class ChannelService {
       this.state.members[channel.id] = initialMembers;
       this.state.messages[channel.id] = [];
       this.state.idempotency[channel.id] = {};
-      if (!this.saveOrFail()) {
+      if (
+        !(await this.commit(
+          { kind: 'create', channel, members: initialMembers },
+          {
+            verifiedWorkspaceId: params.verifiedWorkspaceId,
+            principalId: creatorPrincipalId ?? params.createdBy.principalId ?? params.createdBy.memberId,
+          },
+        ))
+      ) {
         // Roll back to keep the in-memory state in sync with disk.
         this.state.channels.pop();
         delete this.state.members[channel.id];
@@ -814,7 +865,12 @@ export class ChannelService {
       channel.status = 'archived';
       channel.archivedAt = now;
       channel.archivedBy = params.archivedBy;
-      if (!this.saveOrFail()) {
+      if (
+        !(await this.commit(
+          { kind: 'archive', channelId: channel.id, archivedAt: now, archivedBy: params.archivedBy },
+          { verifiedWorkspaceId: params.verifiedWorkspaceId, principalId: params.archivedBy },
+        ))
+      ) {
         // Roll back.
         channel.status = 'active';
         delete channel.archivedAt;
@@ -1000,7 +1056,7 @@ export class ChannelService {
         panePrincipal?.display && !params.member.principalId
           ? panePrincipal.display
           : this.deriveMemberName(joinMemberId, joinPrincipalId);
-      members.push({
+      const joinedRow: ChannelMember = {
         // D5: pin the joining member to the server-resolved workspace, NOT the
         // caller-supplied member.workspaceId — a forger must not join as a victim.
         workspaceId: params.verifiedWorkspaceId,
@@ -1013,9 +1069,18 @@ export class ChannelService {
         lastReadSeq: channel.nextSeq - 1,
         ...(joinPrincipalId ? { principalId: joinPrincipalId } : {}),
         memberName: joinMemberName,
-      });
+      };
+      members.push(joinedRow);
       this.state.members[channel.id] = members;
-      if (!this.saveOrFail()) {
+      if (
+        !(await this.commit(
+          { kind: 'join', channelId: channel.id, member: joinedRow },
+          {
+            verifiedWorkspaceId: params.verifiedWorkspaceId,
+            principalId: joinPrincipalId ?? joinMemberId,
+          },
+        ))
+      ) {
         // Roll back the push AND restore the prior emptySince tag.
         members.pop();
         channel.emptySince = previousEmptySince;
@@ -1063,7 +1128,21 @@ export class ChannelService {
         channel.emptySince = this.now();
       }
       this.state.members[channel.id] = members;
-      if (!this.saveOrFail()) {
+      if (
+        !(await this.commit(
+          {
+            kind: 'leave',
+            channelId: channel.id,
+            workspaceId: params.verifiedWorkspaceId,
+            memberId: params.memberId,
+            // 라이브가 판정한 emptySince 스탬프(마지막 멤버 이탈 시)를 효과로 기록.
+            ...(members.length === 0 && channel.emptySince !== undefined
+              ? { emptySince: channel.emptySince }
+              : {}),
+          },
+          { verifiedWorkspaceId: params.verifiedWorkspaceId, principalId: params.memberId },
+        ))
+      ) {
         // Roll back: re-insert at the original index.
         members.splice(idx, 0, removed);
         // Clear the emptySince stamp we just set.
@@ -1146,7 +1225,20 @@ export class ChannelService {
         channel.emptySince = this.now();
       }
       this.state.members[channel.id] = members;
-      if (!this.saveOrFail()) {
+      if (
+        !(await this.commit(
+          {
+            kind: 'kick',
+            channelId: channel.id,
+            targetWorkspaceId: params.targetWorkspaceId,
+            targetMemberId: params.targetMemberId,
+            ...(members.length === 0 && channel.emptySince !== undefined
+              ? { emptySince: channel.emptySince }
+              : {}),
+          },
+          { verifiedWorkspaceId: params.verifiedWorkspaceId },
+        ))
+      ) {
         // Roll back: re-insert at the original index, clear the emptySince we set.
         members.splice(idx, 0, removed);
         if (members.length === 1) delete channel.emptySince;
@@ -1206,7 +1298,21 @@ export class ChannelService {
         if (survivors.length === 0 && channel.emptySince === undefined) {
           channel.emptySince = this.now();
         }
-        if (!this.saveOrFail()) {
+        if (
+          !(await this.commit(
+            {
+              kind: 'purge',
+              channelId: channel.id,
+              workspaceId: params.workspaceId,
+              ...(params.memberId !== undefined ? { memberId: params.memberId } : {}),
+              ...(params.principalId !== undefined ? { principalId: params.principalId } : {}),
+              ...(survivors.length === 0 && channel.emptySince !== undefined
+                ? { emptySince: channel.emptySince }
+                : {}),
+            },
+            { verifiedWorkspaceId: params.verifiedWorkspaceId },
+          ))
+        ) {
           // Per-channel rollback — same symmetric recovery as leave().
           this.state.members[channel.id] = members;
           channel.emptySince = previousEmptySince;
@@ -1296,7 +1402,7 @@ export class ChannelService {
       }
       const now = this.now();
       const historyFromSeq = params.includeHistory === false ? channel.nextSeq : 0;
-      members.push({
+      const invitedRow: ChannelMember = {
         // The invitee is the caller-supplied TARGET (NOT verifiedWorkspaceId) —
         // see the method doc + InviteChannelParams. Gated by inviter-is-member.
         workspaceId: invitee.workspaceId,
@@ -1314,9 +1420,15 @@ export class ChannelService {
         ...(invitee.principalId ? { principalId: invitee.principalId } : {}),
         // 1b: server-owned display name (principal display, else memberId).
         memberName: this.deriveMemberName(invitee.memberId, invitee.principalId),
-      });
+      };
+      members.push(invitedRow);
       this.state.members[channel.id] = members;
-      if (!this.saveOrFail()) {
+      if (
+        !(await this.commit(
+          { kind: 'invite', channelId: channel.id, member: invitedRow },
+          { verifiedWorkspaceId: params.verifiedWorkspaceId },
+        ))
+      ) {
         members.pop();
         channel.emptySince = previousEmptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel invite' } };
@@ -1706,7 +1818,32 @@ export class ChannelService {
           Array.from(channelIdMap.entries()).map(([k, v]) => [k, v.seq]),
         );
       }
-      if (!this.saveOrFail()) {
+      if (
+        !(await this.commit(
+          {
+            kind: 'post',
+            channelId: channel.id,
+            message,
+            // 커서 라이드·이름 리프레시는 이 커밋에 포함된 효과 — replay 재현용(§5).
+            ...(senderRow && senderRowRode
+              ? { cursorRide: { workspaceId: senderRow.workspaceId, memberId: senderRow.memberId } }
+              : {}),
+            ...(senderRow && senderRowNameRefreshed && senderRow.memberName !== undefined
+              ? {
+                  nameRefresh: {
+                    workspaceId: senderRow.workspaceId,
+                    memberId: senderRow.memberId,
+                    memberName: senderRow.memberName,
+                  },
+                }
+              : {}),
+          },
+          {
+            verifiedWorkspaceId: params.verifiedWorkspaceId,
+            principalId: senderRow?.principalId ?? resolvedMemberId,
+          },
+        ))
+      ) {
         // Roll back: un-bump nextSeq, pop the message, drop idempotency entry,
         // and un-ride the sender cursor.
         channel.nextSeq--;
@@ -1809,7 +1946,10 @@ export class ChannelService {
         // Persist the trim now so the durable cap stays bounded even if the daemon
         // restarts before the next post. Best-effort: on failure the in-memory copy
         // is still trimmed and the next post's saveOrFail re-flushes (CodeRabbit).
-        void this.saveOrFail();
+        // 로그 모드: trim은 post 적용기의 결정론적 일부(channelEvents.ts — 같은 캡
+        // 규칙을 replay가 재적용)라 별도 이벤트가 필요 없다 — 캐시 갱신만 스케줄.
+        if (this.eventLog) this.scheduleCacheWrites();
+        else void this.saveOrFail();
       }
       return {
         ok: true,
@@ -1936,7 +2076,23 @@ export class ChannelService {
       for (const f of cursorFlips) {
         f.row.lastReadSeq = cursorTarget;
       }
-      if ((flips.length > 0 || cursorFlips.length > 0) && !this.saveOrFail()) {
+      if (
+        (flips.length > 0 || cursorFlips.length > 0) &&
+        !(await this.commit(
+          {
+            kind: 'ack',
+            channelId: params.channelId,
+            workspaceId: params.verifiedWorkspaceId,
+            ...(params.memberId !== undefined ? { memberId: params.memberId } : {}),
+            uptoSeq: params.uptoSeq,
+            ackedAt: now,
+          },
+          {
+            verifiedWorkspaceId: params.verifiedWorkspaceId,
+            ...(params.memberId !== undefined ? { principalId: params.memberId } : {}),
+          },
+        ))
+      ) {
         // Roll back the in-memory flips so memory ↔ disk stay consistent.
         for (const f of flips) {
           f.entry.status = f.prevEntryStatus;
@@ -2162,6 +2318,103 @@ export class ChannelService {
   /** Save the current state via the writer. Returns true on success. */
   private saveOrFail(): boolean {
     return this.writer.saveImmediate(this.state);
+  }
+
+  // ── 이벤트로그 커밋 경로 (envelope-design §5, PR3) ────────────────────
+
+  /**
+   * 커밋 프리미티브 — 로그 모드면 `log.append(envelope)`(fsync 배리어 아래 resolve),
+   * 레거시 모드면 기존 saveOrFail. boolean 계약(D16)이라 기존
+   * `if (!this.saveOrFail())` 롤백 블록이 `if (!(await this.commit(...)))`로 형태
+   * 보존된다. 1 커밋 = 1 envelope(§2.6 부분승격 금지 논증 ②).
+   */
+  private async commit(
+    payload: ChannelEventPayload,
+    auth: { verifiedWorkspaceId: string; principalId?: string },
+  ): Promise<boolean> {
+    if (!this.eventLog) return this.saveOrFail();
+    const draft = makeEnvelope({
+      domain: 'channel',
+      payload,
+      origin: {
+        machineId: this.eventLog.machineId,
+        daemonEpoch: CHANNELS_EPOCH, // D8: 순서 비관여 provenance 스탬프
+      },
+      // §7 스탬핑의 완전한 형태(서버핀 하류 배선)는 PR5 소관 — PR3는 서비스 경계가
+      // 이미 보유한 서버-해석 verifiedWorkspaceId(모든 mutation의 authz 앵커)와
+      // 최선의 principal 좌표(display/routing 전용)를 스탬프한다.
+      authContext: this.authContextFor(auth),
+    });
+    const ok = await this.eventLog.log.append(draft);
+    if (ok) this.scheduleCacheWrites();
+    return ok;
+  }
+
+  /** §7 — Q1 커밋 경로는 사실상 trusted(비신뢰는 상류 fail-closed로 미도달). */
+  private authContextFor(auth: {
+    verifiedWorkspaceId: string;
+    principalId?: string;
+  }): AuthContext {
+    return {
+      principalId: auth.principalId ?? auth.verifiedWorkspaceId,
+      verifiedWorkspaceId: auth.verifiedWorkspaceId,
+      trustTier: 'trusted',
+    };
+  }
+
+  /**
+   * 커밋 성공 후 캐시 유지(§5·§6.4): channels.json dual-write(debounced, 워터마크는
+   * writer가 write 시점에 스탬프)와 snapshot/channel.json(debounced, 부트 가속).
+   * 둘 다 라이브 참조를 넘긴다 — 직렬화는 write 시점이므로 최신 상태가 실린다.
+   * 스냅샷 마커가 내용보다 낮을 수 있는 창은 replay 적용기의 멱등성이 흡수한다
+   * (channelEvents.ts 헤더 불변식 (b)).
+   */
+  private scheduleCacheWrites(): void {
+    if (!this.eventLog) return;
+    this.writer.saveDebounced(this.state);
+    this.eventLog.snapshots.saveDebounced(
+      CHANNEL_PROJECTION_REF,
+      this.state,
+      this.eventLog.log.lamportHwm,
+    );
+  }
+
+  /** 로그 모드 부트 시드(§5): 폴백 체인 로드 → tail replay → reaper. */
+  private seedFromEventLog(eventLog: ChannelServiceEventLog): ChannelState {
+    const loaded = eventLog.snapshots.loadWithFallback<ChannelState>({
+      activeRef: CHANNEL_PROJECTION_REF,
+      genesisRef: eventLog.genesisRef,
+      reseedRefs: eventLog.reseedRefs,
+      // ChannelStateWriter.isChannelState는 PR3에서 public 승격(PR2 주입 계약).
+      validateProjection: (d): boolean => ChannelStateWriter.isChannelState(d),
+    });
+    let state: ChannelState;
+    let floor: number;
+    if (loaded) {
+      // 시드 projection에서 워터마크 필드 제거(§6.4c — dual-write 전용 메타).
+      const { eventLogWatermark: _wm, ...clean } = loaded.projection as ChannelState & {
+        eventLogWatermark?: unknown;
+      };
+      state = clean as ChannelState;
+      floor = loaded.snapshotLamport;
+    } else {
+      // 스냅샷 체인 전손(genesis까지) — §5 파국 폴백: 빈 상태 + 전체 replay.
+      console.error(
+        '[ChannelService] 스냅샷 폴백 체인 전손 — 빈 상태에서 로그 전체 replay로 복구 시도',
+      );
+      state = { ...EMPTY_CHANNEL_STATE, channels: [], members: {}, messages: {}, idempotency: {} };
+      floor = 0;
+    }
+    // tail replay(§5): 스냅샷 이후(lamport > floor) 채널 레코드만 결정론 재적용.
+    // 적용기는 멱등(at-least-once §2.6 + 스냅샷 마커 지연 흡수 — channelEvents.ts).
+    for (const rec of eventLog.log.readAllRecords()) {
+      if (rec.domain !== 'channel') continue; // 도메인 무지 통과(§1)
+      if (rec.lamport <= floor) continue;
+      applyChannelEvent(state, rec.payload);
+    }
+    // 빈 채널 reaper — 레거시 load()와 동일 시멘틱 유지(하위 시멘틱 불변).
+    reapEmptyChannels(state, eventLog.emptyChannelTtlHours);
+    return state;
   }
 }
 
