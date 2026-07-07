@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Task, Message, TaskState, Artifact, AgentSkill, CompletionEvidence } from '../../../shared/types';
 import { generateId, validateTransition, TERMINAL_STATES, VALID_TRANSITIONS } from '../../../shared/types';
+import { validateCompletionEvidence } from '../../../shared/completionEvidence';
 import type { PaneAddress } from '../../hooks/a2aAddressing';
 import { isChannelMentionTask } from '../../hooks/channelMentionFlush';
 
@@ -10,6 +11,32 @@ const GC_MAX_TASKS = 500;
 
 function isoNow(): string {
   return new Date().toISOString();
+}
+
+/**
+ * 완료증거 게이트(§6.M PR-B) 거부 코드 → 사람용 액션 힌트(설계 §⑤). 데몬 강제 지점
+ * (A2aTaskService)과 동일 매핑을 폴백 writer에 로컬로 둔다 — shared/completionEvidence는
+ * 주석 외 불변(스키마는 envelope PR5 소유)이라 공용 헬퍼로 뺄 수 없다.
+ */
+function evidenceGateHint(code: string): string {
+  switch (code) {
+    case 'completion_evidence_missing':
+      return "status 'completed' requires structured completion evidence (summary + >=1 well-formed item)";
+    case 'completion_evidence_empty_summary':
+      return "status 'completed' requires a non-empty evidence summary";
+    case 'completion_evidence_no_items':
+      return "status 'completed' requires >=1 well-formed evidence item (command|inspection|artifact)";
+    case 'completion_evidence_invalid_item':
+      return 'evidence has a malformed item (command items need a non-empty command; every item needs a non-empty summary)';
+    case 'completion_evidence_too_large':
+      return 'evidence exceeds size caps (items/strings/files/total bytes)';
+    case 'completion_evidence_bad_file_path':
+      return 'evidence.files must be repo-relative paths (no absolute, drive, ADS, url-scheme, or ".." segments)';
+    case 'failure_reason_missing':
+      return "status 'failed' requires an evidence summary (the failure reason)";
+    default:
+      return 'attach valid completion evidence and retry';
+  }
 }
 
 /** Pending approval prompt for an A2A `execute:true` request. */
@@ -198,12 +225,24 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
         : `'${from}' is a terminal state with no further transitions`;
       return { ok: false, error: `Invalid transition: ${from} -> ${newState}. ${guidance}.` };
     }
+    // 완료증거 게이트(§6.M PR-B — 폴백 writer). 데몬 게이트만으로는 우회 0이 아니다:
+    // pane-핀 태스크 + senderPtyId 호출자는 데몬이 'pane-authz deferred'로 soft-defer해
+    // 이 writer가 최종 판정자가 되고(S-C2), 데몬 미가용 degrade에서도 동일하다. 데몬과
+    // 동형으로 completed/failed에 구조화 증거를 강제한다. validateTransition·권한 거부가
+    // 앞서므로(위) 게이트는 합법 전이에만 도달한다. 데몬 커밋의 verbatim 적용
+    // (applyDaemonTaskUpdate)은 **절대 게이트하지 않는다**(C6 — force-fail 커밋 거부 =
+    // split-brain). 브릿지(useRpcBridge)가 'a2a.task.update: ' 접두를 붙이므로 코드:힌트만 반환.
+    if (newState === 'completed' || newState === 'failed') {
+      const verdict = validateCompletionEvidence(newState, evidence);
+      if (!verdict.ok) {
+        return { ok: false, error: `${verdict.code}: ${evidenceGateHint(verdict.code)}` };
+      }
+    }
     set((state: StoreState) => {
       const t = state.a2aTasks[taskId];
       if (t) {
-        // additive: 완료증거는 전이 성공 시 status에 verbatim 저장한다(§6.M P1 PR-D′).
-        // evidence 검증·거부 로직은 여기 두지 않는다 — 구조 게이트는 validateTransition
-        // 현행 유지, 완료증거 게이트 활성은 후속(PR-B, envelope PR4 이후).
+        // additive: 완료증거는 전이 성공 시 status에 verbatim 저장한다.
+        // 게이트(PR-B)는 validateTransition 뒤·set 앞에서 이미 판정했다(위).
         t.status = { state: newState, message: statusMessage, timestamp: isoNow(), ...(evidence ? { evidence } : {}) };
         t.metadata.updatedAt = isoNow();
       }
