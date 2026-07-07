@@ -7,6 +7,7 @@ import {
   withheldCredentialNames,
   isInternalEnvKey,
   isCredentialEnvKey,
+  stripCredentialValues,
 } from '../envFilter';
 
 describe('isSensitiveEnvKey', () => {
@@ -173,5 +174,59 @@ describe('withheldCredentialNames', () => {
 
   it('is empty when no credentials are present', () => {
     expect(withheldCredentialNames({ PATH: '/p', HOME: '/h' })).toEqual([]);
+  });
+});
+
+describe('stripCredentialValues (직렬화 경계 — 디스크/RPC)', () => {
+  it('자격증명 값만 제거하고 비자격 env(PATH·identity)는 보존', () => {
+    const stripped = stripCredentialValues({
+      PATH: '/usr/bin',
+      WMUX_SURFACE_ID: 'surf-1',      // identity — 보존 (pty:list 복원 의존)
+      KAD_GATEWAY_KEY: 'secret',       // 자격증명 — 제거
+      GITHUB_TOKEN: 'ghp',             // 자격증명 — 제거
+      SSH_AUTH_SOCK: '/s',             // safe-passthrough — 보존
+    });
+    expect(stripped.PATH).toBe('/usr/bin');
+    expect(stripped.WMUX_SURFACE_ID).toBe('surf-1');
+    expect(stripped.SSH_AUTH_SOCK).toBe('/s');
+    expect(stripped.KAD_GATEWAY_KEY).toBeUndefined();
+    expect(stripped.GITHUB_TOKEN).toBeUndefined();
+  });
+
+  it('fresh 사본을 반환 — 입력을 in-place 수정하지 않음(live meta.env 오염 방지)', () => {
+    const live = { PATH: '/p', GITHUB_TOKEN: 'ghp' };
+    const stripped = stripCredentialValues(live);
+    expect(live.GITHUB_TOKEN).toBe('ghp'); // 원본 불변
+    expect(stripped.GITHUB_TOKEN).toBeUndefined();
+    expect(stripped).not.toBe(live);
+  });
+
+  it('env가 undefined/null/비객체면 빈 객체(마이그레이션 total·non-throwing)', () => {
+    expect(stripCredentialValues(undefined)).toEqual({});
+    expect(stripCredentialValues(null)).toEqual({});
+    expect(stripCredentialValues('not-an-object' as unknown as Record<string, string>)).toEqual({});
+  });
+
+  it('선행 밑줄 없는 well-known 비밀도 제거 (3모델 리뷰 확정)', () => {
+    // `_PASSWORD$`/`_KEY$` 패턴에 안 걸리지만 자격증명인 exact 이름들.
+    for (const name of ['PGPASSWORD', 'MYSQL_PWD', 'SECRET_KEY_BASE', 'LDAPPASSWORD',
+      'AWS_ACCESS_KEY_ID', 'REDIS_URL', 'MONGO_URL', 'MONGODB_URI']) {
+      expect(isCredentialEnvKey(name)).toBe(true);
+    }
+    const stripped = stripCredentialValues({
+      PATH: '/p', PGPASSWORD: 'pg', SECRET_KEY_BASE: 'rails', REDIS_URL: 'redis://u:p@h',
+    });
+    expect(stripped.PATH).toBe('/p');
+    expect(stripped.PGPASSWORD).toBeUndefined();
+    expect(stripped.SECRET_KEY_BASE).toBeUndefined();
+    expect(stripped.REDIS_URL).toBeUndefined();
+  });
+
+  it('exact 추가는 유사 비자격 키를 오탐하지 않음', () => {
+    // exact 이름으로만 넓혔으므로(광역 패턴 아님), 비슷하지만 비밀이 아닌 키는 통과.
+    expect(isCredentialEnvKey('PGPASSFILE')).toBe(false);  // passfile 경로(값이 비밀 아님)
+    expect(isCredentialEnvKey('PGHOST')).toBe(false);
+    expect(isCredentialEnvKey('MYSQL_HOST')).toBe(false);
+    expect(isCredentialEnvKey('REDIS_HOST')).toBe(false);  // REDIS_URL이 아님
   });
 });
