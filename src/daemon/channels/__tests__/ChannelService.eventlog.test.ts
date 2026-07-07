@@ -331,6 +331,102 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
     if (verdict.kind === 'downgrade-write') expect(verdict.reason).toBe('hash-mismatch');
     h.log.close();
   });
+
+  // ─── G1 — 커밋-후-적용(append-then-apply): dirty read 구조적 제거 ─────────
+  // 구 saveOrFail은 동기라 mutation 임계구역에 yield가 없었지만 append는 await를
+  // 도입했다. G1은 적용을 fsync 배리어 **뒤**로 미뤄, 그 await 창 동안 뮤텍스를
+  // 안 타는 동기 읽기(list/getMessages)가 미커밋 낙관 상태를 보는 일이 없게 한다.
+  describe('G1 커밋-후-적용', () => {
+    it('① in-flight 비가시 ② fsync reject 후에도 비가시(무롤백) ③ resolve 후 가시', async () => {
+      // 수동 fsync 게이트: 테스트가 각 배리어의 resolve/reject를 직접 쥔다.
+      let release: (() => void) | null = null;
+      let fail: ((err: Error) => void) | null = null;
+      const gate = (): Promise<void> =>
+        new Promise<void>((res, rej) => {
+          release = res;
+          fail = rej;
+        });
+      let gated = false;
+      const h = makeHarness({
+        fsync: () => (gated ? gate() : Promise.resolve()) as never,
+      });
+      const created = await h.svc.create({
+        name: 'general', visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1' }, verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('setup create failed');
+      const chId = created.channel.id;
+      const before = stateOf(h.svc);
+      h.emit.mockClear();
+
+      // ① in-flight: append의 write는 끝났지만 배리어 미해소 — projection 비가시.
+      gated = true;
+      const postPromise = h.svc.post({
+        channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
+        text: 'optimistic', verifiedWorkspaceId: 'ws-1', clientMsgId: 'cli-g1',
+      });
+      await new Promise((r) => setTimeout(r, 10)); // write+배리어 진입 대기
+      expect(h.svc.getMessages(chId, undefined, 'ws-1')).toHaveLength(0); // dirty read 없음
+      expect(stateOf(h.svc)).toEqual(before);
+      expect(h.emit).not.toHaveBeenCalled();
+
+      // ② 배리어 reject: 미적용 그대로 — 롤백이 필요한 상태 자체가 없다.
+      fail!(new Error('inject barrier failure'));
+      const r1 = await postPromise;
+      expect(r1.ok).toBe(false);
+      if (!r1.ok) expect(r1.error.code).toBe('PERSIST_FAILED');
+      expect(h.svc.getMessages(chId, undefined, 'ws-1')).toHaveLength(0);
+      expect(stateOf(h.svc)).toEqual(before);
+      expect(h.emit).not.toHaveBeenCalled();
+
+      // ③ 배리어 resolve: 적용·가시 + 이벤트 방출.
+      const postPromise2 = h.svc.post({
+        channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
+        text: 'committed', verifiedWorkspaceId: 'ws-1', clientMsgId: 'cli-g1', // 재시도(같은 키)
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(h.svc.getMessages(chId, undefined, 'ws-1')).toHaveLength(0); // 아직 비가시
+      release!();
+      const r2 = await postPromise2;
+      expect(r2.ok).toBe(true);
+      const visible = h.svc.getMessages(chId, undefined, 'ws-1');
+      expect(visible).toHaveLength(1);
+      expect(visible[0].text).toBe('committed');
+      expect(visible[0].seq).toBe(1); // 실패 시도는 seq를 소비하지 않음(선결정·무적용)
+      expect(h.emit).toHaveBeenCalled();
+      h.log.close();
+    });
+
+    it('멤버십 계열(join)도 배리어 전 비가시 — 적용은 커밋 뒤', async () => {
+      let release: (() => void) | null = null;
+      let gated = false;
+      const h = makeHarness({
+        fsync: () =>
+          (gated
+            ? new Promise<void>((res) => {
+                release = res;
+              })
+            : Promise.resolve()) as never,
+      });
+      const created = await h.svc.create({
+        name: 'general', visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1' }, verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('setup');
+      gated = true;
+      const joinPromise = h.svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(h.svc.getMembers(created.channel.id, 'ws-1')).toHaveLength(1); // 미커밋 join 비가시
+      release!();
+      expect((await joinPromise).ok).toBe(true);
+      expect(h.svc.getMembers(created.channel.id, 'ws-1')).toHaveLength(2);
+      h.log.close();
+    });
+  });
 });
 
 // ─── 패널 반영: trim 역사 가드(CL-3) + 로그 모드 시멘틱 파리티(CL-4 확장) ─────
