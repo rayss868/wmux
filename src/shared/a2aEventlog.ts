@@ -17,8 +17,9 @@ import type { Task, TaskState, Message, CompletionEvidence } from './types';
 
 /**
  * A2A 로그 payload 판별 union. kind가 닫힌 enum이라 projection이 미지 kind를
- * 안전하게 무시(fail-closed)한다. evidence는 §6.M PR-D′ 스키마를 **수용만** 한다
- * — 게이트·거부는 Q1-4b 소관이므로 이 스키마엔 없다.
+ * 안전하게 무시(fail-closed)한다. evidence는 §6.M 완료증거 스키마다 — 완료증거
+ * 게이트(PR-B)는 A2aTaskService.transition이 강제하고, 이 payload는 게이트를 통과한
+ * 증거를 실어 나른다(스키마 자체는 검증 로직이 아니라 운반 계약).
  */
 export type A2aEventPayload =
   | A2aTaskCreatePayload
@@ -45,8 +46,9 @@ export interface A2aTaskTransitionPayload {
   /** 사람용 상태 메시지(있을 때만). 기계용 evidence와 분리(§① E1). */
   message?: Message;
   /**
-   * §6.M PR-D′ 완료증거 — normalizeCompletionEvidenceWire로 재검증 후 verbatim
-   * 저장한다. **수용만**: verified≥1 게이트·거부는 넣지 않는다(Q1-4b/PR-B 소관).
+   * §6.M 완료증거 — normalizeCompletionEvidenceWire로 재검증 후 저장한다. 완료증거
+   * 게이트(PR-B)는 A2aTaskService.transition이 강제한다(completed=구조화 증거,
+   * failed=사유). verified≥1은 게이트가 아니라 등급(§② E9)이라 verifiedItemCount로 표기.
    */
   evidence?: CompletionEvidence;
   /** 감사·등급용 검증 아이템 수(0=unverified 완료). 전이 게이트 아님(§② E9). */
