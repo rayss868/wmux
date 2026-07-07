@@ -604,3 +604,60 @@ describe('코얼레싱 배치 롤백 — 서비스 레벨 (패널 2R INFO)', () 
     expect(stateOf(h.svc).messages[ids[0]].map((m) => m.seq)).toEqual([1]); // seq 미소비 재확인
   });
 });
+
+// ─── 공유 로그 통합 (PR3×PR4 단일화 — §2.1 단일 논리 스트림) ───────────────
+
+import { A2aTaskService } from '../../a2a/A2aTaskService';
+
+describe('공유 로그: 채널 × A2A 단일 인스턴스', () => {
+  it('도메인 혼재 커밋 → lamport 전역 단조 + 양쪽 replay가 자기 도메인만 소비', async () => {
+    const h = makeHarness();
+    const a2a = new A2aTaskService({
+      log: h.log,
+      origin: { machineId: 'machine-test', daemonEpoch: 1 },
+    });
+
+    // 채널·A2A 커밋을 교차 배치 — 한 로그, 한 lamport 시계.
+    const created = await h.svc.create({
+      name: 'shared', visibility: 'public',
+      createdBy: { workspaceId: 'ws-1', memberId: 'm-1' },
+      verifiedWorkspaceId: 'ws-1',
+    });
+    if (!created.ok) throw new Error('create failed');
+    const chId = created.channel.id;
+    expect((await a2a.createTask({
+      id: 'task-x', title: 'T',
+      from: { workspaceId: 'ws-1', name: 'S' },
+      to: { workspaceId: 'ws-2', name: 'R' },
+    })).ok).toBe(true);
+    expect((await h.svc.post({
+      channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
+      text: 'hi', verifiedWorkspaceId: 'ws-1',
+    })).ok).toBe(true);
+    expect((await a2a.transition({
+      taskId: 'task-x', to: 'working', callerWorkspaceId: 'ws-2',
+    })).ok).toBe(true);
+
+    // 단일 스트림: 도메인 혼재 + lamport 빈틈없이 단조(1..4) — 이중 인스턴스였다면
+    // hwm이 갈라져 중복 lamport가 발급된다.
+    const recs = h.log.readAllRecords();
+    expect(recs.map((r) => r.domain)).toEqual(['channel', 'a2a', 'channel', 'a2a']);
+    expect(recs.map((r) => r.lamport)).toEqual([1, 2, 3, 4]);
+
+    // 재부트: 채널 replay는 a2a 레코드 무시, a2a restore는 channel 무시 — 상호 무오염.
+    const channelLive = stateOf(h.svc);
+    h.log.close();
+    const h2 = makeHarness();
+    const a2a2 = new A2aTaskService({
+      log: h2.log,
+      origin: { machineId: 'machine-test', daemonEpoch: 1 },
+    });
+    a2a2.restoreFromLog();
+    expect(stateOf(h2.svc)).toEqual(channelLive);
+    const restored = a2a2.queryTasks('ws-2', {});
+    expect(restored).toHaveLength(1);
+    expect(restored[0].status.state).toBe('working');
+    expect(h2.log.lamportHwm).toBe(4);
+    h2.log.close();
+  });
+});

@@ -21,9 +21,8 @@ import { PrincipalService, PrincipalStateWriter } from './principals';
 import { isPrincipalUpsertInput } from '../shared/principals';
 import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // envelope PR4 (§5 D11): A2A 태스크 정본을 렌더러 인메모리에서 데몬 이벤트 로그로.
-import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
+// (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
 import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
-import { resolveMachineId, recoverMachineIdFromRecords } from '../shared/machineId';
 import { isTaskState, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
@@ -3013,31 +3012,30 @@ async function main(): Promise<void> {
     },
   });
 
-  // ── A2A 태스크 데몬 정본 로그 (envelope PR4 §5 D11) ──────────────────
-  // A2A는 신규 로그 소비자라 레거시 부채가 없다 — projection-first로 짓는다.
-  // NOTE(오케스트레이터): 이 로그 인스턴스는 PR3(ChannelService 재배선)의 공유
-  // 로그와 **단일 인스턴스로 병합**되어야 한다(§2.1 단일 논리 스트림 — lamport는
-  // 데몬 전역 단일 시계). PR3 미머지 상태의 이 브랜치는 A2A 전용 인스턴스를 자체
-  // 개방하며, 머지 시 마이그레이션 게이트(§6.1) 뒤 공유 개방으로 재배선한다.
+  // ── A2A 태스크 데몬 정본 (envelope PR4 §5 D11 — 공유 로그) ──────────────
+  // 채널과 **단일 AppendOnlyLog 인스턴스를 공유**한다(§2.1 단일 논리 스트림 —
+  // lamport는 데몬 전역 단일 시계. 같은 events/에 인스턴스를 둘 열면 hwm이
+  // 갈라져 lamport가 중복 발급된다). machineId도 게이트 산출물 재사용. 양쪽
+  // replay는 각자 domain 필터로 자기 레코드만 소비한다(ChannelService :2560,
+  // A2aTaskService.restoreFromLog). 부트 게이트가 비활성(레거시 fail-open)이면
+  // A2A도 렌더러-only degrade — a2aSlice 30분 GC의 역사적 best-effort와 동형.
   let a2aTaskService: A2aTaskService | null = null;
-  try {
-    const eventsDir = path.join(wmuxDir, 'events');
-    const a2aLog = new AppendOnlyLog({ dir: eventsDir });
-    a2aLog.open();
-    const machineId = resolveMachineId(eventsDir, {
-      recoverFromRecords: () => recoverMachineIdFromRecords(a2aLog.readAllRecords()),
-    });
-    const svc = new A2aTaskService({
-      log: a2aLog,
-      origin: { machineId, daemonEpoch: CHANNELS_EPOCH },
-    });
-    svc.restoreFromLog(); // 크로스-재시작: 태스크 projection 복원(비내구→내구 전환의 핵심 가치)
-    a2aTaskService = svc;
-    log('info', `A2A task log active (machineId=${machineId.slice(0, 8)}, tasks=${svc.taskCount})`);
-  } catch (err) {
-    // 로그 개방 실패는 파국이 아니다 — A2A는 역사적으로 best-effort 비내구.
-    // 렌더러-only로 degrade한다(a2aTaskService=null → 핸들러가 폴백 응답).
-    log('warn', 'A2A task log unavailable — degrading to renderer-only A2A:', err);
+  if (channelEventLogDeps) {
+    try {
+      const svc = new A2aTaskService({
+        log: channelEventLogDeps.log,
+        origin: { machineId: channelEventLogDeps.machineId, daemonEpoch: CHANNELS_EPOCH },
+      });
+      svc.restoreFromLog(); // 크로스-재시작: 태스크 projection 복원(비내구→내구 전환의 핵심 가치)
+      a2aTaskService = svc;
+      log('info', `A2A task service active (shared log, tasks=${svc.taskCount})`);
+    } catch (err) {
+      // 서비스 복원 실패는 파국이 아니다 — A2A는 역사적으로 best-effort 비내구.
+      // 렌더러-only로 degrade한다(a2aTaskService=null → 핸들러가 폴백 응답).
+      log('warn', 'A2A task service unavailable — degrading to renderer-only A2A:', err);
+    }
+  } else {
+    log('warn', 'A2A task service skipped — event log inactive this boot (legacy path)');
   }
 
   // Channels v2 Step 3a — the wake worker (see channelWakeWorker.ts for the
