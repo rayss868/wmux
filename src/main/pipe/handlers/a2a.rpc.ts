@@ -36,6 +36,12 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
+/** task.metadata.updatedAt(ISO-8601, 사전순=시간순). 부재 시 '' — 항상 최소값. */
+function taskUpdatedAt(t: Record<string, unknown>): string {
+  const meta = isRecord(t.metadata) ? t.metadata : undefined;
+  return typeof meta?.updatedAt === 'string' ? meta.updatedAt : '';
+}
+
 async function daemonTaskRpc(
   getDaemonClient: (() => DaemonClient | null) | undefined,
   method: string,
@@ -288,10 +294,13 @@ export function registerA2aRpc(
   router.register('meta.setSkills', (params) => sendToRenderer(getWindow, 'meta.setSkills', params));
 
   // task.query — 데몬 정본 + 렌더러 캐시 병합(envelope PR4).
-  // 렌더러: 렌더러-로컬 생성 태스크(채널멘션 chmention-* 등)와 세션 내 전체
+  // 렌더러: 렌더러-로컬 생성 태스크(채널멘션 chmention-* 등)와 세션 내 증분
   // 히스토리를 보유. 데몬: 재시작을 생존한 정본 태스크를 보유(내구화의 가치).
-  // 병합 규칙: 같은 id면 렌더러 우선(세션 내 상위집합 — 데몬 커밋은 verbatim
-  // 적용으로 이미 캐시에 반영돼 있고, 증분 히스토리는 렌더러에만 있다), 데몬-only
+  // 병합 규칙(패널 D): 같은 id면 **데몬이 더 최신일 때 데몬 status/updatedAt 우선**.
+  // 데몬 커밋 후 렌더러가 daemonCommitted를 적용하기 전 크래시/불달이면 렌더러
+  // 캐시가 stale인데, 렌더러-무조건-우선은 그 stale이 정본을 영영 가린다. 데몬이
+  // 더 최신이면 status/updatedAt만 데몬 값으로 덮고, 렌더러 전용 증분(history·
+  // artifacts)은 보존한다(§6.F — 증분 히스토리는 아직 데몬 비내구). 데몬-only
   // id(재시작 생존분)는 추가. 데몬 미가용이면 현행 렌더러-only와 동일.
   router.register('a2a.task.query', async (params) => {
     let rendererRes: unknown = null;
@@ -324,8 +333,21 @@ export function registerA2aRpc(
       return { workspaceId: params.workspaceId, tasks: daemonTasks };
     }
     const rendererTasks = (rendererRes as { tasks: Array<Record<string, unknown>> }).tasks;
+    const daemonById = new Map(daemonTasks.map((t) => [t.id, t]));
+    const merged = rendererTasks.map((rt) => {
+      const dt = daemonById.get(rt.id);
+      if (!dt) return rt;
+      // 데몬 정본이 렌더러 캐시보다 최신이면(렌더러가 daemonCommitted 미적용) status/
+      // updatedAt을 데몬 값으로 덮되 렌더러 전용 증분(history·artifacts)은 보존.
+      if (taskUpdatedAt(dt) > taskUpdatedAt(rt)) {
+        const rtMeta = isRecord(rt.metadata) ? rt.metadata : {};
+        const dtMeta = isRecord(dt.metadata) ? dt.metadata : {};
+        return { ...rt, status: dt.status, metadata: { ...rtMeta, updatedAt: dtMeta.updatedAt } };
+      }
+      return rt;
+    });
     const seen = new Set(rendererTasks.map((t) => t.id));
-    const merged = [...rendererTasks, ...daemonTasks.filter((t) => !seen.has(t.id))];
+    merged.push(...daemonTasks.filter((t) => !seen.has(t.id)));
     return { ...(rendererRes as Record<string, unknown>), tasks: merged };
   });
 
@@ -378,13 +400,22 @@ export function registerA2aRpc(
     if (isRecord(result) && result.ok === true && isRecord(result.task) && !params.taskId) {
       const t = result.task as { id?: unknown; metadata?: { title?: unknown; from?: unknown; to?: unknown }; history?: unknown };
       if (typeof t.id === 'string' && isRecord(t.metadata)) {
-        await daemonTaskRpc(getDaemonClient, 'a2a.task.create', {
+        const mirror = await daemonTaskRpc(getDaemonClient, 'a2a.task.create', {
           id: t.id,
           title: t.metadata.title,
           from: t.metadata.from,
           to: t.metadata.to,
           ...(Array.isArray(t.history) ? { history: t.history } : {}),
         });
+        // C(패널): 미러-생성 실패는 조용한 비내구 태스크가 된다(렌더러엔 있고 데몬엔
+        // 없음 → 재시작 미생존). 이후 전이는 'task not found'로 렌더러 폴백해 수렴하나,
+        // 침묵 손실은 관측 가능해야 한다(롤백/outbox는 §6.F 소관 — 여기선 경고만).
+        if (mirror.kind !== 'ok') {
+          console.warn(
+            `[a2a.rpc] daemon mirror-create failed for task ${t.id} — will not survive restart:`,
+            mirror.kind === 'reject' ? mirror.error : 'daemon unavailable',
+          );
+        }
       }
       // 내부 운반 필드 제거 — 파이프 호출자 응답 계약 불변.
       delete (result as Record<string, unknown>).task;

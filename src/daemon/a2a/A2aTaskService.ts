@@ -156,7 +156,35 @@ export class A2aTaskService {
     for (const rec of this.log.readAllRecords()) {
       if (rec.domain !== 'a2a') continue;
       this.applyPayload(rec.payload);
+      this.restoreIdempotency(rec); // E: 크로스-재시작 멱등 재시드
     }
+    // A: 부트 직후 GC — 30분 경과 종단 태스크를 즉시 정리한다. 로그는 영구이므로
+    // 이게 없으면 restore가 역대 전 종단 태스크를 매 부트 부활시켜(projection 무한
+    // 성장) query에 노출한다. GC는 projection만 바운드(로그 절단은 §9 컴팩션 몫).
+    this.gcTerminalTasks();
+  }
+
+  /**
+   * E(패널): 재시작 후 같은 idempotencyKey 재시도가 원본 결과를 반환하도록 멱등 LRU를
+   * replay에서 재구성한다. 없으면 재시도가 캐시 미스→invalid transition(태스크가 이미
+   * 전진)으로 변질된다. transition/cancel만 키를 싣는다(create는 결정적 id로 멱등).
+   */
+  private restoreIdempotency(rec: EventEnvelope): void {
+    if (!rec.idempotencyKey) return;
+    const p = rec.payload as { kind?: unknown; taskId?: unknown; verifiedItemCount?: unknown };
+    if (p.kind !== 'task.transition' && p.kind !== 'task.cancel') return;
+    if (typeof p.taskId !== 'string') return;
+    const task = this.tasks.get(p.taskId);
+    if (!task) return;
+    const result: TransitionOk | CancelOk =
+      p.kind === 'task.transition'
+        ? {
+            ok: true,
+            task,
+            ...(typeof p.verifiedItemCount === 'number' ? { verifiedItemCount: p.verifiedItemCount } : {}),
+          }
+        : { ok: true, task };
+    this.idempotencyRecord(p.taskId, rec.idempotencyKey, result);
   }
 
   /**
@@ -341,6 +369,12 @@ export class A2aTaskService {
       if (!isSender && !isReceiver) {
         return { ok: false, error: `a2a.task.cancel: caller ${input.callerWorkspaceId} is not sender or receiver` };
       }
+      // G(패널): 이미 종단이면 멱등 no-op 성공 — 취소의 목적(종단 도달)이 이미
+      // 충족됐다. reject하면 종전 렌더러 passthrough 경로 대비 회귀다(호출자는
+      // 취소를 눌렀는데 에러를 받는다). 로그 append 없이 현 상태 반환.
+      if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
+        return { ok: true, task };
+      }
       if (!validateTransition(task.status.state, 'canceled')) {
         return { ok: false, error: `a2a.task.cancel: cannot cancel task in state ${task.status.state}` };
       }
@@ -361,6 +395,54 @@ export class A2aTaskService {
       this.idempotencyRecord(input.taskId, input.idempotencyKey, result);
       return result;
     });
+  }
+
+  /**
+   * B(패널·완료증거 설계 §③ E10) — workspace teardown 전용 강제-실패 진입점.
+   * 수신 workspace가 제거되면 그 workspace로 향한 non-terminal 태스크는 어떤
+   * 전진도 불가하다(수신자 소멸). `VALID_TRANSITIONS`를 **의도적으로 우회**해
+   * (submitted/input-required→failed는 그래프상 불가) failed로 커밋한다 —
+   * 일반 transition API는 이 전이를 여전히 거부한다(진입점이 그래프 완화가 아님).
+   *
+   * 이게 없으면 teardown이 렌더러 캐시에서만 태스크를 죽이고 데몬 정본엔 미도달 →
+   * 재시작 시 restoreFromLog가 죽은 태스크를 working/submitted로 부활시켜 정본이
+   * 실제와 어긋난다(내구성 정본 주장 훼손). 데몬 부트 게이트가 workspace 제거를
+   * 아는 유일 지점(a2a.channel.purgeMembership 핸들러)에서 호출된다.
+   *
+   * @returns 실제로 failed로 커밋된 태스크 수.
+   */
+  async failTasksForWorkspaceRemoved(workspaceId: string, reason: string): Promise<number> {
+    // 스냅샷 후 순회 — 락 안에서 status가 바뀌므로 순회 중 Map 변형 회피.
+    const targets = [...this.tasks.values()].filter(
+      (t) =>
+        t.metadata.to.workspaceId === workspaceId &&
+        !(TERMINAL_STATES as readonly string[]).includes(t.status.state),
+    );
+    let failed = 0;
+    for (const target of targets) {
+      // eslint-disable-next-line no-await-in-loop -- per-task 직렬화(정상 전이와 순서 보장)
+      const ok = await this.withTaskLock(target.id, async () => {
+        // 락 대기 중 정상 전이로 종단됐으면 멱등 skip(이중 커밋 방지).
+        const cur = this.tasks.get(target.id);
+        if (!cur || (TERMINAL_STATES as readonly string[]).includes(cur.status.state)) return false;
+        const payload: A2aTaskTransitionPayload = {
+          kind: 'task.transition',
+          taskId: target.id,
+          to: 'failed',
+          timestamp: this.isoNow(),
+          forced: 'workspace_removed',
+          // 합성 완료증거(§③ E10): 실패 사유만(items 없음 — failed는 검증 불변식
+          // 미적용). PR4는 evidence 수용만이므로 게이트 없이 그대로 저장된다.
+          evidence: { summary: reason, items: [] },
+        };
+        const committed = await this.log.append(this.envelope(payload, workspaceId));
+        if (!committed) return false;
+        this.applyPayload(payload);
+        return true;
+      });
+      if (ok) failed++;
+    }
+    return failed;
   }
 
   // ── read ───────────────────────────────────────────────────────────

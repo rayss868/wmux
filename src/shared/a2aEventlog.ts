@@ -51,6 +51,14 @@ export interface A2aTaskTransitionPayload {
   evidence?: CompletionEvidence;
   /** 감사·등급용 검증 아이템 수(0=unverified 완료). 전이 게이트 아님(§② E9). */
   verifiedItemCount?: number;
+  /**
+   * 강제-실패 감사 마커(완료증거 설계 §③ E10). 부재=일반 전이. `'workspace_removed'`
+   * =수신 workspace teardown으로 인한 force-fail(`failTasksForWorkspaceRemoved`) —
+   * VALID_TRANSITIONS를 의도적으로 우회한 전이임을 로그에서 구별한다(submitted/
+   * input-required→failed는 그래프상 불가한데 수신자 소멸로 어떤 non-terminal도
+   * 전진 불가하므로 정당). 일반 transition API로는 이 값이 실리지 않는다.
+   */
+  forced?: 'workspace_removed';
 }
 
 /** 취소(canceled) — sender/receiver 모두 가능(권한은 서비스가 판정). */

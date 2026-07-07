@@ -182,3 +182,80 @@ describe('a2a.rpc — execute confirmation gate', () => {
     expect(worker.execute).not.toHaveBeenCalled();
   });
 });
+
+// ── 패널 D: task.query 병합 — 데몬 정본이 더 최신이면 status/updatedAt 우선 ──
+
+import type { DaemonClient } from '../../../DaemonClient';
+
+function setupRouterWithDaemon(
+  worker: ClaudeWorker,
+  daemonRpc: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+): RpcRouter {
+  const router = new RpcRouter();
+  const dc = { rpc: daemonRpc } as unknown as DaemonClient;
+  registerA2aRpc(router, () => fakeWindow, worker, { getDaemonClient: () => dc });
+  return router;
+}
+
+describe('a2a.task.query 병합 (패널 D)', () => {
+  it('같은 id에서 데몬이 더 최신이면 status/updatedAt은 데몬 값, history는 렌더러 보존', async () => {
+    const worker = makeWorker();
+    // 렌더러 캐시: stale working(+ 증분 history 2건). 데몬 정본: completed(더 최신).
+    sendToRendererMock.mockResolvedValueOnce({
+      workspaceId: 'ws-r',
+      tasks: [{
+        id: 't1',
+        status: { state: 'working', timestamp: '2026-07-07T00:00:00.000Z' },
+        history: ['h1', 'h2'],
+        metadata: { updatedAt: '2026-07-07T00:00:00.000Z', to: { workspaceId: 'ws-r' } },
+      }],
+    });
+    const router = setupRouterWithDaemon(worker, async (method) => {
+      if (method === 'a2a.task.query') {
+        return { ok: true, tasks: [{
+          id: 't1',
+          status: { state: 'completed', timestamp: '2026-07-07T00:05:00.000Z' },
+          history: [],
+          metadata: { updatedAt: '2026-07-07T00:05:00.000Z', to: { workspaceId: 'ws-r' } },
+        }] };
+      }
+      return { ok: false, error: 'unexpected' };
+    });
+
+    const res = await router.dispatch({ id: 'q1', method: 'a2a.task.query', params: { workspaceId: 'ws-r' } });
+    expect(res.ok).toBe(true);
+    const tasks = ((res as { result: unknown }).result as { tasks: Array<Record<string, unknown>> }).tasks;
+    expect(tasks).toHaveLength(1);
+    const t = tasks[0];
+    expect((t.status as { state: string }).state).toBe('completed'); // 데몬 정본 우선
+    expect((t.metadata as { updatedAt: string }).updatedAt).toBe('2026-07-07T00:05:00.000Z');
+    expect(t.history).toEqual(['h1', 'h2']); // 렌더러 증분 보존
+  });
+
+  it('렌더러가 더 최신이면(증분 히스토리로 앞섬) 렌더러 유지 — 데몬-only id는 추가', async () => {
+    const worker = makeWorker();
+    sendToRendererMock.mockResolvedValueOnce({
+      workspaceId: 'ws-r',
+      tasks: [{
+        id: 't1',
+        status: { state: 'input-required', timestamp: '2026-07-07T01:00:00.000Z' },
+        metadata: { updatedAt: '2026-07-07T01:00:00.000Z', to: { workspaceId: 'ws-r' } },
+      }],
+    });
+    const router = setupRouterWithDaemon(worker, async (method) => {
+      if (method === 'a2a.task.query') {
+        return { ok: true, tasks: [
+          { id: 't1', status: { state: 'working', timestamp: '2026-07-07T00:30:00.000Z' }, metadata: { updatedAt: '2026-07-07T00:30:00.000Z', to: { workspaceId: 'ws-r' } } },
+          { id: 't2-restart-survivor', status: { state: 'working', timestamp: '2026-07-07T00:00:00.000Z' }, metadata: { updatedAt: '2026-07-07T00:00:00.000Z', to: { workspaceId: 'ws-r' } } },
+        ] };
+      }
+      return { ok: false, error: 'unexpected' };
+    });
+
+    const res = await router.dispatch({ id: 'q2', method: 'a2a.task.query', params: { workspaceId: 'ws-r' } });
+    const tasks = ((res as { result: unknown }).result as { tasks: Array<Record<string, unknown>> }).tasks;
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    expect((byId.get('t1')!.status as { state: string }).state).toBe('input-required'); // 렌더러가 최신 → 유지
+    expect(byId.get('t2-restart-survivor')).toBeDefined(); // 데몬-only(재시작 생존분) 추가
+  });
+});

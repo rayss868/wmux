@@ -251,3 +251,133 @@ describe('A2aTaskService cancel + query', () => {
     expect(svc.queryTasks('ws-sender', { role: 'agent' })).toHaveLength(0); // sender는 user role
   });
 });
+
+// ── 패널 수정: GC(A) · teardown force-fail(B) · 멱등 재시드(E) · idempotent cancel(G) ──
+
+function newServiceAt(log: AppendOnlyLog, now: () => number): A2aTaskService {
+  return new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 1 }, now });
+}
+
+describe('A(패널) projection GC', () => {
+  it('30분 경과 종단 태스크는 gcTerminalTasks가 제거, 미경과·비종단은 유지', async () => {
+    const t0 = 1_700_000_000_000;
+    let clock = t0;
+    const log = newLog();
+    const svc = newServiceAt(log, () => clock);
+    await svc.createTask({ id: 'done-1', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-r', name: 'R' } });
+    await svc.transition({ taskId: 'done-1', to: 'working', callerWorkspaceId: 'ws-r' });
+    await svc.transition({ taskId: 'done-1', to: 'completed', callerWorkspaceId: 'ws-r', evidence: { summary: 'ok', items: [] } });
+    await svc.createTask({ id: 'live-1', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-r', name: 'R' } });
+    await svc.transition({ taskId: 'live-1', to: 'working', callerWorkspaceId: 'ws-r' });
+
+    clock = t0 + 31 * 60 * 1000; // 31분 경과
+    svc.gcTerminalTasks();
+    expect(svc.getTask('done-1')).toBeUndefined(); // 종단·경과 → 제거
+    expect(svc.getTask('live-1')?.status.state).toBe('working'); // 비종단 → 유지
+    log.close();
+  });
+
+  it('restoreFromLog가 부트 직후 GC를 적용 — 오래된 종단 태스크를 부활시키지 않는다', async () => {
+    const t0 = 1_700_000_000_000;
+    const log1 = newLog();
+    const svc1 = newServiceAt(log1, () => t0);
+    await svc1.createTask({ id: 'old-done', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-r', name: 'R' } });
+    await svc1.transition({ taskId: 'old-done', to: 'working', callerWorkspaceId: 'ws-r' });
+    await svc1.transition({ taskId: 'old-done', to: 'completed', callerWorkspaceId: 'ws-r', evidence: { summary: 'ok', items: [] } });
+    log1.close();
+
+    // 재시작이 31분 뒤라면: 로그는 영구지만 부트 GC가 오래된 종단분을 즉시 정리.
+    const log2 = newLog();
+    const svc2 = newServiceAt(log2, () => t0 + 31 * 60 * 1000);
+    svc2.restoreFromLog();
+    expect(svc2.getTask('old-done')).toBeUndefined(); // 부활 없음
+    expect(svc2.taskCount).toBe(0);
+    log2.close();
+  });
+});
+
+describe('B(패널) teardown force-fail 진입점', () => {
+  it('workspace 제거 시 non-terminal 수신 태스크를 forced 마커로 failed 커밋 + 재시작 생존', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    // ws-gone으로 향한 submitted + working, 그리고 무관한 ws-keep 태스크.
+    await svc.createTask({ id: 'sub', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-gone', name: 'G' } });
+    await svc.createTask({ id: 'wrk', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-gone', name: 'G' } });
+    await svc.transition({ taskId: 'wrk', to: 'working', callerWorkspaceId: 'ws-gone' });
+    await svc.createTask({ id: 'keep', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-keep', name: 'K' } });
+
+    const n = await svc.failTasksForWorkspaceRemoved('ws-gone', 'gone');
+    expect(n).toBe(2); // submitted + working 둘 다(그래프 우회)
+    expect(svc.getTask('sub')?.status.state).toBe('failed');
+    expect(svc.getTask('wrk')?.status.state).toBe('failed');
+    expect(svc.getTask('keep')?.status.state).toBe('submitted'); // 무관 ws 불간섭
+
+    // 로그에 forced 마커 + 합성 evidence.
+    const subRec = transitionRecords(log, 'sub').find((p) => p.to === 'failed');
+    expect(subRec?.forced).toBe('workspace_removed');
+    expect(subRec?.evidence?.summary).toBe('gone');
+
+    // 재시작: 정본이 failed로 복원(부활 없음 — teardown이 정본에 도달).
+    log.close();
+    const log2 = newLog();
+    const svc2 = newService(log2);
+    svc2.restoreFromLog();
+    expect(svc2.getTask('sub')?.status.state).toBe('failed');
+    expect(svc2.getTask('wrk')?.status.state).toBe('failed');
+    log2.close();
+  });
+
+  it('일반 transition API는 submitted→failed를 여전히 거부(진입점이 그래프 완화 아님)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({ id: 'sub', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-r', name: 'R' } });
+    const r = await svc.transition({ taskId: 'sub', to: 'failed', callerWorkspaceId: 'ws-r' });
+    expect(r.ok).toBe(false);
+    log.close();
+  });
+
+  it('force-fail은 멱등 — 락 대기 중 종단된 태스크는 재커밋하지 않는다(재호출 no-op)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({ id: 'sub', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-gone', name: 'G' } });
+    expect(await svc.failTasksForWorkspaceRemoved('ws-gone', 'gone')).toBe(1);
+    expect(await svc.failTasksForWorkspaceRemoved('ws-gone', 'gone')).toBe(0); // 이미 종단 → 0
+    log.close();
+  });
+});
+
+describe('E(패널) 크로스-재시작 멱등 재시드', () => {
+  it('재시작 후 같은 키 재시도 → 원본 결과(invalid transition 아님), 로그 무증가', async () => {
+    const log1 = newLog();
+    const svc1 = newService(log1);
+    await seedWorkingTask(svc1); // submitted→working (키 없음)
+    // completed를 멱등키와 함께 커밋.
+    await svc1.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver', idempotencyKey: 'kc', evidence: { summary: 'ok', items: [] } });
+    log1.close();
+
+    const log2 = newLog();
+    const svc2 = newService(log2);
+    svc2.restoreFromLog();
+    const recBefore = log2.readAllRecords().length;
+    // 같은 키 재시도 — 재시드가 없으면 completed→completed로 invalid transition이 된다.
+    const retry = await svc2.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver', idempotencyKey: 'kc' });
+    expect(retry.ok).toBe(true); // 멱등 흡수
+    expect(log2.readAllRecords().length).toBe(recBefore); // append 없음
+    log2.close();
+  });
+});
+
+describe('G(패널) idempotent cancel', () => {
+  it('이미 종단(completed)인 태스크의 cancel은 no-op 성공(로그 무증가)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedWorkingTask(svc);
+    await svc.transition({ taskId: 'task-1', to: 'completed', callerWorkspaceId: 'ws-receiver', evidence: { summary: 'ok', items: [] } });
+    const recBefore = log.readAllRecords().length;
+    const cancel = await svc.cancelTask({ taskId: 'task-1', callerWorkspaceId: 'ws-sender' });
+    expect(cancel.ok).toBe(true); // reject 아님(회귀 방지)
+    expect(svc.getTask('task-1')?.status.state).toBe('completed'); // 상태 불변
+    expect(log.readAllRecords().length).toBe(recBefore); // append 없음
+    log.close();
+  });
+});

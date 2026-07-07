@@ -1919,6 +1919,23 @@ function registerRpcHandlers(
       typeof params['principalId'] === 'string' && params['principalId'].length > 0
         ? params['principalId']
         : undefined;
+    // B(패널·완료증거 §③ E10): whole-workspace purge(memberId·principalId 모두
+    // 부재)는 workspace 제거 teardown 신호다(workspaceSlice). 데몬이 이 사실을 아는
+    // 유일 지점이므로, 여기서 그 workspace로 향한 non-terminal A2A 태스크를 정본
+    // (로그)에서 force-fail한다 — 렌더러 캐시에서만 죽이면 재시작 시 restoreFromLog가
+    // 부활시켜 정본이 실제와 어긋난다. per-member purge(paneSlice)는 teardown이
+    // 아니므로 제외. 로그 커밋을 await해 응답 전 내구화(데몬 미가용 아님 — 동일 프로세스).
+    if (a2aTaskService && memberId === undefined && principalId === undefined) {
+      try {
+        const n = await a2aTaskService.failTasksForWorkspaceRemoved(
+          workspaceId,
+          'Receiver workspace was removed before this task completed.',
+        );
+        if (n > 0) log('info', `A2A: force-failed ${n} task(s) for removed workspace ${workspaceId}`);
+      } catch (err) {
+        log('warn', `A2A: failTasksForWorkspaceRemoved(${workspaceId}) failed:`, err);
+      }
+    }
     return channelService.purgeMembership({
       workspaceId,
       verifiedWorkspaceId,
@@ -3028,6 +3045,14 @@ async function main(): Promise<void> {
       });
       svc.restoreFromLog(); // 크로스-재시작: 태스크 projection 복원(비내구→내구 전환의 핵심 가치)
       a2aTaskService = svc;
+      // A(패널): projection GC 주기 배선 — 렌더러 a2aSlice(useRpcBridge 5분 타이머)와
+      // 동형. 이게 없으면 종단 태스크가 projection Map에 영구 적재된다(부트 GC는
+      // restoreFromLog가 1회 수행하나 런타임 누적은 주기 GC 몫). unref로 이벤트
+      // 루프를 붙잡지 않는다. 로그 상주분 절단은 §9 컴팩션 소관(별도).
+      const a2aGcInterval = setInterval(() => {
+        svc.gcTerminalTasks();
+      }, 5 * 60 * 1000);
+      a2aGcInterval.unref();
       log('info', `A2A task service active (shared log, tasks=${svc.taskCount})`);
     } catch (err) {
       // 서비스 복원 실패는 파국이 아니다 — A2A는 역사적으로 best-effort 비내구.
