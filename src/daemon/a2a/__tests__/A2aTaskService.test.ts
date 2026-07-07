@@ -273,6 +273,38 @@ describe('T-A2A authContext 서버 유도(§7)', () => {
     expect(env?.authContext.verifiedWorkspaceId).toBe('ws-sender');
     expect(env?.authContext.trustTier).toBe('semi-trusted');
   });
+
+  // 리뷰 3모델 합의(Codex·GLM·Claude): self-address task(from.ws===to.ws)에서는
+  // workspaceId 일치로 행위자 역할을 추론할 수 없다 — role 파라미터로 명시해야 한다.
+  it('self-address create → 발신자(from) pane 좌표 (역할 미구분 시 to 우선 오기 회귀가드)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-self-cr',
+      title: 'T',
+      from: { workspaceId: 'ws-x', name: 'S', paneId: 'pane-from' },
+      to: { workspaceId: 'ws-x', name: 'R', paneId: 'pane-to' },
+    });
+    const env = a2aEnvelope(log, 'task.create');
+    // create 행위자 = sender → from pane. to-우선 버그면 pane-to로 오기됐다.
+    expect(env?.authContext.principalId).toBe(panePrincipalId('ws-x', 'pane-from'));
+  });
+
+  it('self-address cancel(발신자) → 발신자(from) pane 좌표 (수신 pane 아님)', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({
+      id: 'task-self-cx',
+      title: 'T',
+      from: { workspaceId: 'ws-x', name: 'S', paneId: 'pane-from' },
+      to: { workspaceId: 'ws-x', name: 'R', paneId: 'pane-to' },
+    });
+    const cancel = await svc.cancelTask({ taskId: 'task-self-cx', callerWorkspaceId: 'ws-x' });
+    expect(cancel.ok).toBe(true);
+    const env = a2aEnvelope(log, 'task.cancel');
+    // isSender·isReceiver 둘 다 참 → sender 우선(취소는 통상 발신자 행위) → from pane.
+    expect(env?.authContext.principalId).toBe(panePrincipalId('ws-x', 'pane-from'));
+  });
 });
 
 // ── T-A2A 멱등: 동일 키 재시도 → 로그 1건 ──────────────────────────────

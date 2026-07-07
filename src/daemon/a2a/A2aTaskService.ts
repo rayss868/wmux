@@ -255,7 +255,7 @@ export class A2aTaskService {
       const payload: A2aTaskCreatePayload = { kind: 'task.create', task };
       // create의 행위자 = 발신자(from) — principalId를 from pane 좌표에서 서버 유도.
       const committed = await this.log.append(
-        this.envelope(payload, input.from.workspaceId, this.derivePrincipalId(task, input.from.workspaceId)),
+        this.envelope(payload, input.from.workspaceId, this.derivePrincipalId(task, 'from', input.from.workspaceId)),
       );
       if (!committed) {
         return { ok: false, error: 'a2a.task.create: daemon log append failed (uncommitted)' };
@@ -337,7 +337,7 @@ export class A2aTaskService {
       // principalId를 저장된 to pane 좌표에서 서버 유도(위조 불가).
       const authWs = input.callerWorkspaceId;
       const committed = await this.log.append(
-        this.envelope(payload, authWs, this.derivePrincipalId(task, authWs), input.idempotencyKey),
+        this.envelope(payload, authWs, this.derivePrincipalId(task, 'to', authWs), input.idempotencyKey),
       );
       if (!committed) {
         return { ok: false, error: 'a2a.task.update: daemon log append failed (uncommitted)' };
@@ -385,10 +385,11 @@ export class A2aTaskService {
         taskId: input.taskId,
         timestamp: this.isoNow(),
       };
-      // cancel의 행위자 = sender 또는 receiver — principalId를 caller 측 pane 좌표에서
-      // 서버 유도(derivePrincipalId가 callerWorkspaceId로 to/from 중 caller 측을 선택).
+      // cancel의 행위자 = sender 또는 receiver — 위에서 판정한 역할로 pane을 선택한다
+      // (self-address task에선 sender 우선 — 취소는 통상 발신자 행위). principalId를 그
+      // 측 pane 좌표에서 서버 유도.
       const committed = await this.log.append(
-        this.envelope(payload, input.callerWorkspaceId, this.derivePrincipalId(task, input.callerWorkspaceId), input.idempotencyKey),
+        this.envelope(payload, input.callerWorkspaceId, this.derivePrincipalId(task, isSender ? 'from' : 'to', input.callerWorkspaceId), input.idempotencyKey),
       );
       if (!committed) {
         return { ok: false, error: 'a2a.task.cancel: daemon log append failed (uncommitted)' };
@@ -439,9 +440,9 @@ export class A2aTaskService {
           evidence: { summary: reason, items: [] },
         };
         // 데몬 강제-실패(teardown): 제거되는 수신 workspace를 authz 앵커로, principalId는
-        // 수신 pane 좌표에서 서버 유도(cur는 위 가드로 non-null).
+        // 수신 pane(to) 좌표에서 서버 유도(cur는 위 가드로 non-null).
         const committed = await this.log.append(
-          this.envelope(payload, workspaceId, this.derivePrincipalId(cur, workspaceId)),
+          this.envelope(payload, workspaceId, this.derivePrincipalId(cur, 'to', workspaceId)),
         );
         if (!committed) return false;
         this.applyPayload(payload);
@@ -543,30 +544,33 @@ export class A2aTaskService {
   }
 
   /**
-   * principalId 서버 유도(§7). 행위자(caller)의 pane 좌표에서 유도한다 — caller가
-   * 수신자면 to.paneId, 발신자면 from.paneId. 둘 다 task 생성 시 서버 저장값이라
-   * 상태를 갱신하는 caller가 위조할 수 없다(§7:356 — 발신자가 넘긴 principalId는
-   * strip 대상). pane 미핀(ws-level task·헤드리스 ClaudeWorker)이면 verifiedWorkspaceId
-   * 폴백(ChannelService.authContextFor의 principalId ?? verifiedWorkspaceId와 동형).
-   * principalId는 display/routing 전용이라 이 유도가 어긋나도 authz는 불변이다
+   * principalId 서버 유도(§7). 행위자(actor)의 **역할**을 호출자가 명시한다(actorSide) —
+   * create·sender-cancel의 행위자는 from, transition(수신자 강제)·teardown·receiver-cancel은
+   * to. 역할을 workspaceId 일치로 추론하지 않는 이유: self-address task(from.ws===to.ws)에서는
+   * 양쪽이 같은 ws라 추론이 불가능해 행위자를 오기한다(리뷰 3모델 합의 — Codex·GLM·Claude).
+   *
+   * 유도 소스는 task.metadata의 pane 좌표다. transition/cancel의 좌표는 생성 시 서버 저장값이라
+   * 상태를 갱신하는 caller가 위조할 수 없다. create의 from 좌표는 그 호출의 신선한 입력이지만
+   * 정상 토폴로지에선 렌더러 경계 해석값이다(§7:356의 "senderPtyId→레지스트리" 서버 유도는
+   * A2A 경로에선 데몬이 ptyId→pane을 해석하지 못하므로(S-C2, 렌더러 소유) 좌표 유도가 그
+   * 데몬-경계 등가물이다 — 채널 경로처럼 상류가 레지스트리 해석 principalId를 주입하지는 않는다).
+   * pane 미핀(ws-level task·헤드리스 ClaudeWorker)이면 verifiedWorkspaceId 폴백.
+   * principalId는 display/routing·감사 전용이라 이 유도가 어긋나도 authz는 불변이다
    * (권한 앵커 = verifiedWorkspaceId, §7:358).
    */
-  private derivePrincipalId(task: Task, verifiedWorkspaceId: string): string {
-    const { to, from } = task.metadata;
-    if (to.workspaceId === verifiedWorkspaceId && to.paneId) {
-      return panePrincipalId(to.workspaceId, to.paneId);
-    }
-    if (from.workspaceId === verifiedWorkspaceId && from.paneId) {
-      return panePrincipalId(from.workspaceId, from.paneId);
-    }
+  private derivePrincipalId(task: Task, actorSide: 'from' | 'to', verifiedWorkspaceId: string): string {
+    const addr = task.metadata[actorSide];
+    if (addr.paneId) return panePrincipalId(addr.workspaceId, addr.paneId);
     return verifiedWorkspaceId;
   }
 
   /**
    * authContext 조립(§7 PR5). verifiedWorkspaceId = 서버핀 authz 앵커(호출자 제공).
    * principalId = derivePrincipalId가 서버 유도한 display/routing 스탬프. trustTier =
-   * 'semi-trusted' 고정(§7 표: A2A execute는 우리가 spawn한 ClaudeWorker = 준신뢰) —
-   * 발신자 주장이 아니라 서버 결정으로 단일화한다.
+   * 'semi-trusted' 고정: A2A task RPC는 caller가 GUI human인지 우리가 spawn한 ClaudeWorker인지
+   * 구별할 신뢰 신호를 싣지 않으므로(§7 표의 trusted/semi-trusted 구분 입력 부재) 보수적
+   * 하위 등급으로 단일화한다(발신자 주장 차단). 정밀 등급 배정은 caller trust 신호 배선 후속.
+   * trustTier/principalId는 display·감사 전용이라 authz에 무영향(§7:358).
    */
   private buildAuthContext(
     verifiedWorkspaceId: string,

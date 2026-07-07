@@ -2610,8 +2610,9 @@ let channelSnapshotStoreRef: SnapshotStore | null = null;
 // §6.4a: 활성 이벤트로그 formatVersion. manifest durable 활성(로그 모드) 시에만
 // main()이 세팅 — 레거시 폴백/마이그레이션 미완(channelEventLogDeps null 경로)이면
 // undefined로 남아 daemon.ping이 필드를 뺀다(부재 = pre-envelope 데몬 = 레거시
-// 세대). ping 핸들러(registerRpcHandlers 클로저)가 이 모듈 변수를 캡처해 읽는다 —
-// registerRpcHandlers 호출(main 말미)은 마이그레이션 블록보다 뒤라 값이 선행 세팅된다.
+// 세대). ping 핸들러(registerRpcHandlers 클로저)는 이 모듈 변수의 live binding을
+// 캡처하므로 값을 **호출 시점**에 읽는다 — 실제 ping RPC는 부트 완료 후에나 도착하니
+// 마이그레이션 세팅과 핸들러 등록의 상대 순서는 무관하다(등록이 앞서도 안전).
 let activeEventLogFormatVersion: number | undefined = undefined;
 
 // === State builder ===
