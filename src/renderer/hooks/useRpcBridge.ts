@@ -1720,7 +1720,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // Return the RESOLVED target workspaceId so the main-side a2a.rpc handler
     // uses it for execute:true ClaudeWorker spawn, instead of the raw fuzzy `to`
     // string (which could be a number/partial name).
-    return { ok: true, taskId: newTaskId, silent, toWorkspaceId: target.id, executeApproved: executeRequested };
+    // `task`: 확정된 태스크 스냅샷(주소 해석 반영) — main이 데몬 A2aTaskService에
+    // 정본 미러-생성(envelope PR4)할 때 쓰고, 파이프 호출자에게 반환하기 전에
+    // main이 제거한다(응답 계약 불변).
+    return { ok: true, taskId: newTaskId, silent, toWorkspaceId: target.id, executeApproved: executeRequested, task: createdTask };
   }
 
   if (method === 'a2a.task.query') {
@@ -1812,11 +1815,26 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const callerAddrUpdate = resolveSenderPaneAddress(callerLeavesUpdate, callerPtyIdUpdate);
 
     // ── Apply the status transition ──
+    // envelope PR4(§6.M C6): main이 데몬 A2aTaskService에 이미 커밋한 전이는
+    // daemonCommitted 마커 + committedTask 스냅샷으로 도착한다 — 캐시는 이를
+    // **재검증 없이 verbatim 적용**한다(재검증하면 데몬 force-fail 커밋을 거부해
+    // split-brain). 마커가 없으면(데몬 미가용/미시드 태스크) 기존 검증 writer로 폴백.
+    const committedTask =
+      params.daemonCommitted === true &&
+      params.committedTask && typeof params.committedTask === 'object' &&
+      typeof (params.committedTask as { id?: unknown }).id === 'string'
+        ? (params.committedTask as Task)
+        : undefined;
     let transitioned = false;
     if (nextState) {
-      const result = store.updateTaskStatus(taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence);
-      if (!result.ok) return { error: `a2a.task.update: ${result.error}` };
-      transitioned = true;
+      if (committedTask) {
+        store.applyDaemonTaskUpdate(committedTask);
+        transitioned = true;
+      } else {
+        const result = store.updateTaskStatus(taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence);
+        if (!result.ok) return { error: `a2a.task.update: ${result.error}` };
+        transitioned = true;
+      }
     }
 
     // ── Append message + deliver to the other party ──
@@ -1919,6 +1937,20 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
     if (!taskId) return { error: 'a2a.task.cancel: missing "taskId"' };
     if (!workspaceId) return { error: 'a2a.task.cancel: missing "workspaceId". Ensure WMUX_WORKSPACE_ID is set.' };
+    // envelope PR4(C6): 데몬이 이미 커밋한 취소는 verbatim 적용(재검증 없음 —
+    // update 경로와 동일 계약). 마커 없으면 기존 검증 writer 폴백.
+    const committedCancel =
+      params.daemonCommitted === true &&
+      params.committedTask && typeof params.committedTask === 'object' &&
+      typeof (params.committedTask as { id?: unknown }).id === 'string'
+        ? (params.committedTask as Task)
+        : undefined;
+    if (committedCancel) {
+      store.applyDaemonTaskUpdate(committedCancel);
+      const cached = store.getTask(taskId);
+      if (cached) emitA2aTaskEvent(cached, 'cancelled', 'canceled');
+      return { ok: true, taskId };
+    }
     // Snapshot from/to BEFORE the cancel so the pointer's dual-party scope is
     // read off pre-mutation metadata (cancelTask flips status in place today,
     // but a future GC/eviction could remove the task — capture first).

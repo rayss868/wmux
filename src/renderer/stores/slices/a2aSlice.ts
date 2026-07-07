@@ -57,7 +57,22 @@ export interface A2aSlice {
   // task is pinned to a specific receiver pane (`to.paneId`), the status update
   // is restricted to THAT pane. Absent (headless worker / token client / env-hint
   // fallback) ⇒ ws-granular authz, unchanged.
+  //
+  // 지위(envelope PR4, §6.M C6): A2A 전이 정본이 데몬 A2aTaskService로 이관되면서
+  // 이 검증 writer는 **데몬 미가용/미시드 태스크의 폴백·컨틴전시 경로**로 강등됐다.
+  // 렌더러-로컬 생성 태스크(채널멘션 chmention-* 등, 데몬에 시드되지 않음)와 데몬
+  // degrade 창의 전이는 여전히 여기로 온다 — 제거하지 않는다. 데몬이 커밋한 전이는
+  // applyDaemonTaskUpdate(verbatim)로만 적용된다.
   updateTaskStatus: (taskId: string, state: TaskState, callerWorkspaceId: string, callerAddr?: PaneAddress | null, statusMessage?: Message, evidence?: CompletionEvidence) => { ok: boolean; error?: string };
+  /**
+   * 데몬 커밋 결과의 캐시 verbatim 적용(envelope PR4 §5 D11, §6.M 설계 C6).
+   *
+   * **재검증 금지 계약**: evidence 게이트뿐 아니라 structural validateTransition도
+   * 재실행하지 않는다 — 데몬 force-fail(E10 teardown 등)은 그래프 밖 전이를 정당하게
+   * 커밋하는데, 캐시가 validateTransition을 재실행하면 그 커밋을 거부해 split-brain이
+   * 난다. 정본은 데몬 로그, 이 스토어는 캐시다(30분 GC는 캐시 GC로 의미 재정의).
+   */
+  applyDaemonTaskUpdate: (committed: Task) => void;
   addTaskArtifact: (taskId: string, artifact: Artifact) => void;
   cancelTask: (taskId: string, callerWorkspaceId: string) => { ok: boolean; error?: string };
   queryTasks: (
@@ -195,6 +210,22 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     });
     return { ok: true };
   },
+
+  applyDaemonTaskUpdate: (committed) => set((state: StoreState) => {
+    // C6 verbatim: authz·validateTransition·evidence 어느 것도 재실행하지 않는다.
+    // 데몬 A2aTaskService가 이미 게이트를 통과시킨 커밋이다(재검증 = split-brain).
+    const existing = state.a2aTasks[committed.id];
+    if (existing) {
+      // 상태·updatedAt만 데몬 커밋 그대로 반영. history/artifacts는 렌더러가 보유한
+      // 상위집합을 보존한다(데몬 projection은 생성 시점 히스토리만 내구화 — 증분
+      // 히스토리 내구화는 §6.F 몫).
+      existing.status = committed.status;
+      existing.metadata.updatedAt = committed.metadata.updatedAt;
+    } else {
+      // 캐시 미스(데몬 재시작 생존 태스크 등): 데몬 스냅샷을 통째로 수용.
+      state.a2aTasks[committed.id] = committed;
+    }
+  }),
 
   addTaskArtifact: (taskId, artifact) => set((state: StoreState) => {
     const task = state.a2aTasks[taskId];
