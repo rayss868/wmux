@@ -37,6 +37,25 @@ const DEBOUNCE_MS = 30_000;
 const QUEUE_KEY = 'channel-state';
 
 /**
+ * 이벤트로그 모드 옵션(envelope-design §6.4, PR3 additive). 미지정 시 기존 동작 1비트 불변.
+ */
+export interface ChannelStateWriterEventLogOpts {
+  /**
+   * §6.4c 워터마크 스탬프 훅. 지정되면 **모든 물리 write 직전(직렬화 시점)**에 상태를
+   * 변환해 기록한다 — 스케줄 시점이 아니라 write 시점에 훅이 돌아야 stateHash가 실제
+   * 기록 내용과 항상 일치한다(디바운스 창 동안 상태가 계속 변하므로, 스케줄 시점
+   * 해시는 나중에 쓰인 내용과 어긋나 reseed 오발동을 낳는다).
+   */
+  stamp?: (state: ChannelState) => ChannelState;
+  /**
+   * §6.4b — graceful shutdown 경로(flush/flushSync/dispose/syncFallback)의 write를
+   * durable(§2.3: tmp fsync→rename→dir fsync)로 승격. 스테디스테이트 디바운스 write는
+   * 캐시(정본은 로그)라 비내구 유지.
+   */
+  durableFlush?: boolean;
+}
+
+/**
  * Persists ChannelState to `channels.json`. Channel-specific concerns:
  *   - On `load()`, channels with zero members for `emptyChannelTtlHours`
  *     (default 7d) are pruned. The 7-day bound mirrors StateWriter's
@@ -58,6 +77,9 @@ export class ChannelStateWriter {
   private readonly queue = new AsyncQueue();
   private immediateEpoch = 0;
   private lastImmediateState: ChannelState | null = null;
+  // 이벤트로그 모드(PR3 additive) — 부트 게이트가 enableEventLogDualWrite로 설정.
+  private stamp?: (state: ChannelState) => ChannelState;
+  private durableFlush = false;
 
   /**
    * Construct a `ChannelStateWriter` rooted at `baseDir`. The on-disk
@@ -80,13 +102,38 @@ export class ChannelStateWriter {
 
     this.queue.setSyncFallback(QUEUE_KEY, () => {
       if (this.pendingState !== null) {
-        atomicWriteJSONSync(this.filePath, this.pendingState, {
+        // 프로세스-종료 드레인 경로 — §6.4b durableFlush 승격 대상.
+        atomicWriteJSONSync(this.filePath, this.applyStamp(this.pendingState), {
           validate: ChannelStateWriter.isChannelState,
           rotationEnabled: true,
+          durable: this.durableFlush,
         });
         this.pendingState = null;
       }
     });
+  }
+
+  /**
+   * 이벤트로그 dual-write 모드 활성(PR3 부트 게이트 전용, §6.4b/§6.4c).
+   * 이후 모든 write가 stamp(write 시점 워터마크)를 통과하고, shutdown 경로
+   * write가 durable로 승격된다. 레거시 모드(미호출)는 기존 동작 불변.
+   */
+  enableEventLogDualWrite(opts: ChannelStateWriterEventLogOpts): void {
+    this.stamp = opts.stamp;
+    this.durableFlush = opts.durableFlush ?? false;
+  }
+
+  /** write 직전 스탬프 적용(§6.4c — 직렬화 시점 해시 일치 보장). 훅 부재 시 원본. */
+  private applyStamp(state: ChannelState): ChannelState {
+    if (!this.stamp) return state;
+    try {
+      return this.stamp(state);
+    } catch (err) {
+      // 스탬프 실패가 dual-write 자체를 막으면 안 된다(캐시 우선) — 워터마크 없는
+      // 파일은 다음 부트에서 absent→reseed로 감지된다(무성 아님).
+      console.error('[ChannelStateWriter] watermark stamp failed:', err);
+      return state;
+    }
   }
 
   /**
@@ -100,14 +147,17 @@ export class ChannelStateWriter {
    *   ignore the return value continue to work; the boolean is opt-in
    *   for callers that need the failure signal.
    */
-  saveImmediate(state: ChannelState): boolean {
+  saveImmediate(state: ChannelState, opts: { durable?: boolean } = {}): boolean {
     this.immediateEpoch++;
     this.lastImmediateState = state;
     this.queue.clear();
     try {
-      atomicWriteJSONSync(this.filePath, state, {
+      atomicWriteJSONSync(this.filePath, this.applyStamp(state), {
         validate: ChannelStateWriter.isChannelState,
         rotationEnabled: true,
+        // §2.3 durable 옵션(additive) — 마이그레이션/reseed 워터마크 되쓰기(§6.4c)와
+        // shutdown flush(§6.4b)만 true. 기존 호출부(무옵션)는 비내구 그대로.
+        durable: opts.durable ?? false,
       });
       this.pendingState = null;
       return true;
@@ -135,7 +185,12 @@ export class ChannelStateWriter {
         if (payload === null) return;
         const epochAtStart = this.immediateEpoch;
         try {
-          await atomicWriteJSON(this.filePath, payload, {
+          // 스탬프는 write 시점(직렬화 직전)에 적용 — §6.4c 해시-내용 일치.
+          // 비동기 경로는 스탬프(해시 계산)와 직렬화 사이에 await(ensureDir)가
+          // 있어, 그 사이 커밋이 라이브 참조를 변형하면 해시≠기록내용으로 다음
+          // 부트가 허위 downgrade-write를 감지한다(Codex INFO-8) — 스탬프 전에
+          // 클론으로 고정해 해시와 내용을 같은 스냅숏에 묶는다.
+          await atomicWriteJSON(this.filePath, this.applyStamp(structuredClone(payload)), {
             validate: ChannelStateWriter.isChannelState,
             rotationEnabled: true,
           });
@@ -147,7 +202,7 @@ export class ChannelStateWriter {
             this.lastImmediateState !== null
           ) {
             try {
-              atomicWriteJSONSync(this.filePath, this.lastImmediateState, {
+              atomicWriteJSONSync(this.filePath, this.applyStamp(this.lastImmediateState), {
                 validate: ChannelStateWriter.isChannelState,
                 rotationEnabled: true,
               });
@@ -210,39 +265,7 @@ export class ChannelStateWriter {
       return { ...EMPTY_CHANNEL_STATE, channels: [], members: {}, messages: {}, idempotency: {} };
     }
 
-    // Prune channels that have been empty longer than the TTL.
-    // Prune rules (applied per channel):
-    //   - Has members: keep (always).
-    //   - 0 members AND emptySince set AND within TTL: keep.
-    //   - 0 members AND emptySince set AND older than TTL: prune.
-    //   - 0 members AND no emptySince AND `now - createdAt < TTL`: keep
-    //     (the never-joined case AND the recently-orphaned case).
-    //   - 0 members AND no emptySince AND `now - createdAt >= TTL`:
-    //     prune. The fallback to `createdAt` catches a channel that had
-    //     members, went empty, and lost its `emptySince` through a
-    //     crash-between-leave-and-persist window — without the
-    //     fallback, that channel would be immortal. The 7-day bound
-    //     applies from creation in that case, which is conservative.
-    // Archived channels with zero members follow the same rule.
-    const now = Date.now();
-    const cutoffMs = this.emptyChannelTtlHours * 60 * 60 * 1000;
-    const survivingIds = new Set<string>();
-    for (const ch of state.channels) {
-      const memberCount = (state.members[ch.id] ?? []).length;
-      if (memberCount > 0) {
-        survivingIds.add(ch.id);
-        continue;
-      }
-      const effectiveEmptyStart = ch.emptySince ?? ch.createdAt;
-      if (now - effectiveEmptyStart < cutoffMs) {
-        survivingIds.add(ch.id);
-      }
-      // else: prune.
-    }
-    state.channels = state.channels.filter((c) => survivingIds.has(c.id));
-    state.members = pruneKeys(state.members, survivingIds);
-    state.messages = pruneKeys(state.messages, survivingIds);
-    state.idempotency = pruneKeys(state.idempotency, survivingIds);
+    reapEmptyChannels(state, this.emptyChannelTtlHours);
 
     return state;
   }
@@ -254,7 +277,8 @@ export class ChannelStateWriter {
       this.debounceTimer = null;
     }
     if (this.pendingState !== null) {
-      this.saveImmediate(this.pendingState);
+      // dispose(셧다운) 경유 flush — 이벤트로그 모드면 §6.4b durable 승격.
+      this.saveImmediate(this.pendingState, { durable: this.durableFlush });
     }
   }
 
@@ -273,9 +297,11 @@ export class ChannelStateWriter {
       const state = this.pendingState;
       this.pendingState = null;
       try {
-        atomicWriteJSONSync(this.filePath, state, {
+        atomicWriteJSONSync(this.filePath, this.applyStamp(state), {
           validate: ChannelStateWriter.isChannelState,
           rotationEnabled: true,
+          // §6.4b — 프로세스-종료 flush의 durable 승격(이벤트로그 모드).
+          durable: this.durableFlush,
         });
       } catch (err) {
         console.error(
@@ -303,8 +329,12 @@ export class ChannelStateWriter {
    * then spot-check one row per nested map. A malformed row fails the
    * whole validator, triggering `.bak` recovery. Full schema validation
    * lands when the schema stabilises.
+   *
+   * PR3: public 승격 — 마이그레이션 게이트(genesis 검증)와 SnapshotStore 폴백
+   * 체인의 validateProjection 주입 계약(envelope-design §6.1-3, PR2 문면)이
+   * 이 가드를 요구한다. 동작 불변.
    */
-  private static isChannelState(parsed: unknown): parsed is ChannelState {
+  static isChannelState(parsed: unknown): parsed is ChannelState {
     if (typeof parsed !== 'object' || parsed === null) return false;
     const obj = parsed as Record<string, unknown>;
 
@@ -367,6 +397,49 @@ export class ChannelStateWriter {
 
     return true;
   }
+}
+
+/**
+ * 빈 채널 reaper — load() 본문에서 추출(PR3, 동작 불변). 로그 모드 부트(스냅샷+replay
+ * 시드, envelope-design §5)도 같은 프루닝 시멘틱을 유지해야 하므로 함수로 공유한다.
+ *
+ * Prune rules (applied per channel):
+ *   - Has members: keep (always).
+ *   - 0 members AND emptySince set AND within TTL: keep.
+ *   - 0 members AND emptySince set AND older than TTL: prune.
+ *   - 0 members AND no emptySince AND `now - createdAt < TTL`: keep
+ *     (the never-joined case AND the recently-orphaned case).
+ *   - 0 members AND no emptySince AND `now - createdAt >= TTL`:
+ *     prune. The fallback to `createdAt` catches a channel that had
+ *     members, went empty, and lost its `emptySince` through a
+ *     crash-between-leave-and-persist window — without the
+ *     fallback, that channel would be immortal. The 7-day bound
+ *     applies from creation in that case, which is conservative.
+ * Archived channels with zero members follow the same rule.
+ */
+export function reapEmptyChannels(
+  state: ChannelState,
+  emptyChannelTtlHours: number = CHANNEL_EMPTY_TTL_HOURS_DEFAULT,
+  now: number = Date.now(),
+): void {
+  const cutoffMs = emptyChannelTtlHours * 60 * 60 * 1000;
+  const survivingIds = new Set<string>();
+  for (const ch of state.channels) {
+    const memberCount = (state.members[ch.id] ?? []).length;
+    if (memberCount > 0) {
+      survivingIds.add(ch.id);
+      continue;
+    }
+    const effectiveEmptyStart = ch.emptySince ?? ch.createdAt;
+    if (now - effectiveEmptyStart < cutoffMs) {
+      survivingIds.add(ch.id);
+    }
+    // else: prune.
+  }
+  state.channels = state.channels.filter((c) => survivingIds.has(c.id));
+  state.members = pruneKeys(state.members, survivingIds);
+  state.messages = pruneKeys(state.messages, survivingIds);
+  state.idempotency = pruneKeys(state.idempotency, survivingIds);
 }
 
 /**

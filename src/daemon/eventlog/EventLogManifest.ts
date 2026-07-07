@@ -10,6 +10,7 @@
  *   - additive-only: 필드 추가만 허용(옵셔널). 기존 필드 제거·개명·의미변경 금지(디스크 계약).
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteJSONSync, atomicReadJSONSync } from '../util/atomicWrite';
 
@@ -67,13 +68,27 @@ export function isEventLogManifest(v: unknown): v is EventLogManifest {
 }
 
 /**
- * manifest 로드(primary→.bak 폴백은 atomicReadJSONSync 내장). 부재/손상이면 null —
- * 호출자(마이그레이션 감지 §6.1-1)는 null을 "manifest 부재 3분기"로 처리한다.
+ * manifest 로드(primary→.bak 폴백은 atomicReadJSONSync 내장). 부재/손상이면 null.
+ * 손상 시에도 파일을 **이동하지 않는다**(quarantineOnCorruption:false) — manifest는
+ * 로그 모드 활성의 완료 표지라, read-time 격리로 소멸하면 다음 부트가 "부재"로
+ * 오분류해 재마이그레이션(로그-only 커밋 퇴행)한다. 부재/손상의 구분은
+ * manifestFileExists가 담당한다(패널 델타).
  */
 export function readManifest(eventsDir: string): EventLogManifest | null {
   return atomicReadJSONSync<EventLogManifest>(manifestPath(eventsDir), {
     validate: isEventLogManifest,
+    quarantineOnCorruption: false,
   });
+}
+
+/**
+ * manifest 파일 실존 여부(primary 또는 .bak) — 파싱 성공과 무관. "존재하나 판독
+ * 불가"(손상)를 "부재"와 구분하는 물증: 손상 manifest는 과거 로그-모드 활성의
+ * 증거이므로 재마이그레이션 대상이 아니라 fail-closed·수동 복구 대상이다.
+ */
+export function manifestFileExists(eventsDir: string): boolean {
+  const p = manifestPath(eventsDir);
+  return fs.existsSync(p) || fs.existsSync(`${p}.bak`);
 }
 
 /**

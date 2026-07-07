@@ -42,7 +42,13 @@ import {
   HUMAN_MEMBER_ID,
 } from '../../shared/channels';
 import { HUMAN_SELF_PRINCIPAL_ID } from '../../shared/principals';
-import type { ChannelStateWriter } from './ChannelStateWriter';
+import { CHANNELS_EPOCH, EMPTY_CHANNEL_STATE } from '../../shared/channels';
+import { makeEnvelope, type AuthContext } from '../../shared/eventlog';
+import { ChannelStateWriter, reapEmptyChannels } from './ChannelStateWriter';
+import { applyChannelEvent, type ChannelEventPayload } from './channelEvents';
+import type { AppendOnlyLog } from '../eventlog/AppendOnlyLog';
+import type { SnapshotStore } from '../eventlog/SnapshotStore';
+import { CHANNEL_PROJECTION_REF } from '../eventlog/SnapshotStore';
 
 /**
  * Event payload emitted by the service after a successful post. The
@@ -127,12 +133,40 @@ export interface ChannelError {
   message: string;
 }
 
+/**
+ * 이벤트로그 백엔드(envelope-design §5, PR3 — 옵셔널 additive).
+ *
+ * 지정되면 커밋 지점이 saveOrFail(전체상태 동기 write)에서 log.append(envelope)로
+ * 반전된다(D1 단계적 반전): 로그가 정본, channels.json은 워터마크 스탬프된 debounced
+ * dual-write 캐시(§6.4), snapshot/channel.json은 부트 가속 스냅샷(§5). 부트는
+ * 스냅샷 폴백 체인 + `lamport > snapshotLamport` tail replay로 시드한다.
+ *
+ * 미지정(레거시/테스트) 시 기존 saveOrFail 커밋 경로가 1비트 불변으로 유지된다 —
+ * §10 T-파리티(기존 채널 테스트 무변경 통과)의 전제.
+ */
+export interface ChannelServiceEventLog {
+  /** 열린(open() 완료) append-only 로그. 데몬 부트 게이트가 소유. */
+  log: AppendOnlyLog;
+  /** `events/snapshot/` 스토어(부트 시드 + debounced 스냅샷). */
+  snapshots: SnapshotStore;
+  /** manifest.genesisRef — 폴백 체인의 바닥(§6.2). */
+  genesisRef: string;
+  /** manifest.reseedRefs — 폴백 체인의 중간 단계(§6.4c). */
+  reseedRefs: string[];
+  /** origin.machineId(§8). */
+  machineId: string;
+  /** 빈 채널 reaper TTL(시간). 기본 CHANNEL_EMPTY_TTL_HOURS_DEFAULT. */
+  emptyChannelTtlHours?: number;
+}
+
 export interface ChannelServiceDeps {
   /** The persistence layer. `saveImmediate` returns false on write failure
    *  (U1) and the post path surfaces that as `PERSIST_FAILED`. The full
    *  `ChannelStateWriter` is required because we read `load()` at
    *  construction to seed in-memory state. */
   writer: ChannelStateWriter;
+  /** 이벤트로그 백엔드(§5). 부재 시 레거시 커밋 경로(테스트·구 배선) 불변. */
+  eventLog?: ChannelServiceEventLog;
   /** Company this daemon's channels belong to. Channels are company-bounded
    *  by design (see plan KTD10). */
   companyId: string;
@@ -363,6 +397,7 @@ interface IdempotencyEntry {
 
 export class ChannelService {
   private readonly writer: ChannelStateWriter;
+  private readonly eventLog?: ChannelServiceEventLog;
   private state: ChannelState;
   private readonly mutexes = new Map<string, Promise<void>>();
   private readonly idempotency = new Map<string, Map<string, IdempotencyEntry>>();
@@ -406,10 +441,18 @@ export class ChannelService {
 
   constructor(deps: ChannelServiceDeps) {
     this.writer = deps.writer;
-    // Seed from the writer. The writer's `load()` runs the empty-channel
-    // reaper and prototype-pollution guards before we get the data, so
-    // the service can trust the shape.
-    this.state = this.writer.load();
+    this.eventLog = deps.eventLog;
+    if (deps.eventLog) {
+      // 로그 모드 부트(§5): 스냅샷 폴백 체인(최신→.bak→reseed→genesis)으로 시드하고
+      // `lamport > snapshotLamport`인 채널 레코드만 tail replay. channels.json은
+      // 더 이상 시드 원천이 아니다(워터마크 판정·dual-write 대상일 뿐 — §6.4).
+      this.state = this.seedFromEventLog(deps.eventLog);
+    } else {
+      // Seed from the writer. The writer's `load()` runs the empty-channel
+      // reaper and prototype-pollution guards before we get the data, so
+      // the service can trust the shape.
+      this.state = this.writer.load();
+    }
     this.companyId = deps.companyId;
     this.ceoWorkspaceId = deps.ceoWorkspaceId;
     this.emit = deps.emit;
@@ -698,7 +741,6 @@ export class ChannelService {
         nextSeq: 1,
         ...(params.topic !== undefined ? { topic: params.topic } : {}),
       };
-      this.state.channels.push(channel);
       // Auto-add the creator as a member (plan KTD10). Optional
       // initial members (U6) are appended after the creator; duplicates
       // against the creator are silently dropped so a caller cannot
@@ -747,16 +789,33 @@ export class ChannelService {
           memberName: this.deriveMemberName(member.memberId, member.principalId),
         });
       }
-      this.state.members[channel.id] = initialMembers;
-      this.state.messages[channel.id] = [];
-      this.state.idempotency[channel.id] = {};
-      if (!this.saveOrFail()) {
-        // Roll back to keep the in-memory state in sync with disk.
-        this.state.channels.pop();
-        delete this.state.members[channel.id];
-        delete this.state.messages[channel.id];
-        delete this.state.idempotency[channel.id];
-        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel create' } };
+      if (this.eventLog) {
+        // G1 append-then-apply: 배리어 성공 후에만 적용. 실패 = 무적용(롤백 없음).
+        if (
+          !(await this.commitAndApply(
+            { kind: 'create', channel, members: initialMembers },
+            {
+              verifiedWorkspaceId: params.verifiedWorkspaceId,
+              principalId: creatorPrincipalId ?? params.createdBy.principalId ?? params.createdBy.memberId,
+            },
+          ))
+        ) {
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel create' } };
+        }
+      } else {
+        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        this.state.channels.push(channel);
+        this.state.members[channel.id] = initialMembers;
+        this.state.messages[channel.id] = [];
+        this.state.idempotency[channel.id] = {};
+        if (!this.saveOrFail()) {
+          // Roll back to keep the in-memory state in sync with disk.
+          this.state.channels.pop();
+          delete this.state.members[channel.id];
+          delete this.state.messages[channel.id];
+          delete this.state.idempotency[channel.id];
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel create' } };
+        }
       }
       // A1: catalog changed (created) — fan out to the initial member set so
       // their sidebars show the new channel without a manual refresh.
@@ -811,15 +870,28 @@ export class ChannelService {
         };
       }
       const now = this.now();
-      channel.status = 'archived';
-      channel.archivedAt = now;
-      channel.archivedBy = params.archivedBy;
-      if (!this.saveOrFail()) {
-        // Roll back.
-        channel.status = 'active';
-        delete channel.archivedAt;
-        delete channel.archivedBy;
-        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel archive' } };
+      if (this.eventLog) {
+        // G1 append-then-apply: 배리어 성공 후에만 적용. 실패 = 무적용(롤백 없음).
+        if (
+          !(await this.commitAndApply(
+            { kind: 'archive', channelId: channel.id, archivedAt: now, archivedBy: params.archivedBy },
+            { verifiedWorkspaceId: params.verifiedWorkspaceId, principalId: params.archivedBy },
+          ))
+        ) {
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel archive' } };
+        }
+      } else {
+        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        channel.status = 'archived';
+        channel.archivedAt = now;
+        channel.archivedBy = params.archivedBy;
+        if (!this.saveOrFail()) {
+          // Roll back.
+          channel.status = 'active';
+          delete channel.archivedAt;
+          delete channel.archivedBy;
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel archive' } };
+        }
       }
       // A1: catalog changed (archived) — fan out to current members so other
       // renderers flip to read-only instead of offering a post that will fail.
@@ -969,18 +1041,6 @@ export class ChannelService {
           };
         }
       }
-      // Snapshot emptySince so we can restore it on a saveOrFail
-      // rollback (R10). Without the snapshot, a failed persist would
-      // leave the channel with NO emptySince even though it should
-      // still be tagged for the reaper — the channel could end up
-      // living forever despite zero members. The symmetric
-      // snapshot/restore pattern lives in `leave()` below.
-      const previousEmptySince = channel.emptySince;
-      // If the channel was empty (emptySince set), clear the empty marker —
-      // the channel is alive again.
-      if (channel.emptySince !== undefined) {
-        delete channel.emptySince;
-      }
       const now = this.now();
       const historyFromSeq = params.includeHistory === false ? channel.nextSeq : 0;
       // R2: principal stable coordinate (additive, for display/routing). P5:
@@ -1000,7 +1060,7 @@ export class ChannelService {
         panePrincipal?.display && !params.member.principalId
           ? panePrincipal.display
           : this.deriveMemberName(joinMemberId, joinPrincipalId);
-      members.push({
+      const joinedRow: ChannelMember = {
         // D5: pin the joining member to the server-resolved workspace, NOT the
         // caller-supplied member.workspaceId — a forger must not join as a victim.
         workspaceId: params.verifiedWorkspaceId,
@@ -1013,20 +1073,50 @@ export class ChannelService {
         lastReadSeq: channel.nextSeq - 1,
         ...(joinPrincipalId ? { principalId: joinPrincipalId } : {}),
         memberName: joinMemberName,
-      });
-      this.state.members[channel.id] = members;
-      if (!this.saveOrFail()) {
-        // Roll back the push AND restore the prior emptySince tag.
-        members.pop();
-        channel.emptySince = previousEmptySince;
-        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel join' } };
+      };
+      if (this.eventLog) {
+        // G1 append-then-apply: 배리어 성공 후에만 적용(push + emptySince 해제는
+        // 적용기 몫). 실패 = 무적용(롤백 없음).
+        if (
+          !(await this.commitAndApply(
+            { kind: 'join', channelId: channel.id, member: joinedRow },
+            {
+              verifiedWorkspaceId: params.verifiedWorkspaceId,
+              principalId: joinPrincipalId ?? joinMemberId,
+            },
+          ))
+        ) {
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel join' } };
+        }
+      } else {
+        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        // Snapshot emptySince so we can restore it on a saveOrFail
+        // rollback (R10). Without the snapshot, a failed persist would
+        // leave the channel with NO emptySince even though it should
+        // still be tagged for the reaper — the channel could end up
+        // living forever despite zero members. The symmetric
+        // snapshot/restore pattern lives in `leave()` below.
+        const previousEmptySince = channel.emptySince;
+        // If the channel was empty (emptySince set), clear the empty marker —
+        // the channel is alive again.
+        if (channel.emptySince !== undefined) {
+          delete channel.emptySince;
+        }
+        members.push(joinedRow);
+        this.state.members[channel.id] = members;
+        if (!this.saveOrFail()) {
+          // Roll back the push AND restore the prior emptySince tag.
+          members.pop();
+          channel.emptySince = previousEmptySince;
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel join' } };
+        }
       }
       // A1: membership changed (join) — fan out to the post-join member set
       // (includes the new member) so every roster + sidebar re-syncs.
       this.emitCatalog(
         channel.id,
         params.verifiedWorkspaceId,
-        members.map((m) => m.workspaceId),
+        (this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
         'membership',
       );
       return { ok: true, memberId: joinMemberId };
@@ -1055,27 +1145,52 @@ export class ChannelService {
       if (idx < 0) {
         return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Not a member' } };
       }
-      // Snapshot the removed member so we can put them back on rollback.
+      // Snapshot the removed member (레거시 롤백 재삽입 + emit 수신자 계산용).
       const removed = members[idx];
-      members.splice(idx, 1);
-      // If the channel is now empty, stamp `emptySince` (plan KTD8).
-      if (members.length === 0 && channel.emptySince === undefined) {
-        channel.emptySince = this.now();
-      }
-      this.state.members[channel.id] = members;
-      if (!this.saveOrFail()) {
-        // Roll back: re-insert at the original index.
-        members.splice(idx, 0, removed);
-        // Clear the emptySince stamp we just set.
-        if (members.length === 1) delete channel.emptySince;
-        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel leave' } };
+      if (this.eventLog) {
+        // G1 append-then-apply: emptySince 판정을 **선결정**(제거는 적용기 몫 —
+        // 마지막 멤버 이탈이면 스탬프값을 효과로 기록). 실패 = 무적용(롤백 없음).
+        const emptySince =
+          members.length === 1 && channel.emptySince === undefined ? this.now() : undefined;
+        if (
+          !(await this.commitAndApply(
+            {
+              kind: 'leave',
+              channelId: channel.id,
+              workspaceId: params.verifiedWorkspaceId,
+              memberId: params.memberId,
+              ...(emptySince !== undefined ? { emptySince } : {}),
+            },
+            { verifiedWorkspaceId: params.verifiedWorkspaceId, principalId: params.memberId },
+          ))
+        ) {
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel leave' } };
+        }
+      } else {
+        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        members.splice(idx, 1);
+        // If the channel is now empty, stamp `emptySince` (plan KTD8).
+        if (members.length === 0 && channel.emptySince === undefined) {
+          channel.emptySince = this.now();
+        }
+        this.state.members[channel.id] = members;
+        if (!this.saveOrFail()) {
+          // Roll back: re-insert at the original index.
+          members.splice(idx, 0, removed);
+          // Clear the emptySince stamp we just set.
+          if (members.length === 1) delete channel.emptySince;
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel leave' } };
+        }
       }
       // A1: membership changed (leave) — fan out to the remaining members AND
       // the workspace that just left (so its own mirror drops the channel).
       this.emitCatalog(
         channel.id,
         params.verifiedWorkspaceId,
-        [...members.map((m) => m.workspaceId), removed.workspaceId],
+        [
+          ...(this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
+          removed.workspaceId,
+        ],
         'membership',
       );
       return { ok: true };
@@ -1138,26 +1253,50 @@ export class ChannelService {
       if (idx < 0) {
         return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Target is not a member' } };
       }
-      // Snapshot the removed member so we can put them back on rollback (mirrors leave).
+      // Snapshot the removed member (레거시 롤백 재삽입 + emit 수신자 계산용, mirrors leave).
       const removed = members[idx];
-      members.splice(idx, 1);
-      // If the channel is now empty, stamp `emptySince` (plan KTD8) — same as leave.
-      if (members.length === 0 && channel.emptySince === undefined) {
-        channel.emptySince = this.now();
-      }
-      this.state.members[channel.id] = members;
-      if (!this.saveOrFail()) {
-        // Roll back: re-insert at the original index, clear the emptySince we set.
-        members.splice(idx, 0, removed);
-        if (members.length === 1) delete channel.emptySince;
-        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel kick' } };
+      if (this.eventLog) {
+        // G1 append-then-apply(leave와 동형): 실패 = 무적용(롤백 없음).
+        const emptySince =
+          members.length === 1 && channel.emptySince === undefined ? this.now() : undefined;
+        if (
+          !(await this.commitAndApply(
+            {
+              kind: 'kick',
+              channelId: channel.id,
+              targetWorkspaceId: params.targetWorkspaceId,
+              targetMemberId: params.targetMemberId,
+              ...(emptySince !== undefined ? { emptySince } : {}),
+            },
+            { verifiedWorkspaceId: params.verifiedWorkspaceId },
+          ))
+        ) {
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel kick' } };
+        }
+      } else {
+        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        members.splice(idx, 1);
+        // If the channel is now empty, stamp `emptySince` (plan KTD8) — same as leave.
+        if (members.length === 0 && channel.emptySince === undefined) {
+          channel.emptySince = this.now();
+        }
+        this.state.members[channel.id] = members;
+        if (!this.saveOrFail()) {
+          // Roll back: re-insert at the original index, clear the emptySince we set.
+          members.splice(idx, 0, removed);
+          if (members.length === 1) delete channel.emptySince;
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel kick' } };
+        }
       }
       // A1: membership changed (kick) — fan out to the remaining members AND the
       // ejected workspace (so the kicked member's mirror drops the channel).
       this.emitCatalog(
         channel.id,
         params.verifiedWorkspaceId,
-        [...members.map((m) => m.workspaceId), removed.workspaceId],
+        [
+          ...(this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
+          removed.workspaceId,
+        ],
         'membership',
       );
       return { ok: true };
@@ -1201,16 +1340,39 @@ export class ChannelService {
 
         const survivors = members.filter((m) => !matches(m));
         const removed = members.filter(matches);
-        const previousEmptySince = channel.emptySince;
-        this.state.members[channel.id] = survivors;
-        if (survivors.length === 0 && channel.emptySince === undefined) {
-          channel.emptySince = this.now();
-        }
-        if (!this.saveOrFail()) {
-          // Per-channel rollback — same symmetric recovery as leave().
-          this.state.members[channel.id] = members;
-          channel.emptySince = previousEmptySince;
-          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist membership purge' } };
+        if (this.eventLog) {
+          // G1 append-then-apply: 실패 = 무적용(롤백 없음). 적용기의 purge matcher는
+          // 위 matches와 동형(principalId 우선 → memberId → ws 전체).
+          const emptySince =
+            survivors.length === 0 && channel.emptySince === undefined ? this.now() : undefined;
+          if (
+            !(await this.commitAndApply(
+              {
+                kind: 'purge',
+                channelId: channel.id,
+                workspaceId: params.workspaceId,
+                ...(params.memberId !== undefined ? { memberId: params.memberId } : {}),
+                ...(params.principalId !== undefined ? { principalId: params.principalId } : {}),
+                ...(emptySince !== undefined ? { emptySince } : {}),
+              },
+              { verifiedWorkspaceId: params.verifiedWorkspaceId },
+            ))
+          ) {
+            return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist membership purge' } };
+          }
+        } else {
+          // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+          const previousEmptySince = channel.emptySince;
+          this.state.members[channel.id] = survivors;
+          if (survivors.length === 0 && channel.emptySince === undefined) {
+            channel.emptySince = this.now();
+          }
+          if (!this.saveOrFail()) {
+            // Per-channel rollback — same symmetric recovery as leave().
+            this.state.members[channel.id] = members;
+            channel.emptySince = previousEmptySince;
+            return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist membership purge' } };
+          }
         }
         removedTotal += removed.length;
         this.emitCatalog(
@@ -1290,13 +1452,9 @@ export class ChannelService {
       if (members.some((m) => m.workspaceId === invitee.workspaceId && m.memberId === invitee.memberId)) {
         return { ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } };
       }
-      const previousEmptySince = channel.emptySince;
-      if (channel.emptySince !== undefined) {
-        delete channel.emptySince;
-      }
       const now = this.now();
       const historyFromSeq = params.includeHistory === false ? channel.nextSeq : 0;
-      members.push({
+      const invitedRow: ChannelMember = {
         // The invitee is the caller-supplied TARGET (NOT verifiedWorkspaceId) —
         // see the method doc + InviteChannelParams. Gated by inviter-is-member.
         workspaceId: invitee.workspaceId,
@@ -1314,12 +1472,30 @@ export class ChannelService {
         ...(invitee.principalId ? { principalId: invitee.principalId } : {}),
         // 1b: server-owned display name (principal display, else memberId).
         memberName: this.deriveMemberName(invitee.memberId, invitee.principalId),
-      });
-      this.state.members[channel.id] = members;
-      if (!this.saveOrFail()) {
-        members.pop();
-        channel.emptySince = previousEmptySince;
-        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel invite' } };
+      };
+      if (this.eventLog) {
+        // G1 append-then-apply(join과 동형): 실패 = 무적용(롤백 없음).
+        if (
+          !(await this.commitAndApply(
+            { kind: 'invite', channelId: channel.id, member: invitedRow },
+            { verifiedWorkspaceId: params.verifiedWorkspaceId },
+          ))
+        ) {
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel invite' } };
+        }
+      } else {
+        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        const previousEmptySince = channel.emptySince;
+        if (channel.emptySince !== undefined) {
+          delete channel.emptySince;
+        }
+        members.push(invitedRow);
+        this.state.members[channel.id] = members;
+        if (!this.saveOrFail()) {
+          members.pop();
+          channel.emptySince = previousEmptySince;
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel invite' } };
+        }
       }
       // A1: membership changed (invite) — fan out to the post-invite member set
       // (includes the invitee) so the invited workspace's mirror picks up the
@@ -1327,7 +1503,7 @@ export class ChannelService {
       this.emitCatalog(
         channel.id,
         params.verifiedWorkspaceId,
-        members.map((m) => m.workspaceId),
+        (this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
         'membership',
       );
       return { ok: true };
@@ -1544,8 +1720,11 @@ export class ChannelService {
       // REJECTED post can never leave the in-memory row ahead of disk.
       // The only exits after this point are the persist-failure branch —
       // which rolls the name back — and success, which persists it.
-      let senderRowPrevName: string | undefined;
-      let senderRowNameRefreshed = false;
+      //
+      // G1(append-then-apply): 여기서는 **결정만** 한다(refreshedName 계산).
+      // 실제 row 변형은 커밋 경로별로 — 로그 모드는 append 성공 후 적용기,
+      // 레거시 모드는 아래 분기에서 기존 그대로(스냅샷+롤백).
+      let refreshedName: string | undefined;
       if (senderRow?.principalId && this.resolvePrincipalDisplay) {
         try {
           const freshDisplay = this.resolvePrincipalDisplay(senderRow.principalId);
@@ -1554,9 +1733,7 @@ export class ChannelService {
             freshDisplay.length > 0 &&
             freshDisplay !== senderRow.memberName
           ) {
-            senderRowPrevName = senderRow.memberName;
-            senderRow.memberName = freshDisplay;
-            senderRowNameRefreshed = true;
+            refreshedName = freshDisplay;
           }
         } catch (err) {
           console.error('[ChannelService] principal display refresh failed:', err);
@@ -1569,7 +1746,7 @@ export class ChannelService {
       // back to whatever the client sent (then its memberId) so old callers
       // keep a sane display.
       const resolvedMemberName = senderRow
-        ? (senderRow.memberName ?? senderRow.memberId)
+        ? (refreshedName ?? senderRow.memberName ?? senderRow.memberId)
         : (params.sender.memberName ?? params.sender.memberId);
       // Freeze the recipient snapshot at critical-section entry (plan KTD3).
       // We deliberately do NOT re-read members after this point; a concurrent
@@ -1650,7 +1827,10 @@ export class ChannelService {
           ...(typeof mn.ptyId === 'string' && mn.ptyId.length > 0 ? { ptyId: mn.ptyId } : {}),
         });
       }
-      const seq = channel.nextSeq++;
+      // G1: seq는 **선결정**(증가 없음). 로그 모드는 append 성공 후 적용기가
+      // nextSeq를 seq+1로 전진시키고, 레거시 모드는 아래 분기에서 ++한다 —
+      // 발급 규칙(다음 값 = 현재 nextSeq)은 두 경로 동일.
+      const seq = channel.nextSeq;
       const now = this.now();
       const message: ChannelMessage = {
         channelId: channel.id,
@@ -1670,7 +1850,6 @@ export class ChannelService {
           ? { senderPtyId: params.senderPtyId }
           : {}),
       };
-      (this.state.messages[channel.id] ??= []).push(message);
       // Channels v2 (Codex review): a poster has, by definition, seen the
       // channel up to its own message. When the sender's row was fully
       // caught up before this post, ride the cursor over the new seq —
@@ -1683,55 +1862,127 @@ export class ChannelService {
       // a single-row workspace now rides that row's cursor instead of
       // matching nothing and re-nudging itself.
       const senderRowRode = senderRow !== undefined && senderRow.lastReadSeq === seq - 1;
-      if (senderRow && senderRowRode) senderRow.lastReadSeq = seq;
-      // Update idempotency cache.
-      if (params.clientMsgId) {
-        const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
-        const idemKey = idempotencyKey(params.sender.workspaceId, params.clientMsgId);
-        channelIdMap.set(idemKey, {
-          seq,
-          lastUsedAt: now,
-          // Store a COPY so a same-process caller mutating the returned array
-          // can't poison the cached replay value.
-          ...(droppedMentions.length > 0 ? { droppedMentions: [...droppedMentions] } : {}),
-          ...(unmatchedMemberId !== undefined ? { unmatchedMemberId } : {}),
-        });
-        // LRU eviction down to CHANNEL_IDEMPOTENCY_CAP.
-        if (channelIdMap.size > CHANNEL_IDEMPOTENCY_CAP) {
-          this.evictOldest(channelIdMap, channelIdMap.size - CHANNEL_IDEMPOTENCY_CAP);
-        }
-        this.idempotency.set(channel.id, channelIdMap);
-        // Also persist the seq map so a daemon restart preserves idempotency.
-        this.state.idempotency[channel.id] = Object.fromEntries(
-          Array.from(channelIdMap.entries()).map(([k, v]) => [k, v.seq]),
+      if (this.eventLog) {
+        // ── G1 append-then-apply(로그 모드): fsync 배리어 성공 **후에만** 적용 ──
+        // append await 창 동안 projection은 미변형이라, 뮤텍스를 안 타는 동기
+        // 읽기가 미커밋 낙관 상태를 보는 dirty read가 구조적으로 불가능하다.
+        // 실패 = 무적용 — 롤백 블록 자체가 없다(레거시 분기에만 존재).
+        const applied = await this.commitAndApply(
+          {
+            kind: 'post',
+            channelId: channel.id,
+            message,
+            // 커서 라이드·이름 리프레시는 이 커밋에 포함된 효과 — replay 재현용(§5).
+            ...(senderRow && senderRowRode
+              ? { cursorRide: { workspaceId: senderRow.workspaceId, memberId: senderRow.memberId } }
+              : {}),
+            ...(senderRow && refreshedName !== undefined
+              ? {
+                  nameRefresh: {
+                    workspaceId: senderRow.workspaceId,
+                    memberId: senderRow.memberId,
+                    memberName: refreshedName,
+                  },
+                }
+              : {}),
+          },
+          {
+            verifiedWorkspaceId: params.verifiedWorkspaceId,
+            principalId: senderRow?.principalId ?? resolvedMemberId,
+          },
         );
-      }
-      if (!this.saveOrFail()) {
-        // Roll back: un-bump nextSeq, pop the message, drop idempotency entry,
-        // and un-ride the sender cursor.
-        channel.nextSeq--;
-        const msgs = this.state.messages[channel.id];
-        if (msgs) msgs.pop();
-        if (senderRow && senderRowRode) senderRow.lastReadSeq = seq - 1;
-        // 1b refresh rollback: the in-memory row must match disk again.
-        if (senderRow && senderRowNameRefreshed) {
-          if (senderRowPrevName === undefined) delete senderRow.memberName;
-          else senderRow.memberName = senderRowPrevName;
+        if (!applied) {
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist post' } };
         }
+        // 인메모리 LRU(droppedMentions·unmatchedMemberId 재응답 부가정보 포함) —
+        // state.idempotency는 적용기가 이미 반영했다(FIFO cap). 라이브 LRU 축출
+        // 순서와의 미세 차이는 §4 cap 시멘틱 내(부트 hydration FIFO와 동형).
         if (params.clientMsgId) {
-          const channelIdMap = this.idempotency.get(channel.id);
-          if (channelIdMap) {
-            channelIdMap.delete(idempotencyKey(params.sender.workspaceId, params.clientMsgId));
-            // Rebuild the persisted snapshot from the reverted map — `state.idempotency`
-            // was already overwritten with the new key above, so without this the
-            // NEXT successful save would flush an orphaned composite key for a
-            // message that never existed (CodeRabbit).
-            this.state.idempotency[channel.id] = Object.fromEntries(
-              Array.from(channelIdMap.entries()).map(([k, v]) => [k, v.seq]),
-            );
+          const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
+          const idemKey = idempotencyKey(params.sender.workspaceId, params.clientMsgId);
+          channelIdMap.set(idemKey, {
+            seq,
+            lastUsedAt: now,
+            ...(droppedMentions.length > 0 ? { droppedMentions: [...droppedMentions] } : {}),
+            ...(unmatchedMemberId !== undefined ? { unmatchedMemberId } : {}),
+          });
+          if (channelIdMap.size > CHANNEL_IDEMPOTENCY_CAP) {
+            this.evictOldest(channelIdMap, channelIdMap.size - CHANNEL_IDEMPOTENCY_CAP);
+          }
+          this.idempotency.set(channel.id, channelIdMap);
+        }
+        // 적용기의 캡 trim과 인메모리 LRU 정합: 잘린 seq를 가리키는 엔트리 프룬(A2).
+        const msgsAfterApply = this.state.messages[channel.id] ?? [];
+        if (msgsAfterApply.length > 0) {
+          const minSeq = msgsAfterApply[0].seq;
+          const idemMap = this.idempotency.get(channel.id);
+          if (idemMap) {
+            for (const [k, v] of idemMap) {
+              if (v.seq < minSeq) idemMap.delete(k);
+            }
           }
         }
-        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist post' } };
+      } else {
+        // ── 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백 ──
+        let senderRowPrevName: string | undefined;
+        let senderRowNameRefreshed = false;
+        if (senderRow && refreshedName !== undefined) {
+          senderRowPrevName = senderRow.memberName;
+          senderRow.memberName = refreshedName;
+          senderRowNameRefreshed = true;
+        }
+        channel.nextSeq++;
+        (this.state.messages[channel.id] ??= []).push(message);
+        if (senderRow && senderRowRode) senderRow.lastReadSeq = seq;
+        // Update idempotency cache.
+        if (params.clientMsgId) {
+          const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
+          const idemKey = idempotencyKey(params.sender.workspaceId, params.clientMsgId);
+          channelIdMap.set(idemKey, {
+            seq,
+            lastUsedAt: now,
+            // Store a COPY so a same-process caller mutating the returned array
+            // can't poison the cached replay value.
+            ...(droppedMentions.length > 0 ? { droppedMentions: [...droppedMentions] } : {}),
+            ...(unmatchedMemberId !== undefined ? { unmatchedMemberId } : {}),
+          });
+          // LRU eviction down to CHANNEL_IDEMPOTENCY_CAP.
+          if (channelIdMap.size > CHANNEL_IDEMPOTENCY_CAP) {
+            this.evictOldest(channelIdMap, channelIdMap.size - CHANNEL_IDEMPOTENCY_CAP);
+          }
+          this.idempotency.set(channel.id, channelIdMap);
+          // Also persist the seq map so a daemon restart preserves idempotency.
+          this.state.idempotency[channel.id] = Object.fromEntries(
+            Array.from(channelIdMap.entries()).map(([k, v]) => [k, v.seq]),
+          );
+        }
+        if (!this.saveOrFail()) {
+          // Roll back: un-bump nextSeq, pop the message, drop idempotency entry,
+          // and un-ride the sender cursor.
+          channel.nextSeq--;
+          const msgs = this.state.messages[channel.id];
+          if (msgs) msgs.pop();
+          if (senderRow && senderRowRode) senderRow.lastReadSeq = seq - 1;
+          // 1b refresh rollback: the in-memory row must match disk again.
+          if (senderRow && senderRowNameRefreshed) {
+            if (senderRowPrevName === undefined) delete senderRow.memberName;
+            else senderRow.memberName = senderRowPrevName;
+          }
+          if (params.clientMsgId) {
+            const channelIdMap = this.idempotency.get(channel.id);
+            if (channelIdMap) {
+              channelIdMap.delete(idempotencyKey(params.sender.workspaceId, params.clientMsgId));
+              // Rebuild the persisted snapshot from the reverted map — `state.idempotency`
+              // was already overwritten with the new key above, so without this the
+              // NEXT successful save would flush an orphaned composite key for a
+              // message that never existed (CodeRabbit).
+              this.state.idempotency[channel.id] = Object.fromEntries(
+                Array.from(channelIdMap.entries()).map(([k, v]) => [k, v.seq]),
+              );
+            }
+          }
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist post' } };
+        }
       }
       // The cursor ride above advanced a PERSISTED member cursor — badge
       // honesty needs the same catalog signal an explicit ack emits (Codex
@@ -1782,34 +2033,40 @@ export class ChannelService {
       // re-serializes the WHOLE state per post, so an uncapped history makes every
       // post O(total history). The idempotency map's pointer to an evicted seq is
       // already handled — the post path falls through to a fresh post (see above).
-      const msgs2 = this.state.messages[channel.id];
-      if (msgs2 && msgs2.length > CHANNEL_MESSAGES_MAX) {
-        const trimmed = msgs2.slice(msgs2.length - CHANNEL_MESSAGES_MAX);
-        this.state.messages[channel.id] = trimmed;
-        // A2 (GLM P3): drop idempotency entries pointing at now-evicted seqs so
-        // dead pointers don't occupy LRU slots forever (the post path already
-        // falls through to a fresh post when an entry's seq is gone). Keep the
-        // in-memory map and the persisted shape in sync.
-        const minSeq = trimmed.length > 0 ? trimmed[0].seq : 0;
-        const idemMap = this.idempotency.get(channel.id);
-        if (idemMap) {
-          let pruned = false;
-          for (const [k, v] of idemMap) {
-            if (v.seq < minSeq) {
-              idemMap.delete(k);
-              pruned = true;
+      //
+      // G1: 레거시 전용 — 로그 모드의 trim은 post 적용기의 결정론적 일부
+      // (channelEvents.ts, replay와 동일 캡 규칙)이고 인메모리 LRU 프룬은 위
+      // 커밋 분기에서 이미 수행했다.
+      if (!this.eventLog) {
+        const msgs2 = this.state.messages[channel.id];
+        if (msgs2 && msgs2.length > CHANNEL_MESSAGES_MAX) {
+          const trimmed = msgs2.slice(msgs2.length - CHANNEL_MESSAGES_MAX);
+          this.state.messages[channel.id] = trimmed;
+          // A2 (GLM P3): drop idempotency entries pointing at now-evicted seqs so
+          // dead pointers don't occupy LRU slots forever (the post path already
+          // falls through to a fresh post when an entry's seq is gone). Keep the
+          // in-memory map and the persisted shape in sync.
+          const minSeq = trimmed.length > 0 ? trimmed[0].seq : 0;
+          const idemMap = this.idempotency.get(channel.id);
+          if (idemMap) {
+            let pruned = false;
+            for (const [k, v] of idemMap) {
+              if (v.seq < minSeq) {
+                idemMap.delete(k);
+                pruned = true;
+              }
+            }
+            if (pruned) {
+              this.state.idempotency[channel.id] = Object.fromEntries(
+                Array.from(idemMap.entries()).map(([k, v]) => [k, v.seq]),
+              );
             }
           }
-          if (pruned) {
-            this.state.idempotency[channel.id] = Object.fromEntries(
-              Array.from(idemMap.entries()).map(([k, v]) => [k, v.seq]),
-            );
-          }
+          // Persist the trim now so the durable cap stays bounded even if the daemon
+          // restarts before the next post. Best-effort: on failure the in-memory copy
+          // is still trimmed and the next post's saveOrFail re-flushes (CodeRabbit).
+          void this.saveOrFail();
         }
-        // Persist the trim now so the durable cap stays bounded even if the daemon
-        // restarts before the next post. Best-effort: on failure the in-memory copy
-        // is still trimmed and the next post's saveOrFail re-flushes (CodeRabbit).
-        void this.saveOrFail();
       }
       return {
         ok: true,
@@ -1925,28 +2182,56 @@ export class ChannelService {
         }
       }
       const now = this.now();
-      for (const f of flips) {
-        f.entry.status = 'delivered';
-        f.entry.lastAttemptAt = now;
-        // ≥1 recipient delivered ⇒ message delivered (DeliveryResult.ok semantics
-        // — "at least one", NOT "all": a still-pending peer does not block it, and
-        // per-recipient detail remains in recipientSnapshot for callers who need it).
-        if (f.msg.deliveryStatus !== 'delivered') f.msg.deliveryStatus = 'delivered';
-      }
-      for (const f of cursorFlips) {
-        f.row.lastReadSeq = cursorTarget;
-      }
-      if ((flips.length > 0 || cursorFlips.length > 0) && !this.saveOrFail()) {
-        // Roll back the in-memory flips so memory ↔ disk stay consistent.
-        for (const f of flips) {
-          f.entry.status = f.prevEntryStatus;
-          f.entry.lastAttemptAt = f.prevLastAttemptAt;
-          f.msg.deliveryStatus = f.prevMsgStatus;
+      if (flips.length > 0 || cursorFlips.length > 0) {
+        if (this.eventLog) {
+          // G1 append-then-apply: 수집(collect)은 위에서 읽기 전용으로 끝났고,
+          // 적용은 배리어 성공 후 적용기가 수행한다 — 적용기의 재수집(pending
+          // 전용 플립·advance-only 커서)은 뮤텍스 하에서 위 수집과 결정론적으로
+          // 동일하다. 실패 = 무적용(롤백 없음).
+          if (
+            !(await this.commitAndApply(
+              {
+                kind: 'ack',
+                channelId: params.channelId,
+                workspaceId: params.verifiedWorkspaceId,
+                ...(params.memberId !== undefined ? { memberId: params.memberId } : {}),
+                uptoSeq: params.uptoSeq,
+                ackedAt: now,
+              },
+              {
+                verifiedWorkspaceId: params.verifiedWorkspaceId,
+                ...(params.memberId !== undefined ? { principalId: params.memberId } : {}),
+              },
+            ))
+          ) {
+            return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
+          }
+        } else {
+          // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+          for (const f of flips) {
+            f.entry.status = 'delivered';
+            f.entry.lastAttemptAt = now;
+            // ≥1 recipient delivered ⇒ message delivered (DeliveryResult.ok semantics
+            // — "at least one", NOT "all": a still-pending peer does not block it, and
+            // per-recipient detail remains in recipientSnapshot for callers who need it).
+            if (f.msg.deliveryStatus !== 'delivered') f.msg.deliveryStatus = 'delivered';
+          }
+          for (const f of cursorFlips) {
+            f.row.lastReadSeq = cursorTarget;
+          }
+          if (!this.saveOrFail()) {
+            // Roll back the in-memory flips so memory ↔ disk stay consistent.
+            for (const f of flips) {
+              f.entry.status = f.prevEntryStatus;
+              f.entry.lastAttemptAt = f.prevLastAttemptAt;
+              f.msg.deliveryStatus = f.prevMsgStatus;
+            }
+            for (const f of cursorFlips) {
+              f.row.lastReadSeq = f.prev;
+            }
+            return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
+          }
         }
-        for (const f of cursorFlips) {
-          f.row.lastReadSeq = f.prev;
-        }
-        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
       }
       // A cursor advance changes the roster's "N behind" badges, which
       // hydrate from the catalog — without a signal an agent's ack leaves
@@ -2162,6 +2447,123 @@ export class ChannelService {
   /** Save the current state via the writer. Returns true on success. */
   private saveOrFail(): boolean {
     return this.writer.saveImmediate(this.state);
+  }
+
+  // ── 이벤트로그 커밋 경로 (envelope-design §5, PR3) ────────────────────
+
+  /**
+   * 커밋 프리미티브(로그 모드 전용 — commitAndApply 경유로만 호출) —
+   * `log.append(envelope)`가 fsync 배리어 아래에서 resolve한다(boolean 계약 D16).
+   * 1 커밋 = 1 envelope(§2.6 부분승격 금지 논증 ②). 레거시 모드의 커밋은 각
+   * 사이트의 else 분기(saveOrFail)가 담당한다.
+   */
+  private async commit(
+    payload: ChannelEventPayload,
+    auth: { verifiedWorkspaceId: string; principalId?: string },
+  ): Promise<boolean> {
+    if (!this.eventLog) return this.saveOrFail();
+    const draft = makeEnvelope({
+      domain: 'channel',
+      payload,
+      origin: {
+        machineId: this.eventLog.machineId,
+        daemonEpoch: CHANNELS_EPOCH, // D8: 순서 비관여 provenance 스탬프
+      },
+      // §7 스탬핑의 완전한 형태(서버핀 하류 배선)는 PR5 소관 — PR3는 서비스 경계가
+      // 이미 보유한 서버-해석 verifiedWorkspaceId(모든 mutation의 authz 앵커)와
+      // 최선의 principal 좌표(display/routing 전용)를 스탬프한다.
+      authContext: this.authContextFor(auth),
+    });
+    const ok = await this.eventLog.log.append(draft);
+    if (ok) this.scheduleCacheWrites();
+    return ok;
+  }
+
+  /**
+   * G1 — 커밋-후-적용(append-then-apply, 로그 모드 전용). fsync 배리어가 성공한
+   * **후에만** payload를 projection에 적용한다(적용기 = replay와 동일 함수 —
+   * 라이브와 replay의 수렴이 구성적으로 보장된다).
+   *
+   * 이 순서가 dirty read를 구조적으로 제거한다: 구 saveOrFail은 동기라 mutation
+   * 임계구역에 yield가 없었지만 append는 await를 도입했다 — 적용을 배리어 뒤로
+   * 미루면 그 await 창 동안 뮤텍스를 안 타는 동기 읽기(list()·getMessages() 등)는
+   * 항상 커밋된 상태만 본다. 실패 = 무적용이므로 롤백 블록도 없다(레거시 모드
+   * 분기에만 남는다 — 각 사이트의 else 분기 참조).
+   */
+  private async commitAndApply(
+    payload: ChannelEventPayload,
+    auth: { verifiedWorkspaceId: string; principalId?: string },
+  ): Promise<boolean> {
+    if (!(await this.commit(payload, auth))) return false;
+    applyChannelEvent(this.state, payload);
+    return true;
+  }
+
+  /** §7 — Q1 커밋 경로는 사실상 trusted(비신뢰는 상류 fail-closed로 미도달). */
+  private authContextFor(auth: {
+    verifiedWorkspaceId: string;
+    principalId?: string;
+  }): AuthContext {
+    return {
+      principalId: auth.principalId ?? auth.verifiedWorkspaceId,
+      verifiedWorkspaceId: auth.verifiedWorkspaceId,
+      trustTier: 'trusted',
+    };
+  }
+
+  /**
+   * 커밋 성공 후 캐시 유지(§5·§6.4): channels.json dual-write(debounced, 워터마크는
+   * writer가 write 시점에 스탬프)와 snapshot/channel.json(debounced, 부트 가속).
+   * 둘 다 라이브 참조를 넘긴다 — 직렬화는 write 시점이므로 최신 상태가 실린다.
+   * 스냅샷 마커가 내용보다 낮을 수 있는 창은 replay 적용기의 멱등성이 흡수한다
+   * (channelEvents.ts 헤더 불변식 (b)).
+   */
+  private scheduleCacheWrites(): void {
+    if (!this.eventLog) return;
+    this.writer.saveDebounced(this.state);
+    this.eventLog.snapshots.saveDebounced(
+      CHANNEL_PROJECTION_REF,
+      this.state,
+      this.eventLog.log.lamportHwm,
+    );
+  }
+
+  /** 로그 모드 부트 시드(§5): 폴백 체인 로드 → tail replay → reaper. */
+  private seedFromEventLog(eventLog: ChannelServiceEventLog): ChannelState {
+    const loaded = eventLog.snapshots.loadWithFallback<ChannelState>({
+      activeRef: CHANNEL_PROJECTION_REF,
+      genesisRef: eventLog.genesisRef,
+      reseedRefs: eventLog.reseedRefs,
+      // ChannelStateWriter.isChannelState는 PR3에서 public 승격(PR2 주입 계약).
+      validateProjection: (d): boolean => ChannelStateWriter.isChannelState(d),
+    });
+    let state: ChannelState;
+    let floor: number;
+    if (loaded) {
+      // 시드 projection에서 워터마크 필드 제거(§6.4c — dual-write 전용 메타).
+      const { eventLogWatermark: _wm, ...clean } = loaded.projection as ChannelState & {
+        eventLogWatermark?: unknown;
+      };
+      state = clean as ChannelState;
+      floor = loaded.snapshotLamport;
+    } else {
+      // 스냅샷 체인 전손(genesis까지) — §5 파국 폴백: 빈 상태 + 전체 replay.
+      console.error(
+        '[ChannelService] 스냅샷 폴백 체인 전손 — 빈 상태에서 로그 전체 replay로 복구 시도',
+      );
+      state = { ...EMPTY_CHANNEL_STATE, channels: [], members: {}, messages: {}, idempotency: {} };
+      floor = 0;
+    }
+    // tail replay(§5): 스냅샷 이후(lamport > floor) 채널 레코드만 결정론 재적용.
+    // 적용기는 멱등(at-least-once §2.6 + 스냅샷 마커 지연 흡수 — channelEvents.ts).
+    for (const rec of eventLog.log.readAllRecords()) {
+      if (rec.domain !== 'channel') continue; // 도메인 무지 통과(§1)
+      if (rec.lamport <= floor) continue;
+      applyChannelEvent(state, rec.payload);
+    }
+    // 빈 채널 reaper — 레거시 load()와 동일 시멘틱 유지(하위 시멘틱 불변).
+    reapEmptyChannels(state, eventLog.emptyChannelTtlHours);
+    return state;
   }
 }
 

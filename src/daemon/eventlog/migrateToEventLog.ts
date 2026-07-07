@@ -46,6 +46,7 @@ import {
 import {
   EVENTLOG_FORMAT_VERSION,
   readManifest,
+  manifestFileExists,
   writeManifest,
   type EventLogManifest,
 } from './EventLogManifest';
@@ -180,6 +181,16 @@ export interface DetectOptions {
 export function detectMigrationState(opts: DetectOptions): MigrationDetection {
   const manifest = readManifest(opts.eventsDir);
   if (manifest) return { kind: 'active', manifest };
+
+  // 손상 ≠ 부재(패널 델타, Codex conf .94): manifest 파일이 존재하나 판독 불가면
+  // 과거 로그-모드 활성의 물증이다. 3분기 — 특히 (c) 격리+재마이그레이션 — 로
+  // 보내면 로그-only 커밋이 stale 레거시로 조용히 퇴행한다(격리는 바이트만 보존).
+  // fail-closed: 수동 복구 대상으로 중단(레거시·세그먼트 무손상, 다음 부트 재시도).
+  if (manifestFileExists(opts.eventsDir)) {
+    throw new MigrationError(
+      'manifest 손상(존재하나 판독 불가) — 재마이그레이션 금지, events/ 수동 복구 대상',
+    );
+  }
 
   const segFiles = listSegmentFiles(opts.eventsDir);
   if (segFiles.length === 0) {

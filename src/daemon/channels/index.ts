@@ -13,6 +13,7 @@ export {
   type ChannelMessageEvent,
   type ChannelCatalogEvent,
   type ChannelServiceDeps,
+  type ChannelServiceEventLog,
   type ChannelServiceEmit,
   type ArchiveChannelParams,
   type CreateChannelParams,
@@ -22,7 +23,12 @@ export {
   type SenderRef,
 } from './ChannelService';
 
-export { ChannelStateWriter } from './ChannelStateWriter';
+export {
+  ChannelStateWriter,
+  reapEmptyChannels,
+  type ChannelStateWriterEventLogOpts,
+} from './ChannelStateWriter';
+export { applyChannelEvent, type ChannelEventPayload } from './channelEvents';
 export {
   stampChannelCaller,
   type CallerFieldSpec,
