@@ -7,9 +7,11 @@
  *     envelope로 **먼저 커밋(append→true)한 뒤 projection에 적용**한다. append가
  *     false(배치 롤백)면 projection은 건드리지 않는다 — 로그가 정본이므로.
  *   - `VALID_TRANSITIONS`(types.ts) 데몬측 강제(성공 종단='completed').
- *   - 완료증거(evidence)는 §6.M PR-D′ 스키마를 **수용만** 한다:
- *     normalizeCompletionEvidenceWire로 재검증(sanitize) 후 verbatim 저장.
- *     **게이트·거부(verified≥1)는 넣지 않는다** — Q1-4b/PR-B 소관.
+ *   - 완료증거(evidence): §6.M PR-B 게이트 **활성**. 종단 전이(completed/failed)는
+ *     구조화 증거를 강제한다(validateCompletionEvidence) — completed=summary+≥1
+ *     well-formed 아이템, failed=summary(사유). normalizeCompletionEvidenceWire로
+ *     먼저 재검증(sanitize)한 뒤 게이트가 판정한다. verified≥1은 게이트가 아니라
+ *     completed의 **등급**(E9)이다 — verifiedItemCount는 정직 산출·표기만 한다.
  *   - per-task 직렬화(뮤텍스)로 collect→append→apply 일관성.
  *   - clientMsgId류 멱등(§4): (taskId, idempotencyKey) LRU — 재시도는 append 없이
  *     원본 결과 반환(동일 키 재시도 → 로그 1건).
@@ -38,6 +40,7 @@ import { validateTransition, VALID_TRANSITIONS, TERMINAL_STATES } from '../../sh
 import {
   isVerifiedItem,
   normalizeCompletionEvidenceWire,
+  validateCompletionEvidence,
 } from '../../shared/completionEvidence';
 import type {
   A2aTaskCancelPayload,
@@ -50,6 +53,33 @@ const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
 const GC_MAX_TASKS = 500;
 /** §4: 멱등 LRU cap/stream — 채널 상수(CHANNEL_IDEMPOTENCY_CAP=1000)와 동형. */
 const IDEMPOTENCY_CAP = 1000;
+
+/**
+ * 완료증거 게이트(§6.M PR-B) 거부 코드 → 사람용 액션 힌트(설계 §⑤). 코드는 기계 파싱용
+ * 안정 식별자, 힌트는 발신 에이전트가 무엇을 붙여 재시도할지 아는 사람용 문구다.
+ * shared/completionEvidence는 주석 외 불변(스키마는 envelope PR5 소유 — X9)이라
+ * 힌트 매핑은 강제 지점(데몬·렌더러 폴백)에 각각 로컬로 둔다.
+ */
+function evidenceGateHint(code: string): string {
+  switch (code) {
+    case 'completion_evidence_missing':
+      return "status 'completed' requires structured completion evidence (summary + >=1 well-formed item)";
+    case 'completion_evidence_empty_summary':
+      return "status 'completed' requires a non-empty evidence summary";
+    case 'completion_evidence_no_items':
+      return "status 'completed' requires >=1 well-formed evidence item (command|inspection|artifact)";
+    case 'completion_evidence_invalid_item':
+      return 'evidence has a malformed item (command items need a non-empty command; every item needs a non-empty summary)';
+    case 'completion_evidence_too_large':
+      return 'evidence exceeds size caps (items/strings/files/total bytes)';
+    case 'completion_evidence_bad_file_path':
+      return 'evidence.files must be repo-relative paths (no absolute, drive, ADS, url-scheme, or ".." segments)';
+    case 'failure_reason_missing':
+      return "status 'failed' requires an evidence summary (the failure reason)";
+    default:
+      return 'attach valid completion evidence and retry';
+  }
+}
 
 /** append + readAllRecords만 요구하는 최소 로그 인터페이스(AppendOnlyLog 만족). */
 export interface A2aLogLike {
@@ -267,7 +297,7 @@ export class A2aTaskService {
   }
 
   /**
-   * 상태 전이 — 데몬 정본 게이트. 권한 + VALID_TRANSITIONS 강제, evidence는 수용만.
+   * 상태 전이 — 데몬 정본 게이트. 권한 + VALID_TRANSITIONS + 완료증거 게이트(PR-B) 강제.
    * append(true) 후에만 projection 적용. 멱등키가 있으면 재시도 흡수(로그 1건).
    */
   transition(input: TransitionInput): Promise<TransitionOk | OpErr> {
@@ -306,11 +336,11 @@ export class A2aTaskService {
         return { ok: false, error: `a2a.task.update: invalid transition ${from} -> ${input.to}. ${guidance}.` };
       }
 
-      // evidence 수용만(§6.M PR-D′): wire 재정규화(sanitize) 후 verbatim 저장.
-      // **완료증거 게이트(evidence 필수·verified≥1)는 없다** — Q1-4b/PR-B 소관.
-      // 단 malformed shape는 PR-D′가 이미 렌더러 wire 경계에서 거부하던 위생 계약
-      // (useRpcBridge completion_evidence_malformed)이므로 정본 게이트도 동형으로
-      // 거부한다 — 조용히 드롭하면 렌더러(거부)와 데몬(커밋)이 갈라진다(split).
+      // evidence 정규화(§6.M): untrusted wire를 재검증(sanitize)한다. malformed shape는
+      // 렌더러 wire 경계(useRpcBridge completion_evidence_malformed)와 동형으로 거부한다
+      // — 조용히 드롭하면 렌더러(거부)와 데몬(커밋)이 갈라진다(split). 미지 kind·타입
+      // 혼동 아이템은 여기서 malformed로 죽고, shape는 맞지만 well-formed가 아닌
+      // 아이템(빈 command 등)은 아래 게이트가 completion_evidence_invalid_item으로 잡는다.
       let evidence: CompletionEvidence | undefined;
       let verifiedItemCount: number | undefined;
       if (input.evidence !== undefined) {
@@ -322,7 +352,21 @@ export class A2aTaskService {
           };
         }
         evidence = normalized;
-        verifiedItemCount = normalized.items.filter(isVerifiedItem).length; // 감사 등급(게이트 아님)
+      }
+
+      // 완료증거 게이트(§6.M PR-B — 활성). 종단 전이(completed/failed)는 구조화 증거를
+      // 강제한다. pane-authz·불법 전이 거부(위)가 게이트보다 먼저라 게이트는 합법 전이에만
+      // 도달한다(기존 에러 메시지·도그푸드 어서션 보존). verified≥1은 게이트가 아니라
+      // 등급(E9) — verdict가 verifiedItemCount를 정직 산출한다(0 허용).
+      if (input.to === 'completed' || input.to === 'failed') {
+        const verdict = validateCompletionEvidence(input.to, evidence);
+        if (!verdict.ok) {
+          return { ok: false, error: `a2a.task.update: ${verdict.code}: ${evidenceGateHint(verdict.code)}` };
+        }
+        verifiedItemCount = verdict.verifiedItemCount;
+      } else if (evidence !== undefined) {
+        // 비종단 전이(working/input-required)는 게이트 비대상 — evidence 수용 + 등급 카운트만.
+        verifiedItemCount = evidence.items.filter(isVerifiedItem).length;
       }
 
       const payload: A2aTaskTransitionPayload = {
@@ -431,8 +475,9 @@ export class A2aTaskService {
           to: 'failed',
           timestamp: this.isoNow(),
           forced: 'workspace_removed',
-          // 합성 완료증거(§③ E10): 실패 사유만(items 없음 — failed는 검증 불변식
-          // 미적용). PR4는 evidence 수용만이므로 게이트 없이 그대로 저장된다.
+          // 합성 완료증거(§③ E10): 실패 사유만(items 없음). force-fail은 완료증거
+          // 게이트(PR-B)를 **의도적으로 우회**하는 데몬 네이티브 진입점이라
+          // validateCompletionEvidence를 거치지 않는다 — 수신자 소멸 태스크를 그대로 커밋.
           evidence: { summary: reason, items: [] },
         };
         const committed = await this.log.append(this.envelope(payload, workspaceId));
