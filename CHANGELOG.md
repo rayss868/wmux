@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A2A 이벤트 authContext 서버 스탬핑 + daemon.ping 포맷 세대 노출 (envelope PR5).** A2A 태스크 이벤트(생성·전이·취소)의 `authContext.principalId`를 발신자 주장값 대신 데몬이 저장된 태스크 좌표에서 **서버 유도**한다 — 행위자 pane 좌표(전이는 수신자 `to.paneId`, 취소·생성은 caller 측 pane, pane 미핀 태스크·헤드리스 워커면 workspace 폴백). `principalId`/`trustTier`는 표시·라우팅·감사용일 뿐 권한 판정이 아니며(권한 앵커는 서버핀 `verifiedWorkspaceId` 불변), `trustTier`는 `'semi-trusted'`로 서버가 단일 결정한다(발신자가 신뢰 등급을 주장할 수 없음 — PR4의 임시 오버라이드 필드 제거). 또한 `daemon.ping` 응답에 활성 이벤트 로그의 `eventLogFormatVersion`을 additive로 노출한다 — 로그 모드 활성일 때만 실리고(값=활성 formatVersion) 레거시 폴백 시 부재하며, 이 부재가 곧 pre-envelope 데몬(레거시 세대) 신호가 되어 자동 데몬 교체 로직이 모르는 포맷 세대를 fail-closed로 판정하는 입력이 된다.
 - **완료증거 검증 등급이 A2A 태스크 이벤트로 관측된다 (§6.M P1, PR-C).** `wmux_events_poll`로 받는 `a2a.task` 이벤트의 completed/failed 전이가 `verifiedItemCount`(검증된 완료증거 아이템 수, `0`=미검증 완료)를 동반한다 — 이벤트 폴러가 이제 미검증 완료(count 0)와 검증된 완료를 구별한다. 카운트는 종단 전이(completed/failed)에서만 태스크의 `evidence`에서 파생되며(working 등 비종단 전이엔 실리지 않음), 렌더러 주 방출자가 싣고 워크스페이스 teardown force-fail은 등급 0으로 별도 방출한다. publish 신뢰 경계가 비음수 정수만 통과시켜(위조·비정상 값 드롭) 이벤트에 등급이 밀수되지 못하게 한다. created/cancelled 포인터엔 실리지 않는다(등급이 아직 없으므로).
 
+### Changed
+
+- **환경변수 정책이 pane 종류에 따라 달라진다 — 사용자가 직접 연 셸은 이제 자격증명 변수를 그대로 물려받는다 (env-passthrough PR1).** 이전에는 `*_KEY`·`*_TOKEN`·`*_SECRET`·`*_PASSWORD`류 이름의 환경변수가 모든 pane에서 일괄 제거되어, 사용자가 wmux 셸에서 손수 실행한 Claude Code·MCP 서버가 `${KAD_GATEWAY_KEY}` 같은 변수를 빈 값으로 치환하고 "Missing environment variables"로 연결에 실패했다. 이제 정책은 변수 이름이 아니라 **스폰 출처(실행 컨텍스트)** 로 갈린다: 사용자가 UI로 직접 연 인터랙티브 셸 pane은 다른 터미널(tmux·Windows Terminal)처럼 OS 자격증명 변수를 투과받고(단 wmux/Electron 내부 auth는 계속 차단), wmux가 자율 스폰한 에이전트·감독 exec pane은 종전대로 자격증명을 차단한다. 분류는 fail-closed — 출처가 불명확한 스폰은 자격증명이 새는 방향이 아니라 차단되는 방향으로 떨어진다. 에이전트 pane에서 자격증명이 차단되면 어떤 변수가 제외됐는지 로컬 로그 한 줄로 남겨 "왜 없지?"를 즉시 답한다. (secret 값의 디스크 비영속화·명시적 grant 통로·Windows 레지스트리 신선 병합은 후속 PR2·PR3.)
+
 ## [3.17.0] — 2026-07-06
 
 ### Added
