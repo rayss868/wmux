@@ -15,7 +15,7 @@ import { coerceLanLinkPatch } from '../shared/lanlink';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
 import { SnapshotStore, SNAPSHOT_DIRNAME } from './eventlog/SnapshotStore';
-import { readManifest } from './eventlog/EventLogManifest';
+import { manifestFileExists } from './eventlog/EventLogManifest';
 import { runMigration, evaluateWatermark, performReseed, stampWatermark } from './eventlog/migrateToEventLog';
 import { PrincipalService, PrincipalStateWriter } from './principals';
 import { isPrincipalUpsertInput } from '../shared/principals';
@@ -2785,7 +2785,8 @@ async function main(): Promise<void> {
   let logCanonical = false;
   try {
     // 기존 부트에서 이미 활성이면(runMigration 자체가 던져도) fail-closed 대상.
-    logCanonical = readManifest(eventsDir) !== null;
+    // 파일 실존 기준(파싱 무관) — 손상 manifest도 로그-모드 물증이다(패널 델타).
+    logCanonical = manifestFileExists(eventsDir);
     const migration = runMigration({
       eventsDir,
       // 레거시 부재(진짜 first-boot)는 null. 존재 시 기존 로더(리퍼·프로토타입

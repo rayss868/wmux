@@ -702,3 +702,40 @@ describe('computeStateHash(워터마크 필드 자신 제외 + 키순서 불변)
     expect(computeStateHash(a)).toBe(computeStateHash(b));
   });
 });
+
+describe('손상 manifest ≠ 부재 (패널 델타 — fail-closed)', () => {
+  it('manifest 존재하나 판독 불가 + 비어있지-않은 세그먼트 → MigrationError, 격리·재마이그레이션 없음', () => {
+    fs.mkdirSync(eventsDir, { recursive: true });
+            // 손상 manifest(파싱 불가) — .bak 없음.
+    fs.writeFileSync(manifestPath(eventsDir), '{corrupt!!');
+    const segPath = path.join(eventsDir, '00000001.ndjson');
+    const segLine = '{"lamport":1,"eventId":"x","origin":{"seq":1}}\n';
+    fs.writeFileSync(segPath, segLine); // 로그-only 커밋 모사
+
+    expect(() =>
+      detectMigrationState({ eventsDir, validateProjection: isChannelStateLike }),
+    ).toThrow(MigrationError);
+
+    // 무손상: 세그먼트 원위치·원내용, quarantine 미생성, 손상 manifest도 보존(수동 복구 물증).
+    expect(fs.readFileSync(segPath, 'utf8')).toBe(segLine);
+    expect(fs.existsSync(path.join(eventsDir, 'quarantine'))).toBe(false);
+    expect(fs.readFileSync(manifestPath(eventsDir), 'utf8')).toBe('{corrupt!!');
+  });
+
+  it('손상 primary + 유효 .bak → .bak 폴백으로 active (throw 아님)', () => {
+    fs.mkdirSync(eventsDir, { recursive: true });
+            const valid = {
+      formatVersion: 1, machineId: 'm-1', genesisRef: 'genesis-channel',
+      reseedRefs: [], snapshotLamport: 0, activeSegment: 1,
+    };
+    fs.writeFileSync(`${manifestPath(eventsDir)}.bak`, JSON.stringify(valid));
+    fs.writeFileSync(manifestPath(eventsDir), '{corrupt!!');
+
+    const detection = detectMigrationState({
+      eventsDir, validateProjection: isChannelStateLike,
+    });
+    expect(detection.kind).toBe('active');
+    // read-time 격리 이동 없음(quarantineOnCorruption:false) — 손상 primary 보존.
+    expect(fs.existsSync(manifestPath(eventsDir))).toBe(true);
+  });
+});
