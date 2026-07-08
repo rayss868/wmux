@@ -21,7 +21,9 @@
     "notices": "node scripts/generate-notices.mjs",
     "test": "npm run test:parallel && npm run test:runtime",
     "test:parallel": "vitest run --exclude \"**/*.runtime.test.ts\" --exclude \"**/*.runtime.test.tsx\" --exclude \"**/*.runtime.test.mjs\"",
-    "test:runtime": "vitest run --config vitest.runtime.config.ts"
+    "test:runtime": "vitest run --config vitest.runtime.config.ts",
+    "test:rig:sim": "vitest run --config vitest.rig.config.ts rig/sim",
+    "test:rig": "npm run test:rig:sim"
   },
   "keywords": [
     "terminal",
