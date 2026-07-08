@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "rootDir": ".",
+    "resolveJsonModule": true
+  },
+  "include": ["core/harness/**/*.ts"]
+}

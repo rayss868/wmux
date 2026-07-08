@@ -23,7 +23,9 @@
     "test:parallel": "vitest run --exclude \"**/*.runtime.test.ts\" --exclude \"**/*.runtime.test.tsx\" --exclude \"**/*.runtime.test.mjs\"",
     "test:runtime": "vitest run --config vitest.runtime.config.ts",
     "test:rig:sim": "vitest run --config vitest.rig.config.ts rig/sim",
-    "test:rig": "npm run test:rig:sim"
+    "test:rig": "npm run test:rig:sim",
+    "test:harness": "vitest run --config vitest.harness.config.ts",
+    "harness:gen-corpus": "vitest run --config vitest.harness.config.ts core/harness/__tests__/baseline-gate.harness.test.ts"
   },
   "keywords": [
     "terminal",
@@ -68,6 +70,7 @@
     "@typescript-eslint/eslint-plugin": "^5.62.0",
     "@typescript-eslint/parser": "^5.62.0",
     "@vitejs/plugin-react": "^4.7.0",
+    "@xterm/headless": "^6.0.0",
     "autoprefixer": "^10.4.27",
     "electron": "41.0.3",
     "eslint": "^8.57.1",
