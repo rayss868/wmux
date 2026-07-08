@@ -6,12 +6,12 @@
 //     :478 write(JSON+'\n')). 응답은 `id`로 상관(broadcast 이벤트 줄이 끼어들 수 있어
 //     매칭되지 않는 id·이벤트 줄은 무시 — 도그푸드 rpcCall 관례).
 //   - 인증: 모든 요청에 `token` 필드(:438-447 timingSafeEqual). 불일치면 소켓 파괴.
-//     토큰은 `{홈}/.wmux{suffix}/daemon-auth-token`에서 연결 시 읽는다(데몬이 부팅 시 민팅).
+//     토큰은 `{홈}/.wmux{suffix}/daemon-auth-token`에서 읽는다(데몬이 부팅 시 민팅).
 //   - 이중 ok 계층(도그푸드 a2a-symmetric-reply-dogfood.mjs:92-109이 명시한 함정):
 //     · 트랜스포트 봉투 `{id, ok, result}` — 핸들러가 throw 안 하면 항상 ok:true.
 //     · 핸들러 페이로드 `result` — 채널 op는 `result.ok`(ChannelService Result<T>
-//       판별 유니온)가 실제 성공/실패. `call()`은 result를 벗겨 돌려주고,
-//       `channelRpc()`가 `result.ok===false`를 ChannelError로 throw한다.
+//       판별 유니온)가 실제 성공/실패. `channelRpc()`가 `result.ok===false`를 throw로
+//       승격한다.
 //
 // 지속 연결(persistent socket): 호출당 새 소켓을 여는 도그푸드 방식은 데몬의 연결률 캡
 // (`MAX_NEW_CONNECTIONS_PER_SEC = 20`, DaemonPipeServer:57)에 걸려 flood 부하에서
@@ -20,12 +20,27 @@
 // per-socket 캡(50/sec)만 상대한다(페르소나당 소켓 1개라 8ws=400/sec 여유). 연결이
 // 끊기면 다음 호출에서 지연 재연결한다.
 //
-// G6 정직-main 규율: 생성자에 workspaceId 1개를 바인딩하고 모든 채널 호출에 그 값만
-// `verifiedWorkspaceId`로 스탬프한다. 예약 신원(ws-human/local-ui)·타 ws 자칭은
-// 하네스 레벨에서 throw — 제품에 테스트 전용 경로 0. 데몬은 pre-stamped
-// verifiedWorkspaceId를 verbatim 신뢰하므로(`channelCallerIdentity.ts:92-94` Rule 1)
-// SIM은 "정직한 main"을 모사할 뿐이고, 커버 못 하는 라우터 게이트는 §2.5 커버리지 맵에
-// 정직 선언돼 있다(리그 사각).
+// ── G6 정직-main 규율 (리뷰 반영: 우회 봉쇄) ─────────────────────────────────
+// public 표면은 정확히 2개 — `rpc()`(비스탬프)와 `channelRpc()`(스탬프). 원시 전송
+// 경로(send/transact)는 private이라 시나리오가 위생 검사를 우회할 수 없다.
+//   - `channelRpc()`: 생성자에 바인딩된 workspaceId 1개만 `verifiedWorkspaceId`로
+//     스탬프. 최상위 타 ws 자칭·중첩 밀수·`sender.workspaceId` 불일치는 throw.
+//   - `rpc()`: 신원 위생을 항상 강제 — params 트리 어디든 `verifiedWorkspaceId` 키가
+//     있으면 throw(그 키는 channelRpc만 스탬프 가능), 예약 신원 값이 신원류 키에
+//     실리면 throw.
+//   - 예약 신원(ws-human/local-ui)은 생성자 바인딩 자체를 거부.
+//
+// 주의(리뷰 확정 판단): "모든 workspaceId == bound" 블랭킷 금지는 틀리다 — A2A의
+// `to.workspaceId`, invite 타겟(invitedMember.workspaceId), create의 members[]는
+// 정당하게 타 ws를 가리킨다. 하네스가 금지하는 것은 딱 두 가지다:
+//   (1) 호출자 신원 필드 — `verifiedWorkspaceId`(위치 불문 밀수 금지) +
+//       `sender.workspaceId`(bound 불일치 금지),
+//   (2) 예약 신원 값 전역 — `ws-human`/`local-ui`가 신원류 키
+//       (workspaceId/memberId/*WorkspaceId/*MemberId)에 실리는 것.
+//
+// 제품에 테스트 전용 경로 0. 데몬은 pre-stamped verifiedWorkspaceId를 verbatim
+// 신뢰하므로(`channelCallerIdentity.ts:92-94` Rule 1) SIM은 "정직한 main"을 모사할
+// 뿐이고, 커버 못 하는 라우터 게이트는 §2.5 커버리지 맵에 정직 선언돼 있다(리그 사각).
 
 import net from 'node:net';
 import fs from 'node:fs';
@@ -49,8 +64,48 @@ interface Pending {
   method: string;
 }
 
-/** 데몬 파이프에 스탬프 없이 예약된 신원 — 하네스가 페르소나 자칭을 금지한다(G6). */
+/** 데몬 파이프에 자칭이 금지된 예약 신원(G6) — 렌더러 경로 전용 좌석. */
 const RESERVED_WORKSPACE_IDS = new Set(['ws-human', 'local-ui']);
+
+/** 신원류 키 판정 — 예약 신원 값 스캔의 대상 키(헤더 주의 블록 (2) 참조). */
+const isIdentityKey = (key: string): boolean =>
+  key === 'workspaceId' ||
+  key === 'memberId' ||
+  key.endsWith('WorkspaceId') ||
+  key.endsWith('MemberId');
+
+/**
+ * G6 신원 위생 워크 — params 트리 전체를 걸어 (a) `verifiedWorkspaceId` 키 밀수,
+ * (b) 신원류 키에 실린 예약 신원 값을 잡아 throw한다.
+ *
+ * @param allowRootVerified channelRpc 경로에서 true: 최상위 `verifiedWorkspaceId`는
+ *   호출측(channelRpc)이 bound 일치를 이미 검증·스탬프하므로 워크에서 면제. 중첩
+ *   위치는 여전히 throw(어떤 핸들러도 중첩 verifiedWorkspaceId를 읽지 않으며, 존재
+ *   자체가 밀수 시도다).
+ */
+function walkIdentityHygiene(node: unknown, nodePath: string, allowRootVerified: boolean): void {
+  if (Array.isArray(node)) {
+    node.forEach((v, i) => walkIdentityHygiene(v, `${nodePath}[${i}]`, allowRootVerified));
+    return;
+  }
+  if (node === null || typeof node !== 'object') return;
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    const p = nodePath ? `${nodePath}.${key}` : key;
+    if (key === 'verifiedWorkspaceId' && !(allowRootVerified && nodePath === '')) {
+      throw new Error(
+        `[rig/pipe] G6: caller-supplied verifiedWorkspaceId at "${p}" — ` +
+          '스탬프는 channelRpc()만 소유한다(바인딩 ws로만). rpc()·중첩 위치의 밀수는 금지',
+      );
+    }
+    if (isIdentityKey(key) && typeof value === 'string' && RESERVED_WORKSPACE_IDS.has(value)) {
+      throw new Error(
+        `[rig/pipe] G6: reserved identity "${value}" in identity field "${p}" — ` +
+          '페르소나는 ws-human/local-ui를 어떤 위치에서도 자칭·지정할 수 없다',
+      );
+    }
+    walkIdentityHygiene(value, p, allowRootVerified);
+  }
+}
 
 export interface PipeClientOptions {
   /** RPC 응답 대기 타임아웃(ms). 기본 8초(도그푸드 관례). */
@@ -60,9 +115,10 @@ export interface PipeClientOptions {
 /**
  * 데몬 파이프 RPC 클라이언트. 소켓 1개를 지속 유지하고 RPC를 id로 멀티플렉싱한다.
  *
- * 정직-main 규율(G6): 이 클라이언트는 정확히 하나의 workspaceId를 대변한다. 채널
- * 뮤테이션/조회 헬퍼는 그 값을 verifiedWorkspaceId로 스탬프하고, 페르소나가 다른 ws나
- * 예약 신원을 자칭하려 하면 즉시 throw한다(제품 코드 우회 아님 — 하네스 계약).
+ * 정직-main 규율(G6): 이 클라이언트는 정확히 하나의 workspaceId를 대변한다. public
+ * 표면은 `rpc()`/`channelRpc()` 2개뿐이고 둘 다 신원 위생을 강제한다 — 페르소나가
+ * 다른 ws나 예약 신원을 자칭하려 하면 소켓에 닿기 전에 throw한다(제품 코드 우회
+ * 아님 — 하네스 계약).
  */
 export class PipeClient {
   private readonly pipePath: string;
@@ -85,8 +141,8 @@ export class PipeClient {
   constructor(pipePath: string, tokenPath: string, workspaceId: string, opts: PipeClientOptions = {}) {
     if (RESERVED_WORKSPACE_IDS.has(workspaceId)) {
       throw new Error(
-        `[rig/pipe] refusing to bind PipeClient to reserved identity "${workspaceId}" ` +
-          '(G6: 페르소나는 정직-main 모사; 예약 신원 자칭 금지)',
+        `[rig/pipe] G6: refusing to bind PipeClient to reserved identity "${workspaceId}" ` +
+          '(페르소나는 정직-main 모사 — 예약 신원 자칭 금지)',
       );
     }
     if (!workspaceId || !workspaceId.trim()) {
@@ -122,12 +178,91 @@ export class PipeClient {
     this.pending.clear();
   }
 
+  /**
+   * 비스탬프 RPC(daemon.ping 등 신원 무관 호출용). **신원 위생은 항상 강제**(G6):
+   * params 트리 어디든 `verifiedWorkspaceId`가 있으면 throw — 그 키를 실을 수 있는
+   * 경로는 channelRpc()의 스탬프뿐이다. 예약 신원 값이 신원류 키에 실려도 throw.
+   * 트랜스포트 봉투를 벗겨 핸들러 페이로드(result)를 돌려준다.
+   */
+  async rpc(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    walkIdentityHygiene(params, '', /* allowRootVerified */ false);
+    return this.send(method, { ...params });
+  }
+
+  /**
+   * 채널/principal RPC. 바인딩된 workspaceId를 `verifiedWorkspaceId`로 스탬프한 뒤
+   * 핸들러 페이로드의 판별 유니온을 검사한다: `result.ok===false`면 ChannelError로
+   * throw(테스트가 실패 원인을 즉시 본다), ok:true면 페이로드 전체를 돌려준다.
+   *
+   * G6 강제: (1) 최상위 `verifiedWorkspaceId`는 bound와 동일 값만 허용(타 ws 자칭
+   * throw), (2) 중첩 밀수 throw, (3) `sender.workspaceId`가 있으면 bound 불일치 시
+   * throw(정본 post의 sender-pin 게이트와 같은 방향 — 하네스가 먼저 잡는다),
+   * (4) 예약 신원 값 전역 throw.
+   */
+  async channelRpc(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    const finalParams: Record<string, unknown> = { ...params };
+
+    // (1) 최상위 verifiedWorkspaceId — bound 일치만 허용(스탬프와 동치), 타 값은 G6 위반.
+    const claimed = finalParams['verifiedWorkspaceId'];
+    if (typeof claimed === 'string' && claimed.length > 0 && claimed !== this.workspaceId) {
+      throw new Error(
+        `[rig/pipe] G6: persona bound to "${this.workspaceId}" attempted to stamp foreign ` +
+          `verifiedWorkspaceId "${claimed}"`,
+      );
+    }
+
+    // (3) 호출자 신원 필드 sender.workspaceId — bound 불일치는 G6 위반.
+    //     (createdBy/member는 데몬이 verifiedWorkspaceId로 핀하므로(D5) 별도 금지 불요;
+    //      sender는 post의 sender-pin 게이트 입력이라 하네스가 먼저 명시 거부한다.)
+    const sender = finalParams['sender'];
+    if (sender !== null && typeof sender === 'object' && !Array.isArray(sender)) {
+      const sws = (sender as Record<string, unknown>)['workspaceId'];
+      if (typeof sws === 'string' && sws.length > 0 && sws !== this.workspaceId) {
+        throw new Error(
+          `[rig/pipe] G6: sender.workspaceId "${sws}" disagrees with bound workspace ` +
+            `"${this.workspaceId}" — 페르소나는 자기 신원으로만 발신한다`,
+        );
+      }
+    }
+
+    // (2)+(4) 트리 위생 — 중첩 verifiedWorkspaceId 밀수·예약 신원 값.
+    walkIdentityHygiene(finalParams, '', /* allowRootVerified */ true);
+
+    // 스탬프(바인딩 값으로 확정).
+    finalParams['verifiedWorkspaceId'] = this.workspaceId;
+
+    const result = await this.send(method, finalParams);
+    if (result === null || typeof result !== 'object') {
+      throw new Error(`[rig/pipe] ${method} returned non-object payload: ${JSON.stringify(result)}`);
+    }
+    const payload = result as Record<string, unknown>;
+    if (payload['ok'] === false) {
+      const err = payload['error'];
+      const detail =
+        err && typeof err === 'object' ? JSON.stringify(err) : String(err ?? 'unknown channel error');
+      throw new Error(`[rig/pipe] ${method} rejected: ${detail}`);
+    }
+    return payload;
+  }
+
   private readToken(): string {
     try {
       return fs.readFileSync(this.tokenPath, 'utf8').trim();
     } catch {
       return '';
     }
+  }
+
+  /**
+   * 원시 전송(private — 위생 검사를 우회하는 public 경로를 없앤다). 트랜스포트 봉투를
+   * 벗겨 `result`를 돌려주고, 봉투 레벨 실패(미인증·알 수 없는 메서드)는 throw.
+   */
+  private async send(method: string, params: Record<string, unknown>): Promise<unknown> {
+    const envelope = await this.transact(method, params);
+    if (!envelope.ok) {
+      throw new Error(`[rig/pipe] transport failure on ${method}: ${envelope.error ?? 'unknown'}`);
+    }
+    return envelope.result;
   }
 
   /**
@@ -194,55 +329,6 @@ export class PipeClient {
     };
     sock.once('close', onGone);
     sock.once('error', onGone);
-  }
-
-  /**
-   * 원시 RPC. 트랜스포트 봉투를 벗겨 `result`를 돌려준다(핸들러 페이로드). 트랜스포트
-   * 레벨 실패(미인증·알 수 없는 메서드·envelope.ok===false)는 throw. 채널 Result의
-   * `result.ok===false`는 여기서 판단하지 않는다 — `channelRpc()`가 담당.
-   *
-   * @param stamp verifiedWorkspaceId 자동 스탬프 여부. 채널/principal 뮤테이션은 true,
-   *              daemon.ping 같은 신원 무관 호출은 false.
-   */
-  async call(method: string, params: Record<string, unknown> = {}, stamp = false): Promise<unknown> {
-    const finalParams: Record<string, unknown> = { ...params };
-    if (stamp) {
-      const claimed = finalParams['verifiedWorkspaceId'];
-      // 페르소나가 명시적으로 타 ws를 자칭하면 거부(G6). 미지정이면 바인딩 값으로 채운다.
-      if (typeof claimed === 'string' && claimed.length > 0 && claimed !== this.workspaceId) {
-        throw new Error(
-          `[rig/pipe] persona bound to "${this.workspaceId}" attempted to stamp foreign ` +
-            `verifiedWorkspaceId "${claimed}" (G6 위반)`,
-        );
-      }
-      finalParams['verifiedWorkspaceId'] = this.workspaceId;
-    }
-
-    const envelope = await this.transact(method, finalParams);
-    if (!envelope.ok) {
-      throw new Error(`[rig/pipe] transport failure on ${method}: ${envelope.error ?? 'unknown'}`);
-    }
-    return envelope.result;
-  }
-
-  /**
-   * 채널 RPC. `call(..., stamp=true)`로 verifiedWorkspaceId를 스탬프한 뒤, 핸들러
-   * 페이로드의 판별 유니온을 검사한다: `result.ok===false`면 ChannelError로 throw(테스트가
-   * 실패 원인을 즉시 본다), ok:true면 페이로드 전체를 돌려준다.
-   */
-  async channelRpc(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-    const result = await this.call(method, params, true);
-    if (result === null || typeof result !== 'object') {
-      throw new Error(`[rig/pipe] ${method} returned non-object payload: ${JSON.stringify(result)}`);
-    }
-    const payload = result as Record<string, unknown>;
-    if (payload['ok'] === false) {
-      const err = payload['error'];
-      const detail =
-        err && typeof err === 'object' ? JSON.stringify(err) : String(err ?? 'unknown channel error');
-      throw new Error(`[rig/pipe] ${method} rejected: ${detail}`);
-    }
-    return payload;
   }
 
   /** 지속 소켓 위로 RPC 1건을 보내고 id 매칭 응답을 기다린다. */
