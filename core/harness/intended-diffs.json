@@ -1,0 +1,4 @@
+{
+  "_comment": "(d) 의도된 개선 명시 승인 목록 (스펙 §5-2). 여기 등재된 (workloadName,x,y,field)만 diff 리포트에서 'intended'로 승격된다. 미등재 불일치는 'unclassified'로 남아 사람이 판정해야 한다(암묵 (d) 금지). E0 현재는 피검체가 xterm.js 하나뿐이라 교차 diff가 없으므로 승인 대상이 없다 — E1에서 우리 코어가 꽂히면 U16+grapheme vs xterm U11 폭 차이 등이 케이스별로 여기 등재된다.",
+  "intended": []
+}
