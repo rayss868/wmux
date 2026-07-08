@@ -6,13 +6,20 @@
 //   (1) 페르소나 = { ws, client(PipeClient) } — G6 정직-main 바인딩(신원 1개, 그 값만
 //       스탬프). 예약 신원은 PipeClient 생성자가 이미 거부하므로 여기서 재검증 안 함.
 //   (2) 채널 생성/전원 join 오케스트레이션(모든 시나리오의 공통 서막).
-//   (3) 시드 결정성 배선(SeededRng를 페르소나 스크립트에 넘김).
+//   (3) 시드 배선(SeededRng를 시나리오가 필요 시 소비하도록 노출).
 //   (4) teardown 편의(모든 client.close()).
+//
+// **rng는 S1 flood 전용**(정직 선언 — 리뷰 minor): S1의 flood 연사는 페르소나별 연사
+// 횟수·본문을 시드로 뽑아 결정적으로 돈다(rng 실사용). **v1 SIM의 S2~S8은 전부 고정
+// 루프라 결정적이고 rng를 소비하지 않는다** — ping-pong 라운드·dead/hung 구성·no-ack
+// 카운트·boundary 경계값·SIGKILL 타이밍이 전부 상수다. 따라서 `runner.rng`는 노출하되
+// S2~S8은 쓰지 않으며, 그 시나리오들은 "WMUX_RIG_SEED로 재현" 같은 시드 재현 문구를
+// 두지 않는다(거짓 재현 신호 방지). rng를 실제 도입하는 부하 변주는 후속 확장 몫.
 //
 // **행동 스크립트는 각 시나리오가 소유한다** — flood 연사·ping-pong 왕복·dead 소멸·
 // hung 무응답·no-ack 수신·boundary 캡경계는 서로 완전히 다른 로직이라, 여기서
 // "행동 타입"을 열거하면 그게 곧 과추상화다. 프레임은 신원·채널·시드·수명만 관리하고,
-// 스크립트는 `PersonaRunner`가 넘겨주는 (persona, rng)를 받아 시나리오 파일에서 돈다.
+// 스크립트는 페르소나(+필요 시 `runner.rng`)를 받아 시나리오 파일에서 돈다.
 //
 // 이 프레임이 하지 않는 것(정직 선언): RigSession(실 PTY)·nudge 어서션은 v1 SIM
 // 스코프 밖(설계 §4 — S2·S4 재정의). 그래서 persona에 PTY 훅을 넣지 않는다.
@@ -32,21 +39,21 @@ export interface Persona {
 export interface PersonaRunnerOptions {
   /** 페르소나 workspaceId 접두(시나리오 식별용). 예: 's2' → ws-rig-s2-p0. */
   readonly idPrefix: string;
-  /** 이번 런의 결정적 시드(G7 — 실패 시 시나리오가 인쇄해 재현). */
+  /** 이번 런의 시드(rng 시드 — S1 flood만 소비, S2~S8은 고정 루프라 미사용). */
   readonly seed: number;
   /** PipeClient 옵션(타임아웃 등) — 전 페르소나 공유. */
   readonly clientOpts?: PipeClientOptions;
 }
 
 /**
- * 페르소나 러너 — 시나리오의 공통 서막(신원 배정·채널 생성·전원 join)과 시드 결정성을
+ * 페르소나 러너 — 시나리오의 공통 서막(신원 배정·채널 생성·전원 join)과 시드 배선을
  * 관리한다. 행동 스크립트는 시나리오가 `forEach`/직접 루프로 소유한다(프레임은 무개입).
  *
- * 전형적 사용(S2~S8):
+ * 전형적 사용(S2~S8 — 전부 고정 루프라 결정적, rng 미소비):
  *   const runner = new PersonaRunner(ctx, { idPrefix: 's2', seed });
  *   const [a, b] = runner.spawn(2);
  *   const { channelId } = await runner.openChannel('rig-s2', a, [b]);
- *   // ... 시나리오 고유 행동 (runner.rng로 결정적) ...
+ *   // ... 시나리오 고유 행동 (상수 루프 — rng는 S1 flood 전용) ...
  *   runner.closeAll();  // afterAll에서
  */
 export class PersonaRunner {
@@ -54,7 +61,7 @@ export class PersonaRunner {
   private readonly idPrefix: string;
   private readonly clientOpts?: PipeClientOptions;
   private readonly personas: Persona[] = [];
-  /** 시나리오가 결정적 행동에 쓰는 공유 PRNG(G7). */
+  /** 시나리오가 필요 시 소비하는 공유 PRNG(v1은 S1 flood만 사용, S2~S8 미사용). */
   readonly rng: SeededRng;
 
   constructor(ctx: RigContext, opts: PersonaRunnerOptions) {

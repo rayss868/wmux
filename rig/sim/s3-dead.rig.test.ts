@@ -48,8 +48,8 @@ describe('SIM S3 — dead ×3 + 정상 ×2: unread·수명주기 수렴, 채널 
   });
 
   it('dead 3종이 소멸해도 채널은 정상 동작하고 dead 원장(메시지·멤버십)은 잔재한다', async () => {
-    // eslint-disable-next-line no-console
-    console.log(`[S3] seed=${seed} (WMUX_RIG_SEED=${seed} 로 재현)`);
+    // 고정 루프라 결정적(rng 미사용) — seed는 PersonaRunner rng 시드로만 쓰이고 이
+    // 시나리오 본문은 소비하지 않는다. 시드 재현 문구를 두지 않는다(거짓 신호 방지).
     try {
       runner = new PersonaRunner(ctx, { idPrefix: 's3', seed });
       const all = runner.spawn(DEAD_COUNT + ALIVE_COUNT);
@@ -121,16 +121,29 @@ describe('SIM S3 — dead ×3 + 정상 ×2: unread·수명주기 수렴, 채널 
 
       // 5. 정상 페르소나 unread 정합: 아직 아무도 ack 안 했으므로, 각 정상 페르소나는
       //    (자기 발신 제외) 전 메시지를 unread로 센다 — dead 발신분도 포함(수명주기 수렴:
-      //    발신자가 죽어도 그 메시지는 수신자 unread에 계정된다). 정본 산식으로 재계산 대조.
+      //    발신자가 죽어도 그 메시지는 수신자 unread에 계정된다).
+      //
+      //    **커서 입력은 클라이언트 원장 — 데몬 산출을 기대값에 넣지 않는다(R1 순환 교훈)**:
+      //    어떤 alive 페르소나도 ack를 호출하지 않았으므로 클라이언트가 아는 커서 =
+      //    초기값 = historyFrom(공개 채널=0). 데몬이 보고한 lastReadSeq를 기대 unread의
+      //    입력으로 쓰면 커서 오염 버그가 기대값과 실측값을 함께 움직여 통과한다(R1에서
+      //    잡은 부분 순환의 재발). 그래서 기대값은 클라이언트-측 커서(0)로만 계산하고,
+      //    데몬 lastReadSeq는 별도로 그 클라이언트-측 값과 일치하는지 어서트한다(커서 무결성).
+      const CLIENT_KNOWN_CURSOR = 0; // 공개 채널 historyFrom, ack 미호출 → 클라이언트가 아는 커서.
       for (const p of alive) {
         const unread = await p.client.channelRpc('a2a.channel.unread', {});
         const entries = (unread['entries'] ?? []) as RigUnreadEntry[];
         const row = entries.find((e) => e.channelId === channelId && e.memberId === p.ws);
         expect(row, `unread 엔트리 (ws=${p.ws})`).toBeTruthy();
         assertUnread(entries, channelId, p.ws, { headSeq: totalPosts });
-        const cursor = row!.lastReadSeq;
+        // 커서 무결성: 데몬 lastReadSeq가 클라이언트-측 커서(0 — ack 미호출)와 일치해야 한다.
+        expect(row!.lastReadSeq, `데몬 커서가 클라이언트-측 값과 일치 (ws=${p.ws})`).toBe(
+          CLIENT_KNOWN_CURSOR,
+        );
+        // 기대 unread = (클라이언트 원장의 post 중 seq > 클라이언트-측 커서 AND 발신자≠자기) 수.
+        // 데몬 lastReadSeq는 대조 대상이지 기대값의 입력이 아니다.
         const expectedUnread = messages.filter(
-          (m) => m.seq > cursor && m.workspaceId !== p.ws,
+          (m) => m.seq > CLIENT_KNOWN_CURSOR && m.workspaceId !== p.ws,
         ).length;
         expect(row!.unread, `unread 재계산 대조 (ws=${p.ws})`).toBe(expectedUnread);
       }
@@ -141,7 +154,7 @@ describe('SIM S3 — dead ×3 + 정상 ×2: unread·수명주기 수렴, 채널 
       expect(ping.status, 'dead 소멸 후 데몬 생존').toBe('ok');
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`[S3] FAILED with seed=${seed} — reproduce with WMUX_RIG_SEED=${seed}`);
+      console.error(`[S3] FAILED (deterministic fixed-loop scenario — no seed dependency)`);
       // eslint-disable-next-line no-console
       console.error(`[S3] --- daemon log tail ---\n${daemon.log.slice(-2000)}`);
       throw err;

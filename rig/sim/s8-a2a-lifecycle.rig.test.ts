@@ -14,6 +14,15 @@
 //   - VALID_TRANSITIONS: `src/shared/types.ts:655` (submitted→working→completed).
 //   - 완료증거 게이트: `src/shared/completionEvidence.ts:75` validateCompletionEvidence.
 //
+// ── A2A workspaceId 컨벤션(채널 verifiedWorkspaceId와 다름 — 하네스가 막지 않는 이유) ──
+// A2A task RPC(create/update/cancel/query)의 `workspaceId`는 **데몬이 authz로 검증하는
+// 호출자 주장 신원**이다(`daemon/index.ts:1991` callerWorkspaceId=workspaceId → transition의
+// `to.workspaceId !== callerWorkspaceId` 게이트). 채널의 `verifiedWorkspaceId`(transport가
+// 서버핀·channelRpc가 스탬프)와 근본이 다르다. 그래서 이 값은 rpc()로 보내며, G6 하네스
+// 위생은 **일부러** 이 필드를 막지 않는다 — S8의 #354 authz 테스트가 **비참여자 ws 자칭을
+// 정확히 필요로** 하기 때문이다(하네스가 막으면 authz 테스트 자체가 불가능). 페르소나는
+// 자기 ws만 쓰는 것이 규율이되, `#354` 테스트만 의도적으로 outsider ws를 자칭한다.
+//
 // 실행 모델: RigDaemon.spawn → 두 페르소나(from/to) → 수명주기 4단 → EPERM 카오스.
 
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
@@ -53,8 +62,8 @@ describe('SIM S8 — A2A 전 수명주기 + EPERM 카오스', () => {
   });
 
   it('send→working→completed 정상 경로 + verifiedItemCount 방출', async () => {
-    // eslint-disable-next-line no-console
-    console.log(`[S8] seed=${seed} (WMUX_RIG_SEED=${seed} 로 재현)`);
+    // 고정 시퀀스라 결정적(rng 미사용) — seed는 PersonaRunner rng 시드로만 쓰이고 이
+    // 시나리오 본문은 소비하지 않는다. 시드 재현 문구를 두지 않는다(거짓 신호 방지).
     try {
       const [from, to] = runner.spawn(2);
       const taskId = `rig-s8-happy-${ctx.runId}`;
@@ -96,7 +105,7 @@ describe('SIM S8 — A2A 전 수명주기 + EPERM 카오스', () => {
       assertTaskState(q.tasks ?? [], taskId, 'completed');
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`[S8-happy] FAILED seed=${seed}\n${daemon.log.slice(-2000)}`);
+      console.error(`[S8-happy] FAILED (deterministic — no seed dependency)\n${daemon.log.slice(-2000)}`);
       throw err;
     }
   }, 60000);
@@ -140,7 +149,7 @@ describe('SIM S8 — A2A 전 수명주기 + EPERM 카오스', () => {
       assertTaskState(q.tasks ?? [], taskId, 'completed');
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`[S8-gate] FAILED seed=${seed}\n${daemon.log.slice(-2000)}`);
+      console.error(`[S8-gate] FAILED (deterministic — no seed dependency)\n${daemon.log.slice(-2000)}`);
       throw err;
     }
   }, 60000);
@@ -190,7 +199,7 @@ describe('SIM S8 — A2A 전 수명주기 + EPERM 카오스', () => {
       assertTaskState(q.tasks ?? [], taskId, 'completed');
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`[S8-idem] FAILED seed=${seed}\n${daemon.log.slice(-2000)}`);
+      console.error(`[S8-idem] FAILED (deterministic — no seed dependency)\n${daemon.log.slice(-2000)}`);
       throw err;
     }
   }, 60000);
@@ -235,7 +244,7 @@ describe('SIM S8 — A2A 전 수명주기 + EPERM 카오스', () => {
       expect(attack.task, '비참여자에게 태스크 스냅샷이 새지 않아야 한다').toBeUndefined();
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`[S8-authz] FAILED seed=${seed}\n${daemon.log.slice(-2000)}`);
+      console.error(`[S8-authz] FAILED (deterministic — no seed dependency)\n${daemon.log.slice(-2000)}`);
       throw err;
     }
   }, 60000);
@@ -244,8 +253,17 @@ describe('SIM S8 — A2A 전 수명주기 + EPERM 카오스', () => {
   // 데몬 소켓 파일을 chmod 000 → 새 연결이 EACCES/EPERM으로 실패한다(클라이언트 실패
   // 격리). 데몬 프로세스는 그대로 살아있어야 하고(소켓 권한 박탈 ≠ 데몬 사망), 권한을
   // 복원하면 다시 연결·동작해야 한다(복구). win32는 named pipe라 파일 chmod가 없어 skip.
-  const isUnix = process.platform !== 'win32';
-  (isUnix ? it : it.skip)('EPERM 카오스: 소켓 chmod 000 → 클라이언트 격리·데몬 생존·복구', async () => {
+  //
+  // **root(uid 0) skip**(리뷰 MAJOR — Claude): root는 DAC 권한 비트를 전부 우회하므로
+  // chmod 000 소켓에도 connect가 성공한다 → `denied`가 null이 되어 검출이 조용히 무효화
+  // (false-fail). CI SIM 레인의 Linux 컨테이너는 흔히 root로 돌기에 반드시 skip한다.
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const runEperm = process.platform !== 'win32' && !isRoot;
+  if (isRoot) {
+    // eslint-disable-next-line no-console
+    console.log('[S8-eperm] EPERM chaos skipped under root — chmod bypassed by uid 0');
+  }
+  (runEperm ? it : it.skip)('EPERM 카오스: 소켓 chmod 000 → 클라이언트 격리·데몬 생존·복구', async () => {
     try {
       const sockPath = ctx.daemonPipePath;
       // 카오스 전: 정상 연결 확인. pid도 기록(카오스 후 동일해야 = 재시작 아님).
@@ -284,7 +302,7 @@ describe('SIM S8 — A2A 전 수명주기 + EPERM 카오스', () => {
       expect(daemon.pid, 'EPERM 카오스 전후 pid 동일(데몬 생존)').toBe(pidBefore);
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`[S8-eperm] FAILED seed=${seed}\n${daemon.log.slice(-2000)}`);
+      console.error(`[S8-eperm] FAILED (deterministic — no seed dependency)\n${daemon.log.slice(-2000)}`);
       throw err;
     }
   }, 60000);

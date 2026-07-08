@@ -49,8 +49,9 @@ describe('SIM S2 — ping-pong ×2: 핑퐁 부하 하 채널 무결성 (anti-loo
   });
 
   it('두 페르소나가 서로 멘션 왕복해도 전 메시지가 seq 연속·무손실·무한홀드 없이 도달한다', async () => {
-    // eslint-disable-next-line no-console
-    console.log(`[S2] seed=${seed} (WMUX_RIG_SEED=${seed} 로 재현)`);
+    // 이 시나리오는 **고정 루프라 결정적**이다(rng 미사용) — seed는 PersonaRunner가
+    // rng를 만드는 데만 쓰이고 이 시나리오 본문은 소비하지 않는다. 그래서 "WMUX_RIG_SEED
+    // 로 재현" 같은 시드 재현 문구를 두지 않는다(거짓 신호 방지 — 리뷰 minor).
     try {
       runner = new PersonaRunner(ctx, { idPrefix: 's2', seed });
       const [a, b] = runner.spawn(2);
@@ -121,7 +122,7 @@ describe('SIM S2 — ping-pong ×2: 핑퐁 부하 하 채널 무결성 (anti-loo
       expect(finalPing.status, '핑퐁 부하 종료 후 데몬 생존').toBe('ok');
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`[S2] FAILED with seed=${seed} — reproduce with WMUX_RIG_SEED=${seed}`);
+      console.error(`[S2] FAILED (deterministic fixed-loop scenario — no seed dependency)`);
       // eslint-disable-next-line no-console
       console.error(`[S2] --- daemon log tail ---\n${daemon.log.slice(-2000)}`);
       throw err;

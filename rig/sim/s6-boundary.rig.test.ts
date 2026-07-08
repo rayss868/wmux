@@ -54,8 +54,8 @@ describe('SIM S6 — boundary: 캡 경계 수용/거부 정확성 (와이어 레
   });
 
   it('본문·멘션 캡: 경계값은 수용, +1은 정본 사유코드로 거부한다', async () => {
-    // eslint-disable-next-line no-console
-    console.log(`[S6] seed=${seed} (WMUX_RIG_SEED=${seed} 로 재현)`);
+    // 고정 경계값 시나리오라 결정적(rng 미사용) — seed는 PersonaRunner rng 시드로만
+    // 쓰이고 이 시나리오 본문은 소비하지 않는다. 시드 재현 문구를 두지 않는다(거짓 신호 방지).
     try {
       // sender 1인만 — 멘션 캡은 멤버십보다 먼저 걸리므로 실멤버 무리가 불필요(위 주석).
       const [sender] = runner.spawn(1);
@@ -119,7 +119,7 @@ describe('SIM S6 — boundary: 캡 경계 수용/거부 정확성 (와이어 레
       expect(ping.status, '캡 거부 후 데몬 생존').toBe('ok');
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error(`[S6] FAILED with seed=${seed} — reproduce with WMUX_RIG_SEED=${seed}`);
+      console.error(`[S6] FAILED (deterministic fixed-boundary scenario — no seed dependency)`);
       // eslint-disable-next-line no-console
       console.error(`[S6] --- daemon log tail ---\n${daemon.log.slice(-2000)}`);
       throw err;
@@ -166,6 +166,33 @@ describe('SIM S6 — boundary: 캡 경계 수용/거부 정확성 (와이어 레
       expect(String(rejected.error), '정본 사유코드 completion_evidence_too_large').toMatch(
         /completion_evidence_too_large/,
       );
+
+      // items 개수 경계 +1: EVIDENCE_MAX_ITEMS+1(65)개는 거부. 전부 well-formed지만 items
+      // 개수 캡이 초과다. **거부 사유코드는 completion_evidence_malformed**(too_large 아님):
+      // 전이 경로가 wire normalize(`normalizeCompletionEvidenceWire`)를 권위 게이트보다
+      // **먼저** 태우는데, normalize가 items 개수 캡을 자체 검사(`completionEvidence.ts:155`
+      // — `v.items.length > EVIDENCE_MAX_ITEMS`면 null)해 게이트에 닿기 전에 malformed로
+      // 거부한다(`A2aTaskService.ts:353-359`). 즉 items 캡은 wire 레벨에서 강제되며, 그
+      // 강제가 사라지는 회귀(normalize items 캡 제거)를 이 케이스가 잡는다. (문자열 캡은
+      // normalize가 총바이트만 봐서 단일 4KiB가 통과→게이트 withinCaps에서 too_large로
+      // 걸리는 것과 대조 — 두 경계가 서로 다른 레이어에서 강제됨.)
+      const overItems = Array.from({ length: EVIDENCE_MAX_ITEMS + 1 }, (_, i) => ({
+        kind: 'command' as const,
+        status: 'passed' as const,
+        summary: `c${i}`,
+        command: `e${i}`,
+      }));
+      const rejectedItems = (await to.client.rpc('a2a.task.update', {
+        taskId,
+        workspaceId: to.ws,
+        status: 'completed',
+        evidence: { summary: 's6 done', items: overItems },
+      })) as { ok?: boolean; error?: string };
+      expect(rejectedItems.ok, `items=${EVIDENCE_MAX_ITEMS + 1} 거부`).toBe(false);
+      expect(
+        String(rejectedItems.error),
+        '정본 사유코드 completion_evidence_malformed (wire normalize items 캡)',
+      ).toMatch(/completion_evidence_malformed/);
 
       // 경계 수용: EVIDENCE_MAX_ITEMS개(작은 문자열, 캡 내)면 completed 성공 — 개수 경계와
       // 문자열 경계를 동시에 밟는다(각 문자열은 캡 미만).
