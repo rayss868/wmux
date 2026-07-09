@@ -114,7 +114,7 @@ export default function ProjectConfigDialog() {
           overflowY: 'auto',
           backgroundColor: 'var(--bg-base)',
           border: `1px solid ${accent}`,
-          boxShadow: '0 25px 60px rgba(0,0,0,0.75)',
+          boxShadow: 'var(--shadow-modal)',
         }}
       >
         <div className="flex items-center gap-2">

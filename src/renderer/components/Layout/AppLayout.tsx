@@ -1378,7 +1378,7 @@ export default function AppLayout() {
       {showAutoUpdatePrompt && (
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center"
-          style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+          style={{ backgroundColor: 'var(--backdrop-modal)' }}
         >
           <div
             className="flex flex-col gap-4 p-6 rounded-xl"
@@ -1386,7 +1386,7 @@ export default function AppLayout() {
               width: 400,
               backgroundColor: 'var(--bg-base)',
               border: '1px solid var(--bg-surface)',
-              boxShadow: '0 25px 60px rgba(0,0,0,0.75)',
+              boxShadow: 'var(--shadow-modal)',
             }}
           >
             <p className="text-sm font-semibold text-[color:var(--text-main)] font-mono">

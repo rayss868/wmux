@@ -381,7 +381,7 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   return (
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center"
-      style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+      style={{ backgroundColor: 'var(--backdrop-modal)' }}
       data-testid="first-run-wizard-backdrop"
     >
       <div
@@ -395,7 +395,7 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
           maxWidth: '90vw',
           backgroundColor: 'var(--bg-base)',
           border: '1px solid var(--bg-surface)',
-          boxShadow: '0 25px 60px rgba(0,0,0,0.75)',
+          boxShadow: 'var(--shadow-modal)',
           fontFamily: 'ui-monospace, monospace',
         }}
         data-testid="first-run-wizard"

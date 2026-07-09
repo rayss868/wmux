@@ -353,7 +353,7 @@ export default function FleetView() {
         style={{
           backgroundColor: 'var(--bg-base)',
           border: '1px solid var(--bg-surface)',
-          boxShadow: '0 25px 60px rgba(0,0,0,0.7)',
+          boxShadow: 'var(--shadow-modal-soft)',
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >

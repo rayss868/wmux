@@ -3993,7 +3993,7 @@ export default function SettingsPanel() {
     // Backdrop
     <div
       className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh]"
-      style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+      style={{ backgroundColor: 'var(--backdrop-modal)' }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) handleClose();
       }}
@@ -4007,7 +4007,7 @@ export default function SettingsPanel() {
           height: 560,
           backgroundColor: 'var(--bg-base)',
           border: '1px solid var(--bg-surface)',
-          boxShadow: '0 25px 60px rgba(0,0,0,0.75)',
+          boxShadow: 'var(--shadow-modal)',
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
