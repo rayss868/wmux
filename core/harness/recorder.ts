@@ -52,8 +52,12 @@ export function parseEvents(text: string): RecordingEvent[] {
  * 것이 목적이다(반환값은 쓰지 않는다 — 정본 바이트는 워크로드가 산출). 자식 프로세스는 즉시
  * 종료·정리한다. macOS/Linux는 openpty(forkpty), Windows는 conpty — 여기서는 win 전용 가정 없음.
  *
- * 실패해도(예: cat 부재) 녹화 자체는 진행 가능하도록 best-effort로 삼되, 스폰 성공 시에는 resize
- * 호출까지 반드시 태워 geometry 경로가 실제로 동작함을 남긴다.
+ * ── 에러 승격(R8) ──────────────────────────────────────────────────────────
+ * 이전에는 spawn/resize/exit 실패를 삼켰다(best-effort). 그러나 이 함수는 게이트④·코퍼스 생성
+ * 경로에서 호출되므로, 실패를 삼키면 "geometry 경로가 실제로 동작함"이라는 실증이 조용히 무력화된다.
+ * 그래서 spawn 실패·resize 실패·비정상 exit(0이 아닌 코드 또는 시그널)를 **throw로 승격**한다 —
+ * 테스트 실패로 드러나 CI가 잡는다. 정상 종료(cat이 kill로 SIGHUP/SIGTERM 받는 것)는 정상 정리로
+ * 간주한다(kill로 우리가 유도한 종료이므로).
  */
 async function exercisePty(initial: Geometry, resizes: readonly Geometry[]): Promise<void> {
   // 순수 passthrough 자식: 표준입력을 그대로 표준출력으로. macOS `cat`은 인자 없으면 stdin→stdout.
@@ -68,27 +72,42 @@ async function exercisePty(initial: Geometry, resizes: readonly Geometry[]): Pro
       cwd: process.cwd(),
       env: { ...process.env } as { [key: string]: string },
     });
-  } catch {
-    // 환경에 자식 바이너리가 없으면 geometry 실증을 건너뛴다(녹화 자체는 성립 — 정본은 합성 바이트).
-    return;
+  } catch (e) {
+    // R8: spawn 실패를 삼키지 않고 승격 — geometry 실증이 조용히 무력화되는 것을 막는다.
+    throw new Error(`[recorder] PTY spawn 실패(${shell}): ${String(e)}`);
   }
+
+  // onExit를 kill 이전에 배선해 종료의 코드/시그널을 검증한다(R8). node-pty 실측 시맨틱(macOS):
+  // 우리가 kill로 유도한 종료 = {exitCode:0, signal:1(SIGHUP)} — 시그널이 존재한다. 자식이 스스로
+  // 비정상 코드로 죽으면 = {exitCode≠0, signal:0} — 시그널이 없다. 그래서 "exitCode≠0 && 시그널
+  // 부재"를 비정상 exit로 승격한다(우리 kill은 시그널을 남기므로 오탐 없음).
+  const exited = new Promise<{ exitCode: number; signal?: number }>((resolve) => {
+    child.onExit(({ exitCode, signal }) => resolve({ exitCode, signal }));
+  });
+
   try {
     // resize를 초기 geometry에서 순서대로 적용 — PTY의 실제 resize 경로를 밟는다.
     for (const g of resizes) {
       child.resize(g.cols, g.rows);
     }
-    // 자식을 즉시 종료. cat은 stdin EOF에서 종료하므로 kill로 확정 회수.
-    child.kill();
-  } catch {
-    // 이미 종료된 경우 등 — 무해.
+  } catch (e) {
+    // R8: resize 실패도 승격. 정리는 시도하되 원 에러를 던진다.
     try {
       child.kill();
     } catch {
-      /* noop */
+      /* 정리 실패는 원 에러를 가리지 않도록 무시. */
     }
+    throw new Error(`[recorder] PTY resize 실패: ${String(e)}`);
   }
-  // 짧게 이벤트 루프를 한 틱 양보해 자식 종료가 정착하게 한다(리소스 누수 방지).
-  await new Promise<void>((r) => setImmediate(r));
+
+  // 자식을 즉시 종료. cat은 stdin EOF에서 종료하므로 kill로 확정 회수.
+  child.kill();
+
+  // onExit 코드 검증(R8): 비정상 자기 종료(시그널 없이 비정상 코드)면 승격.
+  const { exitCode, signal } = await exited;
+  if (exitCode !== 0 && !signal) {
+    throw new Error(`[recorder] PTY 비정상 exit: code=${exitCode} signal=${signal ?? 'none'}`);
+  }
 }
 
 /** 녹화 산출물 파일명(코퍼스 케이스 디렉토리 안). */
