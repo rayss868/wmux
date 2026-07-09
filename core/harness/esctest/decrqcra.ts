@@ -159,6 +159,49 @@ export type DecrqcraParse =
   | null
   | 'incomplete';
 
+/** WINOPS 문자 resize(CSI 8 ; rows ; cols t) 파싱 결과(리뷰 반영 — 브리지 신선도). */
+export type WinopsResizeParse =
+  | { readonly rows: number; readonly cols: number; readonly end: number }
+  | null
+  | 'incomplete';
+
+/**
+ * s[start..]에서 WINOPS 문자 단위 resize 명령(CSI 8 ; rows ; cols t)을 파싱한다(리뷰 반영).
+ * 이 명령을 가로채 피검체 term.resize에 반영해야 이후 CSI 18 t 질의가 신선한 geometry를
+ * 돌려준다 — 가로채지 않으면 크기 리포트 브리지가 초기 geometry로 고정된다.
+ */
+export function tryParseWinopsResize(s: string, start: number): WinopsResizeParse {
+  let i = start;
+  if (s.charCodeAt(i) === 0x1b) {
+    if (i + 1 >= s.length) return 'incomplete';
+    if (s[i + 1] !== '[') return null;
+    i += 2;
+  } else if (s.charCodeAt(i) === 0x9b) {
+    i += 1;
+  } else {
+    return null;
+  }
+  let params = '';
+  while (i < s.length) {
+    const code = s.charCodeAt(i);
+    if (code >= 0x30 && code <= 0x3f) {
+      params += s[i];
+      i += 1;
+    } else if (code >= 0x40 && code <= 0x7e) {
+      if (s[i] !== 't') return null;
+      const parts = params.split(';');
+      if (parts[0] !== '8' || parts.length < 3) return null;
+      const rows = Number(parts[1]);
+      const cols = Number(parts[2]);
+      if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows <= 0 || cols <= 0) return null;
+      return { rows, cols, end: i + 1 };
+    } else {
+      return null;
+    }
+  }
+  return 'incomplete';
+}
+
 /**
  * s[start..] 위치에서 DECRQCRA 요청(CSI ... * y)을 파싱한다.
  *   - s[start]가 ESC(0x1B)이고 CSI(ESC[)로 이어지지 않으면 시작 아님(null).

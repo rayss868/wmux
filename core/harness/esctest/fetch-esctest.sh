@@ -19,13 +19,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENDOR_DIR="$SCRIPT_DIR/vendor"
 
 # 이미 올바른 핀으로 존재하면 재사용(네트워크 재접촉 회피).
+# 리뷰 반영: HEAD 일치만으로는 부족 — dirty worktree(로컬 변조)·다른 origin이면 "무수정 핀
+# 실행" 보장이 깨진다. 하나라도 어긋나면 재클론.
 if [ -d "$VENDOR_DIR/.git" ]; then
   current="$(git -C "$VENDOR_DIR" rev-parse HEAD 2>/dev/null || echo none)"
-  if [ "$current" = "$ESCTEST_PIN" ]; then
-    echo "[fetch-esctest] vendor already at pin $ESCTEST_PIN — reuse"
+  origin="$(git -C "$VENDOR_DIR" remote get-url origin 2>/dev/null || echo none)"
+  dirty="$(git -C "$VENDOR_DIR" status --porcelain 2>/dev/null | head -1)"
+  if [ "$current" = "$ESCTEST_PIN" ] && [ "$origin" = "$ESCTEST_REPO" ] && [ -z "$dirty" ]; then
+    echo "[fetch-esctest] vendor already at pin $ESCTEST_PIN (clean, origin ok) — reuse"
     exit 0
   fi
-  echo "[fetch-esctest] vendor exists at $current, expected $ESCTEST_PIN — re-fetching"
+  echo "[fetch-esctest] vendor invalid (head=$current origin=$origin dirty=${dirty:+yes}) — re-fetching"
   rm -rf "$VENDOR_DIR"
 fi
 

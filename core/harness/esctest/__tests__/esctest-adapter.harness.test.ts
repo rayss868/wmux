@@ -16,6 +16,7 @@ import {
   buildReport,
   esctestVendorPresent,
   parseEsctestLog,
+  parseEsctestSummary,
   ESCTEST_ENTRY,
 } from '../adapter';
 import {
@@ -174,14 +175,28 @@ describe('parseEsctestLog — 실측 esctest 로그 포맷', () => {
     expect(cases[0].status).toBe('fail');
   });
 
-  it('Fails as expected(known-bug)는 pass로 집계', () => {
+  it('Fails as expected는 known-bug로 분리 집계(리뷰 반영 — pass 순도)', () => {
     const log = ['Run test: FooTests.test_bar', 'Fails as expected: known xterm bug'].join('\n');
-    expect(parseEsctestLog(log)[0].status).toBe('pass');
+    expect(parseEsctestLog(log)[0].status).toBe('known-bug');
+  });
+
+  it('능력 부재 skip은 skipped로 분리 집계(pass 합산 금지 — 리뷰 반영)', () => {
+    const log = [
+      'Run test: FooTests.test_bar',
+      'Skipped because terminal lacks requisite capability: 8-bit controls',
+    ].join('\n');
+    expect(parseEsctestLog(log)[0].status).toBe('skipped');
   });
 
   it('신호 없이 끊긴 마지막 케이스는 error로 마감(무응답 데드락)', () => {
     const log = ['Run test: FooTests.test_bar'].join('\n');
     expect(parseEsctestLog(log)[0].status).toBe('error');
+  });
+
+  it('esctest 요약 라인을 파싱한다(파서 집계의 독립 대조 기준 — 리뷰 반영)', () => {
+    const s = parseEsctestSummary('...\n*** 6 tests passed, 0 known bugs, 0 tests failed ***\n');
+    expect(s).toEqual({ passed: 6, knownBugs: 0, failed: 0 });
+    expect(parseEsctestSummary('no summary here')).toBeNull();
   });
 });
 
@@ -239,12 +254,16 @@ describeVendor('T2 — cup.py 완주 (CPR 기반, 무수정 실행)', () => {
     // xterm.js 기준선의 실태: 전 케이스 pass가 목표. 실제 미준수가 있으면 정직하게 fail로
     // 남되(리포트에 기록), 여기서는 "완주 + 판정 반환"을 게이트로 한다. pass 수는 보고용.
     // (관찰: 6/6 pass — xterm.js는 CUP를 정확히 준수.)
-    expect(r.passCount + r.failCount + r.errorCount).toBe(6);
+    expect(r.passCount + r.failCount + r.errorCount + r.knownBugCount + r.skippedCount).toBe(6);
+    // 파서 집계가 esctest 자체 요약 라인과 일치한다(리뷰 반영 — 오분류·분모 축소 탐지).
+    expect(r.esctestSummary).not.toBeNull();
+    expect(r.reconciled).toBe(true);
     // reset()의 GetScreenSize()가 WINOPS 브리지를 탔다(결정 문서 미포착 경로 실증).
     expect(r.winopsBridgeUses).toBeGreaterThanOrEqual(1);
     // 리포트 빌드가 총계를 집계한다.
     const report = buildReport([r]);
     expect(report.totals.pass + report.totals.fail + report.totals.error).toBe(6);
+    expect(report.totals.unreconciledRuns).toBe(0);
     expect(report.esctestPin).toBe('664be3cf2c1e3f06bc93a8bafb48a0db83c607db');
   });
 });

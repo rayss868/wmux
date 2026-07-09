@@ -69,27 +69,58 @@ async function main(): Promise<void> {
         maxVtLevel: 5,
         hardTimeoutMs: 45000,
       });
+      // zero-match 가드(리뷰 반영): 앵커 오타·클래스명 변경이 "케이스 0건=조용한 분모 축소"로
+      // 숨지 않게 한다 — 0건 매칭은 합성 error 결과로 기록.
+      if (r.cases.length === 0) {
+        results.push({ ...r, cases: [{ name: `${inc} (zero-match)`, status: 'error' }], errorCount: 1, reconciled: false });
+        console.log('ZERO-MATCH (recorded as error)');
+        continue;
+      }
       results.push(r);
       console.log(
         `pass=${r.passCount} fail=${r.failCount} err=${r.errorCount} ` +
+          `known=${r.knownBugCount} skip=${r.skippedCount} ` +
           `decrqcra=${r.decrqcraBridgeUses} winops=${r.winopsBridgeUses}` +
+          (r.reconciled ? '' : ' [UNRECONCILED]') +
           (r.timedOut ? ' [TIMED OUT]' : ''),
       );
     } catch (e) {
+      // 예외도 리포트에 남긴다(리뷰 반영 — 콘솔에만 찍고 totals에서 소실되는 구멍 차단).
       console.log(`THREW: ${String(e)}`);
+      results.push({
+        include: inc,
+        exitCode: -1,
+        timedOut: false,
+        cases: [{ name: `${inc} (spawn/run threw)`, status: 'error' }],
+        passCount: 0,
+        failCount: 0,
+        errorCount: 1,
+        knownBugCount: 0,
+        skippedCount: 0,
+        decrqcraBridgeUses: 0,
+        winopsBridgeUses: 0,
+        esctestSummary: null,
+        reconciled: false,
+      });
     }
   }
 
+  // 개수 정합(리뷰 반영): include마다 결과 1개가 반드시 존재해야 한다 — 아니면 리포트 자체가 실패.
+  if (results.length !== includes.length) {
+    console.error(`[gen-report] FATAL: results(${results.length}) != includes(${includes.length})`);
+    process.exit(1);
+  }
+
   const report = buildReport(results);
-  // 커밋 산출물은 rawLogTail을 최근 600자로 축소한다(어댑터 반환은 라이브 디버깅용 전량 유지 —
-  // 여기 직렬화 시점만 트리밍). 통과 케이스는 로그 가치가 낮고, 실패 시 요약 꼬리만 있어도 충분.
-  const trimmed = {
-    ...report,
-    results: report.results.map((r) => ({ ...r, rawLogTail: r.rawLogTail.slice(-600) })),
-  };
-  writeFileSync(REPORT_PATH, JSON.stringify(trimmed, null, 2) + '\n');
+  writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2) + '\n');
   console.log(`\n[gen-report] wrote ${REPORT_PATH}`);
   console.log(`[gen-report] totals: ${JSON.stringify(report.totals)}`);
+  // 비정상 신호는 종료 코드로도 노출(리뷰 반영 — 그린 위장 차단).
+  const t = report.totals;
+  if (t.unreconciledRuns > 0 || t.timedOutRuns > 0 || t.nonzeroExitRuns > 0) {
+    console.error('[gen-report] WARNING: abnormal runs present (see totals) — exit 3');
+    process.exit(3);
+  }
 }
 
 main().catch((e) => {

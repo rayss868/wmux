@@ -32,6 +32,7 @@ import {
   buildWinopsSizeReply,
   tryParseDecrqcra,
   tryParseWinopsSizeQuery,
+  tryParseWinopsResize,
 } from './decrqcra';
 import type { EsctestCaseResult, EsctestReport, DecrqcraBridgeUse } from './report-types';
 
@@ -115,6 +116,14 @@ class XtermBridge {
   handleWinopsSize(reportCode: 8 | 9): Uint8Array {
     this.winopsBridgeCount += 1;
     return buildWinopsSizeReply(reportCode, this.term.rows, this.term.cols);
+  }
+
+  /**
+   * WINOPS 문자 resize(CSI 8;rows;cols t)를 피검체 그리드에 반영한다(리뷰 반영 —
+   * 이걸 안 하면 이후 CSI 18 t가 초기 geometry로 고정돼 브리지 신선도가 깨진다).
+   */
+  applyWinopsResize(rows: number, cols: number): void {
+    this.term.resize(cols, rows);
   }
 }
 
@@ -228,12 +237,35 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
         idx = win.end;
         continue;
       }
-      // ③ 가로챌 질의 아님 → 피검체로 흘려보낼 1바이트.
+      // ③ WINOPS 문자 resize(CSI 8;r;c t) — 피검체+PTY에 반영해 이후 크기 질의 신선도 보장
+      //    (리뷰 반영). 시퀀스 자체도 피검체에 feed(무해 — xterm.js는 무시).
+      const rsz = tryParseWinopsResize(pending, idx);
+      if (rsz === 'incomplete') break;
+      if (rsz !== null) {
+        flushFeed();
+        bridge.applyWinopsResize(rsz.rows, rsz.cols);
+        try {
+          child.resize(rsz.cols, rsz.rows);
+        } catch {
+          /* 종료 경합 시 무시. */
+        }
+        idx = rsz.end;
+        continue;
+      }
+      // ④ 가로챌 질의 아님 → 피검체로 흘려보낼 1바이트.
       feedable += pending[idx];
       idx += 1;
     }
-    // 소비되지 않은 꼬리는 이월(가로챌 요청 시작 가능성).
+    // 소비되지 않은 꼬리는 이월(가로챌 요청 시작 가능성). 방어(리뷰 반영): 미완결 CSI가
+    // 비정상적으로 길면(현실 CSI 상한을 훨씬 넘는 4KiB) 가로챌 요청이 아니라고 판정하고
+    // 선두 1바이트를 피검체로 강제 배출해 재파싱 — 무한 누적·O(n²) 재파싱 폭주 차단.
     pending = pending.slice(idx);
+    while (pending.length > 4096) {
+      bridge.term.write(pending[0]);
+      pending = pending.slice(1);
+      const again = tryParseDecrqcra(pending, 0);
+      if (again !== 'incomplete') break;
+    }
     flushFeed();
   };
   child.onData(onDataFromEsctest);
@@ -242,8 +274,10 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
     child.onExit(({ exitCode, signal }) => resolve({ exitCode, signal }));
   });
 
-  // 하드 워치독: 무응답 데드락 방어. 타임아웃 시 kill 후 timedOut 표시.
+  // 하드 워치독: 무응답 데드락 방어. 타임아웃 시 kill → 유예 후 SIGKILL 에스컬레이션
+  // (리뷰 반영 — 자식이 기본 신호를 무시해도 반환 보장), exited 자체도 race로 캡.
   let timedOut = false;
+  let killEscalation: ReturnType<typeof setTimeout> | undefined;
   const watchdog = setTimeout(() => {
     timedOut = true;
     try {
@@ -251,34 +285,82 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
     } catch {
       /* 이미 종료됐으면 무시. */
     }
+    killEscalation = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* 무시. */
+      }
+    }, 2000);
   }, hardTimeoutMs);
 
-  const { exitCode, signal } = await exited;
+  // SIGKILL조차 onExit를 못 만드는 극단 경합 대비 — 함수는 어떤 경우에도 반환한다.
+  const { exitCode, signal } = await Promise.race([
+    exited,
+    new Promise<{ exitCode: number; signal?: number }>((resolve) =>
+      setTimeout(() => {
+        timedOut = true;
+        resolve({ exitCode: -1 });
+      }, hardTimeoutMs + 5000),
+    ),
+  ]);
   clearTimeout(watchdog);
+  if (killEscalation) clearTimeout(killEscalation);
 
   bridge.term.dispose();
 
+  // 라이브 디버깅: 커밋 산출물(report.json)에는 로그를 싣지 않으므로(리뷰 반영 — GPL 유래
+  // 텍스트 배제) 필요 시 env로 stderr에 전량 방출한다.
+  if (process.env.WMUX_ESCTEST_DEBUG_LOG) {
+    process.stderr.write(`\n===== esctest stdout (include=${opts.include}) =====\n${stdoutLog}\n`);
+  }
+
   const cases = parseEsctestLog(stdoutLog);
+  const passCount = cases.filter((c) => c.status === 'pass').length;
+  const failCount = cases.filter((c) => c.status === 'fail').length;
+  const errorCount = cases.filter((c) => c.status === 'error').length;
+  const knownBugCount = cases.filter((c) => c.status === 'known-bug').length;
+  const skippedCount = cases.filter((c) => c.status === 'skipped').length;
+  // esctest 자체 요약 라인 — 파서 집계의 독립 대조 기준(리뷰 반영).
+  // 대조식: esctest는 skip을 "passed"에 셈(실측) → pass+skipped == passed.
+  const esctestSummary = parseEsctestSummary(stdoutLog);
+  const reconciled =
+    !timedOut &&
+    exitCode === 0 &&
+    esctestSummary !== null &&
+    passCount + skippedCount === esctestSummary.passed &&
+    knownBugCount === esctestSummary.knownBugs &&
+    failCount === esctestSummary.failed;
   return {
     include: opts.include,
     exitCode,
     signal,
     timedOut,
     cases,
-    passCount: cases.filter((c) => c.status === 'pass').length,
-    failCount: cases.filter((c) => c.status === 'fail').length,
-    errorCount: cases.filter((c) => c.status === 'error').length,
+    passCount,
+    failCount,
+    errorCount,
+    knownBugCount,
+    skippedCount,
     decrqcraBridgeUses: bridge.decrqcraBridgeUses.length,
     winopsBridgeUses: bridge.winopsBridgeUses,
-    // rawLogTail은 traceback에 vendor 절대경로를 담을 수 있다. report.json이 커밋 가능
-    // 산출물이므로 사용자 홈·vendor 절대경로를 <vendor>로 스크럽한다(프라이버시·재현성).
-    rawLogTail: scrubPaths(stdoutLog.slice(-4000)),
+    esctestSummary,
+    reconciled,
+    // rawLogTail은 커밋 산출물에서 제거됐다(리뷰 반영 — GPL 유래 로그 텍스트를 report.json에
+    // 싣지 않는다). 라이브 디버깅은 WMUX_ESCTEST_DEBUG_LOG=1로 stdout 전량을 stderr에 흘린다.
   };
 }
 
-/** rawLogTail에서 vendor 절대경로를 상대 표식으로 치환(커밋 산출물 프라이버시). */
-function scrubPaths(s: string): string {
-  return s.split(VENDOR_ROOT).join('<vendor>');
+/**
+ * esctest 최종 요약 라인 파싱: "*** N tests passed, M known bugs, K tests failed ***"
+ * (vendor 실측 포맷 — 출력 사용법만, GPL 로직 미독해).
+ */
+export function parseEsctestSummary(
+  log: string,
+): { passed: number; knownBugs: number; failed: number } | null {
+  const m = log.match(/\*\*\*\s*(\d+) tests passed, (\d+) known bugs?, (\d+) tests? failed\s*\*\*\*/);
+  if (!m) return null;
+  return { passed: Number(m[1]), knownBugs: Number(m[2]), failed: Number(m[3]) };
 }
 
 /**
@@ -295,14 +377,14 @@ function scrubPaths(s: string): string {
  * 그 케이스 실패의 원인으로 본다(이중 계상 방지).
  */
 export function parseEsctestLog(log: string): EsctestCaseResult['cases'] {
-  const cases: { name: string; status: 'pass' | 'fail' | 'error' }[] = [];
+  const cases: { name: string; status: 'pass' | 'fail' | 'error' | 'known-bug' | 'skipped' }[] = [];
   const lines = log.split(/\r?\n/);
   const startRe = /Run test:\s*(\S+)/;
   const failRe = /\*\*\*\s*TEST\s+(\S+)\s+FAILED/;
   let currentName: string | null = null;
   let settled = false; // 현재 케이스가 확정 신호를 받았는지.
 
-  const settle = (name: string, status: 'pass' | 'fail' | 'error'): void => {
+  const settle = (name: string, status: 'pass' | 'fail' | 'error' | 'known-bug' | 'skipped'): void => {
     cases.push({ name, status });
     settled = true;
   };
@@ -327,11 +409,11 @@ export function parseEsctestLog(log: string): EsctestCaseResult['cases'] {
     if (/^Passed\.\s*$/.test(line)) {
       settle(currentName, 'pass');
     } else if (/^Fails as expected:/.test(line)) {
-      // known-bug 예상 실패 = esctest 관점 정상(pass로 집계).
-      settle(currentName, 'pass');
+      // known-bug 예상 실패 — esctest 관점 정상이나 pass와 분리 집계(리뷰 반영: 순도 감사).
+      settle(currentName, 'known-bug');
     } else if (/^Skipped because terminal lacks requisite capability:/.test(line)) {
-      // 능력 부재 skip — 실패 아님. pass로 집계하되 이름에 표식.
-      settle(`${currentName} (skipped:no-capability)`, 'pass');
+      // 능력 부재 skip — 검증되지 않음. pass 합산 금지, 별도 상태(리뷰 반영).
+      settle(currentName, 'skipped');
     }
   }
   // 마지막 케이스가 미확정으로 끝났으면 error로 마감(무응답 데드락 등).
@@ -341,22 +423,25 @@ export function parseEsctestLog(log: string): EsctestCaseResult['cases'] {
 
 /** 여러 include 실행을 하나의 리포트로 묶는다(report.json 산출). */
 export function buildReport(caseResults: readonly EsctestCaseResult[]): EsctestReport {
-  const totalPass = caseResults.reduce((s, c) => s + c.passCount, 0);
-  const totalFail = caseResults.reduce((s, c) => s + c.failCount, 0);
-  const totalError = caseResults.reduce((s, c) => s + c.errorCount, 0);
-  const totalBridge = caseResults.reduce((s, c) => s + c.decrqcraBridgeUses, 0);
-  const totalWinops = caseResults.reduce((s, c) => s + c.winopsBridgeUses, 0);
+  const sum = (f: (c: EsctestCaseResult) => number): number =>
+    caseResults.reduce((s, c) => s + f(c), 0);
   return {
     subject: 'xterm.js@6 (+Unicode11)',
     generatedAt: new Date().toISOString(),
     esctestPin: '664be3cf2c1e3f06bc93a8bafb48a0db83c607db',
     results: [...caseResults],
     totals: {
-      pass: totalPass,
-      fail: totalFail,
-      error: totalError,
-      decrqcraBridgeUses: totalBridge,
-      winopsBridgeUses: totalWinops,
+      pass: sum((c) => c.passCount),
+      fail: sum((c) => c.failCount),
+      error: sum((c) => c.errorCount),
+      // 리뷰 반영 — 순도 분리 + 비정상 실행이 총계 밖으로 새지 않게 가시화.
+      knownBug: sum((c) => c.knownBugCount),
+      skipped: sum((c) => c.skippedCount),
+      timedOutRuns: caseResults.filter((c) => c.timedOut).length,
+      nonzeroExitRuns: caseResults.filter((c) => c.exitCode !== 0).length,
+      unreconciledRuns: caseResults.filter((c) => !c.reconciled).length,
+      decrqcraBridgeUses: sum((c) => c.decrqcraBridgeUses),
+      winopsBridgeUses: sum((c) => c.winopsBridgeUses),
     },
   };
 }
