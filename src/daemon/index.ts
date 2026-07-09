@@ -2130,7 +2130,8 @@ function registerRpcHandlers(
 
   // task.mission.update(J1 §5): 물질화 필드 단조 커밋. 신원 규율은 start/close와
   // 동형(stampCaller로 senderPtyId→verifiedWorkspaceId, fail-closed). wire
-  // 화이트리스트는 {taskId, branch?, worktreePath?, paneGroupId?}만 — prUrl은 J2 몫.
+  // 화이트리스트: {taskId, branch?, worktreePath?, paneGroupId?, prUrl?} —
+  // prUrl(J3 §2)은 비단조·closed 단독 갱신 허용·형식 검증(WORKTASK_PR_URL_RE).
   pipeServer.onRpc('task.mission.update', async (rawParams) => {
     if (!workTaskService) {
       return { ok: false, error: { code: 'NOT_AVAILABLE', message: 'task.mission.update: mission log unavailable' } };
@@ -2156,6 +2157,7 @@ function registerRpcHandlers(
       ...(typeof p['branch'] === 'string' ? { branch: p['branch'] } : {}),
       ...(typeof p['worktreePath'] === 'string' ? { worktreePath: p['worktreePath'] } : {}),
       ...(typeof p['paneGroupId'] === 'string' ? { paneGroupId: p['paneGroupId'] } : {}),
+      ...(typeof p['prUrl'] === 'string' ? { prUrl: p['prUrl'] } : {}),
     });
   });
 

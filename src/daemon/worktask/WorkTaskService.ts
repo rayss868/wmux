@@ -33,6 +33,7 @@ import {
   WORKTASK_CLOSED_GC_MS,
   WORKTASK_IDEMPOTENCY_CAP,
   WORKTASK_MAX_OPEN_PER_WORKSPACE,
+  WORKTASK_PR_URL_RE,
   missionTopicFor,
   normalizeWorktreePath,
   taskIdFromMissionTopic,
@@ -140,6 +141,8 @@ export interface UpdateMissionInput {
   branch?: string;
   worktreePath?: string;
   paneGroupId?: string;
+  /** J3 §2: 비단조 mutable(PR 재생성 갱신 허용) — closed 태스크에도 단독 갱신 가능. */
+  prUrl?: string;
 }
 
 export type WorkTaskErr = { ok: false; error: string };
@@ -258,7 +261,13 @@ export class WorkTaskService {
       // 적용자이므로 여기서는 존재하는 필드만 덮는다(구 레코드 안전: 부재 필드 무변).
       const u = payload as WorkTaskUpdatePayload;
       const task = this.tasks.get(u.taskId);
-      if (!task || task.status === 'closed') return;
+      if (!task) return;
+      if (task.status === 'closed') {
+        // J3 §2: closed 태스크에는 prUrl만 반영(게이트가 append 전에 물질화
+        // 동반을 거부하지만, replay 안전을 위해 적용자도 동일 필터).
+        if (u.prUrl !== undefined) task.prUrl = u.prUrl;
+        return;
+      }
       if (u.branch !== undefined) task.branch = u.branch;
       if (u.worktreePath !== undefined) task.worktreePath = u.worktreePath;
       if (u.paneGroupId !== undefined) task.paneGroupId = u.paneGroupId;
@@ -490,7 +499,15 @@ export class WorkTaskService {
         return { ok: false, error: `task.mission.update: task not found: ${input.taskId}` };
       }
       if (task.status === 'closed') {
-        return { ok: false, error: `task.mission.update: task is closed: ${input.taskId}` };
+        // J3 §2(리뷰 CX6): closed 태스크는 prUrl 단독 갱신만 허용 — PR은 close
+        // 후에도 생성 가능하다. 물질화 필드 동반 시엔 기존대로 거부.
+        const hasMaterialization =
+          input.branch !== undefined ||
+          input.worktreePath !== undefined ||
+          input.paneGroupId !== undefined;
+        if (hasMaterialization || input.prUrl === undefined) {
+          return { ok: false, error: `task.mission.update: task is closed: ${input.taskId}` };
+        }
       }
       // authz(§5): owner OR CEO — close 게이트와 동일 앵커.
       const isOwner = task.owner.verifiedWorkspaceId === input.verifiedWorkspaceId;
@@ -500,6 +517,15 @@ export class WorkTaskService {
         return {
           ok: false,
           error: `task.mission.update: caller ${input.verifiedWorkspaceId} is not the task owner or CEO`,
+        };
+      }
+
+      // prUrl 형식 게이트(J3 §2 — 리뷰 G5): GitHub PR URL 정합만. 비단조라
+      // write-once 방어가 없으므로 형식이 유일한 wire 방어선이다.
+      if (input.prUrl !== undefined && !WORKTASK_PR_URL_RE.test(input.prUrl)) {
+        return {
+          ok: false,
+          error: `task.mission.update: prUrl must match https://github.com/{owner}/{repo}/pull/{n}`,
         };
       }
 
@@ -559,6 +585,11 @@ export class WorkTaskService {
       }
       if (input.paneGroupId !== undefined && task.paneGroupId === undefined) {
         patch.paneGroupId = input.paneGroupId;
+        changed = true;
+      }
+      // prUrl(J3 §2): 비단조 — 현재 값과 다르면 갱신(동일 값 재쓰기는 no-op).
+      if (input.prUrl !== undefined && task.prUrl !== input.prUrl) {
+        patch.prUrl = input.prUrl;
         changed = true;
       }
       // 변경 없음(전부 동일 값 재시도) = 멱등 성공 no-op(append 없이).
