@@ -181,12 +181,14 @@ describe('§0 E2E 정상 — N=2 전부 성공', () => {
     // spawn cwd=worktreePath, initialCommand는 프롬프트 파일 경로 치환.
     expect(renderer.spawned).toHaveLength(2);
     for (const s of renderer.spawned) {
-      expect(s.cwd).toContain('/wt/');
+      expect(s.cwd.replace(/\\/g, '/')).toContain('/wt/');
       expect(s.initialCommand).toMatch(/prompt\.md/);
-      // 프롬프트 파일이 실제로 worktree 밖 metaDir에 쓰였다.
-      const promptFile = s.initialCommand.match(/(\/[^\s"')]+prompt\.md)/)?.[1];
+      // 프롬프트 파일이 실제로 worktree 밖 metaDir에 쓰였다. buildInitialCommand는
+      // POSIX(cat '…')·win32(-LiteralPath '…') 둘 다 경로를 단일따옴표로 감싸므로
+      // 선행 '/' 가정 없이 따옴표 안쪽만 뽑는다(win32는 'C:\…prompt.md'로 시작).
+      const promptFile = s.initialCommand.match(/'([^']*prompt\.md)'/)?.[1];
       expect(promptFile && fs.existsSync(promptFile)).toBeTruthy();
-      expect(promptFile).toContain('/meta/'); // worktree 밖
+      expect(promptFile?.replace(/\\/g, '/')).toContain('/meta/'); // worktree 밖
     }
   });
 

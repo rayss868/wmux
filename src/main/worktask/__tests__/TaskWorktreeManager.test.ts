@@ -37,6 +37,11 @@ async function loadModule() {
   return await import('../TaskWorktreeManager');
 }
 
+/** path.join()이 win32에서 '/'까지 '\\'로 정규화하므로, 슬래시 리터럴 비교 전에 양쪽을 통일한다. */
+function toPosix(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
 /** git fake: rev-parse/status/worktree 등 인자별 응답 스크립트. */
 function makeGitFake(script: (args: string[], cwd: string) => { stdout?: string; stderr?: string } | Error) {
   return vi.fn(async (args: string[], cwd: string) => {
@@ -83,11 +88,11 @@ describe('preflight — 전용 루트 suffix 파생 (§3 C4)', () => {
     const res = await mgr.preflight(repoRoot, 'My Task', 'wtask-x-abcd1234');
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.plan.worktreePath.startsWith(`${home}/.wmux/worktrees/`)).toBe(true);
-    expect(res.plan.worktreePath.endsWith('/my-task-abcd1234')).toBe(true);
+    expect(toPosix(res.plan.worktreePath).startsWith(`${toPosix(home)}/.wmux/worktrees/`)).toBe(true);
+    expect(toPosix(res.plan.worktreePath).endsWith('/my-task-abcd1234')).toBe(true);
     expect(res.plan.branch).toBe('wtask/my-task-abcd1234');
     // metaDir은 worktree 밖(.meta) — diff 청정성.
-    expect(res.plan.metaDir).toContain('/.meta/');
+    expect(toPosix(res.plan.metaDir)).toContain('/.meta/');
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
@@ -99,7 +104,7 @@ describe('preflight — 전용 루트 suffix 파생 (§3 C4)', () => {
     const res = await mgr.preflight(repoRoot, 'T', 'wtask-x-abcd1234');
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.plan.worktreePath.startsWith(`${home}/.wmux-dev/worktrees/`)).toBe(true);
+    expect(toPosix(res.plan.worktreePath).startsWith(`${toPosix(home)}/.wmux-dev/worktrees/`)).toBe(true);
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 });
