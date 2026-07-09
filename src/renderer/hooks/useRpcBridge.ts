@@ -221,7 +221,11 @@ export function useRpcBridge(): void {
             | 'a2a.channel.post'
             | 'a2a.channel.join'
             | 'a2a.channel.leave'
-            | 'a2a.channel.archive',
+            | 'a2a.channel.archive'
+            // operator-join (설계 §2.1/§2.2) — humans-only, 렌더러 전용 mutateLocal
+            // 경로로만 도달(파이프 미등록). operatorList는 읽기지만 같은 트랜스포트.
+            | 'a2a.channel.operatorJoin'
+            | 'a2a.channel.operatorList',
           params: Record<string, unknown>,
         ) => Promise<RpcResult>;
       };

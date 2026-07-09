@@ -73,6 +73,17 @@ export function IconExternalLink({ size = 14 }: { size?: number }) {
   );
 }
 
+/** Padlock — a private channel the operator is not (yet) a member of
+ *  (operator-join §3 discovery section). */
+export function IconLock({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="3" y="6.2" width="8" height="5.3" rx="1" />
+      <path d="M4.6 6.2 V4.6 a2.4 2.4 0 0 1 4.8 0 V6.2" />
+    </Icon>
+  );
+}
+
 /** Plus — new workspace / new item. */
 export function IconPlus({ size = 14 }: { size?: number }) {
   return <Icon size={size}><line x1="7" y1="2.5" x2="7" y2="11.5" /><line x1="2.5" y1="7" x2="11.5" y2="7" /></Icon>;

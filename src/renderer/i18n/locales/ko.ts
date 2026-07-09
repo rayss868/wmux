@@ -623,4 +623,20 @@ export const ko = {
   'channels.mentionDropped': '이 @멘션은 전달되지 않았습니다(채널 멤버 아님): {names}',
   'channels.mentionUnmatched': '이 @멘션은 일치하는 대상이 없어 전달되지 않았습니다: {names}',
   'channels.mentionNoMatch': '멘션할 에이전트가 없습니다',
+  // operator-join (설계 §3) — 접힘 기본 발견 섹션 + join 확인 다이얼로그. 이 접힘이
+  // 의도 게이트다: 펼치기 전에는 비공개 채널명이 화면에 존재하지 않는다.
+  'channels.operatorSection': '모든 채널',
+  'channels.operatorLocked': '비공개 채널 — 참여하면 읽을 수 있습니다',
+  'channels.operatorArchivedCannotJoin': '보관됨 — 참여할 수 없습니다',
+  'channels.operatorJoinConfirmTitle': '이 채널에 참여할까요?',
+  // 두 문장. 두 번째 문장은 §2.1.1 계약을 그대로 진술한다(내구 기록 append + 멤버
+  // 전원에게 표시) — 삭제 금지.
+  'channels.operatorJoinConfirmBody':
+    '이 채널은 에이전트들이 만든 비공개 채널입니다. 참여하면 채널에 기록이 남고 멤버 전원에게 표시됩니다.',
+  'channels.operatorJoinConfirmCta': '참여',
+  'channels.operatorJoinCancel': '취소',
+  'channels.operatorJoinedToast': '#{channel}에 참여했습니다',
+  'channels.operatorJoinFailedToast': '#{channel}에 참여하지 못했습니다',
+  // 서버-발행 operator-join 시스템 메시지의 표시 문자열.
+  'channels.systemOperatorJoin': '이 채널에 참여했습니다',
 } as const;

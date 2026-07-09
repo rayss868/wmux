@@ -78,6 +78,14 @@ const CHANNEL_MUTATING_METHODS: ReadonlySet<string> = new Set<string>([
   // allow-list is exactly the boundary that keeps a forgeable agent identity
   // (#113) from registering/deleting arbitrary principals.
   'a2a.channel.purgeMembership',
+  // operator-join (설계 §2.1/§2.2) — 오퍼레이터(사람)가 에이전트들이 만든 비공개
+  // 채널에 스스로 들어가는 신뢰 경로(operatorJoin) + 그 발견 목록(operatorList).
+  // kick/purge와 동일 humans-only 관례: 파이프 라우터(a2a.channel.rpc.ts)에 등록되지
+  // 않고 이 렌더러 전용 경로로만 도달한다. operatorList는 읽기지만 파이프에 노출하면
+  // 에이전트가 전 private 채널 이름을 열거할 수 있어 humans-only 트랜스포트가 필요
+  // 하므로 같은 allowlist에 둔다.
+  'a2a.channel.operatorJoin',
+  'a2a.channel.operatorList',
   'a2a.principal.upsert',
   'a2a.principal.remove',
   'a2a.principal.markStaleWorkspace',

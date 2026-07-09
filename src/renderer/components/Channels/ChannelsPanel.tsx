@@ -49,7 +49,7 @@
 // R23 (creation modal), R29 (channel scope to company).
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import type { Channel, ChannelVisibility } from '../../../shared/channels';
+import type { Channel, ChannelVisibility, OperatorChannelSummary } from '../../../shared/channels';
 import { HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID } from '../../../shared/channels';
 import {
   canonicalizeChannelName,
@@ -60,7 +60,7 @@ import {
 import type { Company } from '../../../company/types';
 import { useStore } from '../../stores';
 import ChannelItem from './ChannelItem';
-import { IconPlus, IconChevron, IconChevronDir, IconRefresh } from '../icons';
+import { IconPlus, IconChevron, IconChevronDir, IconRefresh, IconLock, IconArchive } from '../icons';
 import { hydrateChannelsCatalog } from '../../hooks/useChannelsHydration';
 import { FOCUS_RING } from '../focusRing';
 import { tokenAttrs } from '../../themes';
@@ -409,6 +409,19 @@ export interface ChannelsPanelViewProps {
    *  renderer requires (it survived the app upgrade). Renders a "restart wmux"
    *  banner; posting/joining may fail with NOT_A_MEMBER until the restart. */
   daemonStale?: boolean;
+  /** operator-join (design §2.2/§3) — the discovery list backing the collapsed
+   *  "All channels" section (private non-members + archived). undefined until the
+   *  container lazy-loads it on first expand. When undefined AND the operator
+   *  handlers are wired, the section still renders its (collapsed) header so the
+   *  operator can trigger the load. */
+  operatorChannels?: OperatorChannelSummary[];
+  /** Toggle callback for the operator section. The container lazy-loads the list
+   *  on the first expand (nextExpanded === true). Wiring this prop is what turns
+   *  the section on — omit it to hide the whole affordance (tests/legacy). */
+  onOperatorToggle?: (nextExpanded: boolean) => void;
+  /** Join a private/discoverable channel as the operator. The View shows the
+   *  confirm dialog and calls this only after the operator confirms. */
+  onOperatorJoin?: (channelId: string) => void;
 }
 
 export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactElement {
@@ -426,6 +439,9 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
     collapseDir = 'right',
     onRefresh,
     daemonStale = false,
+    operatorChannels,
+    onOperatorToggle,
+    onOperatorJoin,
   } = props;
   const t = props.t ?? ((k: string) => k);
 
@@ -433,6 +449,30 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
   const newBtnRef = useRef<HTMLButtonElement | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [discoverExpanded, setDiscoverExpanded] = useState(false);
+  // operator-join (§3): the section is COLLAPSED by default — this collapse is the
+  // intent gate (private channel names do not exist on screen until expanded).
+  const [operatorExpanded, setOperatorExpanded] = useState(false);
+  // The channel awaiting the operator's join confirmation (null = dialog closed).
+  const [pendingOperatorJoin, setPendingOperatorJoin] = useState<OperatorChannelSummary | null>(null);
+  const handleOperatorToggle = useCallback(() => {
+    setOperatorExpanded((v) => {
+      const next = !v;
+      onOperatorToggle?.(next);
+      return next;
+    });
+  }, [onOperatorToggle]);
+  // Discovery items: channels the operator is NOT a member of that are either a
+  // private (joinable) room or archived (shown with a badge, not joinable). Public
+  // active non-members already appear in the Discover group above, so exclude them
+  // here. Order follows the daemon's deterministic createdAt sort.
+  const operatorItems = useMemo<OperatorChannelSummary[]>(() => {
+    if (!operatorChannels) return [];
+    return operatorChannels.filter((c) => {
+      if (memberChannelIds?.has(c.id)) return false;
+      if (c.status === 'archived') return true;
+      return c.visibility === 'private';
+    });
+  }, [operatorChannels, memberChannelIds]);
 
   const channelList = useMemo(() => Object.values(channels), [channels]);
   const isMember = useMemo(
@@ -679,6 +719,162 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
           )}
         </>
       )}
+
+      {/* Operator section (operator-join §3) — COLLAPSED by default. The collapse
+            is the intent gate: private channel names are not on screen until the
+            operator expands it. Lives OUTSIDE the channelList ternary because the
+            joinable private channels are, by definition, not in the local mirror
+            yet (list() hides them from non-members). Lazy-loads via onOperatorToggle. */}
+      {onOperatorToggle && (
+        <div className="mt-1" data-channels-operator-group>
+          <button
+            type="button"
+            className={`w-full flex items-center gap-1 px-4 py-1 text-[9px] font-mono uppercase tracking-widest text-[var(--text-muted)] hover:text-[var(--text-subtle)] transition-colors ${FOCUS_RING}`}
+            onClick={handleOperatorToggle}
+            aria-expanded={operatorExpanded}
+            data-channels-operator-toggle
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            <span
+              className={`transition-transform ${operatorExpanded ? 'rotate-90' : ''}`}
+              aria-hidden="true"
+            >
+              <IconChevron size={9} />
+            </span>
+            <span>{t('channels.operatorSection') || 'All channels'}</span>
+          </button>
+          {operatorExpanded && (
+            <div className="space-y-0.5" data-channels-operator-list>
+              {operatorItems.length === 0 ? (
+                <div
+                  className="px-4 py-1 text-[10px] font-mono text-[var(--text-muted)]"
+                  data-channels-operator-empty
+                  {...tokenAttrs('textMuted', 'text')}
+                >
+                  {t('channels.empty') || 'No channels yet.'}
+                </div>
+              ) : (
+                operatorItems.map((c) => {
+                  const isArchived = c.status === 'archived';
+                  return (
+                    <div
+                      key={c.id}
+                      className={`flex items-center gap-1 px-4 py-0.5 ${isArchived ? 'opacity-60' : ''}`}
+                      data-channels-operator-item
+                      data-channel-id={c.id}
+                      data-channel-archived={isArchived ? 'true' : 'false'}
+                    >
+                      <span
+                        className="shrink-0 text-[var(--text-muted)]"
+                        aria-hidden="true"
+                        title={
+                          isArchived
+                            ? t('channels.operatorArchivedCannotJoin') || "Archived — can't be joined"
+                            : t('channels.operatorLocked') || 'Private channel — join to read'
+                        }
+                      >
+                        {isArchived ? <IconArchive size={11} /> : <IconLock size={11} />}
+                      </span>
+                      <span
+                        className="flex-1 min-w-0 truncate text-caption font-mono text-[var(--text-subtle)]"
+                        title={`#${c.name}`}
+                      >
+                        #{c.name}
+                      </span>
+                      {isArchived ? (
+                        <span
+                          className="shrink-0 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wide text-[var(--text-muted)]"
+                          data-channels-operator-archived-badge
+                          title={t('channels.operatorArchivedCannotJoin') || "Archived — can't be joined"}
+                          {...tokenAttrs('textMuted', 'text')}
+                        >
+                          {t('channels.archived') || 'archived'}
+                        </span>
+                      ) : (
+                        onOperatorJoin && (
+                          <button
+                            type="button"
+                            className={`shrink-0 px-1.5 py-0.5 text-[10px] rounded text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors ${FOCUS_RING}`}
+                            onClick={() => setPendingOperatorJoin(c)}
+                            data-channels-operator-join
+                            aria-label={`${t('channels.operatorJoinConfirmCta') || 'Join'} #${c.name}`}
+                            {...tokenAttrs('success', 'accent')}
+                          >
+                            {t('channels.operatorJoinConfirmCta') || 'Join'}
+                          </button>
+                        )
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* operator-join confirm dialog (§3). The SECOND sentence of the body states
+            the §2.1.1 contract (a durable record is appended and shown to every
+            member) — it must not be removed. This dialog is an L1 device: it does
+            not stop a direct-socket forge (the system message does), it makes the
+            operator's own join a deliberate act. */}
+      {pendingOperatorJoin && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('channels.operatorJoinConfirmTitle') || 'Join this channel?'}
+          data-channels-operator-confirm
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => setPendingOperatorJoin(null)}
+        >
+          <div
+            className="w-72 max-w-[90vw] rounded-md p-3 bg-[var(--bg-elevated)] border shadow-lg"
+            style={{ borderColor: 'var(--border-soft)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              className="text-caption font-mono font-semibold text-[var(--text-main)] mb-1"
+              {...tokenAttrs('textMain', 'text')}
+            >
+              {t('channels.operatorJoinConfirmTitle') || 'Join this channel?'}
+            </div>
+            <div className="text-[11px] font-mono leading-snug text-[var(--text-sub)] mb-1">
+              #{pendingOperatorJoin.name}
+            </div>
+            <div
+              className="text-[11px] font-mono leading-snug text-[var(--text-sub)] mb-3"
+              data-channels-operator-confirm-body
+              {...tokenAttrs('textSub', 'text')}
+            >
+              {t('channels.operatorJoinConfirmBody') ||
+                'This is a private channel created by agents. If you join, a record is kept in the channel and shown to all members.'}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className={`px-2 py-1 text-[11px] rounded text-[var(--text-sub)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING}`}
+                onClick={() => setPendingOperatorJoin(null)}
+                data-channels-operator-confirm-cancel
+              >
+                {t('channels.operatorJoinCancel') || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                className={`px-2 py-1 text-[11px] rounded text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING}`}
+                onClick={() => {
+                  const id = pendingOperatorJoin.id;
+                  setPendingOperatorJoin(null);
+                  onOperatorJoin?.(id);
+                }}
+                data-channels-operator-confirm-join
+                {...tokenAttrs('success', 'accent')}
+              >
+                {t('channels.operatorJoinConfirmCta') || 'Join'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -700,6 +896,8 @@ export function ChannelsPanel(): React.ReactElement {
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const createChannelDaemon = useStore((s) => s.createChannelDaemon);
   const joinChannelDaemon = useStore((s) => s.joinChannelDaemon);
+  const operatorListDaemon = useStore((s) => s.operatorListDaemon);
+  const operatorJoinDaemon = useStore((s) => s.operatorJoinDaemon);
   const pushToast = useStore((s) => s.pushToast);
   // Dock host wiring: the panel's collapse affordance folds the whole dock
   // away (the panel is the dock's only host — the old separate dock header
@@ -762,6 +960,56 @@ export function ChannelsPanel(): React.ReactElement {
       });
     },
     [selfWorkspaceId, channels, joinChannelDaemon, pushToast, t],
+  );
+
+  // operator-join (§2.2/§3): the discovery list, lazy-loaded on first expand of
+  // the collapsed section. Kept as component state (not the global mirror) — it is
+  // a superset that includes private rooms the operator is NOT in, so it must not
+  // pollute the authoritative channel catalog.
+  const [operatorChannels, setOperatorChannels] = useState<OperatorChannelSummary[] | undefined>(
+    undefined,
+  );
+  const reloadOperatorList = useCallback(() => {
+    void operatorListDaemon(HUMAN_WORKSPACE_ID).then(setOperatorChannels);
+  }, [operatorListDaemon]);
+  const handleOperatorToggle = useCallback(
+    (nextExpanded: boolean) => {
+      // Load on expand (and refresh on every expand so a room created since the
+      // last look shows up). Collapse leaves the last list in place — harmless,
+      // it is re-fetched on the next expand.
+      if (nextExpanded) reloadOperatorList();
+    },
+    [reloadOperatorList],
+  );
+  const handleOperatorJoin = useCallback(
+    (channelId: string) => {
+      const channelName = operatorChannels?.find((c) => c.id === channelId)?.name ?? channelId;
+      void operatorJoinDaemon(channelId).then((result) => {
+        if (result.ok) {
+          // The channel was private+hidden until now; re-pull the catalog so the
+          // freshly-visible row + members land in the mirror, then select it.
+          const bridge = useStore.getState().channelsRpc();
+          if (bridge) {
+            void hydrateChannelsCatalog({
+              rpc: bridge.rpc,
+              workspaceId: HUMAN_WORKSPACE_ID,
+              setChannels: useStore.getState().setChannels,
+            }).then(() => {
+              setActiveChannel(channelId);
+            });
+          }
+          pushToast({ level: 'info', message: t('channels.operatorJoinedToast', { channel: channelName }) });
+          reloadOperatorList();
+        } else if (result.error.message.includes('DUPLICATE')) {
+          // Already a member (e.g. joined in another window since the list loaded).
+          pushToast({ level: 'info', message: t('channels.operatorJoinedToast', { channel: channelName }) });
+          reloadOperatorList();
+        } else {
+          pushToast({ level: 'error', message: t('channels.operatorJoinFailedToast', { channel: channelName }) });
+        }
+      });
+    },
+    [operatorChannels, operatorJoinDaemon, pushToast, t, setActiveChannel, reloadOperatorList],
   );
 
   const handleCreate = useCallback(
@@ -844,6 +1092,9 @@ export function ChannelsPanel(): React.ReactElement {
       collapseDir={sidebarPosition !== 'right' ? 'right' : 'left'}
       onRefresh={handleRefresh}
       daemonStale={channelsDaemonStale}
+      operatorChannels={operatorChannels}
+      onOperatorToggle={handleOperatorToggle}
+      onOperatorJoin={handleOperatorJoin}
       t={t}
     />
   );
