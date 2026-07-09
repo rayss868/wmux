@@ -99,6 +99,11 @@ describe('channelLocal.handler — CHANNEL_MUTATE_LOCAL', () => {
       // shared nudge ledger (2a-2): renderer-only for the same reason as kick —
       // a forgeable pipe caller could suppress another member's re-nudges.
       'a2a.channel.nudgeRecorded',
+      // operator-join (§2.1/§2.2): operatorJoin (self-join a private room) +
+      // operatorList (discovery) ride THIS renderer-only allow-list and are
+      // deliberately absent from the pipe router — same humans-only stance as kick.
+      'a2a.channel.operatorJoin',
+      'a2a.channel.operatorList',
     ]) {
       rpc.mockClear();
       const r = await handler(fakeEvent, method, { verifiedWorkspaceId: 'ws-ceo' });

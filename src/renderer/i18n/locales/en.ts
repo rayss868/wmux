@@ -715,6 +715,25 @@ export const en = {
   'channels.mentionDropped': 'These @mentions did not land (not a channel member): {names}',
   'channels.mentionUnmatched': 'These @mentions matched no one — not delivered: {names}',
   'channels.mentionNoMatch': 'No agents to mention',
+  // operator-join (design §3) — collapsed-by-default discovery section + the
+  // join-confirm dialog. The collapse IS the intent gate: private channel names
+  // do not exist on screen until the section is expanded.
+  'channels.operatorSection': 'All channels',
+  'channels.operatorLocked': 'Private channel — join to read',
+  'channels.operatorArchivedCannotJoin': "Archived — can't be joined",
+  'channels.operatorJoinConfirmTitle': 'Join this channel?',
+  // Two sentences. The SECOND states the §2.1.1 contract verbatim (a durable
+  // record is appended and shown to every member) — do NOT delete it.
+  'channels.operatorJoinConfirmBody':
+    'This is a private channel created by agents. If you join, a record is kept in the channel and shown to all members.',
+  'channels.operatorJoinConfirmCta': 'Join',
+  'channels.operatorJoinCancel': 'Cancel',
+  'channels.operatorJoinedToast': 'Joined #{channel}',
+  'channels.operatorJoinFailedToast': "Couldn't join #{channel}",
+  // Display string for the server-published operator-join system message.
+  // Viewpoint-neutral on purpose: the marker fans out to every member's view,
+  // so a second-person "You joined" would be wrong for non-operator viewers.
+  'channels.systemOperatorJoin': 'Operator joined this channel',
 } as const;
 
 export type TranslationKey = keyof typeof en;

@@ -291,10 +291,11 @@ describe('a2a.channel.rpc — mutating routing (capability a2a.channel.send)', (
 });
 
 // =========================================================================
-// 2a. archive + kick are HUMANS-ONLY — deliberately NOT routed on the pipe
+// 2a. archive + kick + operatorJoin/operatorList are HUMANS-ONLY — deliberately
+//     NOT routed on the pipe
 // =========================================================================
 
-describe('a2a.channel.rpc — archive + kick are unregistered (agents cannot reach them)', () => {
+describe('a2a.channel.rpc — archive + kick + operator methods are unregistered (agents cannot reach them)', () => {
   it.each([
     [
       'a2a.channel.archive',
@@ -303,6 +304,18 @@ describe('a2a.channel.rpc — archive + kick are unregistered (agents cannot rea
     [
       'a2a.channel.kick',
       { channelId: CHANNEL_ID, targetWorkspaceId: 'ws-victim', targetMemberId: 'm-victim', senderPtyId: 'pty-attacker' },
+    ],
+    // operator-join (§2.3 / Codex #7): operatorJoin plants the human seat and
+    // operatorList enumerates every private channel name — both humans-only,
+    // reachable ONLY via the renderer channels:mutate-local IPC. An agent that
+    // forges a fully-resolvable senderPtyId must still hit "Unknown method" here.
+    [
+      'a2a.channel.operatorJoin',
+      { channelId: CHANNEL_ID, verifiedWorkspaceId: 'ws-human', senderPtyId: 'pty-attacker' },
+    ],
+    [
+      'a2a.channel.operatorList',
+      { verifiedWorkspaceId: 'ws-human', senderPtyId: 'pty-attacker' },
     ],
   ] as const)('rejects %s with Unknown method and never reaches the daemon', async (method, params) => {
     const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));

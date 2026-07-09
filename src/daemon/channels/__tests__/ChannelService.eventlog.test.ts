@@ -194,6 +194,35 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
     h2.log.close();
   });
 
+  it('operator-join: 좌석+시스템 메시지가 1 envelope로 커밋되고 재부트 replay가 수렴', async () => {
+    const h = makeHarness();
+    // 에이전트가 만든 비공개 채널.
+    const created = await h.svc.create({
+      name: 'secret',
+      visibility: 'private',
+      createdBy: { workspaceId: 'ws-agent', memberId: 'agent-1' },
+      verifiedWorkspaceId: 'ws-agent',
+    });
+    if (!created.ok) throw new Error('create failed');
+    const before = h.log.readAllRecords().length;
+    const res = await h.svc.operatorJoin({
+      channelId: created.channel.id,
+      verifiedWorkspaceId: 'ws-human',
+    });
+    expect(res.ok).toBe(true);
+    // 좌석 push + 시스템 메시지 append가 단 하나의 operator-join envelope다(1 커밋 = 1 envelope).
+    const recs = h.log.readAllRecords();
+    expect(recs.length).toBe(before + 1);
+    expect((recs.at(-1)?.payload as { kind: string }).kind).toBe('operator-join');
+    const live = stateOf(h.svc);
+    h.log.close();
+
+    // 재부트: genesis + 전체 replay가 라이브 projection과 정확히 수렴(원자 재적용).
+    const h2 = makeHarness();
+    expect(stateOf(h2.svc)).toEqual(live);
+    h2.log.close();
+  });
+
   it('재부트(스냅샷 가속): flush된 스냅샷 + tail replay가 수렴', async () => {
     const h = makeHarness();
     const chId = await runBattery(h.svc);

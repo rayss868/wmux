@@ -224,6 +224,14 @@ export type RpcMethod =
   | 'a2a.channel.nudgeRecorded'
   | 'a2a.channel.unread'
   | 'a2a.channel.purgeMembership'
+  // operator-join (설계 §2.1/§2.2) — 사람이 에이전트가 만든 비공개 채널에 스스로
+  // 들어가는 신뢰 경로 + 그 발견 목록. archive/kick/purge와 동일한 humans-only
+  // 등급: 파이프 라우터(a2a.channel.rpc.ts)에 등록되지 않고 렌더러 전용
+  // channels:mutate-local IPC로만 도달한다. 이 union 등재는 RpcMethod 완전성
+  // (METHOD_CAPABILITY 매핑) 목적이며, first-party 그랜트(FIRST_PARTY_METHODS)에는
+  // 의도적으로 제외된다(설계 §2.3 / Codex #7).
+  | 'a2a.channel.operatorJoin'
+  | 'a2a.channel.operatorList'
   | 'a2a.principal.upsert'
   | 'a2a.principal.remove'
   | 'a2a.principal.markStaleWorkspace'
@@ -366,6 +374,9 @@ export const ALL_RPC_METHODS = [
   'a2a.channel.nudgeRecorded',
   'a2a.channel.unread',
   'a2a.channel.purgeMembership',
+  // operator-join (설계 §2.1/§2.2) — humans-only, 파이프 미등록. RpcMethod 완전성.
+  'a2a.channel.operatorJoin',
+  'a2a.channel.operatorList',
   'a2a.principal.upsert',
   'a2a.principal.remove',
   'a2a.principal.markStaleWorkspace',
