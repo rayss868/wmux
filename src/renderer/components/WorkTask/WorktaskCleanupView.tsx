@@ -9,13 +9,14 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 import type { WorktaskScanEntryWire, WorktaskScanCategoryWire } from '../../../shared/workTask';
 
-const CATEGORY_LABEL: Record<WorktaskScanCategoryWire, string> = {
-  'unmaterialized-open': '미물질화(worktree 없음)',
-  'disk-missing': '디스크 결측',
-  preserved: '보존 잔존(미커밋)',
-  'orphan-dir': '무연결 디렉토리',
+const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
+  'unmaterialized-open': 'worktask.cleanup.cat.unmaterialized',
+  'disk-missing': 'worktask.cleanup.cat.diskMissing',
+  preserved: 'worktask.cleanup.cat.preserved',
+  'orphan-dir': 'worktask.cleanup.cat.orphan',
 };
 
 const CATEGORY_COLOR: Record<WorktaskScanCategoryWire, string> = {
@@ -26,6 +27,7 @@ const CATEGORY_COLOR: Record<WorktaskScanCategoryWire, string> = {
 };
 
 export default function WorktaskCleanupView() {
+  const t = useT();
   const visible = useStore((s) => s.worktaskCleanupVisible);
   const setVisible = useStore((s) => s.setWorktaskCleanupVisible);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -43,10 +45,17 @@ export default function WorktaskCleanupView() {
     if (!api || !activeWorkspaceId) return;
     setLoading(true);
     setError(null);
-    // 렌더러가 아는 전체 open 미션(모든 부모)을 reconcile 힌트로 넘긴다.
+    // 렌더러가 아는 전체 open 미션(모든 부모)을 reconcile 힌트로 넘긴다. F1: 각
+    // 미션의 owner ws id도 실어, 다른 부모가 소유한 태스크의 정합화 close가 그
+    // owner 신원으로 불리게 한다(close authz가 owner 스코프).
     const knownOpen = Object.values(missionByPaneGroup)
       .filter((m) => m.status === 'open')
-      .map((m) => ({ taskId: m.id, title: m.title, ...(m.worktreePath ? { worktreePath: m.worktreePath } : {}) }));
+      .map((m) => ({
+        taskId: m.id,
+        title: m.title,
+        ownerWorkspaceId: m.owner?.verifiedWorkspaceId,
+        ...(m.worktreePath ? { worktreePath: m.worktreePath } : {}),
+      }));
     try {
       const res = await api.scan(activeWorkspaceId, knownOpen);
       if (res.ok) {
@@ -68,12 +77,15 @@ export default function WorktaskCleanupView() {
   }, [visible, runScan]);
 
   const handleClose = useCallback(
-    async (taskId: string) => {
+    async (taskId: string, ownerWorkspaceId: string | undefined) => {
       const api = window.electronAPI.workTask;
-      if (!api || !activeWorkspaceId) return;
+      // F1 — close는 태스크 owner 스코프 authz라 엔트리의 owner ws id로 부른다
+      // (활성 ws가 아님). owner를 모르면 활성 ws로 폴백(동일 부모에서 연 경우 정합).
+      const closeAs = ownerWorkspaceId || activeWorkspaceId;
+      if (!api || !closeAs) return;
       setBusyTaskId(taskId);
       try {
-        const res = await api.close(taskId, activeWorkspaceId);
+        const res = await api.close(taskId, closeAs);
         if (res.ok) {
           pushToast({ level: 'info', message: '태스크를 닫았습니다.' });
         } else if (res.reason === 'dirty') {
@@ -109,33 +121,33 @@ export default function WorktaskCleanupView() {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--bg-surface)]">
-          <span className="text-sm font-semibold text-[var(--text-main)]">태스크 정리 목록</span>
+          <span className="text-sm font-semibold text-[var(--text-main)]">{t('worktask.cleanup.title')}</span>
           <div className="flex-1" />
           <button
             className="px-2 py-0.5 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
             onClick={() => void runScan()}
             disabled={loading}
           >
-            {loading ? '스캔 중…' : '다시 스캔'}
+            {loading ? t('worktask.cleanup.scanning') : t('worktask.cleanup.rescan')}
           </button>
           <button
             className="px-2 py-0.5 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)]"
             onClick={() => setVisible(false)}
           >
-            닫기
+            {t('worktask.cleanup.dismiss')}
           </button>
         </div>
 
         <div className="overflow-y-auto flex-1 p-2">
           {scannedRoot && (
             <div className="px-2 py-1 text-[10px] text-[var(--text-muted)] font-mono truncate" title={scannedRoot}>
-              루트: {scannedRoot}
+              {t('worktask.cleanup.root')}: {scannedRoot}
             </div>
           )}
           {error && <div className="px-2 py-2 text-[11px] text-[var(--accent-red,#f87171)]">{error}</div>}
           {!loading && !error && entries.length === 0 && (
             <div className="px-2 py-8 text-center text-[12px] text-[var(--text-muted)]">
-              정리할 항목이 없습니다 — 전용 루트가 깨끗합니다.
+              {t('worktask.cleanup.empty')}
             </div>
           )}
           {entries.map((e, i) => {
@@ -149,10 +161,10 @@ export default function WorktaskCleanupView() {
                   className="text-[9px] font-semibold px-1.5 py-0.5 rounded mt-0.5 shrink-0"
                   style={{ color: CATEGORY_COLOR[e.category], border: `1px solid ${CATEGORY_COLOR[e.category]}` }}
                 >
-                  {CATEGORY_LABEL[e.category]}
+                  {t(CATEGORY_LABEL_KEY[e.category])}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <div className="text-[12px] text-[var(--text-main)] truncate">{e.title ?? e.taskId ?? '(이름 없음)'}</div>
+                  <div className="text-[12px] text-[var(--text-main)] truncate">{e.title ?? e.taskId ?? t('worktask.cleanup.unnamed')}</div>
                   {e.worktreePath && (
                     <div className="text-[10px] text-[var(--text-muted)] font-mono truncate" title={e.worktreePath}>
                       {e.worktreePath}
@@ -160,17 +172,18 @@ export default function WorktaskCleanupView() {
                   )}
                   {e.detail && <div className="text-[10px] text-[var(--text-sub)]">{e.detail}</div>}
                   {e.closedAt && (
-                    <div className="text-[10px] text-[var(--text-muted)]">종료: {new Date(e.closedAt).toLocaleString()}</div>
+                    <div className="text-[10px] text-[var(--text-muted)]">
+                      {t('worktask.cleanup.closedAt')}: {new Date(e.closedAt).toLocaleString()}
+                    </div>
                   )}
                 </div>
                 {canClose && (
                   <button
                     className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-mantle)] text-[var(--text-sub)] hover:text-[var(--accent-red,#f87171)] border border-[var(--bg-mantle)] disabled:opacity-40 shrink-0"
-                    onClick={() => void handleClose(e.taskId!)}
+                    onClick={() => void handleClose(e.taskId!, e.ownerWorkspaceId)}
                     disabled={busyTaskId !== null}
-                    title="태스크 닫기(정합화)"
                   >
-                    {busyTaskId === e.taskId ? '닫는 중…' : '닫기'}
+                    {busyTaskId === e.taskId ? t('worktask.cleanup.closing') : t('worktask.cleanup.close')}
                   </button>
                 )}
               </div>

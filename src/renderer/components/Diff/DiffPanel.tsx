@@ -27,6 +27,8 @@ interface TaskMeta {
   branch: string;
   missionChannelId: string;
   channelArchived: boolean;
+  /** F11 — closed면 close/PR 버튼을 감춘다(worktree 제거됨·닫을 것 없음). */
+  status: 'open' | 'closed';
 }
 
 // F10 — diff 코멘트 역조회(미션 채널의 diff-comment 앵커 메시지).
@@ -83,6 +85,7 @@ async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Pro
       ok?: boolean;
       tasks?: Array<{
         id: string;
+        status?: 'open' | 'closed';
         worktreePath?: string;
         branch?: string;
         missionChannelId?: string;
@@ -114,6 +117,7 @@ async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Pro
       branch: task.branch ?? '',
       missionChannelId: channelId,
       channelArchived,
+      status: task.status === 'closed' ? 'closed' : 'open',
     };
   } catch {
     return null;
@@ -451,24 +455,27 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
         >
           {applying ? '채택 중...' : `채택 (${selectedCount})`}
         </button>
-        {/* J3 §2 — 1클릭 PR(확인 1회). */}
-        <button
-          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)] disabled:opacity-40"
-          onClick={() => void handleCreatePr()}
-          disabled={lifecycleBusy !== null}
-          title="push + PR 생성(gh 4중 게이트·멱등 재진입)"
-        >
-          {lifecycleBusy === 'pr' ? 'PR 중...' : 'PR'}
-        </button>
-        {/* J3 §1 — close(remove 성공→close). */}
-        <button
-          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--accent-red,#f87171)] border border-[var(--bg-mantle)] disabled:opacity-40"
-          onClick={() => void handleClose()}
-          disabled={lifecycleBusy !== null}
-          title="태스크 닫기(clean이면 worktree 제거·채널 아카이브)"
-        >
-          {lifecycleBusy === 'close' ? '닫는 중...' : '닫기'}
-        </button>
+        {/* J3 §2·§1 — 1클릭 PR·close. F11: closed 태스크에선 숨긴다(worktree 제거됨). */}
+        {meta && meta.status !== 'closed' && (
+          <>
+            <button
+              className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)] disabled:opacity-40"
+              onClick={() => void handleCreatePr()}
+              disabled={lifecycleBusy !== null}
+              title="push + PR 생성(gh 4중 게이트·멱등 재진입)"
+            >
+              {lifecycleBusy === 'pr' ? 'PR 중...' : 'PR'}
+            </button>
+            <button
+              className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--accent-red,#f87171)] border border-[var(--bg-mantle)] disabled:opacity-40"
+              onClick={() => void handleClose()}
+              disabled={lifecycleBusy !== null}
+              title="태스크 닫기(clean이면 worktree 제거·채널 아카이브)"
+            >
+              {lifecycleBusy === 'close' ? '닫는 중...' : '닫기'}
+            </button>
+          </>
+        )}
       </div>
 
       {applyMsg && (

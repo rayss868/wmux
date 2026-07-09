@@ -49,6 +49,13 @@ export interface Surface {
   editorFilePath?: string;
   /** J2 — diff 서피스: 대상 태스크 id. diff 내용은 파생 데이터(열 때마다 재계산). */
   diffTaskId?: string;
+  /**
+   * J3 F1 — diff 서피스의 태스크 owner(부모) 워크스페이스 id. diff 서피스는 자식
+   * 태스크 워크스페이스에 붙지만 task.mission.* RPC는 owner 스코프라(daemon
+   * listMissions·close authz), 그 조회·close·PR는 이 owner id를 verifiedWorkspaceId로
+   * 써야 태스크를 찾는다. 담는 값 = fan-out을 실행한 부모 ws id.
+   */
+  diffOwnerWorkspaceId?: string;
   scrollbackFile?: string;  // surfaceId used as filename for scrollback dump
   /** True once the user manually renamed this tab; blocks shell-set (OSC 0/2) titles. */
   titleLocked?: boolean;

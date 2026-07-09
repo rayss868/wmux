@@ -240,6 +240,8 @@ export interface WorktaskScanEntryWire {
   category: WorktaskScanCategoryWire;
   taskId?: string;
   title?: string;
+  /** F1 — 열린 태스크 이상 항목의 owner(부모) ws id(정합화 close 신원). */
+  ownerWorkspaceId?: string;
   worktreePath?: string;
   closedAt?: number;
   detail?: string;

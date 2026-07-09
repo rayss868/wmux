@@ -113,7 +113,8 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
         // 승격은 하지 않는다(생성자 소유권을 CEO로 뭉개면 born-owned 계약 위반).
         verifiedWorkspaceId: activeWorkspace?.id ?? '',
       });
-      reportResult(res, pushToast);
+      // owner(부모) ws id = fan-out을 실행한 활성 워크스페이스(§5.1 born-owned).
+      reportResult(res, pushToast, activeWorkspace?.id ?? '');
       // fan-out 완료 직후 미션 캐시 즉시 refetch(순수 pull이라 push가 없다 —
       // 배경 폴링을 기다리지 않고 사이드바 "Missions" 섹션을 바로 채운다).
       const parentId = activeWorkspace?.id;
@@ -212,6 +213,8 @@ interface FanOutResultLike {
     worktreePath?: string;
     // J3 §3 — onExhausted 토스트 매핑 재료(ptyId→태스크).
     ptyId?: string;
+    // F2 — 재발사용 원래 initialCommand(에이전트 기동+프롬프트 주입).
+    initialCommand?: string;
   }>;
 }
 
@@ -222,19 +225,20 @@ type PushToast = (t: {
 }) => string;
 
 // F5 — 태스크 워크스페이스의 첫 leaf 페인에 diff 서피스를 연다. 워크스페이스가
-// 아직 없거나 leaf가 없으면(레이스) 조용히 무시.
-function openTaskDiff(taskId: string, workspaceId: string, title: string): void {
+// 아직 없거나 leaf가 없으면(레이스) 조용히 무시. F1: owner(부모) ws id를 서피스에
+// 실어 close/PR/resolveTaskMeta가 owner 스코프 RPC를 올바른 신원으로 부르게 한다.
+function openTaskDiff(taskId: string, workspaceId: string, title: string, ownerWorkspaceId: string): void {
   const st = useStore.getState();
   const ws = st.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return;
   const leaf = findLeafPanes(ws.rootPane)[0];
   if (!leaf) return;
-  st.addDiffSurface(leaf.id, taskId, `diff: ${title}`, workspaceId);
+  st.addDiffSurface(leaf.id, taskId, `diff: ${title}`, workspaceId, ownerWorkspaceId);
   // 태스크 워크스페이스로 전환해 방금 연 diff가 바로 보이게.
   st.setActiveWorkspace(workspaceId);
 }
 
-function reportResult(res: unknown, pushToast: PushToast): void {
+function reportResult(res: unknown, pushToast: PushToast, ownerWorkspaceId: string): void {
   const r = (res ?? {}) as FanOutResultLike;
   if (r.error) {
     pushToast({ level: 'error', message: `fan-out 거부: ${r.error}` });
@@ -244,9 +248,17 @@ function reportResult(res: unknown, pushToast: PushToast): void {
 
   // J3 §3 — onExhausted 토스트가 소비할 ptyId→태스크 매핑을 등록(발사 실패 통지는
   // fan-out 반환 이후 비동기로 오므로 store에 남겨둔다). ptyId 없는 태스크는 생략.
+  // F2: 재발사가 원문 프롬프트가 아니라 원래 initialCommand(에이전트 기동+프롬프트
+  // 주입)를 재전송해야 하므로 initialCommand도 함께 싣는다.
   const ptyEntries = tasks
     .filter((t) => t.ptyId && t.taskId)
-    .map((t) => ({ ptyId: t.ptyId as string, taskId: t.taskId as string, title: t.title ?? (t.taskId as string), ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}) }));
+    .map((t) => ({
+      ptyId: t.ptyId as string,
+      taskId: t.taskId as string,
+      title: t.title ?? (t.taskId as string),
+      ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}),
+      ...(t.initialCommand ? { initialCommand: t.initialCommand } : {}),
+    }));
   if (ptyEntries.length > 0) useStore.getState().registerTaskPtys(ptyEntries);
 
   const ok = tasks.filter((t) => t.ok).length;
@@ -274,7 +286,7 @@ function reportResult(res: unknown, pushToast: PushToast): void {
       message: `태스크 "${title}" 준비됨`,
       action: {
         label: 'diff 열기',
-        onClick: () => openTaskDiff(taskId, workspaceId, title),
+        onClick: () => openTaskDiff(taskId, workspaceId, title, ownerWorkspaceId),
       },
     });
   }
