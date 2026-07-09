@@ -368,6 +368,16 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.principal.remove':             { capability: 'wmux.internal' },
   'a2a.principal.markStaleWorkspace': { capability: 'wmux.internal' },
 
+  // --- WorkTask mission channels (J0 §4) ---
+  // Mission start/close create+archive a private channel bound to a WorkTask.
+  // Same capability split as a2a.channel.*: start/close are mutations
+  // (a2a.channel.send), list is a read (a2a.channel.read). The task-level
+  // close authz gate (owner OR CEO) is enforced daemon-side in WorkTaskService
+  // — the capability only decides whether the plugin may reach the surface.
+  'task.mission.start': { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'task.mission.close': { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'task.mission.list':  { capability: 'a2a.channel.read', riskClass: 'a2a' },
+
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.
   'company.create':         { capability: 'wmux.internal' },
