@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>V3 wasm renderer</title></head>
+<body>
+<script type="module">
+  // web 타깃 wasm-bindgen 산출물 — default export = init(fetch로 .wasm 로드).
+  import init, { WmuxTerm } from '../../dist/wasm-web/wmux_term.js';
+
+  (async () => {
+    try {
+      await init(); // .wasm fetch + 인스턴스화.
+      const term = new WmuxTerm(80, 24);
+      const enc = new TextEncoder();
+      const r = term.feed(enc.encode('renderer wasm OK'));
+      term.feed(enc.encode('\r\nsecond line'));
+
+      window.v3bridge.report({
+        ok: true,
+        cols: term.cols,
+        rows: term.rows,
+        dirtyRows: r.dirty_rows,
+        writebackLen: r.writeback_len,
+        row0: term.snapshot_row(0),
+        row1: term.snapshot_row(1),
+      });
+    } catch (e) {
+      window.v3bridge.report({ ok: false, error: String(e && e.stack || e) });
+    }
+  })();
+</script>
+</body>
+</html>
