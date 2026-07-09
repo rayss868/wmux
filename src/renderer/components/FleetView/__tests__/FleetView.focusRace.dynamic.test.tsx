@@ -97,4 +97,22 @@ describe('FleetView — mount focus race (NB2 wave2)', () => {
     expect(active?.hasAttribute('data-fleet-card')).toBe(true);
     expect(active?.getAttribute('role')).toBe('option');
   });
+
+  it('restores focus to the opener element on close (unmount)', async () => {
+    // 열기 트리거 대역: 마운트 직전에 포커스를 쥔 요소(예: 페인의 textarea).
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    expect(document.activeElement).toBe(opener);
+
+    mount();
+    await flushRaf();
+    // 열리면 포커스는 카드로 넘어간다.
+    expect(document.activeElement).not.toBe(opener);
+
+    unmount();
+    // 닫히면 열기 시점 요소로 복원(브라우저가 body로 떨구지 않는다).
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
 });
