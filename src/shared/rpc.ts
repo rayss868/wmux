@@ -226,7 +226,14 @@ export type RpcMethod =
   | 'a2a.channel.purgeMembership'
   | 'a2a.principal.upsert'
   | 'a2a.principal.remove'
-  | 'a2a.principal.markStaleWorkspace';
+  | 'a2a.principal.markStaleWorkspace'
+  // WorkTask mission channels (J0 — §4). Mission start/close bind a worktree
+  // mission (WorkTask) to a private channel; list enumerates the caller's
+  // missions. Identity rides the same senderPtyId→verifiedWorkspaceId stamp as
+  // a2a.channel.* mutations (fail-closed on unresolvable identity).
+  | 'task.mission.start'
+  | 'task.mission.close'
+  | 'task.mission.list';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -359,6 +366,9 @@ export const ALL_RPC_METHODS = [
   'a2a.principal.upsert',
   'a2a.principal.remove',
   'a2a.principal.markStaleWorkspace',
+  'task.mission.start',
+  'task.mission.close',
+  'task.mission.list',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===

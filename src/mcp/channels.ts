@@ -443,4 +443,72 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       });
     },
   );
+
+  // ── channel_mission_start (WorkTask J0) ───────────────────────────
+  // Start a worktree mission: server mints a WorkTask (owner = you, born-owned)
+  // AND creates a private mission channel bound to it, returning both ids. Thin
+  // RPC caller over task.mission.start — identity, ownership, and the channel
+  // are all server-constructed (§5.1): you supply only title + optional invites.
+  server.tool(
+    'channel_mission_start',
+    'Start a mission: create a WorkTask (owned by you) plus a private mission channel bound to it. Returns { taskId, channelId }. Use idempotency_key to make a retried start safe — a repeat with the same key returns the original { taskId, channelId } instead of creating a duplicate mission + channel. Optionally seed the channel with initial members via invite.',
+    {
+      title: z.string().min(1).max(256).describe('Human-readable mission title (max 256 chars). Also seeds the channel name.'),
+      member_id: memberIdSchema,
+      invite: z
+        .array(
+          z.object({
+            workspace_id: z.string().describe('Workspace id of the member to seed into the mission channel.'),
+            member_id: z.string().describe('Member id within that workspace.'),
+          }),
+        )
+        .optional()
+        .describe('Optional initial members to add to the mission channel alongside you.'),
+      idempotency_key: z
+        .string()
+        .optional()
+        .describe('Optional idempotency key. A retried start with the same key returns the original { taskId, channelId } instead of creating a duplicate.'),
+    },
+    async ({ title, member_id, invite, idempotency_key }) => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      const params: Record<string, unknown> = {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+        title,
+        memberId: member_id,
+      };
+      if (invite !== undefined) {
+        params['invite'] = invite.map((m) => ({ workspaceId: m.workspace_id, memberId: m.member_id }));
+      }
+      if (idempotency_key !== undefined) params['idempotencyKey'] = idempotency_key;
+      return callChannelRpc('task.mission.start' as RpcMethod, params);
+    },
+  );
+
+  // ── channel_mission_close (WorkTask J0) ───────────────────────────
+  // Close a mission you own (or as CEO): flips the WorkTask to closed and
+  // archives its mission channel. Idempotent — closing an already-closed
+  // mission is a no-op success, and the archive step is no-op-tolerant if the
+  // channel was already archived or reaped.
+  server.tool(
+    'channel_mission_close',
+    'Close a mission by task_id: mark the WorkTask closed and archive its mission channel. Only the task owner (or the CEO) may close. Re-closing an already-closed mission is a no-op success. Use idempotency_key to make a retried close safe.',
+    {
+      task_id: z.string().describe('The WorkTask id returned by channel_mission_start.'),
+      idempotency_key: z
+        .string()
+        .optional()
+        .describe('Optional idempotency key. A retried close with the same key returns the original result.'),
+    },
+    async ({ task_id, idempotency_key }) => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      const params: Record<string, unknown> = {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+        taskId: task_id,
+      };
+      if (idempotency_key !== undefined) params['idempotencyKey'] = idempotency_key;
+      return callChannelRpc('task.mission.close' as RpcMethod, params);
+    },
+  );
 }
