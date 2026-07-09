@@ -1,13 +1,14 @@
-// E0 컨포먼스 하니스 — 합성 워크로드 5종 (스펙: engine-core-decision-2026-07-09.md §5-1)
+// E0 컨포먼스 하니스 — 합성 워크로드 6종 (스펙: engine-core-decision-2026-07-09.md §5-1)
 //
 // 결정성 규율(§5-1): 동일 스크립트 2회 실행이 **동일 바이트**를 내야 한다. 그래서 워크로드는
 // 타임스탬프·PID·난수 시스템 호출을 전혀 쓰지 않는다(시드 기반 PRNG만 허용). 각 워크로드는
 // 순수 합성 바이트열과 resize 트레일, 그리고 "스크립트가 정답 명세"라는 §5-2 ③ 골든 어서션을
 // 워크로드 정의 옆에 함께 둔다.
 //
-// 커밋 코퍼스 5종(D4 — 저장소 커밋은 합성만):
+// 커밋 코퍼스 6종(D4 — 저장소 커밋은 합성만):
 //   ① scroll-flood      대량 스크롤 flood
-//   ② resize-roundtrip  resize 왕복(80→79→80, reflow idempotent 케이스)
+//   ② resize-roundtrip  resize 왕복(80→79→80) — **비-reflow 대조군**(40자, wrap 없음)
+//   ②b resize-reflow    resize 왕복(80→79→80) — **wrap을 실제로 밟는 reflow 케이스**(120자, 실측 박제)
 //   ③ alt-screen        alt-screen 진입/이탈
 //   ④ cjk-emoji         CJK·이모지(ZWJ·VS16) 폭 케이스
 //   ⑤ sgr-spectrum      SGR 스펙트럼(16/256/truecolor·속성 플래그)
@@ -135,13 +136,14 @@ const scrollFlood: Workload = {
   ],
 };
 
-// ── ② resize-roundtrip ──────────────────────────────────────────────────────
-// reflow idempotency 케이스. 40자 마크(축소 폭 79에서도 wrap이 일어나지 않는 폭)를 쓴 뒤
-// 80→79→80 왕복. 폭이 79로 줄었다 80으로 돌아와도 마크가 한 행 안에 그대로 남아야 한다
-// (완전 복원). 이 폭 선택은 실측 근거다: 80/100자처럼 wrap 경계를 밟으면 xterm.js reflow는
-// wrap-pending 셀을 왕복에서 완전히 복원하지 않아(관측: 80→79→80 후 79자만 잔존) idempotent가
-// 성립하지 않는다. reflow의 "왕복 안정" 정답이 명확한 폭은 비-wrap 폭이므로 40자로 고정한다.
-const RESIZE_MARK = 'ABCDEFGHIJ'.repeat(4); // 40자 — 79열에서도 wrap 없음.
+// ── ② resize-roundtrip (비-reflow 대조군) ────────────────────────────────────
+// **정직화(R2 ①): 이 워크로드는 reflow 경로를 밟지 않는 대조군이다.** 40자 마크는 축소 폭 79에서도
+// wrap이 일어나지 않으므로(단일 행에 수렴) 80→79→80 왕복에서 xterm.js가 rewrap 로직을 전혀 타지
+// 않는다. 즉 이 케이스가 검증하는 것은 "reflow idempotency"가 **아니라** "wrap이 없을 때 resize
+// 왕복이 콘텐츠를 건드리지 않는다"는 대조 기준선이다. 실제 wrap/reflow 경로 검증은 신규 워크로드
+// resize-reflow(아래)가 100자+ 마크로 담당한다. 이 대조군을 남기는 이유: reflow가 있는 케이스와
+// 없는 케이스의 동작 차이를 나란히 봐야 "차이가 reflow에서 왔다"를 귀속할 수 있기 때문이다.
+const RESIZE_MARK = 'ABCDEFGHIJ'.repeat(4); // 40자 — 79열에서도 wrap 없음(대조군).
 const resizeRoundtrip: Workload = {
   name: 'resize-roundtrip',
   initialGeometry: { cols: 80, rows: 24 },
@@ -160,7 +162,7 @@ const resizeRoundtrip: Workload = {
   },
   golden: [
     {
-      name: '80→79→80 왕복 후 첫 행이 40자 마크 그대로(reflow idempotent)',
+      name: '비-reflow 대조군: 80→79→80 왕복 후 첫 행이 40자 마크 그대로(wrap 없어 콘텐츠 불변)',
       check: (g) => {
         const t = rowText(g, 0);
         return t === RESIZE_MARK ? null : `첫 행 복원 실패: "${t}" (len=${t.length})`;
@@ -171,10 +173,80 @@ const resizeRoundtrip: Workload = {
       check: (g) => (g.cols === 80 ? null : `cols=${g.cols} (기대 80)`),
     },
     {
-      name: '둘째 행은 비어있다(40자는 wrap하지 않으므로 접힘 잔재 없음)',
+      name: '둘째 행은 비어있다(40자는 wrap하지 않으므로 접힘 잔재 없음 — 대조군 특성)',
       check: (g) => {
         const t = rowText(g, 1);
         return t === '' ? null : `둘째 행에 잔재: "${t}"`;
+      },
+    },
+  ],
+};
+
+// ── ②b resize-reflow (신규 — wrap을 실제로 밟는 reflow 케이스) ─────────────────
+// **R2: reflow 경로를 실제로 검증한다.** 80열에서 120자 연속 마크를 홈부터 출력하면 시작부터
+// wrapped 2행(row0 80자 full + row1 40자)이 된다. 이후 80→79→80 왕복.
+//
+// **골든은 "왕복 후 이상적 복원"이 아니라 xterm.js U11의 실측 결정적 상태를 박제한다**(R2 ②).
+// 로컬 실측 관측(2026-07-09, @xterm/headless 6 + Unicode11Addon activeVersion='11'):
+//   - 80열 write 직후: row0=80자 full, row1=40자, cursor (40,1).
+//   - 80→79→80 왕복 후(박제 대상): row0=**79자**(col79가 빈 셀 — 마지막 'J'가 wrap 경계에서
+//     복원되지 않음), row1=40자 그대로, cursor (40,1). 즉 원본 120자 중 **119자만 잔존**한다.
+//   - 왕복 2회 결정성: 동일(게이트①이 보장하는 결정성은 성립 — 다만 "이상적 복원"은 아님).
+// 이 79자 잔존은 xterm.js reflow가 wrap-pending 셀을 왕복에서 완전 복원하지 않는 실제 한계이며,
+// 이상적 reflow idempotency(120자 완전 복원)는 **E1 코어의 (d)의도된 개선 목표**로
+// intended-diffs.json에 예약 항목으로 등재된다(R4). 이 워크로드의 골든은 그 예약을 위한 실측
+// 기준선을 박제하는 것이지, xterm.js의 이 동작을 "정답"이라 주장하는 것이 아니다.
+const REFLOW_MARK = 'ABCDEFGHIJ'.repeat(12); // 120자 — 80열에서 시작부터 wrapped 2행.
+// 왕복 후 실측 row0(79자): 120자 마크의 앞 79자(col0..78). 반복 주기 10 → col78 = 'I'(78 % 10 = 8).
+const REFLOW_ROW0_AFTER = REFLOW_MARK.slice(0, 79);
+// 왕복 후 실측 row1(40자): 마크의 80..119(원본 row1 40자가 그대로 잔존).
+const REFLOW_ROW1_AFTER = REFLOW_MARK.slice(80, 120);
+const resizeReflow: Workload = {
+  name: 'resize-reflow',
+  initialGeometry: { cols: 80, rows: 24 },
+  reflowMode: 'self',
+  build: () => {
+    // 홈으로 이동 → 120자 연속 마크(시작부터 wrapped 2행).
+    return concat([b(`${CSI}H`), b(REFLOW_MARK)]);
+  },
+  trail: (bytes) => {
+    const end = bytes.length;
+    // 전 바이트 feed 후 resize 왕복(80→79→80). wrap이 있으므로 실제 rewrap 경로를 밟는다.
+    return [
+      { type: 'resize', byteOffset: end, geometry: { cols: 79, rows: 24 } },
+      { type: 'resize', byteOffset: end, geometry: { cols: 80, rows: 24 } },
+    ];
+  },
+  golden: [
+    {
+      name: '왕복 후 열 수는 80으로 복원',
+      check: (g) => (g.cols === 80 ? null : `cols=${g.cols} (기대 80)`),
+    },
+    {
+      name: '실측 박제: 왕복 후 row0은 79자(wrap 경계 셀 미복원 — xterm.js U11 관측 상태)',
+      check: (g) => {
+        const t = rowText(g, 0);
+        return t === REFLOW_ROW0_AFTER
+          ? null
+          : `row0 실측 불일치: "${t}" (len=${t.length}, 기대 len=79)`;
+      },
+    },
+    {
+      name: '실측 박제: 왕복 후 row1은 원본 뒤쪽 40자 그대로 잔존',
+      check: (g) => {
+        const t = rowText(g, 1);
+        return t === REFLOW_ROW1_AFTER
+          ? null
+          : `row1 실측 불일치: "${t}" (len=${t.length}, 기대 len=40)`;
+      },
+    },
+    {
+      name: '실측 박제: 왕복 후 wrap 경계 col79 셀은 비어있다(마지막 J 미복원 — reflow 비-idempotency 증거)',
+      check: (g) => {
+        const c79 = g.cells[0]?.[79];
+        if (!c79) return 'row0 col79 셀 없음';
+        // 원본이라면 col79 = 'J'(120자 마크의 index 79 = 'J', 79 % 10 = 9). 실측은 빈 셀.
+        return c79.char === '' ? null : `col79 char="${c79.char}" (실측 기대: 빈 셀 — J 미복원)`;
       },
     },
   ],
@@ -370,10 +442,11 @@ const sgrSpectrum: Workload = {
   ],
 };
 
-/** 커밋 코퍼스 5종(D4 — 저장소 커밋은 합성만). */
+/** 커밋 코퍼스 6종(D4 — 저장소 커밋은 합성만). */
 export const WORKLOADS: readonly Workload[] = [
   scrollFlood,
   resizeRoundtrip,
+  resizeReflow,
   altScreen,
   cjkEmoji,
   sgrSpectrum,
