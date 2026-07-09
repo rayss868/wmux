@@ -66,18 +66,20 @@ export interface RecordingMeta {
  * 한 셀의 전 속성 스냅샷. @xterm/headless IBufferCell에서 추출한 값이며, 우리 코어(E1)·제3
  * 레퍼런스도 같은 형상으로 산출해 셀 단위 diff가 가능하도록 한다.
  *
- * 색 모드: raw fgMode/bgMode는 xterm.js 내부 상수(default=0, palette-16≠palette-256≠RGB — quick
- * compare + 16 vs 256 구분용). **이식 가능한 모드 판정은 boolean 3종**(palette/rgb/default)이며,
- * 우리 코어(E1)도 이 boolean 형상으로 산출한다(IBufferCell.isFgPalette/isFgRGB/isFgDefault 대응).
+ * 색 모드: raw fgMode/bgMode는 xterm.js 내부 상수(default=0, palette-16≠palette-256≠RGB). 이 raw
+ * 상수는 **xterm.js 내부 표현이라 이식 불가**(우리 코어·제3 레퍼런스가 같은 정수를 낼 보장이 없다) —
+ * 그래서 스냅샷에는 **참고 필드로만** 남기고 **교차-피검체 diff에서는 제외한다**(differ.ts CELL_FIELDS
+ * 참조: fgMode/bgMode 비대상). 이식 가능한 모드 판정은 boolean 3종(palette/rgb/default)이며, 우리
+ * 코어(E1)도 이 boolean 형상으로 산출한다(IBufferCell.isFgPalette/isFgRGB/isFgDefault 대응).
  * 스타일 플래그 9종: bold/italic/dim/underline/blink/inverse/invisible/strikethrough/overline.
  */
 export interface CellSnapshot {
   readonly char: string; // getChars() — 빈 문자열이면 공백/후속 wide 셀.
   readonly width: number; // getWidth() — 1(보통)·2(wide)·0(wide 다음 spacer).
   readonly code: number; // getCode() — UTF32 codepoint(결합 문자는 마지막 문자).
-  readonly fgMode: number; // getFgColorMode() raw 상수(16 vs 256 구분에만 의미).
+  readonly fgMode: number; // getFgColorMode() raw 상수 — 참고 필드(diff 비대상, 이식 불가).
   readonly fg: number; // getFgColor() — palette 인덱스 / 0xRRGGBB / default -1.
-  readonly bgMode: number;
+  readonly bgMode: number; // getBgColorMode() raw 상수 — 참고 필드(diff 비대상, 이식 불가).
   readonly bg: number;
   readonly fgPalette: boolean; // isFgPalette() — 16색·256색 팔레트.
   readonly fgRGB: boolean; // isFgRGB() — truecolor.
@@ -121,7 +123,7 @@ export interface GridSnapshot {
 export interface DiffEntry {
   readonly x: number;
   readonly y: number;
-  readonly field: keyof CellSnapshot | 'cursor' | 'grid-shape';
+  readonly field: keyof CellSnapshot | 'cursor' | 'grid-shape' | 'activeBuffer';
   readonly a: unknown; // subject A의 값.
   readonly b: unknown; // subject B의 값.
   readonly classification: DiffClassification;
