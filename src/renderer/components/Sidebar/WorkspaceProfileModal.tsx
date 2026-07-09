@@ -108,7 +108,7 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
 
   return (
     <div
-      className="fixed inset-0 z-[10000] flex items-center justify-center"
+      className="fixed inset-0 z-[var(--z-modal-top)] flex items-center justify-center"
       style={{ background: 'rgba(0,0,0,0.45)' }}
       onMouseDown={onClose}
     >

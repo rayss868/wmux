@@ -380,7 +380,7 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center"
+      className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center"
       style={{ backgroundColor: 'var(--backdrop-modal)' }}
       data-testid="first-run-wizard-backdrop"
     >

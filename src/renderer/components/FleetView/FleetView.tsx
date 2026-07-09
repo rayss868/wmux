@@ -339,7 +339,7 @@ export default function FleetView() {
 
   return (
     <div
-      className="fixed inset-0 z-[55] flex items-start justify-center pt-[8vh]"
+      className="fixed inset-0 z-[var(--z-fleet)] flex items-start justify-center pt-[8vh]"
       style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) setVisible(false); }}
     >

@@ -99,7 +99,7 @@ export default function ProjectConfigDialog() {
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center"
+      className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center"
       style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}
       role="dialog"
       aria-labelledby="project-config-title"

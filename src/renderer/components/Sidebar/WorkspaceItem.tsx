@@ -511,7 +511,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       {/* Right-click context menu */}
       {menuPos && (
         <div
-          className="fixed z-[9999] w-max flex flex-col py-1 rounded-lg shadow-xl sidebar-popover-enter"
+          className="fixed z-[var(--z-popover-top)] w-max flex flex-col py-1 rounded-lg shadow-xl sidebar-popover-enter"
           style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >
@@ -599,7 +599,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       {/* Close-workspace confirmation (anti-misclick). */}
       {closeConfirmPos && (
         <div
-          className="fixed z-[9999] w-[220px] py-2 rounded-lg shadow-xl sidebar-popover-enter"
+          className="fixed z-[var(--z-popover-top)] w-[220px] py-2 rounded-lg shadow-xl sidebar-popover-enter"
           style={{ left: Math.min(closeConfirmPos.x, window.innerWidth - 232), top: closeConfirmPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >

@@ -3207,7 +3207,7 @@ function KeyCaptureOverlay({ label, onCapture, onCancel }: { label: string; onCa
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center"
+      className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center"
       style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
       onClick={onCancel}
     >

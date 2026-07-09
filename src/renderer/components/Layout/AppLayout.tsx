@@ -1352,18 +1352,19 @@ export default function AppLayout() {
         </ErrorBoundary>
       )}
       <CommandPalette />
-      {/* S-C1 Fleet View overlay (z-[55], Ctrl+Shift+A) — above the palette
-          (z-50), below inspect (z-65). Mount-gated on fleetViewVisible. */}
+      {/* S-C1 Fleet View overlay (--z-fleet 55, Ctrl+Shift+A) — above the
+          palette (--z-overlay 50), below inspect (--z-inspect 65). Mount-gated
+          on fleetViewVisible. */}
       {fleetViewVisible && (
         <ErrorBoundary name="FleetView">
           <FleetView />
         </ErrorBoundary>
       )}
       <SettingsPanel />
-      {/* Color inspect-mode overlay (S4). Sits at z-[65] (declared inside the
-          component) — above SettingsPanel (z-50) so it captures clicks over the
-          minimized Settings bar, below FirstRunWizard (z-70). Returns null when
-          inspectModeActive is false. */}
+      {/* Color inspect-mode overlay (S4). Sits at --z-inspect (65, declared
+          inside the component) — above SettingsPanel (--z-overlay 50) so it
+          captures clicks over the minimized Settings bar, below FirstRunWizard
+          (--z-dialog 70). Returns null when inspectModeActive is false. */}
       <InspectOverlay />
       <ApprovalDialog />
       {!inboxOwnsApprovals && <ExecuteApprovalDialog />}
@@ -1377,7 +1378,7 @@ export default function AppLayout() {
       {/* First-run auto-update prompt */}
       {showAutoUpdatePrompt && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center"
+          className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center"
           style={{ backgroundColor: 'var(--backdrop-modal)' }}
         >
           <div
@@ -1423,7 +1424,7 @@ export default function AppLayout() {
         </div>
       )}
 
-      {/* First-run wizard (T8a). Sits at z-[70] (declared inside the
+      {/* First-run wizard (T8a). Sits at --z-dialog (70, declared inside the
           component) so it stacks above the auto-update prompt. T8b's
           SettingsPanel triggers a FIRST_RUN_REOPEN_EVENT window event to
           set mode='reopen' (D9). */}
@@ -1451,7 +1452,7 @@ export default function AppLayout() {
           style={{
             position: 'fixed',
             inset: 0,
-            zIndex: 99999,
+            zIndex: 'var(--z-critical)',
             pointerEvents: 'none',
             backgroundColor: 'rgba(137, 180, 250, 0.08)',
           }}

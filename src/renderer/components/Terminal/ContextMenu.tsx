@@ -61,7 +61,7 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
   return (
     <div
       ref={menuRef}
-      className="fixed z-[9999] min-w-[160px] py-1 rounded-md shadow-xl"
+      className="fixed z-[var(--z-popover-top)] min-w-[160px] py-1 rounded-md shadow-xl"
       style={{
         left: x,
         top: y,

@@ -358,7 +358,7 @@ export default function InspectOverlay(): React.ReactElement | null {
       data-inspect-overlay
       tabIndex={-1}
       onKeyDown={onKeyDown}
-      className="fixed inset-0 z-[65] outline-none"
+      className="fixed inset-0 z-[var(--z-inspect)] outline-none"
       // Root is a pass-through container: pointer-events:none so that once a
       // target is set and the capture layer yields (pointer-events:none below),
       // clicks fall through to the Settings picker (z-50) underneath instead of

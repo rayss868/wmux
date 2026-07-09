@@ -10,9 +10,9 @@
  * Design notes:
  * - Renders nothing if `cheatSheetDismissed === true` (D11: permanent
  *   opt-out, only revivable from Settings → First-run setup).
- * - Stays *below* the wizard modal in z-index — wizard is z-[70], we sit
- *   at z-[40] so we never trap clicks meant for the wizard or auto-update
- *   prompt (z-[60]).
+ * - Stays *below* the wizard modal in z-index — wizard is --z-dialog (70),
+ *   we sit at --z-cheatsheet (40) so we never trap clicks meant for the
+ *   wizard or auto-update prompt (--z-modal, 60).
  * - OS-aware modifier rendering (⌘ vs Ctrl+) mirrors `useKeyboard.ts`'s
  *   pattern (`window.electronAPI.platform === 'darwin'`).  tmux prefix
  *   (Ctrl+B) and bookmark (Ctrl+M) intentionally stay literal on every
@@ -145,7 +145,7 @@ export function KeyboardCheatSheetView({
       role="region"
       aria-label={title}
       data-testid="keyboard-cheat-sheet"
-      className="fixed bottom-4 right-4 z-[40] w-[280px] rounded-lg shadow-lg overflow-hidden text-xs"
+      className="fixed bottom-4 right-4 z-[var(--z-cheatsheet)] w-[280px] rounded-lg shadow-lg overflow-hidden text-xs"
       style={{
         backgroundColor: 'var(--bg-mantle, rgba(24,24,37,0.95))',
         border: '1px solid var(--bg-surface0, rgba(255,255,255,0.08))',
