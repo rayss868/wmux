@@ -245,7 +245,6 @@
  *
  *   40    cheatsheet   기준선(z-50) 아래
  *   50    overlay      드롭다운·메뉴·패널 (표준 Tailwind z-50)
- *   55    fleet        플릿 뷰 오버레이
  *   60    modal        설정·자동업데이트 모달
  *   65    inspect      컬러 인스펙트 오버레이
  *   70    dialog       승인·마법사·프로젝트 다이얼로그
@@ -257,7 +256,6 @@
 :root {
   --z-cheatsheet: 40;
   --z-overlay: 50;
-  --z-fleet: 55;
   --z-modal: 60;
   --z-inspect: 65;
   --z-dialog: 70;
