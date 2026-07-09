@@ -45,6 +45,8 @@ export const IPC = {
   // the workspace/pane/surface (see useNotificationListener).
   NOTIFICATION_FOCUS: 'notification:focus',
   CWD_CHANGED: 'notification:cwd-changed',
+  /** J3 §3: initialCommand 재시도 소진(프롬프트 미발사) — payload: sessionId. */
+  PTY_INITIAL_CMD_EXHAUSTED: 'notification:initial-cmd-exhausted',
   GIT_BRANCH_CHANGED: 'notification:git-branch-changed',
   TERMINAL_TITLE_CHANGED: 'terminal:title-changed',
   METADATA_UPDATE: 'metadata:update',
