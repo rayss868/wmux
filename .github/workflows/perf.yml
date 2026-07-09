@@ -14,6 +14,7 @@ on:
       - 'src/**'
       - 'scripts/perf-bench.mjs'
       - 'scripts/perf-compare.mjs'
+      - 'scripts/perf-scenarios.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/perf.yml'
