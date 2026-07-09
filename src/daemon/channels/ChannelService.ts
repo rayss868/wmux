@@ -1244,8 +1244,10 @@ export class ChannelService {
         principalId: HUMAN_SELF_PRINCIPAL_ID,
       };
       // 서버-발행 시스템 메시지(§2.1.1). systemKind로 판별하고 text는 폴백이다.
-      // deliveryStatus='delivered' + recipientSnapshot 부재 = 배달/nudge 대상이
-      // 아닌 감사 마커(wake worker가 이 행으로 재-nudge를 걸지 않는다).
+      // nudge 억제의 실제 장치는 unreadFor()의 systemKind 면제다 — 감사 마커는
+      // 누구의 unread도 만들지 않으므로 wake worker가 이 행으로 nudge를 걸지
+      // 않는다. deliveryStatus='delivered'는 "배달이 아니다"의 표기일 뿐 unread/
+      // wake 판정에는 관여하지 않는다.
       const systemMessage: ChannelMessage = {
         channelId: channel.id,
         seq,
@@ -1290,7 +1292,8 @@ export class ChannelService {
       }
       // 멤버십 변경 팬아웃 — post-join 멤버 집합(사람 포함)에 roster/sidebar 재동기
       // (join()과 동일 신호). 최선노력·비내구라 §2.1.1 시스템 메시지가 내구 흔적을
-      // 별도로 남긴다.
+      // 별도로 남긴다(단 채널 히스토리는 CHANNEL_MESSAGES_MAX에서 tail-evict되므로
+      // 이 흔적의 보존도 그 한계 내다 — 무한 감사 로그가 아니다).
       this.emitCatalog(
         channel.id,
         HUMAN_WORKSPACE_ID,
@@ -2576,6 +2579,12 @@ export class ChannelService {
           // the full row identity (workspaceId AND memberId) so a same-ws
           // SIBLING agent still owes it (same-ws A2A stays a conversation).
           if (m.workspaceId === row.workspaceId && m.memberId === row.memberId) continue;
+          // System rows (systemKind) are audit markers, not deliverable work:
+          // this exemption is what actually keeps the wake worker away from
+          // them — without it every agent member owes one plain unread for an
+          // "Operator joined" marker and gets a PTY nudge (three-model review
+          // consensus). deliveryStatus/recipientSnapshot play no role here.
+          if (m.systemKind) continue;
           unread += 1;
           const mentioned = (m.mentions ?? []).some(
             (men) =>

@@ -637,6 +637,7 @@ export const ko = {
   'channels.operatorJoinCancel': '취소',
   'channels.operatorJoinedToast': '#{channel}에 참여했습니다',
   'channels.operatorJoinFailedToast': '#{channel}에 참여하지 못했습니다',
-  // 서버-발행 operator-join 시스템 메시지의 표시 문자열.
-  'channels.systemOperatorJoin': '이 채널에 참여했습니다',
+  // 서버-발행 operator-join 시스템 메시지의 표시 문자열. 모든 멤버 뷰에
+  // 동일하게 렌더되므로 2인칭이 아닌 시점 중립 문구를 쓴다.
+  'channels.systemOperatorJoin': '오퍼레이터가 이 채널에 참여했습니다',
 } as const;

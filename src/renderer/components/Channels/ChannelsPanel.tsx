@@ -946,7 +946,7 @@ export function ChannelsPanel(): React.ReactElement {
             level: 'info',
             message: t('channels.joinedToast', { workspace: label, channel: channelName }),
           });
-        } else if (result.error.message.includes('DUPLICATE')) {
+        } else if (result.error.code === 'DUPLICATE_MEMBER') {
           pushToast({
             level: 'info',
             message: t('channels.alreadyMemberToast', { workspace: label, channel: channelName }),
@@ -994,13 +994,20 @@ export function ChannelsPanel(): React.ReactElement {
               rpc: bridge.rpc,
               workspaceId: HUMAN_WORKSPACE_ID,
               setChannels: useStore.getState().setChannels,
-            }).then(() => {
-              setActiveChannel(channelId);
-            });
+            })
+              .then(() => {
+                setActiveChannel(channelId);
+              })
+              .catch(() => {
+                // Mirror refresh failed — the join itself is already persisted
+                // daemon-side, so the toast stays truthful; the next catalog
+                // emit converges the mirror. Swallow to avoid an unhandled
+                // rejection; channel selection is skipped until then.
+              });
           }
           pushToast({ level: 'info', message: t('channels.operatorJoinedToast', { channel: channelName }) });
           reloadOperatorList();
-        } else if (result.error.message.includes('DUPLICATE')) {
+        } else if (result.error.code === 'DUPLICATE_MEMBER') {
           // Already a member (e.g. joined in another window since the list loaded).
           pushToast({ level: 'info', message: t('channels.operatorJoinedToast', { channel: channelName }) });
           reloadOperatorList();

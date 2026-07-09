@@ -715,7 +715,9 @@ export const en = {
   'channels.operatorJoinedToast': 'Joined #{channel}',
   'channels.operatorJoinFailedToast': "Couldn't join #{channel}",
   // Display string for the server-published operator-join system message.
-  'channels.systemOperatorJoin': 'You joined this channel',
+  // Viewpoint-neutral on purpose: the marker fans out to every member's view,
+  // so a second-person "You joined" would be wrong for non-operator viewers.
+  'channels.systemOperatorJoin': 'Operator joined this channel',
 } as const;
 
 export type TranslationKey = keyof typeof en;

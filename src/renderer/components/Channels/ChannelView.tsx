@@ -519,7 +519,8 @@ export function ChannelViewContent({
             {rendered.map((m) => {
             // operator-join (§2.1.1/§3): a server-published system marker renders as
             // a centered muted line, not an attributed chat message. The durable
-            // append is the audit trail; here it just reads as "you joined".
+            // append is the audit trail; the copy is viewpoint-neutral because
+            // every member's view renders this same marker.
             if (m.systemKind === 'operator-join') {
               return (
                 <div
@@ -530,7 +531,7 @@ export function ChannelViewContent({
                   className="flex items-center justify-center py-0.5 text-[10px] font-mono italic text-[var(--text-muted)]"
                   {...tokenAttrs('textMuted', 'text')}
                 >
-                  {t('channels.systemOperatorJoin') || 'You joined this channel'}
+                  {t('channels.systemOperatorJoin') || 'Operator joined this channel'}
                 </div>
               );
             }

@@ -186,6 +186,23 @@ describe('ChannelService.operatorJoin', () => {
     expect(sys[0].memberId).toBe(HUMAN_MEMBER_ID);
   });
 
+  it('system message owes NO unread to agent members (audit marker, not deliverable work)', async () => {
+    const { svc } = makeService();
+    const channelId = await makePrivateAgentChannel(svc);
+
+    await svc.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+
+    // 채널 생성자(에이전트)의 unread — unreadFor()의 systemKind 면제가 wake
+    // worker의 plain-unread nudge를 막는 실제 장치다(3모델 리뷰 합의). 마커가
+    // seq는 소비하되(headSeq 전진) 누구의 unread도 만들지 않아야 한다.
+    const rows = svc.unreadFor('ws-agent', 'agent-1');
+    const row = rows.find((r) => r.channelId === channelId);
+    expect(row).toBeDefined();
+    expect(row?.headSeq).toBe(1);
+    expect(row?.unread).toBe(0);
+    expect(row?.mentionUnread).toBe(0);
+  });
+
   it('atomically ROLLS BACK seat AND system message when persist fails', async () => {
     const { svc, writer } = makeService();
     const channelId = await makePrivateAgentChannel(svc);

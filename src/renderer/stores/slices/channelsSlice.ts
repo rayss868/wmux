@@ -141,6 +141,7 @@ export interface ChannelError {
     | 'CHANNEL_NOT_FOUND'
     | 'CHANNEL_ARCHIVED'
     | 'NOT_A_MEMBER'
+    | 'DUPLICATE_MEMBER'
     | 'PERSIST_FAILED'
     | 'ALREADY_EXISTS'
     | 'NOT_AUTHORIZED'
@@ -827,6 +828,11 @@ export const createChannelsSlice: StateCreator<
           // non-creator archive). Model it so the toast shows the real reason
           // instead of bucketing to UNKNOWN with the code mangled into the text.
           'NOT_AUTHORIZED',
+          // 6g2: join + operatorJoin branch on "already a member" for a benign
+          // info toast. Modeled so callers can test `.code` — the previous
+          // behavior (UNKNOWN bucket with the code prepended to the message)
+          // made that branch depend on a message-substring accident.
+          'DUPLICATE_MEMBER',
           'UNKNOWN',
         ]);
         if (KNOWN_CODES.has(code as ChannelError['code'])) {

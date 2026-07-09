@@ -845,7 +845,13 @@ describe('channelsSlice — joinChannelDaemon (membership)', () => {
       const store = createTestStore();
       const res = await store.getState().joinChannelDaemon('ch-1', member, 'ws-join');
       expect(res.ok).toBe(false);
-      if (!res.ok) expect(res.error.message).toContain('DUPLICATE_MEMBER');
+      // 6g2: DUPLICATE_MEMBER is a modeled code now (join/operatorJoin branch
+      // on `.code` for the benign "already a member" toast) — the message
+      // passes through verbatim instead of the UNKNOWN-bucket mangling.
+      if (!res.ok) {
+        expect(res.error.code).toBe('DUPLICATE_MEMBER');
+        expect(res.error.message).toBe('Already a member');
+      }
       expect(store.getState().channelMembers['ch-1']).toBeUndefined();
     } finally {
       clearChannelsRpc();
