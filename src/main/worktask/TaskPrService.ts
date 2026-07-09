@@ -167,25 +167,28 @@ export class TaskPrService {
       return { ok: false, reason: 'error', error: `git remote 조회 실패: ${errMsg(err)}` };
     }
 
-    // ── ③ push -u origin {branch}(execFile argv — 셸 조립 없음) ──
-    // 이미 존재(fast-forward)면 무해 통과. 비-ff·권한 실패는 push-failed.
+    // ── ③ push -u origin -- {branch}(execFile argv + `--` 세퍼레이터 — F6: 브랜치명이
+    // 옵션으로 오인되는 표면 차단). 이미 존재(fast-forward)면 무해 통과.
     try {
-      await this.git(['push', '-u', 'origin', branch], worktreePath);
+      await this.git(['push', '-u', 'origin', '--', branch], worktreePath);
     } catch (err) {
       return { ok: false, reason: 'push-failed', error: `git push 실패: ${errMsg(err)}` };
     }
 
     // base = repo default(CL4·[J2대조]4 — fan-out 원본 브랜치 미기록이라 default 조회).
-    let base = 'main';
+    // F6: 조회 실패·빈 값이면 'main' 추측 대신 명시 에러(엉뚱한 base로 PR 여는 것 방지).
+    let base: string;
     try {
       const { stdout } = await this.gh(
         ['repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name'],
         worktreePath,
       );
-      const resolved = stdout.trim();
-      if (resolved.length > 0) base = resolved;
-    } catch {
-      // default 조회 실패 → 'main' 폴백(대다수 정합. 틀리면 pr create가 명시 실패).
+      base = stdout.trim();
+    } catch (err) {
+      return { ok: false, reason: 'pr-failed', error: `base 브랜치(repo default)를 확인할 수 없습니다: ${errMsg(err)}` };
+    }
+    if (!base) {
+      return { ok: false, reason: 'pr-failed', error: 'base 브랜치(repo default)를 확인할 수 없습니다(빈 응답) — origin의 defaultBranchRef가 없습니다' };
     }
 
     // ── ④ gh pr create --head --title --body --base ──

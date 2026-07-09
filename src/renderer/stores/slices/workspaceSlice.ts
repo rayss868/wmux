@@ -249,6 +249,16 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           delete state.paneNotificationRing[pid];
         }
       }
+      // J3 F4: 이 ws가 태스크 워크스페이스(paneGroupId=이 ws id)였다면 이탈 뱃지·
+      // onExhausted 매핑을 evict(무한 성장 방지). departed는 ws id 키, registry는
+      // ptyId 키라 제거 ws의 모든 surface ptyId를 훑는다.
+      delete state.departedPaneGroups[id];
+      if (state.taskPtyRegistry) {
+        const removedWs = state.workspaces[idx];
+        const collectPtyIds = (p: Pane): string[] =>
+          p.type === 'leaf' ? p.surfaces.map((s) => s.ptyId).filter(Boolean) : p.children.flatMap(collectPtyIds);
+        for (const pid of collectPtyIds(removedWs.rootPane)) delete state.taskPtyRegistry[pid];
+      }
       state.workspaces.splice(idx, 1);
       if (state.activeWorkspaceId === id) {
         state.activeWorkspaceId = state.workspaces[Math.min(idx, state.workspaces.length - 1)].id;

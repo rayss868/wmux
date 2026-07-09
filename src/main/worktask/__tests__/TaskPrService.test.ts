@@ -131,9 +131,9 @@ describe('J3 §2 정상 1클릭 PR', () => {
     if (!res.ok) throw new Error('unreachable');
     expect(res.prUrl).toBe(VALID_PR);
 
-    // push -u origin {branch}.
+    // push -u origin -- {branch}(F6 세퍼레이터).
     const push = calls.find((c) => c.cmd === 'git' && c.args[0] === 'push');
-    expect(push?.args).toEqual(['push', '-u', 'origin', INPUT.branch]);
+    expect(push?.args).toEqual(['push', '-u', 'origin', '--', INPUT.branch]);
 
     // pr create에 --base가 실 값(main)으로 실렸는지.
     const create = calls.find((c) => isGh(c.cmd) && c.args[0] === 'pr' && c.args[1] === 'create');
@@ -149,16 +149,29 @@ describe('J3 §2 정상 1클릭 PR', () => {
     expect(invalidate).toHaveBeenCalledWith(INPUT.worktreePath, INPUT.branch);
   });
 
-  it('repo view 실패 시 base=main 폴백', async () => {
+  it('F6 — repo view 실패면 base 추측 없이 명시 에러(pr create 안 함)', async () => {
     const { exec, calls } = makeExec((cmd, args) =>
       isGh(cmd) && argStr(args).startsWith('repo view') ? { throw: 'no default' } : happyBehavior(cmd, args),
     );
     const { svc } = makeService(exec);
     const res = await svc.createPr(INPUT);
-    expect(res.ok).toBe(true);
-    const create = calls.find((c) => isGh(c.cmd) && c.args[0] === 'pr' && c.args[1] === 'create');
-    const baseIdx = create!.args.indexOf('--base');
-    expect(create!.args[baseIdx + 1]).toBe('main');
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('unreachable');
+    expect(res.reason).toBe('pr-failed');
+    expect(res.error).toContain('base');
+    // base 미상이면 pr create를 시도하지 않는다(엉뚱한 base 방지).
+    expect(calls.find((c) => isGh(c.cmd) && c.args[0] === 'pr' && c.args[1] === 'create')).toBeUndefined();
+  });
+
+  it('F6 — defaultBranchRef 빈 응답도 명시 에러', async () => {
+    const { exec } = makeExec((cmd, args) =>
+      isGh(cmd) && argStr(args).startsWith('repo view') ? { stdout: '' } : happyBehavior(cmd, args),
+    );
+    const { svc } = makeService(exec);
+    const res = await svc.createPr(INPUT);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('unreachable');
+    expect(res.reason).toBe('pr-failed');
   });
 });
 
