@@ -184,3 +184,70 @@ export function normalizeWorktreePath(raw: string, platform: NodeJS.Platform = p
   if (platform === 'win32' || platform === 'darwin') p = p.toLowerCase();
   return p;
 }
+
+/**
+ * 태스크 meta dir에 각인하는 디스크 정본 스탬프(J3 §1 D1 — CL5). 태스크
+ * projection이 GC(WORKTASK_CLOSED_GC_MS)로 소멸한 뒤에도 전용 루트에 남은
+ * worktree 디렉토리를 taskId·title로 역추적할 수 있게 하는 사이드카다.
+ * closedAt은 clean close 시 meta dir째 삭제되므로 대개 부재 — close↔meta삭제
+ * 사이 크래시로 worktree가 잔존하는 창에서만 관측된다.
+ */
+export interface WorkTaskMetaStamp {
+  taskId: string;
+  title: string;
+  createdAt: number;
+  closedAt?: number;
+}
+
+/** meta dir에 스탬프를 쓰는 파일명(J3 §1 — 정리 스캔 역추적 정본). */
+export const WORKTASK_META_FILENAME = 'task.json';
+
+// ── J3 IPC wire 결과 타입(렌더러 안전 — node import 없는 순수 데이터) ──────────
+// main측 서비스(TaskCloseService·TaskPrService·WorktaskScanService)는 node를
+// import하므로 렌더러 번들에 못 들어간다. preload·렌더러가 공유하는 이 wire 타입은
+// 그 서비스 반환을 그대로 미러링한다(계약 표류 시 tsc가 잡도록 손으로 정합 유지).
+
+/** task:close 결과(TaskCloseService.CloseTaskResult 미러). */
+export type CloseTaskResultWire =
+  | { ok: true; taskId: string; archivePending: boolean; unmaterialized?: boolean }
+  | {
+      ok: false;
+      taskId: string;
+      reason: 'unpushed' | 'dirty' | 'error';
+      error: string;
+      preservedWorktree?: string;
+      aheadCount?: number;
+    };
+
+/** task:create-pr 결과(TaskPrService.CreatePrResult 미러). */
+export type CreatePrResultWire =
+  | { ok: true; prUrl: string; recovered?: boolean; commitPending?: boolean }
+  | {
+      ok: false;
+      reason: 'gh-missing' | 'gh-unauth' | 'dirty' | 'no-origin' | 'push-failed' | 'pr-failed' | 'error';
+      error: string;
+      browseFallback?: string;
+    };
+
+/** 정리 스캔 항목 4종(WorktaskScanService.WorktaskScanEntry 미러). */
+export type WorktaskScanCategoryWire =
+  | 'unmaterialized-open'
+  | 'disk-missing'
+  | 'preserved'
+  | 'orphan-dir';
+
+export interface WorktaskScanEntryWire {
+  category: WorktaskScanCategoryWire;
+  taskId?: string;
+  title?: string;
+  /** F1 — 열린 태스크 이상 항목의 owner(부모) ws id(정합화 close 신원). */
+  ownerWorkspaceId?: string;
+  worktreePath?: string;
+  closedAt?: number;
+  detail?: string;
+}
+
+/** worktask:scan 결과(핸들러 반환 미러). */
+export type WorktaskScanResultWire =
+  | { ok: true; scannedRoot: string; entries: WorktaskScanEntryWire[] }
+  | { ok: false; error: string; scannedRoot: string; entries: WorktaskScanEntryWire[] };

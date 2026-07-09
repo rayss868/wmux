@@ -87,16 +87,21 @@ function makeDaemonFake(opts?: {
   return { port, calls };
 }
 
-/** renderer fake — spawnWorkspace가 실제 workspaceId를 회수 반환. */
+/** renderer fake — spawnWorkspace가 실제 workspaceId를 회수 반환. 반환한 ptyId도
+ *  기록해 FanOutService가 그 id를 결과에 무변형 전달하는지 검증 가능케 한다(F11). */
 function makeRendererFake(opts?: { spawnFailOn?: (name: string) => boolean }) {
-  const spawned: Array<{ name: string; cwd: string; initialCommand: string }> = [];
+  const spawned: Array<{ name: string; cwd: string; initialCommand: string; returnedPtyId?: string }> = [];
   let seq = 0;
   const port: FanOutRendererPort = {
     spawnWorkspace: vi.fn(async (p) => {
-      spawned.push(p);
-      if (opts?.spawnFailOn && opts.spawnFailOn(p.name)) return { error: 'spawn fail' };
+      if (opts?.spawnFailOn && opts.spawnFailOn(p.name)) {
+        spawned.push({ ...p });
+        return { error: 'spawn fail' };
+      }
       seq++;
-      return { workspaceId: `ws-task-${seq}`, ptyId: `pty-${seq}` };
+      const ptyId = `pty-${seq}`;
+      spawned.push({ ...p, returnedPtyId: ptyId });
+      return { workspaceId: `ws-task-${seq}`, ptyId };
     }),
   };
   return { port, spawned };
@@ -172,6 +177,20 @@ describe('§0 E2E 정상 — N=2 전부 성공', () => {
       expect(t.taskId).toBeTruthy();
       expect(t.workspaceId).toBeTruthy();
       expect(t.channelDisconnected).toBe(false);
+      // J3 §3·F11: spawn이 반환한 ptyId가 결과에 그대로 실린다(변형 없음). 이 ptyId는
+      // pty.create의 세션 id와 동일하고 onExhausted가 그 sessionId로 발화하므로,
+      // 여기서의 무변형 전달이 재발사 레지스트리 조회(ptyId===sessionId) 계약의 근거다.
+      expect(t.ptyId).toBe(renderer.spawned[t.index]?.returnedPtyId);
+      // F2: 재발사가 재전송할 initialCommand도 결과에 실린다(원문 프롬프트 아님).
+      expect(t.initialCommand).toMatch(/prompt\.md/);
+      // J3 §1 CL5: task.json 스탬프가 metaDir에 각인된다(GC 이후 역추적 정본).
+      const slug = t.taskId!.slice(-8);
+      const stampPath = path.join(metaRoot, 'meta', slug, 'task.json');
+      expect(fs.existsSync(stampPath)).toBe(true);
+      const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8')) as { taskId: string; title: string; createdAt: number };
+      expect(stamp.taskId).toBe(t.taskId);
+      expect(stamp.title).toBe(t.title);
+      expect(typeof stamp.createdAt).toBe('number');
     }
     // mission.start·update 각 2회, invite 2회.
     const methods = daemon.calls.map((c) => c.method);

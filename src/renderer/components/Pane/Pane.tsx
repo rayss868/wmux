@@ -602,13 +602,15 @@ function SplitSurfaceView({
               onClose={() => onCloseSurface(surface.id)}
             />
           ) : surface.surfaceType === 'diff' ? (
-            // J2 — diff 서피스는 PTY 없음. verifiedWorkspaceId는 태스크 워크스페이스 id.
+            // J2 — diff 서피스는 PTY 없음. F1: verifiedWorkspaceId는 태스크 owner(부모)
+            // ws id(task.mission.* RPC가 owner 스코프). fan-out이 diff 서피스에 실어둔
+            // diffOwnerWorkspaceId를 쓰고, 없으면(구 세션 등) 담고 있는 ws로 폴백.
             <DiffPanel
               key={surface.id}
               taskId={surface.diffTaskId || ''}
               isActive={surface.id === activeSurfaceId}
               surfaceId={surface.id}
-              verifiedWorkspaceId={workspaceId}
+              verifiedWorkspaceId={surface.diffOwnerWorkspaceId || workspaceId}
             />
           ) : (
             <TerminalComponent

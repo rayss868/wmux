@@ -31,6 +31,8 @@ import {
   FANOUT_MAX_TASKS,
   FANOUT_PROMPT_MAX_BYTES,
   WORKTASK_IDEMPOTENCY_CAP,
+  WORKTASK_META_FILENAME,
+  type WorkTaskMetaStamp,
 } from '../../shared/workTask';
 import { TaskWorktreeManager } from './TaskWorktreeManager';
 import type { TaskWorktreePlan } from './TaskWorktreeManager';
@@ -79,6 +81,12 @@ export interface FanOutTaskResult {
   taskId?: string;
   channelId?: string;
   workspaceId?: string;
+  /** 에이전트 페인의 ptyId(spawnWorkspace 반환 — §3 onExhausted 토스트 매핑 재료.
+   *  렌더러가 부재 시 매핑 불가 태스크는 토스트 생략 — best-effort). */
+  ptyId?: string;
+  /** F2 — 발사한 initialCommand(에이전트 기동+프롬프트 주입). 재발사가 원문 프롬프트
+   *  대신 이 명령을 재전송하도록 하는 재료(맨 셸이 프롬프트를 실행하는 오배선 방지). */
+  initialCommand?: string;
   worktreePath?: string;
   branch?: string;
   /** 실패 사유(ok=false). */
@@ -264,12 +272,16 @@ export class FanOutService {
     base.worktreePath = plan.worktreePath;
     base.branch = plan.branch;
 
-    // 프롬프트 파일을 태스크 메타 디렉토리(worktree 밖 — diff 청정성 §4)에 쓴다.
+    // 프롬프트 파일 + task.json 스탬프를 태스크 메타 디렉토리(worktree 밖 — diff
+    // 청정성 §4)에 쓴다. task.json(J3 §1 CL5)은 projection GC 이후에도 전용 루트의
+    // worktree를 taskId·title로 역추적하게 하는 디스크 정본 사이드카다.
     let promptPath: string;
     try {
       fs.mkdirSync(plan.metaDir, { recursive: true });
       promptPath = path.join(plan.metaDir, 'prompt.md');
       fs.writeFileSync(promptPath, ctx.prompt, 'utf8');
+      const stamp: WorkTaskMetaStamp = { taskId, title: ctx.title, createdAt: Date.now() };
+      fs.writeFileSync(path.join(plan.metaDir, WORKTASK_META_FILENAME), JSON.stringify(stamp), 'utf8');
     } catch (err) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
       return { ...base, error: `prompt file write failed: ${(err as Error).message}`, preservedWorktree: plan.worktreePath };
@@ -278,6 +290,7 @@ export class FanOutService {
     // ③ 렌더러 spawn — 전용 워크스페이스 + 에이전트 페인. cwd=worktreePath,
     //    initialCommand=`{agentCmd} "$(cat '{promptPath}')"`(경로 쿼팅). 실제 workspaceId 회수.
     const initialCommand = buildInitialCommand(ctx.agentCmd, promptPath);
+    base.initialCommand = initialCommand; // F2 재발사 재료(맨 셸 오배선 방지).
     const wsName = `wtask: ${ctx.title.slice(0, 32)}`;
     let workspaceId: string;
     try {
@@ -291,6 +304,8 @@ export class FanOutService {
         return { ...base, error: `renderer spawn failed: ${spawned.error}`, preservedWorktree: plan.worktreePath };
       }
       workspaceId = spawned.workspaceId;
+      // ptyId는 옵셔널(핸드셰이크가 싣지 못하면 부재) — §3 onExhausted 토스트 매핑용.
+      if (spawned.ptyId) base.ptyId = spawned.ptyId;
     } catch (err) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
       return { ...base, error: `renderer spawn threw: ${(err as Error).message}`, preservedWorktree: plan.worktreePath };

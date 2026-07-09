@@ -173,6 +173,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const metadata = workspace?.metadata;
   // X5 wmux.json badge state for this workspace (transient, probe-driven).
   const projectState = useStore((s) => s.projectConfigs[workspaceId]);
+  // J3 §4 — 태스크 워크스페이스의 페인 cwd가 worktree 경계 밖으로 이탈했는지(경고만).
+  const departedCwd = useStore((s) => s.departedPaneGroups[workspaceId]);
 
   // X1→X3 bridge: a listening-port badge click jumps to the workspace and
   // shows http://localhost:<port> in its browser pane (reusing one if the
@@ -452,6 +454,14 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                 {unreadCount > 0 && (
                   <span className="bg-[var(--accent-blue)] text-[var(--bg-base)] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0">
                     {unreadCount}
+                  </span>
+                )}
+                {departedCwd && (
+                  <span
+                    className="text-[9px] text-[var(--accent-yellow,#f9e2af)] flex-shrink-0"
+                    title={`페인 cwd가 태스크 worktree 경계 밖으로 이탈: ${departedCwd}`}
+                  >
+                    ⚠ 이탈
                   </span>
                 )}
               </div>

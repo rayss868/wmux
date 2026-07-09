@@ -11,6 +11,18 @@ import {
 } from './useNotificationPolicy';
 import { findSurfaceByPtyId, findActiveLeaf } from '../utils/paneTraversal';
 import { FrameCoalescer } from '../utils/frameCoalescer';
+import { normalizeWorktreePath } from '../../shared/workTask';
+
+/**
+ * J3 §4 — cwd가 태스크 worktree 경계 안인지(best-effort, OSC 협조 기반). 정규화
+ * 후 동일 경로거나 `{worktree}/` 접두면 안. 원본 repo 등 경계 밖이면 이탈.
+ */
+function isWithinWorktree(cwd: string, worktreePath: string): boolean {
+  const c = normalizeWorktreePath(cwd);
+  const w = normalizeWorktreePath(worktreePath);
+  if (!c || !w) return true; // 판정 불가 → 이탈로 몰지 않음(경고만·오탐 방지).
+  return c === w || c.startsWith(w + '/');
+}
 
 // ─── Target resolution helpers (regression-locked, unchanged from pre-T8) ───
 // `findSurfaceByPtyId` / `findActiveLeaf` now live in ../utils/paneTraversal
@@ -457,6 +469,19 @@ export function useNotificationListener() {
       // A3: 프레임당 1회로 병합(마지막 cwd 승리) — 실제 반영은 cwdCoalescer.
       if (!ptyId) return;
       cwdCoalescer.push(ptyId, cwd);
+
+      // J3 §4 — 태스크 워크스페이스의 페인 cwd가 worktree 경계 밖으로 벗어나면
+      // 이탈 뱃지(경고만·차단 없음). ptyId→워크스페이스→미션(worktreePath) 해석 후
+      // 경계 비교. 미션이 아니거나 미물질화면 무시.
+      const st = useStore.getState();
+      const target = resolveNotificationTarget(st, ptyId, undefined);
+      if (target) {
+        const mission = st.getMissionForPaneGroup(target.workspaceId);
+        if (mission?.worktreePath) {
+          const inside = isWithinWorktree(cwd, mission.worktreePath);
+          st.setPaneGroupDeparted(target.workspaceId, inside ? null : cwd);
+        }
+      }
     });
 
     const unsubTitle = window.electronAPI.notification.onTitleChanged((ptyId, title) => {
@@ -654,6 +679,45 @@ export function useNotificationListener() {
       gitBranchCoalescer.push(ptyId, branch);
     });
 
+    // J3 §3 — initialCommand 재시도 소진(프롬프트 미발사) 통지. fan-out 결과가
+    // taskPtyRegistry에 등록해 둔 ptyId→태스크로 토스트 + [재발사]. 재발사는 main이
+    // prompt.md 실존을 검사(파일 소실 시 사유), 실제 inject는 pty.write. 상태 영속
+    // 없음(§3 G8 — 리부트로 토스트 소실 수용).
+    const unsubExhausted = window.electronAPI.notification.onInitialCmdExhausted((ptyId) => {
+      if (!ptyId) return;
+      const st = useStore.getState();
+      const entry = st.taskPtyRegistry[ptyId];
+      if (!entry) return; // 매핑 부재(non-fanout·핸드셰이크 ptyId 누락) → best-effort 생략.
+      const worktreePath = entry.worktreePath;
+      const initialCommand = entry.initialCommand;
+      // F2 — 재발사는 원래 initialCommand(에이전트 기동+프롬프트 주입)를 재전송해야
+      // 한다(맨 셸에 원문 프롬프트를 흘리면 셸이 실행). 둘 다 있어야 [재발사] 제공.
+      const canRefire = Boolean(worktreePath && initialCommand);
+      st.pushToast({
+        level: 'warn',
+        message: `태스크 "${entry.title}": 프롬프트가 발사되지 않았습니다(에이전트 페인이 비어 있을 수 있음).`,
+        ...(canRefire
+          ? {
+              action: {
+                label: '재발사',
+                onClick: () => {
+                  void (async () => {
+                    const api = window.electronAPI.workTask;
+                    if (!api) return;
+                    const res = await api.refire({ ptyId, worktreePath: worktreePath as string, initialCommand: initialCommand as string });
+                    if (res.ok) {
+                      useStore.getState().pushToast({ level: 'info', message: `태스크 "${entry.title}": 프롬프트를 재발사했습니다.` });
+                    } else {
+                      useStore.getState().pushToast({ level: 'error', message: `재발사 불가: ${res.error}` });
+                    }
+                  })();
+                },
+              },
+            }
+          : {}),
+      });
+    });
+
     // Phase 1.5 — Claude Code hook signal health. Main throttles to 1Hz so
     // this fires at most once per second. Just slots into the existing
     // uiSlice field; no derived state required.
@@ -684,6 +748,7 @@ export function useNotificationListener() {
       unsubTitle();
       unsubMeta();
       unsubGitBranch();
+      unsubExhausted();
       unsubSignalHealth();
       unsubUsage();
       // Reset throttlers so a hot-reloaded listener doesn't inherit stale

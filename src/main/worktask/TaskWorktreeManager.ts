@@ -91,6 +91,17 @@ export function taskIdSuffix(taskId: string): string {
   return taskId.replace(/^wtask-/, '').slice(-TASK_ID_SUFFIX_LEN);
 }
 
+/**
+ * worktree 경로 → meta dir 파생(J3 §1·§3 — preflight의 경로 규칙 역산).
+ * preflight가 `worktreePath = {root}/{slug}`·`metaDir = {root}/.meta/{slug}`로
+ * 파생하므로, `dirname(worktreePath)/.meta/basename(worktreePath)`가 정합이다.
+ * 정리 스캔(task.json 역추적)·미발사 재발사(prompt.md 실존 검사)가 worktreePath
+ * 하나로 meta dir를 되찾는 단일 출처.
+ */
+export function metaDirForWorktree(worktreePath: string): string {
+  return path.join(path.dirname(worktreePath), '.meta', path.basename(worktreePath));
+}
+
 /** taskSlug = `{titleSlug}-{taskIdSuffix}`. titleSlug 비면 접미사만. */
 export function buildTaskSlug(title: string, taskId: string): string {
   const slug = titleToSlug(title);

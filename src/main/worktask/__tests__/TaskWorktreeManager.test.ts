@@ -107,6 +107,19 @@ describe('preflight — 전용 루트 suffix 파생 (§3 C4)', () => {
     expect(toPosix(res.plan.worktreePath).startsWith(`${toPosix(home)}/.wmux-dev/worktrees/`)).toBe(true);
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
+
+  // J3 §1·§3 — metaDirForWorktree는 worktreePath 하나로 preflight의 metaDir을
+  // 되찾는다(정리 스캔 task.json 역추적·재발사 prompt.md 실존 검사의 단일 출처).
+  it('metaDirForWorktree(worktreePath)가 preflight의 metaDir과 정합한다', async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
+    const { TaskWorktreeManager, metaDirForWorktree } = await loadModule();
+    const mgr = new TaskWorktreeManager({ runGit: healthyRepoGit(repoRoot) });
+    const res = await mgr.preflight(repoRoot, 'My Task', 'wtask-x-abcd1234');
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(metaDirForWorktree(res.plan.worktreePath)).toBe(res.plan.metaDir);
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
 });
 
 describe('preflight — 에지 fail-closed (§3)', () => {

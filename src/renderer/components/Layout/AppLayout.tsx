@@ -11,6 +11,7 @@ import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import StatusBar from '../StatusBar/StatusBar';
 import NotificationPanel from '../Notification/NotificationPanel';
 import CommandPalette from '../Palette/CommandPalette';
+import WorktaskCleanupView from '../WorkTask/WorktaskCleanupView';
 import FleetView from '../FleetView/FleetView';
 import SettingsPanel from '../Settings/SettingsPanel';
 import InspectOverlay from '../Inspect/InspectOverlay';
@@ -1368,6 +1369,7 @@ export default function AppLayout() {
         </ErrorBoundary>
       )}
       <CommandPalette />
+      <WorktaskCleanupView />
       <SettingsPanel />
       {/* Color inspect-mode overlay (S4). Sits at --z-inspect (65, declared
           inside the component) — above SettingsPanel (--z-overlay 50) so it

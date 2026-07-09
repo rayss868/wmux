@@ -262,6 +262,11 @@ export default function CommandPalette() {
         action: () => { useStore.getState().setFleetViewVisible(true); setVisible(false); },
       },
       {
+        // J3 §1 — 태스크 정리 목록(전용 루트 디스크 정본 스캔).
+        label: t('palette.cmd.openWorktaskCleanup'),
+        action: () => { useStore.getState().setWorktaskCleanupVisible(true); setVisible(false); },
+      },
+      {
         label: t('palette.cmd.openBrowser'),
         action: () => {
           // forceNew: the explicit "Open Browser" command always creates a
