@@ -75,6 +75,11 @@ export const IPC = {
   // workspace, sound by the Electron process boundary) and forwards to the
   // daemon, whose authz gates run against it. See channelLocal.handler.ts.
   CHANNEL_MUTATE_LOCAL: 'channels:mutate-local',
+  // J1 fan-out — renderer(다이얼로그) → main: 프롬프트 1개 → N 격리 태스크 스폰.
+  // main의 FanOutService가 데몬 RPC(mission.start/update/invite)와 렌더러 spawn을
+  // 조립한다. 렌더러 신뢰 신원(verifiedWorkspaceId)은 channelLocal과 동일 trust
+  // basis(Electron 프로세스 경계). 파이프 미노출 — 같은 사용자 MCP 클라가 못 닿는다.
+  FANOUT_START: 'fanout:start',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

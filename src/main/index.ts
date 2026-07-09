@@ -43,6 +43,7 @@ import { registerPluginSchemePrivileges, registerPluginProtocolHandler } from '.
 import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
 import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.handler';
 import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
+import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { registerUiPluginRpc } from './pipe/handlers/uiPlugin.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
@@ -553,6 +554,10 @@ registerProjectConfigHandlers();
 // handler fails a no-senderPtyId mutation closed, and this ipcMain.handle
 // channel is unreachable from the pipe. See channelLocal.handler.ts.
 registerChannelLocalHandlers(() => daemonClient);
+// J1 fan-out — 프롬프트 1개 → N 격리 태스크. 렌더러 다이얼로그가 fanout:start를
+// invoke하면 main의 FanOutService가 데몬 RPC + 렌더러 spawn을 조립한다(channelLocal과
+// 동일 renderer-trusted 신원, 파이프 미노출).
+registerFanOutHandler(() => daemonClient, () => mainWindow);
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
 const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient);
