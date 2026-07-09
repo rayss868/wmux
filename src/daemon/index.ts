@@ -2128,6 +2128,37 @@ function registerRpcHandlers(
     return { ok: true, verifiedWorkspaceId, tasks: workTaskService.listMissions(verifiedWorkspaceId) };
   });
 
+  // task.mission.update(J1 §5): 물질화 필드 단조 커밋. 신원 규율은 start/close와
+  // 동형(stampCaller로 senderPtyId→verifiedWorkspaceId, fail-closed). wire
+  // 화이트리스트는 {taskId, branch?, worktreePath?, paneGroupId?}만 — prUrl은 J2 몫.
+  pipeServer.onRpc('task.mission.update', async (rawParams) => {
+    if (!workTaskService) {
+      return { ok: false, error: { code: 'NOT_AVAILABLE', message: 'task.mission.update: mission log unavailable' } };
+    }
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params;
+    const verifiedWorkspaceId =
+      typeof p['verifiedWorkspaceId'] === 'string' ? p['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: { code: 'NOT_AUTHORIZED', message: 'task.mission.update: a server-resolved verifiedWorkspaceId is required' },
+      };
+    }
+    const taskId = typeof p['taskId'] === 'string' ? p['taskId'] : '';
+    if (!taskId) {
+      return { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'task.mission.update: taskId is required' } };
+    }
+    return workTaskService.updateMission({
+      taskId,
+      verifiedWorkspaceId,
+      ...(typeof p['branch'] === 'string' ? { branch: p['branch'] } : {}),
+      ...(typeof p['worktreePath'] === 'string' ? { worktreePath: p['worktreePath'] } : {}),
+      ...(typeof p['paneGroupId'] === 'string' ? { paneGroupId: p['paneGroupId'] } : {}),
+    });
+  });
+
   // ── Principal registry (R2) ─────────────────────────────────────────
   // The three writes are renderer-only system actions: reachable only via
   // main's `channels:mutate-local` (renderer-only IPC), and deliberately not
@@ -3196,6 +3227,15 @@ async function main(): Promise<void> {
         // 데몬은 오늘 ceoWorkspaceId를 알지 못한다(ChannelService.archive와 동일 —
         // 렌더러가 Company.ceoWorkspaceId 소유). CEO 예외 활성은 배선 후속.
         ceoWorkspaceId: undefined,
+        // §5 배타 불변식의 realpath 해석기. 경로가 디스크에 실존하면 심링크를 풀고,
+        // 부재면(fs 예외) 원본을 반환해 순수 문자열 정규화로 폴백한다.
+        realpath: (p: string): string => {
+          try {
+            return fs.realpathSync(p);
+          } catch {
+            return p;
+          }
+        },
       });
       await svc.boot();
       workTaskService = svc;

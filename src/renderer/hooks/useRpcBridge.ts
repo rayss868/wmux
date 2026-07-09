@@ -541,6 +541,67 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     return { ptyId, workspaceId: newWsId, workspaceName: newWs.name };
   }
 
+  if (method === 'fanout.spawnWorkspace') {
+    // J1 §2 ③ — fan-out 태스크의 전용 워크스페이스 + 에이전트 페인 스폰. main의
+    // FanOutService가 sendToRenderer로 호출한다. mcp.claimWorkspace와 동형이나
+    // cwd=worktreePath + initialCommand(프롬프트 파일 치환)를 추가로 싣는다. 실제
+    // workspaceId를 회수 반환(핸드셰이크 C3). 사람 포커스를 훔치지 않는다(이전 활성
+    // 복원). 워크스페이스 트리 정본은 렌더러라 이 경로가 정본 우회 없는 스폰이다.
+    const previousActiveId = store.activeWorkspaceId;
+    const name = typeof params.name === 'string' && params.name.length > 0 ? params.name : undefined;
+    const cwd = typeof params.cwd === 'string' ? params.cwd : '';
+    const initialCommand = typeof params.initialCommand === 'string' ? params.initialCommand : '';
+
+    store.addWorkspace(name);
+    const afterAdd = useStore.getState();
+    const newWs = afterAdd.workspaces.find((w) => w.id === afterAdd.activeWorkspaceId);
+    if (!newWs) {
+      return { error: 'fanout.spawnWorkspace: workspace creation failed' };
+    }
+    const newWsId = newWs.id;
+    const paneId = newWs.activePaneId;
+
+    let ptyId: string;
+    try {
+      const created = await window.electronAPI.pty.create(
+        withWorkspaceProfile(
+          withDefaultShell(
+            {
+              workspaceId: newWsId,
+              cwd: cwd || undefined,
+              ...(initialCommand ? { initialCommand } : {}),
+            },
+            useStore.getState().defaultShell,
+          ),
+          // profile.startupCwd = worktreePath 힌트(§1 — 초기 편의). split 상속에
+          // 밀리는 tolerant 힌트라 방어가 아니라 편의로만 계상한다.
+          { ...newWs.profile, startupCwd: cwd || newWs.profile?.startupCwd },
+        ),
+      );
+      ptyId = created.id;
+    } catch (err) {
+      const rollback = useStore.getState();
+      rollback.removeWorkspace(newWsId);
+      rollback.setActiveWorkspace(previousActiveId);
+      return { error: `fanout.spawnWorkspace: PTY create failed — ${err instanceof Error ? err.message : String(err)}` };
+    }
+
+    const afterPty = useStore.getState();
+    const freshWs = afterPty.workspaces.find((w) => w.id === newWsId);
+    if (!freshWs || !findPaneById(freshWs.rootPane, paneId)) {
+      try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
+      afterPty.removeWorkspace(newWsId);
+      afterPty.setActiveWorkspace(previousActiveId);
+      return { error: 'fanout.spawnWorkspace: pane disappeared during PTY creation' };
+    }
+    afterPty.addSurface(paneId, ptyId, '', cwd, newWsId);
+
+    // 포커스 복원 — fan-out 스폰이 사람 화면을 훔치지 않는다.
+    useStore.getState().setActiveWorkspace(previousActiveId);
+
+    return { workspaceId: newWsId, ptyId };
+  }
+
   // -------------------------------------------------------------------------
   // surface.*
   // -------------------------------------------------------------------------

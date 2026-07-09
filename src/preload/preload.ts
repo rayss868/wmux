@@ -258,6 +258,11 @@ const electronAPI = {
     mutateChannelLocal: (method: string, params: Record<string, unknown>) =>
       ipcRenderer.invoke(IPC.CHANNEL_MUTATE_LOCAL, method, params),
   },
+  // J1 fan-out — 프롬프트 1개 → N 격리 태스크. 렌더러 다이얼로그가 요청을 조립해
+  // main의 FanOutService로 보낸다(renderer-trusted 신원, 파이프 미노출).
+  fanout: {
+    start: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.FANOUT_START, req),
+  },
   browser: {
     registerWebview: (surfaceId: string, webContentsId: number) =>
       ipcRenderer.invoke('browser:register-webview', surfaceId, webContentsId),
