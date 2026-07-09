@@ -47,6 +47,7 @@ v1의 "부분 성공 허용(성공 hunk 적용·실패 hunk 표시)"은 단일 `
 - **발신은 렌더러 channelLocal 경로 전용**(리뷰 CL3 — 실측: MCP channel_post는 data 파라미터 미지원): MCP 에이전트는 코멘트 앵커를 읽기만 가능(channel_read는 data 통과). channel_post에 data 추가는 도구 표면 확장이라 별도 판단 몫 — J2는 계약 명시만.
 - diff 뷰는 미션 채널에서 kind 매칭 역조회해 인라인 표시(read RPC 재사용). 라인 드리프트는 hunkHeader+line 스냅샷 — 불일치 시 "위치 이동됨" 뱃지 강등.
 - 미션 채널 archived/소실 시 코멘트 버튼 비활성 + 사유(J0 외부 변이 내성 정합).
+- **v1 앵커 정밀도 = hunkHeader 단위**(F10): 코멘트는 file+hunkHeader로 매칭하고 side/line 실기록·라인 단위 정밀 앵커는 J4로 이연한다(현재 발신 앵커의 `side:'new', line:0`은 placeholder — hunkHeader가 바뀌면 "위치 이동됨" 그룹으로 강등).
 
 ## 5. 결정 D5 — 검증 리그 배선 (전략 P8 — J2 출하 블로커)
 
@@ -112,6 +113,23 @@ Codex 9건(CX) + Claude 실코드 9건(CL — Pane.tsx·workspaceSlice·mcp/chan
 | R14 | Claude(8)+GLM(6) | mergeBase 문법 오용·산출 위치 불일치 | 1-arg 워킹트리 diff + 단일 출처 캐싱(§2) |
 | R15 | GLM(5) | 동시 apply 직렬화 부재 | per-repo 뮤텍스 재사용(§3) |
 | R16 | GLM(5) | 패치 내부 경로 검증 부재 | a/ b/ 정규화 + `..` 거부 + --unsafe-paths 금지(§3) |
+
+## 11. 코드 리뷰 로그 — 3모델 1라운드 (2026-07-10)
+
+구현 산출물(shared 파서·main 핸들러·renderer)에 대한 3모델(Claude·Codex·GLM 5.2) 코드 리뷰 합의 수정. 반영 위치·테스트 동봉.
+
+| # | 합의 | 발견 | 반영 |
+|---|---|---|---|
+| F1 | 3-MODEL 최우선 | `git status --porcelain` 공백 slice(3)·rename ` -> ` 파싱이 공백·한글·따옴표 파일명을 훼손 | `-z -uall -c core.quotepath=false` + NUL split 파서(`parsePorcelainZ`). rename/copy는 newpath만 dirty(NUL 2필드). 핸들러 `collectSnapshot`·untracked 수집. 테스트: 특수문자·rename |
+| F2 | 2-MODEL | per-hunk 개별 프로브가 의존 hunk를 false-negative로 오판 | 적용 게이트 = 선택 hunk 결합 패치 1회 `--check`. per-hunk는 UI 힌트. `alreadyApplied`(reverse --check) hunk는 게이트 전 명시 거부(원인 은닉 방지). 테스트: 의존 hunk 결합·alreadyApplied 거부 |
+| F3 | Codex 9 | untracked readFile가 symlink를 follow해 repo 밖 파일 노출 | readFile 전 `lstat` — 정규 파일만 합성, symlink·FIFO는 `unsupported` 라벨. `DiffReadResult.unsupported` 신설. 테스트: symlink 차단 |
+| F4 | Codex 8 | delete diff의 displayPath가 `/dev/null` → dirty 게이트가 실경로 미검사 | delete는 oldPath를 identity/display로(`diffParse` displayPath). 테스트: delete 파일 타겟 dirty 시 거부 |
+| F5 | Codex 10 | fan-out→diff 진입 미배선 | 성공 태스크 결과 토스트에 "diff 열기" 액션 → `{taskId, workspaceId}`로 `addDiffSurface`. Toast `action` 필드·ToastContainer 버튼 |
+| F6 | Codex 9 | terminal+browser 혼재 split에서 diff·editor 서피스 미렌더 | `pickOverlaySurfaces`로 비PTY 서피스를 split 위 오버레이 라우팅(editor 무회귀). 테스트: 라우팅 |
+| F7 | Claude 6 | 캡 초과(truncated) 파일 채택 가능 | 캡 초과 `hunkSelectable=false` + `applyHunks`에서 truncated 명시 거부(2중). 테스트: 캡 초과 거부 |
+| F8 | Claude 6 | `targetHeadOid` 인자 무검증 | `/^[0-9a-fA-F]{7,40}$/` 형식 검증(불일치 `bad-oid`). 테스트: 형식 가드 |
+| F9 | Claude 5×2 + GLM 5×2 | ① 채널 read 실패 fail-open ② handleComment 에러 삼킴 ③ 빈 문자열 조기 종료 ④ resolveTargetRepo 문자열 조작 폴백 | ① `a2a.channel.get` fail-safe(archived=true) ② try/catch+에러 메시지 ③ 빈 문자열 종료를 마지막 원소일 때만 ④ common-dir 상위 `--show-toplevel` 직접 도출 |
+| F10 | Codex 10 INFO(§4 이행) | 코멘트 역조회 인라인 미표시 | `data.kind==='diff-comment'`&&taskId 매칭 → hunk 아래 인라인, 불일치분 "위치 이동됨" 그룹. §4에 v1 앵커 정밀도=hunkHeader 단위 명시. 테스트: 앵커 매칭 |
 
 ## 부록 A — surfaceType 전수 감사 산출물 (구현 시 실측, 2026-07-10)
 
