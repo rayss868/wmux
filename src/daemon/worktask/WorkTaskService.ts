@@ -75,8 +75,15 @@ export interface WorkTaskChannelPort {
     | { ok: true }
     | { ok: false; error: { code: string; message: string } }
   >;
-  /** 부트 reconcile 전용 — 멤버십 무관 전체 채널 (id, topic, status). */
-  listAllForReconcile(): Array<{ id: string; topic?: string; status: 'active' | 'archived' }>;
+  /** 부트 reconcile 전용 — 멤버십 무관 전체 채널 (id, topic, status, 창설 ws).
+   *  createdByWorkspaceId는 고아 archive의 authz 신원(창설자는 항상 멤버로
+   *  시드되므로 멤버 게이트를 통과한다 — 3모델 리뷰 R1': 빈 신원 archive는 전패). */
+  listAllForReconcile(): Array<{
+    id: string;
+    topic?: string;
+    status: 'active' | 'archived';
+    createdByWorkspaceId?: string;
+  }>;
 }
 
 export interface WorkTaskServiceOptions {
@@ -171,14 +178,16 @@ export class WorkTaskService {
    * 재시작 후 같은 idempotencyKey 재시도가 원본 결과를 반환하도록 멱등 LRU를
    * replay에서 재구성한다(A2aTaskService.restoreIdempotency 동형). start는
    * (taskId, channelId), close는 (taskId)를 원본 결과로 재구성한다.
+   * 스코프 신원은 envelope authContext의 서버 스탬프에서 복원한다(위조 불가 값).
    */
   private restoreIdempotency(rec: EventEnvelope): void {
     if (!rec.idempotencyKey) return;
+    const ws = rec.authContext.verifiedWorkspaceId;
     const p = rec.payload as { kind?: unknown; task?: unknown; taskId?: unknown };
     if (p.kind === 'task.create') {
       const task = (p as WorkTaskCreatePayload).task;
       if (task && typeof task.id === 'string' && typeof task.missionChannelId === 'string') {
-        this.idempotencyRecord('start', rec.idempotencyKey, {
+        this.idempotencyRecord('start', ws, rec.idempotencyKey, {
           ok: true,
           taskId: task.id,
           channelId: task.missionChannelId,
@@ -189,7 +198,7 @@ export class WorkTaskService {
     if (p.kind === 'task.close') {
       const taskId = (p as WorkTaskClosePayload).taskId;
       if (typeof taskId === 'string') {
-        this.idempotencyRecord('close', rec.idempotencyKey, { ok: true, taskId });
+        this.idempotencyRecord('close', ws, rec.idempotencyKey, { ok: true, taskId });
       }
     }
   }
@@ -237,12 +246,11 @@ export class WorkTaskService {
       const anchoredTaskId = taskIdFromMissionTopic(ch.topic);
       if (!anchoredTaskId) continue;
       if (this.tasks.has(anchoredTaskId)) continue; // 정상 바인딩 — projection에 있음.
-      // 고아: 데몬 내부 archive(신원은 채널 createdBy를 통과하는 서버 경로 —
-      // verifiedWorkspaceId를 채널의 창설 워크스페이스로 특정할 수 없으므로
-      // CEO/멤버 게이트를 통과하도록 archive는 best-effort로 시도하고 실패는
-      // 삼킨다. reaper 의존은 §3에서 정정됐지만, 부트 reconcile은 authz 앵커가
-      // 없어 실패할 수 있다 — 그 창은 여전히 reaper 몫으로 남긴다).
-      await this.tryArchive(ch.id, '');
+      // 고아: 데몬 내부 archive. 신원 = 채널의 창설 워크스페이스(3모델 리뷰 R1' —
+      // 창설자는 create가 항상 멤버로 시드하므로 멤버 게이트를 통과한다. 빈
+      // 신원('')은 isMember/isCeo 전패라 모든 고아 archive가 no-op으로 삼켜져
+      // 영구 잔존했다). 창설 ws가 기록에 없으면(구 레코드) best-effort 폴백.
+      await this.tryArchive(ch.id, ch.createdByWorkspaceId ?? '');
     }
 
     // 태스크 방향: closed인데 채널 active면 archive 재시도.
@@ -258,20 +266,18 @@ export class WorkTaskService {
    * closedAt + WORKTASK_CLOSED_GC_MS 경과 태스크를 projection에서 퇴출(§1 D13).
    * 로그 절단이 아니라 인메모리 뷰 바운드다(§6.L 컴팩션 몫 불변).
    *
-   * **archive 미확인 closed 태스크는 GC 면제(§1 안전핀)**: 미션 채널이 아직
-   * active면 태스크 방향 reconcile 대상이므로 projection에서 지우면 복구가 끊긴다.
+   * "archive 미확인 closed는 GC 면제" 안전핀은 **의도적으로 두지 않는다**(리뷰
+   * GLM R3' 반영, 설계 v1.1 §1 안전핀 문구 대체): 부트 순서가 replay → reconcile
+   * → GC로 고정돼 있어 GC 시점엔 이번 부트의 archive 재시도가 이미 끝났고, 다음
+   * 부트의 replay가 로그에서 전 태스크를 복원하므로 GC가 복구 경로를 끊지 못한다.
+   * 반대로 active-채널 면제를 두면 owner-leave 수용 잔여(§3)에서 closed 태스크가
+   * projection에 영구 잔류해 GC의 존재 이유(뷰 바운드)가 무산된다.
    */
   gcClosedTasks(): void {
     const now = this.now();
-    const channels = new Map(
-      this.channels.listAllForReconcile().map((c) => [c.id, c.status]),
-    );
     for (const [id, task] of this.tasks) {
       if (task.status !== 'closed' || task.closedAt === undefined) continue;
       if (now - task.closedAt <= WORKTASK_CLOSED_GC_MS) continue;
-      // archive 미확인(채널이 여전히 active 또는 존재 불명확) → GC 면제.
-      const chStatus = channels.get(task.missionChannelId);
-      if (chStatus === 'active') continue;
       this.tasks.delete(id);
     }
   }
@@ -286,7 +292,9 @@ export class WorkTaskService {
   startMission(input: StartMissionInput): Promise<StartMissionOk | WorkTaskErr> {
     return this.withWriteLock(async () => {
       // §3 멱등: 응답 유실 재시도는 저장된 결과 재반환(append 없이).
-      const cached = this.idempotencyHit('start', input.idempotencyKey);
+      // 키는 caller의 서버핀 워크스페이스로 스코프(2모델 리뷰 R2' — 무스코프
+      // 전역 키는 타 워크스페이스가 같은 키로 남의 {taskId, channelId}를 받는다).
+      const cached = this.idempotencyHit('start', input.verifiedWorkspaceId, input.idempotencyKey);
       if (cached) return cached as StartMissionOk;
 
       const title = input.title.trim();
@@ -359,7 +367,7 @@ export class WorkTaskService {
       this.applyPayload(payload);
 
       const result: StartMissionOk = { ok: true, taskId, channelId };
-      this.idempotencyRecord('start', input.idempotencyKey, result);
+      this.idempotencyRecord('start', input.verifiedWorkspaceId, input.idempotencyKey, result);
       return result;
     });
   }
@@ -372,9 +380,14 @@ export class WorkTaskService {
    */
   closeMission(input: CloseMissionInput): Promise<CloseMissionOk | WorkTaskErr> {
     return this.withWriteLock(async () => {
-      // §3 멱등: 응답 유실 재시도 흡수.
-      const cached = this.idempotencyHit('close', input.idempotencyKey);
-      if (cached) return cached as CloseMissionOk;
+      // §3 멱등: 응답 유실 재시도 흡수(워크스페이스 스코프 — R2'). 캐시 히트라도
+      // 요청 taskId와 불일치하면 미스로 취급한다(2모델 리뷰: 같은 caller가 키를
+      // 재사용해 다른 태스크를 close하려는 경우, 이전 성공 영수증을 돌려주면
+      // 요청한 close가 조용히 미실행된다 — authz·존재 검증 경로로 흘려보낸다).
+      const cached = this.idempotencyHit('close', input.verifiedWorkspaceId, input.idempotencyKey);
+      if (cached && (cached as CloseMissionOk).taskId === input.taskId) {
+        return cached as CloseMissionOk;
+      }
 
       const task = this.tasks.get(input.taskId);
       if (!task) {
@@ -394,7 +407,7 @@ export class WorkTaskService {
       // (부트 reconcile 태스크 방향이 담당) — 성립한 close에 대해 caller는 성공을 받는다.
       if (task.status === 'closed') {
         const result: CloseMissionOk = { ok: true, taskId: task.id };
-        this.idempotencyRecord('close', input.idempotencyKey, result);
+        this.idempotencyRecord('close', input.verifiedWorkspaceId, input.idempotencyKey, result);
         return result;
       }
 
@@ -415,7 +428,7 @@ export class WorkTaskService {
       await this.tryArchive(task.missionChannelId, task.owner.verifiedWorkspaceId);
 
       const result: CloseMissionOk = { ok: true, taskId: task.id };
-      this.idempotencyRecord('close', input.idempotencyKey, result);
+      this.idempotencyRecord('close', input.verifiedWorkspaceId, input.idempotencyKey, result);
       return result;
     });
   }
@@ -468,7 +481,10 @@ export class WorkTaskService {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 32);
-    const shortId = taskId.replace(/^wtask-/, '').slice(0, 8);
+    // shortId는 taskId의 **끝** 8자(= random 세그먼트). 앞 8자는 now().toString(36)
+    // 타임스탬프라(현 epoch에서 정확히 8자) 엔트로피가 0 — 같은 ms·같은 title 두
+    // start가 동일 채널명을 만들어 중복 거부로 자기 DoS된다(리뷰 Claude R4').
+    const shortId = taskId.replace(/^wtask-/, '').slice(-8);
     const base = slug.length > 0 ? `mission-${slug}-${shortId}` : `mission-${shortId}`;
     // 채널 이름 규칙: 소문자/숫자로 시작. slug가 숫자·하이픈으로 시작하면 접두가 'mission-'이라 항상 안전.
     return base.slice(0, 64);
@@ -503,21 +519,30 @@ export class WorkTaskService {
     };
   }
 
+  /**
+   * 멱등 키는 `{op}:{verifiedWorkspaceId}:{key}` — caller의 서버핀 워크스페이스로
+   * 네임스페이스한다(2모델 리뷰 R2'). 무스코프 전역 키는 ① 타 워크스페이스가
+   * 같은 키로 남의 {taskId, channelId} 결과(private 채널 id 누출)를 받고 ② close
+   * 캐시 히트가 owner 게이트보다 먼저 반환돼 authz를 우회한다. A2aTaskService가
+   * (taskId, key)로 1차 스코프해 봉쇄한 문제의 동형.
+   */
   private idempotencyHit(
     op: 'start' | 'close',
+    verifiedWorkspaceId: string,
     key: string | undefined,
   ): StartMissionOk | CloseMissionOk | undefined {
     if (!key) return undefined;
-    return this.idempotency.get(`${op}:${key}`);
+    return this.idempotency.get(`${op}:${verifiedWorkspaceId}:${key}`);
   }
 
   private idempotencyRecord(
     op: 'start' | 'close',
+    verifiedWorkspaceId: string,
     key: string | undefined,
     result: StartMissionOk | CloseMissionOk,
   ): void {
     if (!key) return;
-    this.idempotency.set(`${op}:${key}`, result);
+    this.idempotency.set(`${op}:${verifiedWorkspaceId}:${key}`, result);
     // LRU: Map은 삽입 순서 보존 — cap 초과 시 가장 오래된 키부터 축출.
     while (this.idempotency.size > WORKTASK_IDEMPOTENCY_CAP) {
       const oldest = this.idempotency.keys().next().value as string | undefined;

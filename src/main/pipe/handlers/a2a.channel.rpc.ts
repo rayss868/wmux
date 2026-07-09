@@ -111,10 +111,13 @@ export function registerA2aChannelRpc(
         delete (ref as Record<string, unknown>).principalId;
       }
     }
-    if (Array.isArray(base.members)) {
-      for (const m of base.members) {
-        if (m && typeof m === 'object' && !Array.isArray(m)) {
-          delete (m as Record<string, unknown>).principalId;
+    for (const arrKey of ['members', 'invite'] as const) {
+      const arr = base[arrKey];
+      if (Array.isArray(arr)) {
+        for (const m of arr) {
+          if (m && typeof m === 'object' && !Array.isArray(m)) {
+            delete (m as Record<string, unknown>).principalId;
+          }
         }
       }
     }
@@ -122,7 +125,9 @@ export function registerA2aChannelRpc(
     // four scalar refs PLUS each entry of create's initial `members[]` array
     // (ship review — Codex: create's members[] was the ONE identity path the
     // per-key guards missed, so a pipe channel_create could seed a reserved-id
-    // member row and bypass both guards below).
+    // member row and bypass both guards below) PLUS mission.start's `invite[]`
+    // array and its scalar `memberId` (J0 review: mission params carry identity
+    // in those two shapes, not member/members).
     const identityRefs: Array<Record<string, unknown>> = [];
     for (const key of ['member', 'invitedMember', 'createdBy', 'sender'] as const) {
       const ref = base[key];
@@ -130,12 +135,20 @@ export function registerA2aChannelRpc(
         identityRefs.push(ref as Record<string, unknown>);
       }
     }
-    if (Array.isArray(base.members)) {
-      for (const m of base.members) {
-        if (m && typeof m === 'object' && !Array.isArray(m)) {
-          identityRefs.push(m as Record<string, unknown>);
+    for (const arrKey of ['members', 'invite'] as const) {
+      const arr = base[arrKey];
+      if (Array.isArray(arr)) {
+        for (const m of arr) {
+          if (m && typeof m === 'object' && !Array.isArray(m)) {
+            identityRefs.push(m as Record<string, unknown>);
+          }
         }
       }
+    }
+    if (typeof base.memberId === 'string') {
+      // mission.start carries the creator's memberId as a bare scalar — wrap it
+      // so the reserved-identity guards below see it too.
+      identityRefs.push({ memberId: base.memberId });
     }
     // R2 review C4: 'local-ui' is the GUI human's reserved identity — if a pipe
     // path uses this label, it would be shown in the roster/transcript
@@ -223,6 +236,17 @@ export function registerA2aChannelRpc(
   router.register('a2a.channel.leave', (p) => forward('a2a.channel.leave', p, true));
   router.register('a2a.channel.post', (p) => forward('a2a.channel.post', p, true));
   router.register('a2a.channel.invite', (p) => forward('a2a.channel.invite', p, true));
+
+  // Mission RPCs (J0 §3) — same forwarder, same D5 stamp discipline: mutating
+  // start/close require a resolvable senderPtyId (fail-closed) and get a
+  // server-pinned verifiedWorkspaceId over any client-supplied value; list is
+  // a read (owner-scoped by the stamped/advisory workspace). These MUST be
+  // registered here or the MCP mission tools die with "Unknown method"
+  // (J0 3-model review — Codex, conf 10: capability map + FIRST_PARTY had the
+  // methods but the router forward was the missing link).
+  router.register('task.mission.start', (p) => forward('task.mission.start', p, true));
+  router.register('task.mission.close', (p) => forward('task.mission.close', p, true));
+  router.register('task.mission.list', (p) => forward('task.mission.list', p, false));
 
   // NOTE: a2a.channel.archive and a2a.channel.kick are intentionally NOT registered
   // here. BOTH are HUMANS-ONLY actions (product decision): archiving tears a channel

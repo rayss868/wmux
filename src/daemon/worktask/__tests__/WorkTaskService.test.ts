@@ -98,19 +98,33 @@ function newWorkTaskService(
 // ── 주입 가능한 fake ChannelPort (실패·상태 제어) ──────────────────────
 function makeFakeChannelPort(opts?: { failCreate?: boolean }) {
   let seq = 0;
-  const channels = new Map<string, { id: string; topic?: string; status: 'active' | 'archived' }>();
+  const channels = new Map<
+    string,
+    { id: string; topic?: string; status: 'active' | 'archived'; createdByWorkspaceId?: string }
+  >();
   const archiveCalls: string[] = [];
+  /** archive 호출의 신원 관측(R1' — 고아 reconcile이 창설 ws로 archive하는지). */
+  const archiveIdentities: Array<{ channelId: string; verifiedWorkspaceId: string }> = [];
   const port: WorkTaskChannelPort = {
     create: vi.fn(async (params) => {
       if (opts?.failCreate) {
         return { ok: false as const, error: { code: 'PERSIST_FAILED', message: 'forced' } };
       }
       const id = `ch-${++seq}`;
-      channels.set(id, { id, ...(params.topic !== undefined ? { topic: params.topic } : {}), status: 'active' });
+      channels.set(id, {
+        id,
+        ...(params.topic !== undefined ? { topic: params.topic } : {}),
+        status: 'active',
+        createdByWorkspaceId: params.createdBy.workspaceId,
+      });
       return { ok: true as const, channel: { id } };
     }),
     archive: vi.fn(async (params) => {
       archiveCalls.push(params.channelId);
+      archiveIdentities.push({
+        channelId: params.channelId,
+        verifiedWorkspaceId: params.verifiedWorkspaceId,
+      });
       const ch = channels.get(params.channelId);
       if (!ch) return { ok: false as const, error: { code: 'CHANNEL_NOT_FOUND', message: 'nf' } };
       ch.status = 'archived';
@@ -123,7 +137,7 @@ function makeFakeChannelPort(opts?: { failCreate?: boolean }) {
     const ch = channels.get(id);
     if (ch) ch.status = status;
   };
-  return { port, channels, archiveCalls, setStatus };
+  return { port, channels, archiveCalls, archiveIdentities, setStatus };
 }
 
 // ═══ §2 경로 정규화 유틸 ═══════════════════════════════════════════════
@@ -248,6 +262,53 @@ describe('§3 멱등', () => {
     expect(c1.ok).toBe(true);
     expect(c2.ok).toBe(true);
   });
+
+  it('R2′: 멱등 키는 워크스페이스 스코프 — 타 ws가 같은 키를 써도 남의 결과를 받지 않는다', async () => {
+    const { port } = makeFakeChannelPort();
+    const svc = newWorkTaskService(newLog(), port);
+    await svc.boot();
+    const a = await svc.startMission({ title: 'A', verifiedWorkspaceId: 'ws-a', memberId: 'lead', idempotencyKey: 'shared' });
+    const b = await svc.startMission({ title: 'B', verifiedWorkspaceId: 'ws-b', memberId: 'lead', idempotencyKey: 'shared' });
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    // 무스코프 전역 키였다면 b가 a의 {taskId, channelId}(private 채널 id 누출)를 받는다.
+    expect(b.taskId).not.toBe(a.taskId);
+    expect(b.channelId).not.toBe(a.channelId);
+    expect(svc.taskCount).toBe(2);
+  });
+
+  it('R2′: close 캐시 히트가 요청 taskId와 불일치하면 미스로 취급 — authz·존재 검증 경로를 탄다', async () => {
+    const { port } = makeFakeChannelPort();
+    const svc = newWorkTaskService(newLog(), port);
+    await svc.boot();
+    const t1 = await svc.startMission({ title: 'T1', verifiedWorkspaceId: 'ws-a', memberId: 'lead' });
+    const t2 = await svc.startMission({ title: 'T2', verifiedWorkspaceId: 'ws-a', memberId: 'lead' });
+    expect(t1.ok && t2.ok).toBe(true);
+    if (!t1.ok || !t2.ok) return;
+    const c1 = await svc.closeMission({ taskId: t1.taskId, verifiedWorkspaceId: 'ws-a', idempotencyKey: 'k' });
+    expect(c1.ok).toBe(true);
+    // 같은 키로 다른 태스크 close — 이전 영수증(t1) 재반환이 아니라 t2가 실제로 닫혀야 한다.
+    const c2 = await svc.closeMission({ taskId: t2.taskId, verifiedWorkspaceId: 'ws-a', idempotencyKey: 'k' });
+    expect(c2.ok).toBe(true);
+    if (!c2.ok) return;
+    expect(c2.taskId).toBe(t2.taskId);
+    expect(svc.getTask(t2.taskId)?.status).toBe('closed');
+  });
+
+  it('R4′: 같은 ms·같은 title 두 start도 채널명이 달라진다 (shortId = random 세그먼트)', async () => {
+    const fixed = 1_700_000_000_000;
+    const f = makeFakeChannelPort();
+    const svc = newWorkTaskService(newLog(), f.port, { now: () => fixed });
+    await svc.boot();
+    const r1 = await svc.startMission({ title: 'Same Title', verifiedWorkspaceId: 'ws-a', memberId: 'lead' });
+    const r2 = await svc.startMission({ title: 'Same Title', verifiedWorkspaceId: 'ws-a', memberId: 'lead' });
+    expect(r1.ok && r2.ok).toBe(true);
+    const create = f.port.create as ReturnType<typeof vi.fn>;
+    const names = create.mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(names).toHaveLength(2);
+    // timestamp-shortId였다면 동일명 → 실 ChannelService의 중복 거부로 자기 DoS.
+    expect(names[0]).not.toBe(names[1]);
+  });
 });
 
 // ═══ §3 authz (타 워크스페이스 거부 · CEO 허용) ══════════════════════════
@@ -314,12 +375,21 @@ describe('§3 실패 보상 archive', () => {
 describe('§3 양방향 부트 reconcile', () => {
   it('채널 방향: projection에 없는 mission-topic 고아 채널을 archive (크래시 창)', async () => {
     // 사전상태: mission-topic 앵커가 박힌 active 채널이 있으나 로그엔 task.create 없음.
-    const { port, channels, archiveCalls } = makeFakeChannelPort();
-    channels.set('ch-orphan', { id: 'ch-orphan', topic: missionTopicFor('wtask-ghost'), status: 'active' });
+    const { port, channels, archiveCalls, archiveIdentities } = makeFakeChannelPort();
+    channels.set('ch-orphan', {
+      id: 'ch-orphan',
+      topic: missionTopicFor('wtask-ghost'),
+      status: 'active',
+      createdByWorkspaceId: 'ws-creator',
+    });
     const svc = newWorkTaskService(newLog(), port);
     await svc.boot(); // reconcile 채널 방향이 고아를 줍는다.
     expect(archiveCalls).toContain('ch-orphan');
     expect(channels.get('ch-orphan')?.status).toBe('archived');
+    // R1′: archive 신원은 빈 값이 아니라 채널의 창설 워크스페이스 — 창설자는 항상
+    // 멤버로 시드되므로 실 ChannelService의 멤버 게이트를 통과한다('' 는 전패).
+    const orphanArchive = archiveIdentities.find((a) => a.channelId === 'ch-orphan');
+    expect(orphanArchive?.verifiedWorkspaceId).toBe('ws-creator');
   });
 
   it('태스크 방향: closed 태스크의 채널이 active면 부트에서 archive 재시도', async () => {
@@ -391,10 +461,11 @@ describe('§1 closed projection GC', () => {
     expect(svc.getTask(started.taskId)).toBeUndefined();
   });
 
-  it('archive 미확인 closed(채널 여전히 active)는 GC 면제', async () => {
+  it('archive 미확인 closed도 GC 퇴출 — 복구는 다음 부트 replay+reconcile이 담당 (R3′)', async () => {
     let clock = 1_000_000;
-    const { port, setStatus } = makeFakeChannelPort();
-    const svc = newWorkTaskService(newLog(), port, { now: () => clock });
+    const { port, channels, setStatus } = makeFakeChannelPort();
+    const log = newLog();
+    const svc = newWorkTaskService(log, port, { now: () => clock });
     await svc.boot();
     const started = await svc.startMission({ title: 'T', verifiedWorkspaceId: 'ws-a', memberId: 'lead' });
     expect(started.ok).toBe(true);
@@ -404,8 +475,13 @@ describe('§1 closed projection GC', () => {
     setStatus(started.channelId, 'active');
     clock += 8 * 24 * 60 * 60 * 1000;
     svc.gcClosedTasks();
-    // 면제: 여전히 projection에 남는다(태스크 방향 reconcile 복구 대상 보존).
-    expect(svc.getTask(started.taskId)?.status).toBe('closed');
+    // 면제 없음: projection에서 퇴출된다(면제를 두면 owner-leave 잔여에서 영구 잔류
+    // — 뷰 바운드 무산). 복구 경로가 끊기지 않음을 아래 재부트로 실증한다.
+    expect(svc.getTask(started.taskId)).toBeUndefined();
+    // 재부트: replay가 로그에서 태스크를 복원하고 reconcile이 archive를 재시도.
+    const svc2 = newWorkTaskService(newLog(), port, { now: () => clock });
+    await svc2.boot();
+    expect(channels.get(started.channelId)?.status).toBe('archived');
   });
 });
 

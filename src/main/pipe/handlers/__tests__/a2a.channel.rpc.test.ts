@@ -231,6 +231,42 @@ describe('a2a.channel.rpc — mutating routing (capability a2a.channel.send)', (
     if (res.ok) expect(res.result).toBe(expected);
   });
 
+  // J0 (3-model review — Codex): the mission RPCs live on THIS router. The
+  // capability map + FIRST_PARTY entries existed without the router forward,
+  // so the MCP mission tools died with "Unknown method" — pin the registration.
+  it.each([
+    ['task.mission.start', { title: 'T', memberId: 'lead', senderPtyId: 'pty-S' }],
+    ['task.mission.close', { taskId: 'wtask-x', senderPtyId: 'pty-S' }],
+  ] as const)('%s is registered, mutating, and D5-stamped', async (rpcMethod, params) => {
+    const expected = { ok: true, value: null };
+    const daemon = makeFakeDaemon((method, p) => {
+      expect(method).toBe(rpcMethod);
+      // Mutating discipline: server-resolved workspace stamped over any client value.
+      expect((p as Record<string, unknown>).verifiedWorkspaceId).toBe('ws-of-pty-S');
+      return expected;
+    });
+    const router = setupHandlerRouter(daemon);
+    const res = await router.dispatch({ id: `m-${rpcMethod}`, method: rpcMethod, params });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.result).toBe(expected);
+  });
+
+  it('task.mission.start/close fail closed without a resolvable senderPtyId', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const rpcSpy = (daemon as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    for (const method of ['task.mission.start', 'task.mission.close'] as const) {
+      const res = await router.dispatch({ id: `fc-${method}`, method, params: { title: 'T', taskId: 'wtask-x' } });
+      expect(res.ok).toBe(true); // Result envelope with ok:false inside
+      if (res.ok) {
+        const r = res.result as { ok: boolean; error?: { code: string } };
+        expect(r.ok).toBe(false);
+        expect(r.error?.code).toBe('NOT_AUTHORIZED');
+      }
+    }
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+
   it('treats missing params as {} so the daemon gets a valid envelope', async () => {
     // The handler is `(params) => daemonClient.rpc(method, params ?? {})` —
     // a caller omitting `params` still hits the daemon with a valid object,
