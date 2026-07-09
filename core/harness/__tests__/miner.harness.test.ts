@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { RingBuffer } from '../../../src/daemon/RingBuffer';
-import { scrub, mineBufferDir, writeMinedSeeds } from '../miner';
+import { scrub, mineBufferDir, writeMinedSeeds, LOCAL_CORPUS_DIR } from '../miner';
 
 const enc = new TextEncoder();
 const decUtf8 = new TextDecoder('utf-8');
@@ -117,6 +117,63 @@ describe('miner — 다층 스크럽', () => {
     expect(out).toContain(lowEntropy);
   });
 
+  // ── R7 보강 패턴 ──────────────────────────────────────────────────────────
+  it('AWS 계열 대문자 스네이크 credential env를 지운다(R7)', () => {
+    const input = enc.encode(
+      'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE AWS_SESSION_TOKEN=FQoGZXIvYXdzE keep=me',
+    );
+    const out = dec.decode(scrub(input));
+    expect(out).not.toContain('wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY');
+    expect(out).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(out).not.toContain('FQoGZXIvYXdzE');
+    // 키 이름은 남고 값만 마킹.
+    expect(out).toContain('AWS_SECRET_ACCESS_KEY=[[REDACTED]]');
+    expect(out).toContain('keep=me');
+  });
+
+  it('URL userinfo(scheme://user:pass@)를 지우되 호스트는 보존한다(R7)', () => {
+    const input = enc.encode('git clone https://alice:s3cr3tPass@github.com/org/repo.git done');
+    const out = dec.decode(scrub(input));
+    expect(out).not.toContain('s3cr3tPass');
+    expect(out).not.toContain('alice:s3cr3tPass');
+    expect(out).toContain('https://[[REDACTED]]@github.com/org/repo.git');
+  });
+
+  it('JSON/colon 형식("secret": "...")을 지우되 키는 보존한다(R7)', () => {
+    const input = enc.encode('{"api_key": "sk_live_verysecretvalue123", "user": "bob"}');
+    const out = dec.decode(scrub(input));
+    expect(out).not.toContain('sk_live_verysecretvalue123');
+    expect(out).toContain('"api_key": "[[REDACTED]]"');
+    // 비-secret 키/값은 보존.
+    expect(out).toContain('"user": "bob"');
+  });
+
+  it('PEM 개인키 블록을 통째로 지운다(R7)', () => {
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn\nrandomkeymaterial\n-----END RSA PRIVATE KEY-----';
+    const input = enc.encode(`before\n${pem}\nafter`);
+    const out = dec.decode(scrub(input));
+    expect(out).not.toContain('MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn');
+    expect(out).not.toContain('BEGIN RSA PRIVATE KEY');
+    expect(out).toContain('before');
+    expect(out).toContain('after');
+    expect(out).toContain('[[REDACTED]]');
+  });
+
+  it('알려진 토큰 프리픽스(sk-/ghp_/gho_/xox)를 지운다(R7)', () => {
+    const input = enc.encode(
+      'openai sk-proj1234567890ABCDEFxyz github ghp_1234567890abcdefghijABCDEF12 slack xoxb-123456789012-abcdef done',
+    );
+    const out = dec.decode(scrub(input));
+    expect(out).not.toContain('sk-proj1234567890ABCDEFxyz');
+    expect(out).not.toContain('ghp_1234567890abcdefghijABCDEF12');
+    expect(out).not.toContain('xoxb-123456789012-abcdef');
+    expect(out).toContain('[[REDACTED]]');
+    // 프리픽스 아닌 일반 텍스트는 보존.
+    expect(out).toContain('openai');
+    expect(out).toContain('done');
+  });
+
   it('raw ANSI 제어시퀀스(SGR·커서)는 스크럽 후에도 보존된다', () => {
     const input = enc.encode('\x1b[1;31mBOLD-RED\x1b[0m\x1b[10;5H');
     const out = dec.decode(scrub(input));
@@ -126,13 +183,25 @@ describe('miner — 다층 스크럽', () => {
   it('writeMinedSeeds는 로컬 디렉토리에 .seed.bin으로 기록한다', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'wmux-miner-local-'));
     try {
-      const written = writeMinedSeeds(dir, [
-        { sourceFile: '/x/y/session-1.buf', bytes: enc.encode('data') },
-      ]);
+      // 새 시그니처(R7): (seeds, outLocalDir). tmpdir은 저장소 바깥이라 격리 가드 통과.
+      const written = writeMinedSeeds([{ sourceFile: '/x/y/session-1.buf', bytes: enc.encode('data') }], dir);
       expect(written.length).toBe(1);
       expect(path.basename(written[0])).toBe('session-1.seed.bin');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // R7: 격리 가드 — 저장소 내 비-ignored 경로로 쓰려 하면 거부.
+  it('writeMinedSeeds는 저장소 내 비-ignored 경로(예: corpus/)를 거부한다', () => {
+    const repoCorpus = path.join(__dirname, '..', 'corpus'); // core/harness/corpus — 커밋 대상.
+    expect(() =>
+      writeMinedSeeds([{ sourceFile: '/x/session-x.buf', bytes: enc.encode('data') }], repoCorpus),
+    ).toThrow(/격리 위반/);
+  });
+
+  it('writeMinedSeeds 기본 출력 루트는 core/harness/corpus-local/(저장소 내 유일 허용)', () => {
+    // 기본 경로가 LOCAL_CORPUS_DIR와 일치하는지(가드가 이 경로만 저장소 내부에서 허용).
+    expect(LOCAL_CORPUS_DIR.endsWith(path.join('core', 'harness', 'corpus-local'))).toBe(true);
   });
 });
