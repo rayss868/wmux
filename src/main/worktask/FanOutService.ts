@@ -84,6 +84,9 @@ export interface FanOutTaskResult {
   /** 에이전트 페인의 ptyId(spawnWorkspace 반환 — §3 onExhausted 토스트 매핑 재료.
    *  렌더러가 부재 시 매핑 불가 태스크는 토스트 생략 — best-effort). */
   ptyId?: string;
+  /** F2 — 발사한 initialCommand(에이전트 기동+프롬프트 주입). 재발사가 원문 프롬프트
+   *  대신 이 명령을 재전송하도록 하는 재료(맨 셸이 프롬프트를 실행하는 오배선 방지). */
+  initialCommand?: string;
   worktreePath?: string;
   branch?: string;
   /** 실패 사유(ok=false). */
@@ -287,6 +290,7 @@ export class FanOutService {
     // ③ 렌더러 spawn — 전용 워크스페이스 + 에이전트 페인. cwd=worktreePath,
     //    initialCommand=`{agentCmd} "$(cat '{promptPath}')"`(경로 쿼팅). 실제 workspaceId 회수.
     const initialCommand = buildInitialCommand(ctx.agentCmd, promptPath);
+    base.initialCommand = initialCommand; // F2 재발사 재료(맨 셸 오배선 방지).
     const wsName = `wtask: ${ctx.title.slice(0, 32)}`;
     let workspaceId: string;
     try {

@@ -689,10 +689,14 @@ export function useNotificationListener() {
       const entry = st.taskPtyRegistry[ptyId];
       if (!entry) return; // 매핑 부재(non-fanout·핸드셰이크 ptyId 누락) → best-effort 생략.
       const worktreePath = entry.worktreePath;
+      const initialCommand = entry.initialCommand;
+      // F2 — 재발사는 원래 initialCommand(에이전트 기동+프롬프트 주입)를 재전송해야
+      // 한다(맨 셸에 원문 프롬프트를 흘리면 셸이 실행). 둘 다 있어야 [재발사] 제공.
+      const canRefire = Boolean(worktreePath && initialCommand);
       st.pushToast({
         level: 'warn',
         message: `태스크 "${entry.title}": 프롬프트가 발사되지 않았습니다(에이전트 페인이 비어 있을 수 있음).`,
-        ...(worktreePath
+        ...(canRefire
           ? {
               action: {
                 label: '재발사',
@@ -700,14 +704,9 @@ export function useNotificationListener() {
                   void (async () => {
                     const api = window.electronAPI.workTask;
                     if (!api) return;
-                    const res = await api.readPrompt(worktreePath);
+                    const res = await api.refire({ ptyId, worktreePath: worktreePath as string, initialCommand: initialCommand as string });
                     if (res.ok) {
-                      try {
-                        await window.electronAPI.pty.write(ptyId, res.text + '\r');
-                        useStore.getState().pushToast({ level: 'info', message: `태스크 "${entry.title}": 프롬프트를 재발사했습니다.` });
-                      } catch (e) {
-                        useStore.getState().pushToast({ level: 'error', message: `재발사 실패: ${e instanceof Error ? e.message : String(e)}` });
-                      }
+                      useStore.getState().pushToast({ level: 'info', message: `태스크 "${entry.title}": 프롬프트를 재발사했습니다.` });
                     } else {
                       useStore.getState().pushToast({ level: 'error', message: `재발사 불가: ${res.error}` });
                     }

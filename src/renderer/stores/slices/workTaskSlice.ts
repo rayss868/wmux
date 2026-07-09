@@ -75,6 +75,8 @@ export interface TaskPtyEntry {
   title: string;
   /** prompt.md 재발사 재료(§3 — main이 파일 실존 검사). 미물질화면 부재. */
   worktreePath?: string;
+  /** F2 — 재발사가 재전송할 원래 initialCommand(에이전트 기동+프롬프트 주입). */
+  initialCommand?: string;
 }
 
 export interface WorkTaskSlice {
@@ -120,6 +122,7 @@ export const createWorkTaskSlice: StateCreator<
           taskId: e.taskId,
           title: e.title,
           ...(e.worktreePath ? { worktreePath: e.worktreePath } : {}),
+          ...(e.initialCommand ? { initialCommand: e.initialCommand } : {}),
         };
       }
     }),

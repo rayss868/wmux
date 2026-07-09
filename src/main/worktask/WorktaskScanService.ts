@@ -44,6 +44,9 @@ export interface WorktaskScanEntry {
   /** projection 또는 task.json에서 회수. 역추적 불가 시 부재(무연결 디렉토리). */
   taskId?: string;
   title?: string;
+  /** F1 — 열린 태스크 이상 항목의 owner(부모) ws id. close authz가 owner 스코프라
+   *  정합화 버튼이 이 신원으로 close를 불러야 한다. orphan은 부재. */
+  ownerWorkspaceId?: string;
   /** 디스크 worktree 경로(preserved·orphan-dir·disk-missing에서 존재). */
   worktreePath?: string;
   /** task.json의 closedAt(GC된 closed 태스크의 orphan에서만 관측). */
@@ -61,6 +64,8 @@ export interface WorktaskScanResult {
 export interface ScanOpenTask {
   taskId: string;
   title: string;
+  /** F1 — owner(부모) ws id. 이상 엔트리 close를 owner 스코프로 부르는 재료. */
+  ownerWorkspaceId?: string;
   worktreePath?: string;
 }
 
@@ -111,6 +116,7 @@ export class WorktaskScanService {
           category: 'unmaterialized-open',
           taskId: t.taskId,
           title: t.title,
+          ...(t.ownerWorkspaceId ? { ownerWorkspaceId: t.ownerWorkspaceId } : {}),
           detail: '물질화 미완(worktree 부재) — close 또는 재물질화',
         });
         continue;
@@ -139,6 +145,7 @@ export class WorktaskScanService {
             category: 'preserved',
             taskId: matched.taskId,
             title: matched.title,
+            ...(matched.ownerWorkspaceId ? { ownerWorkspaceId: matched.ownerWorkspaceId } : {}),
             worktreePath: dir,
             detail: '미커밋 산출물 보존 — diff 재열람 후 커밋/PR 또는 폐기',
           });
@@ -154,8 +161,8 @@ export class WorktaskScanService {
         ...(stamp?.closedAt !== undefined ? { closedAt: stamp.closedAt } : {}),
         worktreePath: dir,
         detail: stamp
-          ? '연결된 open 태스크 없음(종료·GC 잔여) — 안전 삭제 대상'
-          : '연결된 태스크·스탬프 없음 — 안전 삭제 대상',
+          ? '연결된 open 태스크 없음(종료·GC 잔여) — 수동 확인 후 삭제 가능'
+          : '연결된 태스크·스탬프 없음 — 수동 확인 후 삭제 가능',
       });
     }
 
@@ -166,12 +173,60 @@ export class WorktaskScanService {
         category: 'disk-missing',
         taskId: t.taskId,
         title: t.title,
+        ...(t.ownerWorkspaceId ? { ownerWorkspaceId: t.ownerWorkspaceId } : {}),
         ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}),
         detail: 'worktree 디스크 부재(외부 삭제·크래시) — close로 정합화',
       });
     }
 
+    // ── F8 meta 고아: remove↔meta 삭제 사이 크래시로 worktree는 없어졌으나
+    // `.meta/{slug}/task.json`이 남은 잔여. worktree 무매칭 + open 태스크 무매칭인
+    // meta만 orphan-dir로 표시(사이드카 정리 대상). 자동 삭제는 하지 않는다.
+    for (const meta of this.enumerateMetaDirs()) {
+      const wtNorm = this.norm(meta.impliedWorktreePath);
+      if (seen.has(wtNorm) || openByNormPath.has(wtNorm)) continue; // worktree/태스크 있으면 정상.
+      const stamp = this.readStampFromMeta(meta.metaDir);
+      entries.push({
+        category: 'orphan-dir',
+        ...(stamp?.taskId ? { taskId: stamp.taskId } : {}),
+        ...(stamp?.title ? { title: stamp.title } : {}),
+        ...(stamp?.closedAt !== undefined ? { closedAt: stamp.closedAt } : {}),
+        worktreePath: meta.impliedWorktreePath,
+        detail: 'worktree 없는 meta 잔여(remove↔meta 삭제 크래시) — 사이드카 확인 후 삭제 가능',
+      });
+    }
+
     return { scannedRoot: this.root, entries };
+  }
+
+  /** F8 — 전용 루트의 meta dir 열거: `{root}/{repoHash}/.meta/{slug}`와 그 slug가
+   *  함의하는 worktree 경로 `{root}/{repoHash}/{slug}`. */
+  private enumerateMetaDirs(): Array<{ metaDir: string; impliedWorktreePath: string }> {
+    const out: Array<{ metaDir: string; impliedWorktreePath: string }> = [];
+    let repoHashes: fs.Dirent[];
+    try {
+      repoHashes = fs.readdirSync(this.root, { withFileTypes: true });
+    } catch {
+      return out;
+    }
+    for (const rh of repoHashes) {
+      if (!rh.isDirectory()) continue;
+      const metaRoot = path.join(this.root, rh.name, '.meta');
+      let slugs: fs.Dirent[];
+      try {
+        slugs = fs.readdirSync(metaRoot, { withFileTypes: true });
+      } catch {
+        continue; // .meta 부재면 스킵.
+      }
+      for (const s of slugs) {
+        if (!s.isDirectory()) continue;
+        out.push({
+          metaDir: path.join(metaRoot, s.name),
+          impliedWorktreePath: path.join(this.root, rh.name, s.name),
+        });
+      }
+    }
+    return out;
   }
 
   /**
@@ -206,9 +261,13 @@ export class WorktaskScanService {
 
   /** worktree 경로의 sibling meta dir에서 task.json 스탬프 읽기(부재·손상 시 null). */
   private readStamp(worktreePath: string): WorkTaskMetaStamp | null {
+    return this.readStampFromMeta(metaDirForWorktree(worktreePath));
+  }
+
+  /** meta dir에서 task.json 스탬프 읽기(부재·손상 시 null). */
+  private readStampFromMeta(metaDir: string): WorkTaskMetaStamp | null {
     try {
-      const file = path.join(metaDirForWorktree(worktreePath), WORKTASK_META_FILENAME);
-      const raw = fs.readFileSync(file, 'utf8');
+      const raw = fs.readFileSync(path.join(metaDir, WORKTASK_META_FILENAME), 'utf8');
       const parsed = JSON.parse(raw) as WorkTaskMetaStamp;
       if (parsed && typeof parsed.taskId === 'string') return parsed;
       return null;

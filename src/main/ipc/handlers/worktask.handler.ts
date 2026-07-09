@@ -5,7 +5,7 @@
 //   task:close        — TaskCloseService(remove 성공→close 순서 역전 §1).
 //   task:create-pr    — TaskPrService(gh 4중 게이트 1클릭 PR §2).
 //   worktask:scan     — WorktaskScanService(디스크 정본 정리 스캔 §1).
-//   worktask:read-prompt — 미발사 재발사용 prompt.md 실존 검사·읽기(§3).
+//   worktask:refire   — 미발사 재발사(prompt.md 실존 검사 후 원래 initialCommand 재전송 §3·F2).
 //
 // close·createPr는 taskId만 받고 물질화 필드(branch·worktreePath·title)는 데몬
 // projection(task.mission.list)에서 역참조한다 — 렌더러가 stale 필드를 실어보내
@@ -26,6 +26,9 @@ import { TaskCloseService } from '../../worktask/TaskCloseService';
 import { TaskPrService } from '../../worktask/TaskPrService';
 import { WorktaskScanService, type ScanOpenTask } from '../../worktask/WorktaskScanService';
 import { prStatusCache } from '../../metadata/PrStatusCache';
+import { getWmuxHomeDir } from '../../../shared/constants';
+import { sanitizePtyText } from '../../../shared/types';
+import { normalizeWorktreePath } from '../../../shared/workTask';
 
 const execFileAsync = promisify(execFile);
 
@@ -68,20 +71,18 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
       const task = await resolveTask(daemonPort, taskId, verifiedWorkspaceId);
       if (!task) return { ok: false, taskId, reason: 'error' as const, error: 'task:close: 태스크를 찾을 수 없음(projection 부재)' };
 
-      // 미물질화(worktreePath 부재): worktree 단계 생략 close만(CX4).
-      if (!task.worktreePath) {
+      // F3 — close-only 라우팅: worktreePath 부재(미물질화 CX4) / 디스크 결측
+      // (fs.existsSync false) / 본 repo 해석 불가(worktree 손상)면 remove 단계를
+      // 건너뛰고 mission.close만. 이게 스캔의 disk-missing 정합화 버튼과
+      // TaskCloseService 계약(remove 성공↔close 실패 크래시 재시도)을 살린다.
+      if (!task.worktreePath || !fs.existsSync(task.worktreePath)) {
         return closeService.closeTask({ taskId, verifiedWorkspaceId });
       }
-
-      // 물질화: repoRoot·repoHash·metaDir을 worktreePath에서 역산.
       const repo = await resolveRepoInfo(task.worktreePath);
       if (!repo) {
-        return {
-          ok: false,
-          taskId,
-          reason: 'error' as const,
-          error: 'task:close: worktree의 본 repo를 해석할 수 없음(worktree 손상?)',
-        };
+        // worktree 디렉토리는 있으나 본 repo 해석 불가 — remove가 어차피 실패하므로
+        // close-only로 정합화(닫히지 않고 영영 붙잡히는 것 방지).
+        return closeService.closeTask({ taskId, verifiedWorkspaceId });
       }
       return closeService.closeTask({
         taskId,
@@ -140,7 +141,14 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
       const byId = new Map<string, ScanOpenTask>();
       for (const t of tasks) {
         if (t.status !== 'open') continue;
-        byId.set(t.id, { taskId: t.id, title: t.title, ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}) });
+        // 데몬 목록은 요청 owner 스코프라 owner = verifiedWorkspaceId(F1: close가
+        // owner 스코프 authz라 엔트리에 owner를 실어 정합화 버튼이 올바른 신원을 쓰게).
+        byId.set(t.id, {
+          taskId: t.id,
+          title: t.title,
+          ownerWorkspaceId: verifiedWorkspaceId,
+          ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}),
+        });
       }
       const known = Array.isArray((raw as Record<string, unknown>).knownOpen)
         ? ((raw as Record<string, unknown>).knownOpen as unknown[])
@@ -153,6 +161,8 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
         byId.set(taskId, {
           taskId,
           title: typeof kt.title === 'string' ? kt.title : taskId,
+          // 다른 부모의 태스크는 렌더러가 실어준 owner를 그대로 쓴다(없으면 요청 owner).
+          ownerWorkspaceId: typeof kt.ownerWorkspaceId === 'string' ? kt.ownerWorkspaceId : verifiedWorkspaceId,
           ...(typeof kt.worktreePath === 'string' ? { worktreePath: kt.worktreePath } : {}),
         });
       }
@@ -161,25 +171,38 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
     }),
   );
 
-  // ── worktask:read-prompt ────────────────────────────────────────────
-  // 미발사 재발사(§3): worktreePath에서 prompt.md 실존 검사 후 본문 반환. 파일
-  // 소실 시 사유. 실제 inject(pty.write)는 렌더러 몫(파일 접근만 main).
-  ipcMain.removeHandler(IPC.WORKTASK_READ_PROMPT);
+  // ── worktask:refire ─────────────────────────────────────────────────
+  // 미발사 재발사(§3·F2). exhausted 페인은 기동 명령이 한 번도 전달 안 됨 = 맨 셸
+  // (에이전트 없음). 원문 프롬프트를 흘리면 셸이 그걸 명령으로 실행하므로, 원래
+  // initialCommand(에이전트 기동 + `$(cat prompt.md)` 주입)를 정상 경로와 동일한
+  // sanitizePtyText 규율로 재전송한다. prompt.md가 소실됐으면 재발사할 원본이 없어
+  // 거부(F7: worktreePath는 전용 루트 하위여야 — 경로 오라클 차단).
+  ipcMain.removeHandler(IPC.WORKTASK_REFIRE);
   ipcMain.handle(
-    IPC.WORKTASK_READ_PROMPT,
-    wrapHandler(IPC.WORKTASK_READ_PROMPT, async (_event, raw: unknown) => {
-      const worktreePath =
-        raw && typeof raw === 'object' && typeof (raw as Record<string, unknown>).worktreePath === 'string'
-          ? ((raw as Record<string, unknown>).worktreePath as string)
-          : '';
-      if (!worktreePath) return { ok: false as const, error: 'worktask:read-prompt: worktreePath가 필요합니다' };
+    IPC.WORKTASK_REFIRE,
+    wrapHandler(IPC.WORKTASK_REFIRE, async (_event, raw: unknown) => {
+      const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+      const ptyId = typeof r.ptyId === 'string' ? r.ptyId : '';
+      const worktreePath = typeof r.worktreePath === 'string' ? r.worktreePath : '';
+      const initialCommand = typeof r.initialCommand === 'string' ? r.initialCommand : '';
+      if (!ptyId || !worktreePath || !initialCommand) {
+        return { ok: false as const, error: 'worktask:refire: ptyId·worktreePath·initialCommand가 필요합니다' };
+      }
+      // F7 — worktreePath가 전용 루트({wmux home}/worktrees) 하위인지 검증. 임의
+      // 경로로 prompt.md 실존을 프로빙하는 오라클/탈출을 차단한다.
+      if (!isUnderWorktreeRoot(worktreePath)) {
+        return { ok: false as const, error: 'worktask:refire: worktreePath가 전용 루트 밖입니다' };
+      }
+      // prompt.md 실존 검사(initialCommand의 `$(cat …)` 대상이 소실됐으면 무의미).
       const promptPath = path.join(metaDirForWorktree(worktreePath), 'prompt.md');
-      try {
-        const text = fs.readFileSync(promptPath, 'utf8');
-        return { ok: true as const, text };
-      } catch {
+      if (!fs.existsSync(promptPath)) {
         return { ok: false as const, error: '프롬프트 파일이 소실되었습니다 — 재발사할 원본이 없습니다' };
       }
+      const dc = getDaemonClient();
+      if (!dc) return { ok: false as const, error: 'worktask:refire: 데몬 미연결' };
+      // 정상 경로(scheduleInitialCommand.write)와 동일: sanitize + CR.
+      dc.writeToSession(ptyId, sanitizePtyText(initialCommand) + '\r');
+      return { ok: true as const };
     }),
   );
 
@@ -187,8 +210,15 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
     ipcMain.removeHandler(IPC.TASK_CLOSE);
     ipcMain.removeHandler(IPC.TASK_CREATE_PR);
     ipcMain.removeHandler(IPC.WORKTASK_SCAN);
-    ipcMain.removeHandler(IPC.WORKTASK_READ_PROMPT);
+    ipcMain.removeHandler(IPC.WORKTASK_REFIRE);
   };
+}
+
+/** F7 — worktreePath 정규화 후 전용 루트({wmux home}/worktrees) 하위 여부. */
+function isUnderWorktreeRoot(worktreePath: string): boolean {
+  const root = normalizeWorktreePath(path.join(getWmuxHomeDir(), 'worktrees'));
+  const p = normalizeWorktreePath(worktreePath);
+  return p === root || p.startsWith(root + '/');
 }
 
 /** {taskId, verifiedWorkspaceId} 방어적 파싱(렌더러 신뢰이나 형태 검증). */
@@ -233,12 +263,25 @@ async function resolveTask(
  */
 async function resolveRepoInfo(worktreePath: string): Promise<{ repoRoot: string; repoHash: string } | null> {
   try {
-    const common = await execFileAsync(
-      'git',
-      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
-      { cwd: worktreePath, timeout: 30000, windowsHide: true },
-    );
-    const commonDir = common.stdout.trim();
+    // F10 — `--path-format=absolute`는 git≥2.31 전용. 실패(구식 git)하면 플래그
+    // 없이 재시도해 상대/절대 혼재 출력을 worktreePath 기준으로 절대화한다.
+    let commonDir: string;
+    try {
+      const common = await execFileAsync(
+        'git',
+        ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+        { cwd: worktreePath, timeout: 30000, windowsHide: true },
+      );
+      commonDir = common.stdout.trim();
+    } catch {
+      const legacy = await execFileAsync(
+        'git',
+        ['rev-parse', '--git-common-dir'],
+        { cwd: worktreePath, timeout: 30000, windowsHide: true },
+      );
+      const raw = legacy.stdout.trim();
+      commonDir = raw ? path.resolve(worktreePath, raw) : '';
+    }
     if (!commonDir) return null;
     const top = await execFileAsync(
       'git',

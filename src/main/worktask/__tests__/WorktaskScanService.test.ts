@@ -121,6 +121,53 @@ describe('J3 §1 GC 이후 역추적(closed 태스크 소멸 후 task.json)', ()
   });
 });
 
+describe('J3 F1 owner 스코프 — 이상 엔트리에 ownerWorkspaceId', () => {
+  it('unmaterialized-open·preserved 엔트리에 owner ws id가 실린다', async () => {
+    const wt = seedWorktree('owned-slug');
+    const svc = makeSvc(new Set([wt]));
+    const res = await svc.scan([
+      { taskId: 'wtask-u', title: 'U', ownerWorkspaceId: 'parent-a' },
+      { taskId: 'wtask-p', title: 'P', ownerWorkspaceId: 'parent-b', worktreePath: wt },
+    ]);
+    expect(res.entries.find((x) => x.taskId === 'wtask-u')?.ownerWorkspaceId).toBe('parent-a');
+    expect(res.entries.find((x) => x.taskId === 'wtask-p')?.ownerWorkspaceId).toBe('parent-b');
+  });
+
+  it('disk-missing 엔트리에도 owner ws id가 실린다', async () => {
+    const svc = makeSvc();
+    const ghost = path.join(root, REPO_HASH, 'ghost2');
+    const res = await svc.scan([{ taskId: 'wtask-d', title: 'D', ownerWorkspaceId: 'parent-c', worktreePath: ghost }]);
+    expect(res.entries.find((x) => x.taskId === 'wtask-d')?.ownerWorkspaceId).toBe('parent-c');
+  });
+});
+
+describe('J3 F8 meta 고아 — worktree 없는 .meta 잔여', () => {
+  it('worktree 없이 .meta/{slug}/task.json만 남으면 orphan-dir로 표시(자동 삭제 안 함)', async () => {
+    // remove↔meta 삭제 사이 크래시: worktree 디렉토리는 없고 meta만 잔존.
+    const slug = 'meta-only';
+    const metaDir = path.join(root, REPO_HASH, '.meta', slug);
+    fs.mkdirSync(metaDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(metaDir, WORKTASK_META_FILENAME),
+      JSON.stringify({ taskId: 'wtask-mo', title: 'MO', createdAt: 1, closedAt: 2 }),
+    );
+    const svc = makeSvc();
+    const res = await svc.scan([]);
+    const e = res.entries.find((x) => x.taskId === 'wtask-mo');
+    expect(e?.category).toBe('orphan-dir');
+    expect(e?.title).toBe('MO');
+    expect(e?.worktreePath).toBe(path.join(root, REPO_HASH, slug));
+  });
+
+  it('worktree가 있는 정상 meta는 중복 등재되지 않는다', async () => {
+    // worktree + open 태스크 매칭(clean) → 이상 아님. meta 사이드카가 있어도 orphan 아님.
+    const wt = seedWorktree('healthy', { taskId: 'wtask-h', title: 'H', createdAt: 1 });
+    const svc = makeSvc(/* clean */);
+    const res = await svc.scan([{ taskId: 'wtask-h', title: 'H', worktreePath: wt }]);
+    expect(res.entries).toHaveLength(0);
+  });
+});
+
 describe('J3 §1 스캔 경계', () => {
   it('.meta 사이드카는 worktree로 오인하지 않는다', async () => {
     seedWorktree('with-meta', { taskId: 'wtask-6', title: 'F', createdAt: 1 });

@@ -16,7 +16,7 @@ export interface SurfaceSlice {
   addEditorSurface: (paneId: string, filePath: string) => void;
   /** J2 — diff 리뷰 서피스 추가. taskId만 영속(diff 내용은 파생 데이터).
    * 같은 taskId가 이미 열려 있으면 그 탭으로 전환. editor/browser처럼 ptyId 없음. */
-  addDiffSurface: (paneId: string, taskId: string, title?: string, workspaceId?: string) => void;
+  addDiffSurface: (paneId: string, taskId: string, title?: string, workspaceId?: string, ownerWorkspaceId?: string) => void;
   /** Close a surface tab. `workspaceId` lets RPC/CLI callers target a
    * non-active workspace (defaults to the active one — existing callers are
    * unchanged). */
@@ -143,7 +143,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = surface.id;
   }),
 
-  addDiffSurface: (paneId, taskId, title, workspaceId) => set((state: StoreState) => {
+  addDiffSurface: (paneId, taskId, title, workspaceId, ownerWorkspaceId) => set((state: StoreState) => {
     const targetWsId = workspaceId || state.activeWorkspaceId;
     const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
@@ -163,6 +163,8 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       cwd: '',
       surfaceType: 'diff',
       diffTaskId: taskId,
+      // F1: task.mission.* RPC가 owner 스코프라 owner(부모) ws id를 실어둔다.
+      ...(ownerWorkspaceId ? { diffOwnerWorkspaceId: ownerWorkspaceId } : {}),
     };
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;
@@ -188,6 +190,8 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (closedPtyId && state.surfaceAgent) delete state.surfaceAgent[closedPtyId];
     if (closedPtyId && state.surfaceActivity) delete state.surfaceActivity[closedPtyId];
     if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
+    // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict(무한 성장·재사용 ptyId 오염 방지).
+    if (closedPtyId && state.taskPtyRegistry) delete state.taskPtyRegistry[closedPtyId];
 
     pane.surfaces.splice(idx, 1);
     if (pane.activeSurfaceId === surfaceId) {

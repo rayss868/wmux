@@ -1,13 +1,10 @@
-// J3 worktask 핸들러 — worktask:read-prompt 왕복 + 파일 소실 재발사 거부(§3·§6).
-//
-// electron ipcMain을 캡처해 핸들러를 직접 호출한다(diff.handler.test.ts 패턴).
-// close·create-pr·scan의 핵심 로직은 서비스 단위 테스트가 담당하고, 여기서는
-// 핸들러가 배선한 재발사 경로(prompt.md 실존 검사)를 검증한다.
+// J3 worktask 핸들러 — refire(§3·F2·F7) + owner 스코프 close(F1 E2E) + disk-missing
+// close(F3). electron ipcMain을 캡처해 핸들러를 직접 호출한다(diff.handler.test.ts 패턴).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, basename } from 'node:path';
+import { join } from 'node:path';
 
 const captured = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock('electron', () => ({
@@ -21,65 +18,163 @@ vi.mock('electron', () => ({
 
 import { registerWorktaskHandlers } from '../worktask.handler';
 import { IPC } from '../../../../shared/constants';
+import type { DaemonClient } from '../../../DaemonClient';
 
-/** 캡처한 핸들러를 event 인자 없이 payload로 호출. */
 async function call(channel: string, payload: unknown): Promise<unknown> {
   const fn = captured.get(channel);
   if (!fn) throw new Error(`handler not registered: ${channel}`);
   return fn({} as unknown, payload);
 }
 
+/** rpc(list owner-scoped / close) + writeToSession을 가진 최소 DaemonClient 페이크. */
+function makeDaemon(
+  tasks: Array<{ id: string; title: string; status: 'open' | 'closed'; owner: string; worktreePath?: string; branch?: string }>,
+) {
+  const writes: Array<{ sessionId: string; data: string }> = [];
+  const rpcCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const client = {
+    rpc: async (method: string, params: Record<string, unknown>) => {
+      rpcCalls.push({ method, params });
+      if (method === 'task.mission.list') {
+        const vws = params.verifiedWorkspaceId;
+        return { ok: true, tasks: tasks.filter((t) => t.owner === vws) };
+      }
+      if (method === 'task.mission.close') return { ok: true, taskId: params.taskId, archivePending: false };
+      return { ok: true };
+    },
+    writeToSession: (sessionId: string, data: string | Buffer) => {
+      writes.push({ sessionId, data: typeof data === 'string' ? data : data.toString() });
+      return true;
+    },
+  };
+  return { client: client as unknown as DaemonClient, writes, rpcCalls };
+}
+
 let base: string;
-let dispose: () => void;
+let prevUserProfile: string | undefined;
+let prevHome: string | undefined;
+let prevSuffix: string | undefined;
+let dispose: (() => void) | undefined;
+let daemon: ReturnType<typeof makeDaemon>;
 
 beforeEach(() => {
   captured.clear();
   base = mkdtempSync(join(tmpdir(), 'wmux-wth-'));
-  // 데몬 없음(read-prompt는 데몬 불요) — null 반환.
-  dispose = registerWorktaskHandlers(() => null);
+  // getWmuxHomeDir()가 {base}/.wmux로 해석되도록 홈 env를 임시 지정(F7 전용 루트 검증).
+  prevUserProfile = process.env.USERPROFILE;
+  prevHome = process.env.HOME;
+  prevSuffix = process.env.WMUX_DATA_SUFFIX;
+  process.env.USERPROFILE = base;
+  process.env.HOME = base;
+  delete process.env.WMUX_DATA_SUFFIX;
 });
 afterEach(() => {
-  dispose();
+  dispose?.();
+  if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = prevUserProfile;
+  if (prevHome === undefined) delete process.env.HOME;
+  else process.env.HOME = prevHome;
+  if (prevSuffix === undefined) delete process.env.WMUX_DATA_SUFFIX;
+  else process.env.WMUX_DATA_SUFFIX = prevSuffix;
   rmSync(base, { recursive: true, force: true });
 });
 
-/** worktreePath와 그 sibling meta dir(prompt.md 포함)을 만든다. 반환=worktreePath. */
-function seedWorktreeWithPrompt(promptBody: string): string {
-  const worktreePath = join(base, 'repohash', 'my-task-abcd1234');
+/** {base}/.wmux/worktrees/{repoHash}/{slug}(+ sibling .meta/{slug}/prompt.md)를 만든다. */
+function seedWorktree(slug: string, withPrompt: boolean): string {
+  const root = join(base, '.wmux', 'worktrees', 'repohash');
+  const worktreePath = join(root, slug);
   mkdirSync(worktreePath, { recursive: true });
-  // metaDirForWorktree = dirname(wt)/.meta/basename(wt).
-  const metaDir = join(dirname(worktreePath), '.meta', basename(worktreePath));
-  mkdirSync(metaDir, { recursive: true });
-  writeFileSync(join(metaDir, 'prompt.md'), promptBody, 'utf8');
+  if (withPrompt) {
+    const metaDir = join(root, '.meta', slug);
+    mkdirSync(metaDir, { recursive: true });
+    writeFileSync(join(metaDir, 'prompt.md'), 'do the thing', 'utf8');
+  }
   return worktreePath;
 }
 
-describe('worktask:read-prompt (§3 재발사 재료)', () => {
-  it('prompt.md가 존재하면 본문을 반환한다(왕복)', async () => {
-    const wt = seedWorktreeWithPrompt('do the thing across the repo');
-    const res = (await call(IPC.WORKTASK_READ_PROMPT, { worktreePath: wt })) as
-      | { ok: true; text: string }
-      | { ok: false; error: string };
+describe('worktask:refire (§3·F2 — 원래 initialCommand 재전송)', () => {
+  it('prompt.md 존재 + 전용 루트 하위면 sanitize된 initialCommand를 writeToSession으로 재전송', async () => {
+    daemon = makeDaemon([]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+    const wt = seedWorktree('task-a', true);
+    const res = (await call(IPC.WORKTASK_REFIRE, {
+      ptyId: 'pty-1',
+      worktreePath: wt,
+      initialCommand: 'claude "$(cat \'/x/prompt.md\')"',
+    })) as { ok: boolean };
     expect(res.ok).toBe(true);
-    if (!res.ok) throw new Error('unreachable');
-    expect(res.text).toBe('do the thing across the repo');
+    expect(daemon.writes).toHaveLength(1);
+    expect(daemon.writes[0].sessionId).toBe('pty-1');
+    expect(daemon.writes[0].data).toContain('claude');
+    expect(daemon.writes[0].data.endsWith('\r')).toBe(true);
   });
 
-  it('prompt.md가 소실되면 재발사를 거부한다(사유 반환)', async () => {
-    // worktree만 있고 meta/prompt.md는 없음.
-    const worktreePath = join(base, 'repohash', 'gone-task-abcd1234');
-    mkdirSync(worktreePath, { recursive: true });
-    const res = (await call(IPC.WORKTASK_READ_PROMPT, { worktreePath })) as
-      | { ok: true; text: string }
-      | { ok: false; error: string };
+  it('prompt.md 소실이면 재발사 거부(원문 프롬프트를 흘리지 않음)', async () => {
+    daemon = makeDaemon([]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+    const wt = seedWorktree('task-b', false); // prompt.md 없음.
+    const res = (await call(IPC.WORKTASK_REFIRE, { ptyId: 'p', worktreePath: wt, initialCommand: 'claude x' })) as {
+      ok: boolean;
+      error?: string;
+    };
     expect(res.ok).toBe(false);
-    if (res.ok) throw new Error('unreachable');
     expect(res.error).toContain('소실');
+    expect(daemon.writes).toHaveLength(0);
   });
 
-  it('worktreePath가 없으면 형태 에러', async () => {
-    const res = (await call(IPC.WORKTASK_READ_PROMPT, {})) as { ok: false; error: string };
+  it('F7 — 전용 루트 밖 worktreePath는 거부(경로 오라클 차단)', async () => {
+    daemon = makeDaemon([]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+    const outside = join(base, 'not-worktrees', 'evil');
+    mkdirSync(outside, { recursive: true });
+    const res = (await call(IPC.WORKTASK_REFIRE, { ptyId: 'p', worktreePath: outside, initialCommand: 'claude x' })) as {
+      ok: boolean;
+      error?: string;
+    };
     expect(res.ok).toBe(false);
-    expect(res.error).toContain('worktreePath');
+    expect(res.error).toContain('전용 루트');
+    expect(daemon.writes).toHaveLength(0);
+  });
+
+  it('필수 필드 누락은 형태 에러', async () => {
+    daemon = makeDaemon([]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+    const res = (await call(IPC.WORKTASK_REFIRE, { ptyId: 'p' })) as { ok: boolean };
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe('task:close owner 스코프(F1 E2E — 자식 실패·owner 성공)', () => {
+  it('자식 ws id로는 태스크를 못 찾아 실패, owner ws id로는 close 성공', async () => {
+    // 태스크는 owner='parent-ws'가 소유(자식 태스크 ws는 'child-ws'). worktreePath
+    // 부재라 close-only 경로로 단순화.
+    daemon = makeDaemon([{ id: 'wtask-1', title: 'T', status: 'open', owner: 'parent-ws' }]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+
+    // 자식 ws id → listMissions(child-ws)는 빈 목록 → resolve 실패.
+    const childRes = (await call(IPC.TASK_CLOSE, { taskId: 'wtask-1', verifiedWorkspaceId: 'child-ws' })) as {
+      ok: boolean;
+      reason?: string;
+    };
+    expect(childRes.ok).toBe(false);
+    expect(childRes.reason).toBe('error');
+    expect(daemon.rpcCalls.find((c) => c.method === 'task.mission.close')).toBeUndefined();
+
+    // owner ws id → 찾음 → close-only 성공.
+    const ownerRes = (await call(IPC.TASK_CLOSE, { taskId: 'wtask-1', verifiedWorkspaceId: 'parent-ws' })) as { ok: boolean };
+    expect(ownerRes.ok).toBe(true);
+    const closeCall = daemon.rpcCalls.find((c) => c.method === 'task.mission.close');
+    expect(closeCall?.params.verifiedWorkspaceId).toBe('parent-ws');
+  });
+});
+
+describe('task:close disk-missing 라우팅(F3)', () => {
+  it('worktreePath가 디스크에 없으면 remove를 건너뛰고 close-only로 정합화', async () => {
+    const ghost = join(base, '.wmux', 'worktrees', 'repohash', 'ghost'); // 생성하지 않음.
+    daemon = makeDaemon([{ id: 'wtask-2', title: 'G', status: 'open', owner: 'parent-ws', worktreePath: ghost, branch: 'wtask/g' }]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+    const res = (await call(IPC.TASK_CLOSE, { taskId: 'wtask-2', verifiedWorkspaceId: 'parent-ws' })) as { ok: boolean };
+    expect(res.ok).toBe(true);
+    expect(daemon.rpcCalls.filter((c) => c.method === 'task.mission.close')).toHaveLength(1);
   });
 });
