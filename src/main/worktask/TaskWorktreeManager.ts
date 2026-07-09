@@ -156,7 +156,12 @@ export class TaskWorktreeManager {
    *   - 전용 루트 쓰기 가능 + 경로 길이(260자) 검증.
    *   - branch·slug·경로 파생 반환(성공 시).
    */
-  async preflight(repoPathRaw: string, title: string, taskId: string): Promise<PreflightResult> {
+  async preflight(
+    repoPathRaw: string,
+    title: string,
+    taskId: string,
+    opts?: { checkBranchConflict?: boolean },
+  ): Promise<PreflightResult> {
     let repoInput: string;
     try {
       repoInput = validatePath(repoPathRaw, 'repoPath');
@@ -244,6 +249,19 @@ export class TaskWorktreeManager {
       return { ok: false, error: `preflight: dedicated worktree root not writable: ${(err as Error).message}` };
     }
 
+    // branch 충돌 선검증(F3 — titles 전체 선검증 시 사용). createWorktree가 락 안에서
+    // 다시 검사하지만, 전역 프리플라이트가 mission.start 전에 부적격 태스크를 걸러
+    // "부적격이면 태스크 생성 0" 계약을 지키려면 여기서도 확인해야 한다.
+    if (opts?.checkBranchConflict) {
+      try {
+        await this.runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], realRoot);
+        // 성공 = 브랜치 존재 → 충돌.
+        return { ok: false, error: `preflight: branch already exists: ${branch}` };
+      } catch {
+        // 실패 = 브랜치 부재 → 정상.
+      }
+    }
+
     return { ok: true, plan: { repoRoot: realRoot, repoHash, taskSlug, worktreePath, branch, metaDir } };
   }
 
@@ -302,7 +320,11 @@ export class TaskWorktreeManager {
     });
   }
 
-  /** repoHash 단위 직렬 체인(§3 — index.lock 경합 차단). A2aTaskService.withTaskLock 동형. */
+  /**
+   * repoHash 단위 직렬 체인(§3 — index.lock 경합 차단). A2aTaskService.withTaskLock 동형.
+   * 프로세스 내 직렬화만 보장한다 — 크로스 프로세스 동시 add는 git 자체의 index.lock에
+   * 의존하고, 경합 시 git 에러가 명시 전파된다(조용한 성공 위장 없음).
+   */
   private withRepoLock<T>(repoHash: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.repoChains.get(repoHash) ?? Promise.resolve();
     const run = prev.then(fn, fn);

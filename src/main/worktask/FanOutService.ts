@@ -15,7 +15,7 @@
  *      응답에서 실제 workspaceId 회수(핸드셰이크 C3)
  *   ④ task.update({branch, worktreePath, paneGroupId=workspaceId}) 물질화
  *   ⑤ 채널 invite(태스크 워크스페이스를 미션 채널 멤버로 — 실패 비치명) + spawn이
- *      발사한 initialCommand(`{agentCmd} "$(cat {promptPath})"`)
+ *      발사한 initialCommand(`{agentCmd} "$(cat '{promptPath}')"` — 경로 단일따옴표 쿼팅)
  *
  * 실패 보상(태스크 단위 원자성): ②~④ 실패 시 그 태스크만 mission.close(채널 archive
  * 포함) + worktree는 삭제하지 않고 보존 목록 기록. 나머지 태스크는 계속. fan-out
@@ -176,11 +176,19 @@ export class FanOutService {
     const memberId = req.memberId && req.memberId.length > 0 ? req.memberId : verifiedWorkspaceId;
 
     // ── ⓪ 프리플라이트(§2 — repo 유효성 1회 선검증. 부적격이면 태스크 생성 0) ──
-    // taskId를 아직 모르므로 slug 파생용 자리표시자로 검증한다. 실 slug는 태스크별로
-    // 재파생하지만 repo 유효성·bare·submodule·LFS 판정은 taskId 독립이라 여기서 확정.
-    const pf = await this.worktrees.preflight(req.repoPath, titles[0] ?? 'task', 'wtask-preflight-00000000');
-    if (!pf.ok) {
-      return { ok: false, error: `fanout preflight failed: ${pf.error}`, tasks: [] };
+    // repo 유효성·bare·submodule·LFS는 taskId 독립이라 첫 항목에서 확정된다. 하지만
+    // slug 파생·경로 길이·branch 충돌은 title별로 달라지므로(F3 2모델 리뷰) titles
+    // 전체를 선검증한다 — 부적격이 하나라도 있으면 mission.start 전에 N개 전부 거부해
+    // "부적격이면 태스크 생성 0" 계약을 이행한다. 실 taskId는 아직 없으므로 인덱스별
+    // 자리표시자로 slug/경로/branch를 파생·검증한다.
+    for (let k = 0; k < n; k++) {
+      const placeholder = `wtask-preflight-${String(k).padStart(8, '0')}`;
+      const pf = await this.worktrees.preflight(req.repoPath, titles[k]!, placeholder, {
+        checkBranchConflict: true,
+      });
+      if (!pf.ok) {
+        return { ok: false, error: `fanout preflight failed (task ${k + 1}): ${pf.error}`, tasks: [] };
+      }
     }
 
     // ── 태스크 순차 처리(직렬 큐가 이미 강제하지만, 스폰 부하도 직렬로) ──
@@ -268,7 +276,7 @@ export class FanOutService {
     }
 
     // ③ 렌더러 spawn — 전용 워크스페이스 + 에이전트 페인. cwd=worktreePath,
-    //    initialCommand=`{agentCmd} "$(cat {promptPath})"`. 실제 workspaceId 회수.
+    //    initialCommand=`{agentCmd} "$(cat '{promptPath}')"`(경로 쿼팅). 실제 workspaceId 회수.
     const initialCommand = buildInitialCommand(ctx.agentCmd, promptPath);
     const wsName = `wtask: ${ctx.title.slice(0, 32)}`;
     let workspaceId: string;
@@ -290,6 +298,9 @@ export class FanOutService {
     base.workspaceId = workspaceId;
 
     // ④ task.update — 물질화 커밋({branch, worktreePath, paneGroupId=workspaceId}).
+    // 이 RPC는 MCP 도구 표면은 없지만 파이프 라우터 등록으로 first-party 클라이언트에
+    // 도달 가능하다(F4). 변이 방어는 데몬의 owner OR CEO authz 게이트 + 물질화 단조
+    // 게이트(이중 물질화 차단)에 있고, main의 이 경로는 owner 신원으로 스탬프된다.
     try {
       const updated = (await this.daemon.rpc('task.mission.update', {
         taskId,
@@ -363,13 +374,20 @@ function describeErr(err: unknown): string {
 }
 
 /**
- * initialCommand 조립(§4 D4). POSIX `{agentCmd} "$(cat {path})"` / Windows PowerShell
- * `{agentCmd} "$(Get-Content -Raw {path})"`. 프롬프트 본문은 파일 안이라 쿼팅 표면이
- * 경로에 한정된다. sanitizePtyText가 `$()`·따옴표를 보존함은 §4 C9 테스트로 확정.
+ * initialCommand 조립(§4 D4). POSIX `{agentCmd} "$(cat '{path}')"` / Windows PowerShell
+ * `{agentCmd} "$(Get-Content -Raw -LiteralPath '{path}')"`. 프롬프트 본문은 파일 안이라
+ * 쿼팅 표면이 경로에 한정된다 — 경로를 셸 단일따옴표로 감싸 공백·`$`·백틱·따옴표가
+ * 셸에 재해석되지 않게 한다(F1 3모델 리뷰 conf10). sanitizePtyText가 `$()`·따옴표를
+ * 보존함은 §4 C9 테스트로 확정.
  */
 export function buildInitialCommand(agentCmd: string, promptPath: string): string {
   if (process.platform === 'win32') {
-    return `${agentCmd} "$(Get-Content -Raw ${promptPath})"`;
+    // PowerShell 단일따옴표 리터럴: 내부 `'`는 `''`로 이스케이프. -LiteralPath로
+    // glob·경로 특수문자 해석까지 봉쇄.
+    const escaped = promptPath.replace(/'/g, "''");
+    return `${agentCmd} "$(Get-Content -Raw -LiteralPath '${escaped}')"`;
   }
-  return `${agentCmd} "$(cat ${promptPath})"`;
+  // POSIX 단일따옴표 리터럴: 내부 `'`는 `'\''`(닫고-이스케이프-열기)로 처리.
+  const escaped = promptPath.replace(/'/g, "'\\''");
+  return `${agentCmd} "$(cat '${escaped}')"`;
 }

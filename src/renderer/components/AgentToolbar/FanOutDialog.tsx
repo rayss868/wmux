@@ -33,7 +33,6 @@ interface FanOutDialogProps {
 export default function FanOutDialog({ onClose }: FanOutDialogProps) {
   const activeWorkspace = useStore(selectActiveWorkspace);
   const pushToast = useStore((s) => s.pushToast);
-  const ceoWorkspaceId = useStore((s) => s.company?.ceoWorkspaceId);
 
   const defaultRepo = activeWorkspace?.metadata?.cwd ?? '';
 
@@ -108,9 +107,10 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
         titles: titles.slice(0, n),
         repoPath: repoPath.trim(),
         agentCmd: agentCmd.trim() || 'claude',
-        // 렌더러 신뢰 신원(§2 — channelLocal과 동일 trust basis). CEO ws 우선,
-        // 없으면 활성 ws.
-        verifiedWorkspaceId: ceoWorkspaceId ?? activeWorkspace?.id ?? '',
+        // 렌더러 신뢰 신원(§2 — channelLocal과 동일 trust basis). owner = 생성자
+        // (스펙 §5.1 born-owned=createdBy)라 활성 워크스페이스로 고정한다. CEO 자동
+        // 승격은 하지 않는다(생성자 소유권을 CEO로 뭉개면 born-owned 계약 위반).
+        verifiedWorkspaceId: activeWorkspace?.id ?? '',
       });
       reportResult(res, pushToast);
       onClose();
@@ -119,7 +119,7 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, prompt, promptOverCap, repoPath, titles, n, agentCmd, ceoWorkspaceId, activeWorkspace, pushToast, onClose]);
+  }, [submitting, prompt, promptOverCap, repoPath, titles, n, agentCmd, activeWorkspace, pushToast, onClose]);
 
   const field = 'w-full px-2 py-1 rounded border border-[var(--bg-overlay)] bg-[var(--bg-surface)] text-[12px] text-[var(--text-main)]';
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';

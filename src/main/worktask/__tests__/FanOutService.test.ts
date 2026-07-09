@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { FanOutService, buildInitialCommand } from '../FanOutService';
 import type { FanOutDaemonPort, FanOutRendererPort } from '../FanOutService';
 import type { TaskWorktreePlan } from '../TaskWorktreeManager';
@@ -114,12 +115,44 @@ function baseReq(overrides?: Partial<Parameters<FanOutService['start']>[0]>) {
 }
 
 describe('buildInitialCommand (§4 D4)', () => {
-  it('POSIX 경로 치환 명령을 만든다', () => {
+  it('POSIX 경로 치환 명령을 만든다(경로 단일따옴표 쿼팅)', () => {
     // process.platform이 win32가 아닌 CI/로컬 기준.
     if (process.platform !== 'win32') {
-      expect(buildInitialCommand('claude', '/m/prompt.md')).toBe('claude "$(cat /m/prompt.md)"');
+      expect(buildInitialCommand('claude', '/m/prompt.md')).toBe("claude \"$(cat '/m/prompt.md')\"");
     } else {
-      expect(buildInitialCommand('claude', 'C:\\m\\prompt.md')).toContain('Get-Content -Raw');
+      expect(buildInitialCommand('claude', 'C:\\m\\prompt.md')).toContain('Get-Content -Raw -LiteralPath');
+    }
+  });
+
+  it('셸 재해석 위험 경로(공백·단일따옴표·$·백틱)를 안전하게 쿼팅한다', () => {
+    if (process.platform === 'win32') {
+      // PowerShell: 단일따옴표 리터럴, 내부 `'`는 `''`.
+      const cmd = buildInitialCommand('claude', "C:\\a b\\it's $x`.md");
+      expect(cmd).toBe("claude \"$(Get-Content -Raw -LiteralPath 'C:\\a b\\it''s $x`.md')\"");
+      return;
+    }
+    // POSIX: 각 위험 경로가 단일따옴표 리터럴 안에 담기고 `'`만 닫고-이스케이프-열기.
+    expect(buildInitialCommand('claude', '/a b/prompt.md')).toBe("claude \"$(cat '/a b/prompt.md')\"");
+    expect(buildInitialCommand('claude', "/a/it's.md")).toBe("claude \"$(cat '/a/it'\\''s.md')\"");
+    expect(buildInitialCommand('claude', '/a/$x`y.md')).toBe("claude \"$(cat '/a/$x`y.md')\"");
+  });
+
+  it('POSIX: 실제 sh -c 왕복에서 파일 내용이 argv로 실린다(재해석 없음)', () => {
+    if (process.platform === 'win32') return;
+    // 공백·$·백틱·단일따옴표를 모두 담은 경로에 프롬프트 파일을 쓰고,
+    // buildInitialCommand의 `cat` 부분만 떼어 sh로 왕복해 argv 안전성을 확증한다.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wm f$`'-"));
+    const promptFile = path.join(dir, "pr'ompt $x`.md");
+    const body = 'PROMPT BODY WITH $VAR `backtick` and spaces';
+    fs.writeFileSync(promptFile, body, 'utf8');
+    try {
+      // agentCmd를 printf로 두면 "$(cat '...')"가 printf의 argv로 실려 그대로 출력된다.
+      // 셸이 경로를 재해석하면 cat이 실패하거나 다른 파일을 읽어 body와 어긋난다.
+      const cmd = buildInitialCommand("printf '%s'", promptFile);
+      const out = execFileSync('sh', ['-c', cmd], { encoding: 'utf8' });
+      expect(out).toBe(body);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });
@@ -151,7 +184,7 @@ describe('§0 E2E 정상 — N=2 전부 성공', () => {
       expect(s.cwd).toContain('/wt/');
       expect(s.initialCommand).toMatch(/prompt\.md/);
       // 프롬프트 파일이 실제로 worktree 밖 metaDir에 쓰였다.
-      const promptFile = s.initialCommand.match(/(\/[^\s")]+prompt\.md)/)?.[1];
+      const promptFile = s.initialCommand.match(/(\/[^\s"')]+prompt\.md)/)?.[1];
       expect(promptFile && fs.existsSync(promptFile)).toBeTruthy();
       expect(promptFile).toContain('/meta/'); // worktree 밖
     }
@@ -282,6 +315,33 @@ describe('프리플라이트 거부 — 태스크 생성 0', () => {
     expect(res.error).toMatch(/preflight/);
     expect(res.tasks).toHaveLength(0);
     expect(daemon.calls.filter((c) => c.method === 'task.mission.start')).toHaveLength(0);
+  });
+
+  it('titles[1]만 부적격(초장문 slug·브랜치 충돌)이면 태스크·채널 생성 0 (F3)', async () => {
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    // 전역 프리플라이트가 titles 전체를 본다: 2번째 title에서만 실패시킨다.
+    const worktrees: any = makeWorktreesFake();
+    let preCount = 0;
+    worktrees.preflight = vi.fn(async (_repo: string, _title: string, taskId: string) => {
+      // 전역 선검증 단계(taskId에 'preflight' 포함)에서 2번째 호출만 거부.
+      if (taskId.includes('preflight')) {
+        preCount++;
+        if (preCount === 2) {
+          return { ok: false as const, error: 'branch already exists: wtask/task-b' };
+        }
+      }
+      return { ok: true as const, plan: makePlan(taskId.slice(-8)) };
+    });
+    const svc = new FanOutService({ daemon: daemon.port, renderer: renderer.port, worktrees });
+
+    const res = await svc.start(baseReq({ titles: ['Task A', 'Task B'] }));
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/task 2/);
+    expect(res.tasks).toHaveLength(0);
+    // mission.start·채널 생성·spawn 전부 0(부적격이면 태스크 생성 0 계약).
+    expect(daemon.calls.filter((c) => c.method === 'task.mission.start')).toHaveLength(0);
+    expect(renderer.spawned).toHaveLength(0);
   });
 
   it('프롬프트 8KB 초과 거부', async () => {

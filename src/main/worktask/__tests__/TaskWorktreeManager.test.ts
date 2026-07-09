@@ -196,6 +196,27 @@ describe('createWorktree — 브랜치 충돌 (§3)', () => {
     expect(res.error).toMatch(/branch already exists/);
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
+
+  it('checkBranchConflict 옵션이면 preflight가 기존 브랜치를 선차단한다 (F3)', async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
+    const { TaskWorktreeManager } = await loadModule();
+    const git = makeGitFake((args) => {
+      if (args.includes('--show-toplevel')) return { stdout: `${repoRoot}\n` };
+      if (args.includes('--is-bare-repository')) return { stdout: 'false\n' };
+      if (args[0] === 'rev-parse' && args.includes('--verify')) return { stdout: 'exists\n' }; // 브랜치 존재
+      return { stdout: '' };
+    });
+    const mgr = new TaskWorktreeManager({ runGit: git });
+    // 옵션 없으면 통과(충돌은 createWorktree가 잡음).
+    const ok = await mgr.preflight(repoRoot, 'T', 'wtask-x-abcd1234');
+    expect(ok.ok).toBe(true);
+    // 옵션 켜면 preflight 자체가 거부.
+    const rejected = await mgr.preflight(repoRoot, 'T', 'wtask-x-abcd1234', { checkBranchConflict: true });
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) return;
+    expect(rejected.error).toMatch(/branch already exists/);
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
 });
 
 describe('removeWorktree — dirty 보존 (§3)', () => {

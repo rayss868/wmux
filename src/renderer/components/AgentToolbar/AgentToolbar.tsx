@@ -26,11 +26,12 @@ export default function AgentToolbar() {
   const disabled = !ptyId;
 
   // §6 broadcast-only(별개 동작 — WorkTask·worktree·채널 0). 현재 워크스페이스의
-  // 모든 에이전트 페인(terminal surface)에 같은 텍스트를 inject. C10의 격리 해제
-  // 옵션을 fan-out에 두지 않고 별도 진입으로 봉쇄한다. 최소 구현(§6 재량).
+  // 모든 터미널 페인(terminal surface)에 같은 텍스트를 inject한다 — 에이전트 페인
+  // 선별은 하지 않으므로(F5 라벨 정직화) 라벨도 "모든 터미널 페인"으로 표기한다.
+  // C10의 격리 해제 옵션을 fan-out에 두지 않고 별도 진입으로 봉쇄한다. 최소 구현(§6 재량).
   const handleBroadcast = useCallback(async () => {
     if (!activeWorkspace) return;
-    const text = window.prompt('broadcast — 현재 워크스페이스의 모든 에이전트 페인에 보낼 텍스트');
+    const text = window.prompt('broadcast — 현재 워크스페이스의 모든 터미널 페인에 전송');
     if (!text || text.trim().length === 0) return;
     const ptyIds: string[] = [];
     for (const leaf of findLeafPanes(activeWorkspace.rootPane)) {
@@ -134,7 +135,7 @@ export default function AgentToolbar() {
       <button
         className={`${btn} ${idle}`}
         onClick={handleBroadcast}
-        title="Broadcast — 현재 워크스페이스 에이전트 페인에 같은 텍스트(격리 없음)"
+        title="Broadcast — 현재 워크스페이스의 모든 터미널 페인에 같은 텍스트(격리 없음)"
         data-testid="broadcast-button"
       >
         Broadcast
