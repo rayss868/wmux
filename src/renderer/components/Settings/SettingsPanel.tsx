@@ -1977,10 +1977,11 @@ const UI_TOKEN_GROUPS: { label: string; tokens: UITokenSpec[] }[] = [
   {
     label: 'Accents',
     tokens: [
-      { key: 'accent',  labelKey: 'settings.token.accent',  hueScope: 'color' },
-      { key: 'success', labelKey: 'settings.token.success', hueScope: 'color' },
-      { key: 'danger',  labelKey: 'settings.token.danger',  hueScope: 'color' },
-      { key: 'warning', labelKey: 'settings.token.warning', hueScope: 'color' },
+      { key: 'accent',          labelKey: 'settings.token.accent',          hueScope: 'color' },
+      { key: 'accentSecondary', labelKey: 'settings.token.accentSecondary', hueScope: 'color' },
+      { key: 'success',         labelKey: 'settings.token.success',         hueScope: 'color' },
+      { key: 'danger',          labelKey: 'settings.token.danger',          hueScope: 'color' },
+      { key: 'warning',         labelKey: 'settings.token.warning',         hueScope: 'color' },
     ],
   },
 ];
@@ -2006,6 +2007,7 @@ const TOKEN_DESCRIPTIONS: Record<UITokenSpec['key'], string> = {
   textSub: 'Secondary text / labels',
   textMuted: 'Disabled / hints',
   accent: 'Selection / focus / brand',
+  accentSecondary: 'Links / info accent',
   success: 'OK / running / complete',
   danger: 'Errors / destructive',
   warning: 'Waiting / caution',
@@ -2029,6 +2031,7 @@ const TOKEN_INSPECT_ROLE: Record<UITokenSpec['key'], TokenRole> = {
   textSub: 'text',
   textMuted: 'text',
   accent: 'accent',
+  accentSecondary: 'accent',
   success: 'accent',
   danger: 'accent',
   warning: 'accent',

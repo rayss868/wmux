@@ -105,7 +105,11 @@ export interface UIThemeTokens {
   textMain: string;  // primary text
   textSub: string;   // secondary text (descriptions, labels)
   textMuted: string; // tertiary / disabled text
-  accent: string;    // brand / selection / focus
+  accent: string;    // brand / selection / focus (primary accent)
+  accentSecondary: string; // link/info accent (--accent-blue) — split from
+                           // `accent` so links can diverge from the brand hue.
+                           // Defaults to `accent` per theme (visually inert
+                           // until a theme opts into a distinct value).
   success: string;   // green family (running OK, complete)
   danger: string;    // red family (errors, destructive)
   warning: string;   // yellow/amber family (waiting, caution)
@@ -115,44 +119,44 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
   'catppuccin-mocha': {
     bgBase: '#1E1E2E', bgSurface: '#313244', bgMantle: '#181825',
     textMain: '#CDD6F4', textSub: '#BAC2DE', textMuted: '#7F849C',
-    accent: '#89B4FA', success: '#A6E3A1', danger: '#F38BA8', warning: '#F9E2AF',
+    accent: '#89B4FA', accentSecondary: '#89B4FA', success: '#A6E3A1', danger: '#F38BA8', warning: '#F9E2AF',
   },
   monochrome: {
     bgBase: '#080808', bgSurface: '#1A1A1A', bgMantle: '#050505',
     textMain: '#E0E0E0', textSub: '#B0B0B0', textMuted: '#707070',
-    accent: '#A0A0A0', success: '#909090', danger: '#FF5555', warning: '#C0C0C0',
+    accent: '#A0A0A0', accentSecondary: '#A0A0A0', success: '#909090', danger: '#FF5555', warning: '#C0C0C0',
   },
   'stars-and-stripes': {
     bgBase: '#0C1428', bgSurface: '#1E2E4A', bgMantle: '#091020',
     textMain: '#C8D6E8', textSub: '#A0B0C8', textMuted: '#6A7A98',
-    accent: '#5B8DEF', success: '#4EBF8B', danger: '#E8554E', warning: '#F2C85B',
+    accent: '#5B8DEF', accentSecondary: '#5B8DEF', success: '#4EBF8B', danger: '#E8554E', warning: '#F2C85B',
   },
   'red-dynasty': {
     bgBase: '#1A0A0A', bgSurface: '#3A1A1A', bgMantle: '#140808',
     textMain: '#E8D0C0', textSub: '#C0A898', textMuted: '#8A6A5A',
-    accent: '#E84040', success: '#5AAE6A', danger: '#E84040', warning: '#F2C744',
+    accent: '#E84040', accentSecondary: '#E84040', success: '#5AAE6A', danger: '#E84040', warning: '#F2C744',
   },
   nightowl: {
     bgBase: '#1E1B16', bgSurface: '#2E2A22', bgMantle: '#161310',
     textMain: '#C8BFA8', textSub: '#9A9080', textMuted: '#6B6350',
-    accent: '#C4A055', success: '#8AAA70', danger: '#CC6B5A', warning: '#C89060',
+    accent: '#C4A055', accentSecondary: '#C4A055', success: '#8AAA70', danger: '#CC6B5A', warning: '#C89060',
   },
   void: {
     bgBase: '#000000', bgSurface: '#0A0A0A', bgMantle: '#000000',
     textMain: '#C0C0C0', textSub: '#909090', textMuted: '#606060',
-    accent: '#C0C0C0', success: '#909090', danger: '#FF4444', warning: '#A0A0A0',
+    accent: '#C0C0C0', accentSecondary: '#C0C0C0', success: '#909090', danger: '#FF4444', warning: '#A0A0A0',
   },
   hinomaru: {
     // Light theme — text colors must be DARK against #FAF8F5 background.
     // Previous textMuted #A8A098 / textSubtle #8A827A were too pale → invisible.
     bgBase: '#FAF8F5', bgSurface: '#E2DDD4', bgMantle: '#F0ECE6',
     textMain: '#2A2522', textSub: '#4A4540', textMuted: '#6E6862',
-    accent: '#BC002D', success: '#3D6750', danger: '#BC002D', warning: '#A06A1A',
+    accent: '#BC002D', accentSecondary: '#BC002D', success: '#3D6750', danger: '#BC002D', warning: '#A06A1A',
   },
   taegeuk: {
     bgBase: '#F8F8FA', bgSurface: '#DDDDE4', bgMantle: '#EEEEF2',
     textMain: '#1A1A2E', textSub: '#3A3A50', textMuted: '#6A6A7A',
-    accent: '#003478', success: '#1F6940', danger: '#C60C30', warning: '#9B6A07',
+    accent: '#003478', accentSecondary: '#003478', success: '#1F6940', danger: '#C60C30', warning: '#9B6A07',
   },
 };
 
@@ -207,7 +211,7 @@ export function deriveFullPalette(tokens: UIThemeTokens): FullCssPalette {
     textSubtle: mixHex(tokens.textSub, tokens.textMuted, 0.5),
     textMuted: tokens.textMuted,
     accentCursor: tokens.accent,
-    accentBlue: tokens.accent,
+    accentBlue: tokens.accentSecondary,
     accentGreen: tokens.success,
     accentRed: tokens.danger,
     accentYellow: tokens.warning,
@@ -352,6 +356,7 @@ export function migrateCustomThemeColors(input: unknown): CustomThemeColors {
 
   // Already in new shape (has xtermPaletteId, no xtermBackground)?
   if (typeof obj.xtermPaletteId === 'string' && typeof obj.xtermBackground !== 'string') {
+    const accent = String(obj.accent ?? DEFAULT_CUSTOM_THEME.accent);
     const ui: UIThemeTokens = {
       bgBase: String(obj.bgBase ?? DEFAULT_CUSTOM_THEME.bgBase),
       bgSurface: String(obj.bgSurface ?? DEFAULT_CUSTOM_THEME.bgSurface),
@@ -359,7 +364,10 @@ export function migrateCustomThemeColors(input: unknown): CustomThemeColors {
       textMain: String(obj.textMain ?? DEFAULT_CUSTOM_THEME.textMain),
       textSub: String(obj.textSub ?? DEFAULT_CUSTOM_THEME.textSub),
       textMuted: String(obj.textMuted ?? DEFAULT_CUSTOM_THEME.textMuted),
-      accent: String(obj.accent ?? DEFAULT_CUSTOM_THEME.accent),
+      accent,
+      // Older custom themes predate the split — fall back to `accent` so the
+      // link accent stays identical to what they saw before.
+      accentSecondary: String(obj.accentSecondary ?? accent),
       success: String(obj.success ?? DEFAULT_CUSTOM_THEME.success),
       danger: String(obj.danger ?? DEFAULT_CUSTOM_THEME.danger),
       warning: String(obj.warning ?? DEFAULT_CUSTOM_THEME.warning),
@@ -368,6 +376,7 @@ export function migrateCustomThemeColors(input: unknown): CustomThemeColors {
   }
 
   // Legacy 37-field shape. Map old keys to new tokens.
+  const legacyAccent = String(obj.accentBlue ?? DEFAULT_CUSTOM_THEME.accent);
   const ui: UIThemeTokens = {
     bgBase: String(obj.bgBase ?? DEFAULT_CUSTOM_THEME.bgBase),
     bgSurface: String(obj.bgSurface ?? DEFAULT_CUSTOM_THEME.bgSurface),
@@ -375,7 +384,9 @@ export function migrateCustomThemeColors(input: unknown): CustomThemeColors {
     textMain: String(obj.textMain ?? DEFAULT_CUSTOM_THEME.textMain),
     textSub: String(obj.textSub ?? DEFAULT_CUSTOM_THEME.textSub),
     textMuted: String(obj.textMuted ?? DEFAULT_CUSTOM_THEME.textMuted),
-    accent: String(obj.accentBlue ?? DEFAULT_CUSTOM_THEME.accent),
+    accent: legacyAccent,
+    // Legacy had a single blue accent — the split starts unified.
+    accentSecondary: legacyAccent,
     success: String(obj.accentGreen ?? DEFAULT_CUSTOM_THEME.success),
     danger: String(obj.accentRed ?? DEFAULT_CUSTOM_THEME.danger),
     warning: String(obj.accentYellow ?? DEFAULT_CUSTOM_THEME.warning),
