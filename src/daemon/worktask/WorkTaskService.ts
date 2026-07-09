@@ -147,7 +147,12 @@ export interface UpdateMissionInput {
 
 export type WorkTaskErr = { ok: false; error: string };
 export type StartMissionOk = { ok: true; taskId: string; channelId: string };
-export type CloseMissionOk = { ok: true; taskId: string };
+export type CloseMissionOk = {
+  ok: true;
+  taskId: string;
+  /** J3 §1(CX2): 채널 archive 미확정 — 부트 reconcile이 재시도 수렴. */
+  archivePending?: boolean;
+};
 export type UpdateMissionOk = { ok: true; taskId: string };
 
 export class WorkTaskService {
@@ -473,9 +478,13 @@ export class WorkTaskService {
       // 2. 미션 채널 archive — 데몬 내부(owner 신원으로). 실패 내성: 이미 archived/
       //    부재/reaper 소실이면 no-op. close 자체는 성립(로그 커밋됨)이므로 archive
       //    실패는 close를 무르지 않는다(§3 owner-leave 수용 잔여 + reaper 몫).
-      await this.tryArchive(task.missionChannelId, task.owner.verifiedWorkspaceId);
+      const archived = await this.tryArchive(task.missionChannelId, task.owner.verifiedWorkspaceId);
 
-      const result: CloseMissionOk = { ok: true, taskId: task.id };
+      const result: CloseMissionOk = {
+        ok: true,
+        taskId: task.id,
+        ...(archived ? {} : { archivePending: true }),
+      };
       this.idempotencyRecord('close', input.verifiedWorkspaceId, input.idempotencyKey, result);
       return result;
     });
@@ -635,17 +644,20 @@ export class WorkTaskService {
    * NOT_AUTHORIZED(owner-leave 수용 잔여)·PERSIST_FAILED도 삼킨다 — 부트/close
    * 경로 모두 archive 실패가 정본(태스크 로그)을 무르지 않게 한다.
    */
-  private async tryArchive(channelId: string, verifiedWorkspaceId: string): Promise<void> {
+  private async tryArchive(channelId: string, verifiedWorkspaceId: string): Promise<boolean> {
     try {
-      await this.channels.archive({
+      const res = await this.channels.archive({
         channelId,
         archivedBy: verifiedWorkspaceId,
         verifiedWorkspaceId,
       });
       // 성공·실패 코드 모두 무해 처리 — CHANNEL_NOT_FOUND/CHANNEL 이미 archived/
-      // NOT_AUTHORIZED는 §3 계약상 no-op으로 삼킨다.
+      // NOT_AUTHORIZED는 §3 계약상 no-op으로 삼킨다. 확정 여부만 반환(J3 CX2:
+      // 미확정이면 close 응답에 archivePending으로 표시 — 부트 reconcile 수렴).
+      return res.ok === true;
     } catch {
       // 채널 서비스 예외도 삼킨다 — 태스크 무결성은 채널 실존에 의존하지 않는다.
+      return false;
     }
   }
 
