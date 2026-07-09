@@ -233,7 +233,10 @@ export type RpcMethod =
   // a2a.channel.* mutations (fail-closed on unresolvable identity).
   | 'task.mission.start'
   | 'task.mission.close'
-  | 'task.mission.list';
+  | 'task.mission.list'
+  // J1 §5 — 물질화 필드(branch/worktreePath/paneGroupId) 단조 커밋. FanOutService
+  // 내부 경로가 호출한다(owner OR CEO authz는 데몬 WorkTaskService에서 강제).
+  | 'task.mission.update';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -369,6 +372,7 @@ export const ALL_RPC_METHODS = [
   'task.mission.start',
   'task.mission.close',
   'task.mission.list',
+  'task.mission.update',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===

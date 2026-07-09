@@ -54,6 +54,12 @@ export interface WorkTask {
   // ── J1+ 물질화 필드 (J0에선 스키마만, 항상 옵셔널) ──
   branch?: string;
   worktreePath?: string;
+  /**
+   * 태스크 전용 워크스페이스 id(J1 §1 D1 의미 확정 — J0가 위임한 "그룹 vs 페인
+   * 배열" 미결의 판정). 태스크 실행 단위 = 전용 워크스페이스이고, 그 워크스페이스
+   * id를 그대로 담는다(신원 축 분리·리부트 생존이 기존 워크스페이스 영속 경로에
+   * 무임승차). J0 additive-only 규약상 필드명은 불변, 의미만 확정한다.
+   */
   paneGroupId?: string;
   // ── J2 ──
   prUrl?: string;
@@ -109,6 +115,21 @@ export const WORKTASK_MAX_OPEN_PER_WORKSPACE = 256;
 
 /** §4 멱등 LRU cap — 채널/A2A 상수(1000)와 동형. */
 export const WORKTASK_IDEMPOTENCY_CAP = 1000;
+
+/**
+ * fan-out 1회 호출당 태스크 상한(J1 §2 — 워크스페이스·PTY 폭주 방어). J0 open
+ * 캡(WORKTASK_MAX_OPEN_PER_WORKSPACE=256)과 별개로, 단일 fanout:start 호출이
+ * 찍을 수 있는 태스크 수를 8로 제한한다. 초과 시 프리플라이트에서 즉시 거부.
+ */
+export const FANOUT_MAX_TASKS = 8;
+
+/**
+ * fan-out 프롬프트 본문 캡(J1 §4 G5 — argv 한계). `{agentCmd} "$(cat {path})"`의
+ * `$(cat)` 치환 결과가 단일 argv가 되므로 Windows 명령줄 한계(8191자)·ARG_MAX를
+ * 고려한 플랫폼 최소공배수 8KB. 초과 시 명시 에러("프롬프트를 줄이고 상세는
+ * 파일로 만들어 경로를 언급하라").
+ */
+export const FANOUT_PROMPT_MAX_BYTES = 8 * 1024;
 
 /** closed projection GC 임계(§1 D — 리뷰 반영 GLM: 7일). 인메모리 뷰 바운드다. */
 export const WORKTASK_CLOSED_GC_MS = 7 * 24 * 60 * 60 * 1000;
