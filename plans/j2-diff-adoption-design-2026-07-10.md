@@ -112,3 +112,21 @@ Codex 9건(CX) + Claude 실코드 9건(CL — Pane.tsx·workspaceSlice·mcp/chan
 | R14 | Claude(8)+GLM(6) | mergeBase 문법 오용·산출 위치 불일치 | 1-arg 워킹트리 diff + 단일 출처 캐싱(§2) |
 | R15 | GLM(5) | 동시 apply 직렬화 부재 | per-repo 뮤텍스 재사용(§3) |
 | R16 | GLM(5) | 패치 내부 경로 검증 부재 | a/ b/ 정규화 + `..` 거부 + --unsafe-paths 금지(§3) |
+
+## 부록 A — surfaceType 전수 감사 산출물 (구현 시 실측, 2026-07-10)
+
+D1 요구(§1)에 따라 renderer의 `surfaceType` 소비 지점을 전수 감사했다. 총 16개 섹션·약 70개 코드라인. 'diff'는 `ptyId=''` + negative 술어 결합으로 대부분 자동 제외되나, PTY 자가생성·렌더 라우팅에 걸리는 급소는 명시 수정했다.
+
+**수정한 지점(6):**
+1. `shared/types.ts:46` — surfaceType union에 `'diff'` 추가 + `diffTaskId` 필드.
+2. `Pane/Pane.tsx` 렌더 스위치 — else(터미널) 앞에 diff 분기 추가(DiffPanel 라우팅). **최상위 급소** — 미수정 시 diff가 TerminalComponent로 렌더돼 PTY 자가생성.
+3. `Layout/AppLayout.tsx` 재조정 loop — `surfaceType === 'diff'` continue(PTY 자가생성 스킵). **critical**.
+4. `Layout/AppLayout.tsx` drag-drop 검증 — browser/editor/diff는 경로 붙여넣기 대상 아님.
+5. `hooks/useActivePaneFocus.ts` — diff는 xterm 포커스 대상 아님(null 반환).
+6. `utils/sessionInfoMarkdown.ts` — diff 케이스 추가(PTY ID 오표기 방지).
+7. `stores/slices/workspaceSlice.ts:634,650` — PTY 클리어 negative 술어에 `!== 'diff'` 명시.
+8. `stores/selectors/fleet.ts:30,121` — FleetPane surfaceType union 확장.
+
+**무수정(안전 확인):** ptyId='' + negative 술어로 자동 제외되는 지점 — Pane.tsx:544 터미널 필터, a2aAddressing.ts:31/60/83, channelsSlice.ts:683, Composer.tsx:128, ChannelMembers.tsx:399, paneSlice.ts:403, focusedSurface.ts:27, surfaceSlice.ts:250/268/284, FleetView.tsx:117, useRpcBridge.ts:1478/2060 등. 이들은 diff의 빈 ptyId 또는 positive browser 술어로 이미 diff를 배제한다.
+
+**신설:** `addDiffSurface`(surfaceSlice.ts — editor/browser 관례대로 `ptyId:''`), DiffPanel(Diff/DiffPanel.tsx).

@@ -7,6 +7,7 @@ import { useIpc } from '../../hooks/useIpc';
 import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
+import DiffPanel from '../Diff/DiffPanel';
 import SurfaceTabs from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
@@ -579,6 +580,15 @@ function SplitSurfaceView({
               partition={surface.browserPartition || 'persist:wmux-default'}
               isActive={surface.id === activeSurfaceId}
               onClose={() => onCloseSurface(surface.id)}
+            />
+          ) : surface.surfaceType === 'diff' ? (
+            // J2 — diff 서피스는 PTY 없음. verifiedWorkspaceId는 태스크 워크스페이스 id.
+            <DiffPanel
+              key={surface.id}
+              taskId={surface.diffTaskId || ''}
+              isActive={surface.id === activeSurfaceId}
+              surfaceId={surface.id}
+              verifiedWorkspaceId={workspaceId}
             />
           ) : (
             <TerminalComponent

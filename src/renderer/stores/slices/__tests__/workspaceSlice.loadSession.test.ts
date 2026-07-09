@@ -189,6 +189,55 @@ function makeBrowserSurfaceTree(url: string): Pane {
   } as unknown as Pane;
 }
 
+// J2 — diff 서피스 트리(ptyId 없음, taskId만 영속).
+function makeDiffSurfaceTree(taskId: string): Pane {
+  return {
+    id: 'pane-root',
+    type: 'leaf',
+    surfaces: [
+      {
+        id: 'surface-diff',
+        surfaceType: 'diff',
+        ptyId: '',
+        diffTaskId: taskId,
+        title: 'Diff',
+      },
+    ],
+    activeSurfaceId: 'surface-diff',
+  } as unknown as Pane;
+}
+
+describe('WorkspaceSlice.loadSession — J2 diff 서피스 복원(PTY 자가생성 0)', () => {
+  it('diff 서피스 복원 시 surfaceType·taskId 보존 + ptyId="" 유지', () => {
+    const store = createTestStore();
+    const ws: Workspace = {
+      id: 'ws-1',
+      name: 'DiffRestore',
+      rootPane: makeDiffSurfaceTree('wtask-restore'),
+      activePaneId: 'pane-root',
+    };
+    const data: SessionData = {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+    } as unknown as SessionData;
+
+    store.getState().loadSession(data);
+    // clearAllPtyState는 복원 폴백 경로 — diff 서피스는 PTY 클리어 대상이 아님.
+    store.getState().clearAllPtyState();
+
+    const root = store.getState().workspaces[0].rootPane as unknown as {
+      surfaces: { ptyId: string; surfaceType?: string; diffTaskId?: string }[];
+    };
+    const s = root.surfaces[0];
+    // 핵심 불변식: PTY 자가생성 경로에 걸리지 않도록 ptyId는 계속 비어 있고
+    // surfaceType='diff'가 보존되어 렌더 스위치가 DiffPanel로 라우팅한다.
+    expect(s.surfaceType).toBe('diff');
+    expect(s.ptyId).toBe('');
+    expect(s.diffTaskId).toBe('wtask-restore');
+  });
+});
+
 describe('WorkspaceSlice.loadSession — Fix 0 contract', () => {
   it('preserves saved surface.ptyId (no wipe)', () => {
     const store = createTestStore();
