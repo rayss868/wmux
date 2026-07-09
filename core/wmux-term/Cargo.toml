@@ -1,0 +1,45 @@
+[package]
+name = "wmux-term"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "E0 스파이크 S-A1 — vte 파서 + 미니 그리드, 이중 타깃(napi/wasm) 배관 실증"
+license = "MIT"
+
+[lib]
+# napi는 cdylib, wasm-bindgen도 cdylib. rlib은 cargo test / 마이크로벤치(네이티브 라이브러리 링크)용.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# 기본: 바인딩 레이어(napi/wasm) 컴파일. napi CLI는 이 default로 .node를 산출.
+# 마이크로벤치 바이너리는 `bench` 피처를 required-features로 걸어 napi 빌드에서 제외
+# (그때만 --no-default-features --features bench로 순수 Grid만 링크 → napi 심볼 미해결 회피).
+default = ["bindings"]
+bindings = ["dep:napi", "dep:napi-derive", "dep:wasm-bindgen"]
+bench = []
+
+# 마이크로벤치 — bench 피처에서만 빌드(napi CLI의 전 타깃 빌드에서 격리).
+[[bin]]
+name = "bench_native"
+required-features = ["bench"]
+
+[dependencies]
+# 파서 — vte 0.15, default-features off(ansi 피처 금지, raw Perform 8콜백만). 결정 문서 D1.
+vte = { version = "0.15.0", default-features = false }
+
+# 네이티브(.node) 타깃 전용 — napi-rs 메이저 3 핀(결정 문서 D5). optional: bindings 피처 게이트.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+napi = { version = "3", default-features = false, features = ["napi8"], optional = true }
+napi-derive = { version = "3", optional = true }
+
+# wasm32 타깃 전용 — wasm-bindgen. optional: bindings 피처 게이트.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.build-dependencies]
+napi-build = "2"
+
+[profile.release]
+# 벤치·산출물 릴리스 프로파일 — lto로 vte 인라이닝 최대화(V4 처리량 게이트).
+lto = true
+codegen-units = 1
