@@ -362,7 +362,7 @@ export default function FleetView() {
           className="flex items-center gap-3 px-4 py-3"
           style={{ borderBottom: '1px solid var(--bg-surface)' }}
         >
-          <span className="text-sm font-semibold text-[var(--text-main)]">{t('fleet.title')}</span>
+          <span className="text-title text-[var(--text-main)]">{t('fleet.title')}</span>
           {needsCount > 0 && (
             <span
               className="text-[11px] font-medium px-2 py-0.5 rounded-full"

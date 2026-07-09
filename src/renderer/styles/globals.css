@@ -268,6 +268,56 @@
   --z-critical: 99999;
 }
 
+/* ─── 타이포그래피 4단 스케일 (theme-independent) ────────────────────────────
+ * 산재한 text-{base,sm} + font-{semibold} 조합을 4단 램프로 승격. 값은 현행
+ * 대표 사이트의 크기·굵기를 그대로 담아 시각 불변이다(터미널 UI 컴팩트 스케일):
+ *   display  16px/600  다이얼로그·페이지 히어로 헤딩 (기존 text-base font-semibold)
+ *   title    14px/600  섹션·패널 타이틀           (기존 text-sm  font-semibold)
+ *   body     13px/400  본문                       (선례용 예약)
+ *   caption  11px/500  라벨·힌트                  (선례용 예약)
+ * 이번 파동은 대표 3곳(FirstRunWizard 헤딩·SettingsPanel 타이틀·FleetView
+ * 헤더)에만 적용해 토큰 실재와 선례를 확립한다. 전면 교체는 다음 파동 몫.
+ * font-family·색·tracking은 각 사용처 유틸리티가 계속 소유한다. */
+:root {
+  /* line-heights match Tailwind's text-base(1.5rem/16px=1.5) and
+   * text-sm(1.25rem/14px≈1.4286) so promoting the 3 sites is byte-inert. */
+  --text-display-size: 16px;
+  --text-display-line: 1.5;
+  --text-display-weight: 600;
+  --text-title-size: 14px;
+  --text-title-line: 1.4286;
+  --text-title-weight: 600;
+  --text-body-size: 13px;
+  --text-body-line: 1.5;
+  --text-body-weight: 400;
+  --text-caption-size: 11px;
+  --text-caption-line: 1.4;
+  --text-caption-weight: 500;
+}
+
+@layer components {
+  .text-display {
+    font-size: var(--text-display-size);
+    line-height: var(--text-display-line);
+    font-weight: var(--text-display-weight);
+  }
+  .text-title {
+    font-size: var(--text-title-size);
+    line-height: var(--text-title-line);
+    font-weight: var(--text-title-weight);
+  }
+  .text-body {
+    font-size: var(--text-body-size);
+    line-height: var(--text-body-line);
+    font-weight: var(--text-body-weight);
+  }
+  .text-caption {
+    font-size: var(--text-caption-size);
+    line-height: var(--text-caption-line);
+    font-weight: var(--text-caption-weight);
+  }
+}
+
 /* ─── Base ────────────────────────────────────────────────────────────────── */
 
 * {

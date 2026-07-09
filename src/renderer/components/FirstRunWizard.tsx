@@ -405,7 +405,7 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
           <div>
             <h2
               id={headerId}
-              className="text-base font-semibold"
+              className="text-display"
               style={{ color: 'var(--text-main)', margin: 0 }}
             >
               {t('firstRunWizard.title')}

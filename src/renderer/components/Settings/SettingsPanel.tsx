@@ -4019,7 +4019,7 @@ export default function SettingsPanel() {
           className="flex items-center justify-between px-5 py-3 shrink-0"
           style={{ borderBottom: '1px solid var(--bg-surface)' }}
         >
-          <span className="text-sm font-semibold text-[color:var(--text-main)] font-mono tracking-wide">{t('settings.title')}</span>
+          <span className="text-title text-[color:var(--text-main)] font-mono tracking-wide">{t('settings.title')}</span>
           <button
             className={`inline-flex items-center rounded p-0.5 text-[color:var(--text-subtle)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}
             onClick={handleClose}
