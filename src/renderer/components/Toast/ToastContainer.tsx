@@ -25,7 +25,17 @@ function levelColor(level: ToastLevel): string {
   }
 }
 
-function ToastItem({ id, message, level }: { id: string; message: string; level: ToastLevel }) {
+function ToastItem({
+  id,
+  message,
+  level,
+  action,
+}: {
+  id: string;
+  message: string;
+  level: ToastLevel;
+  action?: { label: string; onClick: () => void };
+}) {
   const dismissToast = useStore((s) => s.dismissToast);
 
   useEffect(() => {
@@ -50,6 +60,20 @@ function ToastItem({ id, message, level }: { id: string; message: string; level:
         aria-hidden="true"
       />
       <span className="flex-1 leading-snug">{message}</span>
+      {/* F5 — optional action button (fan-out "diff 열기"). Runs then dismisses. */}
+      {action && (
+        <button
+          type="button"
+          onClick={() => {
+            action.onClick();
+            dismissToast(id);
+          }}
+          className="flex-shrink-0 px-2 py-0.5 rounded font-medium transition-colors"
+          style={{ backgroundColor: 'var(--accent-blue, #89b4fa)', color: 'var(--bg-base)' }}
+        >
+          {action.label}
+        </button>
+      )}
       <button
         type="button"
         aria-label="Dismiss"
@@ -74,7 +98,7 @@ export default function ToastContainer() {
     >
       {toasts.map((t) => (
         <div key={t.id} className="pointer-events-auto">
-          <ToastItem id={t.id} message={t.message} level={t.level} />
+          <ToastItem id={t.id} message={t.message} level={t.level} action={t.action} />
         </div>
       ))}
     </div>

@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../stores';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
+import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { generateId } from '../../../shared/types';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../shared/workTask';
 
@@ -201,13 +202,33 @@ interface FanOutResultLike {
     error?: string;
     unmaterialized?: boolean;
     channelDisconnected?: boolean;
+    // F5 — diff 진입 재료(FanOutTaskResult에서 반환).
+    taskId?: string;
+    workspaceId?: string;
+    worktreePath?: string;
   }>;
 }
 
-function reportResult(
-  res: unknown,
-  pushToast: (t: { level: 'info' | 'warn' | 'error'; message: string }) => string,
-): void {
+type PushToast = (t: {
+  level: 'info' | 'warn' | 'error';
+  message: string;
+  action?: { label: string; onClick: () => void };
+}) => string;
+
+// F5 — 태스크 워크스페이스의 첫 leaf 페인에 diff 서피스를 연다. 워크스페이스가
+// 아직 없거나 leaf가 없으면(레이스) 조용히 무시.
+function openTaskDiff(taskId: string, workspaceId: string, title: string): void {
+  const st = useStore.getState();
+  const ws = st.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return;
+  const leaf = findLeafPanes(ws.rootPane)[0];
+  if (!leaf) return;
+  st.addDiffSurface(leaf.id, taskId, `diff: ${title}`, workspaceId);
+  // 태스크 워크스페이스로 전환해 방금 연 diff가 바로 보이게.
+  st.setActiveWorkspace(workspaceId);
+}
+
+function reportResult(res: unknown, pushToast: PushToast): void {
   const r = (res ?? {}) as FanOutResultLike;
   if (r.error) {
     pushToast({ level: 'error', message: `fan-out 거부: ${r.error}` });
@@ -226,4 +247,21 @@ function reportResult(
     level: fail > 0 ? 'error' : disconnected > 0 || unmaterialized > 0 ? 'warn' : 'info',
     message: parts.join(' · '),
   });
+
+  // F5 — 물질화된 성공 태스크마다 "diff 열기" 액션 토스트. 워크스페이스가 있어야
+  // 서피스를 열 수 있으므로 workspaceId·taskId가 채워진 태스크만 대상.
+  for (const t of tasks) {
+    if (!t.ok || !t.taskId || !t.workspaceId) continue;
+    const taskId = t.taskId;
+    const workspaceId = t.workspaceId;
+    const title = t.title ?? taskId;
+    pushToast({
+      level: 'info',
+      message: `태스크 "${title}" 준비됨`,
+      action: {
+        label: 'diff 열기',
+        onClick: () => openTaskDiff(taskId, workspaceId, title),
+      },
+    });
+  }
 }

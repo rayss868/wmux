@@ -16,7 +16,7 @@
  * Pane.notificationRing.test.tsx (the pure helper is the load-bearing piece).
  */
 import { describe, it, expect } from 'vitest';
-import { pickSplitShownSurfaces } from '../Pane';
+import { pickSplitShownSurfaces, pickOverlaySurfaces } from '../Pane';
 
 const T = (id: string) => ({ id });
 
@@ -72,5 +72,38 @@ describe('pickSplitShownSurfaces — split visibility decoupled from focus', () 
       shownTerminalId: 'term-1',
       shownBrowserId: undefined,
     });
+  });
+});
+
+// F6 — split(terminal+browser) 혼재 페인에서 diff·editor가 누락되지 않아야 한다.
+describe('pickOverlaySurfaces — F6 mixed-split diff/editor routing', () => {
+  it('terminal+browser+diff 혼재에서 diff 서피스를 오버레이 집합으로 추출', () => {
+    const surfaces = [
+      { id: 's1', surfaceType: 'terminal' },
+      { id: 's2', surfaceType: 'browser' },
+      { id: 's3', surfaceType: 'diff' },
+    ];
+    const overlay = pickOverlaySurfaces(surfaces);
+    // 스플릿이 terminals·browsers만 렌더하므로 diff는 오버레이로 별도 라우팅돼야 한다.
+    expect(overlay.map((s) => s.id)).toEqual(['s3']);
+  });
+
+  it('editor도 오버레이 집합에 포함(diff와 동일 처리)', () => {
+    const surfaces = [
+      { id: 't', surfaceType: 'terminal' },
+      { id: 'b', surfaceType: 'browser' },
+      { id: 'e', surfaceType: 'editor' },
+      { id: 'd', surfaceType: 'diff' },
+    ];
+    expect(pickOverlaySurfaces(surfaces).map((s) => s.id)).toEqual(['e', 'd']);
+  });
+
+  it('순수 terminal/browser만이면 오버레이 없음(회귀 방지)', () => {
+    const surfaces = [
+      { id: 't', surfaceType: 'terminal' },
+      { id: 'b', surfaceType: 'browser' },
+      { id: 'legacy', surfaceType: undefined },
+    ];
+    expect(pickOverlaySurfaces(surfaces)).toEqual([]);
   });
 });
