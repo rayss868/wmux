@@ -134,16 +134,11 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
 }
 
 /**
- * Brief bottom-center toast. Mirrors Sidebar.handleCopySessionInfo so the
- * "Copied!" feedback is visually identical wherever a copy happens.
+ * "Copied!" 피드백. 정본 토스트(toastSlice)를 경유해 앱 전역 알림과 스타일을
+ * 공유한다. (기존 수동 DOM 토스트는 store를 우회했다.)
  */
 function showCopyToast(text: string): void {
-  const toast = document.createElement('div');
-  toast.textContent = text;
-  toast.style.cssText = 'position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:var(--bg-surface);color:var(--text-main);padding:4px 12px;border-radius:4px;font-size:12px;z-index:9999;opacity:0;transition:opacity .2s';
-  document.body.appendChild(toast);
-  requestAnimationFrame(() => { toast.style.opacity = '1'; });
-  setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 200); }, 1500);
+  useStore.getState().pushToast({ level: 'info', message: text });
 }
 
 function shortenPath(path: string, maxLen = 25): string {
