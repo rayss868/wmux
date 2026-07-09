@@ -78,6 +78,9 @@ export interface DiffReadResult {
   readonly snapshot: DiffTargetSnapshot;
   // 캡 초과·binary 등으로 표시 전용인 파일 경로 목록(사용자 안내용).
   readonly truncated: readonly string[];
+  // F3: symlink·FIFO 등 비정규 파일 — 합성·채택 불가("unsupported" 라벨).
+  //   repo 밖 노출(symlink 타겟 readFile) 차단을 위해 아예 합성에서 제외한다.
+  readonly unsupported: readonly string[];
 }
 
 export interface DiffReadError {
@@ -200,10 +203,12 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
           bodyLines.push(b);
           i += 1;
         } else if (b === '') {
-          // split('\n')의 마지막 빈 원소(트레일링 개행) 또는 컨텍스트 공백 라인.
-          // git diff의 빈 컨텍스트 라인은 실제로 ' '(공백 1자)로 나오므로,
-          // 완전 빈 문자열은 파일 말미 트레일링 개행 산물 — 바디에서 제외하고 종료.
-          break;
+          // git diff의 빈 컨텍스트 라인은 ' '(공백 1자)로 나오므로 완전 빈 문자열은
+          // split('\n')의 트레일링 원소다. F9: "마지막 원소일 때만" 종료로 한정한다 —
+          // 중간의 빈 문자열(예: 다음 파일 헤더 앞 구분 공백)에서 hunk를 조기 종료하면
+          // 뒤따르는 바디 라인을 유실할 수 있으므로, 마지막이 아니면 건너뛰고 계속.
+          if (i === lines.length - 1) break;
+          i += 1;
         } else {
           // 알 수 없는 라인(다음 섹션) — hunk 종료.
           break;
@@ -244,7 +249,13 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
       (kind === 'modify' || kind === 'add' || kind === 'delete') && hunks.length > 0;
 
     // 표시 경로: a/ b/ 접두 제거(원문 oldPath/newPath는 접두 유지).
-    const displayPath = stripDiffPrefix(newPath ?? oldPath ?? '(unknown)');
+    // F4: delete는 newPath가 `/dev/null`이라 그대로 쓰면 dirty 게이트·numstat
+    //   매칭이 실경로와 어긋난다(dirtySet.has('/dev/null')은 늘 false → delete
+    //   파일이 타겟에서 dirty여도 거부 못 함). newPath가 /dev/null이면 oldPath를
+    //   identity/display로 사용해 실경로가 dirty 검사 대상에 포함되게 한다.
+    const rawDisplay =
+      newPath && newPath !== '/dev/null' ? newPath : (oldPath ?? newPath ?? '(unknown)');
+    const displayPath = stripDiffPrefix(rawDisplay);
     files.push({
       path: displayPath,
       oldPath,

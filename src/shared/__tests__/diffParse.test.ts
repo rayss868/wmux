@@ -301,3 +301,47 @@ describe('reassemblePatch — 다중 파일 all-or-nothing', () => {
     expect(reassembleFile(file, [])).toBe('');
   });
 });
+
+// ── F4: delete 파일의 표시 경로는 실경로(‘/dev/null’ 아님) ────────────────────
+describe('parseUnifiedDiff — F4 delete display path', () => {
+  it('delete diff의 path는 oldPath 실경로', () => {
+    // gone.txt를 커밋 후 rm → 실제 git이 만든 delete diff. newPath는 /dev/null.
+    const dir = mkdtempSync(join(tmpdir(), 'del-'));
+    try {
+      const git = (args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+      git(['init', '-q']);
+      git(['config', 'user.email', 't@t']);
+      git(['config', 'user.name', 't']);
+      git(['config', 'core.autocrlf', 'false']);
+      writeFileSync(join(dir, 'gone.txt'), 'x1\nx2\n');
+      git(['add', '-A']);
+      git(['commit', '-q', '-m', 'base']);
+      rmSync(join(dir, 'gone.txt'));
+      const diff = git(['diff']);
+      const parsed = parseUnifiedDiff(diff);
+      const f = parsed.files.find((ff) => ff.kind === 'delete')!;
+      expect(f).toBeDefined();
+      // 표시·매칭 경로가 /dev/null이 아니라 실경로 gone.txt.
+      expect(f.path).toBe('gone.txt');
+      expect(f.path).not.toBe('/dev/null');
+      expect(f.hunkSelectable).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── F9: hunk 바디의 빈 문자열 종료는 마지막 원소일 때만 ──────────────────────
+describe('parseUnifiedDiff — F9 빈 문자열 라인 처리', () => {
+  it('트레일링 개행 산물(마지막 빈 원소)은 종료, 왕복 apply 정합', () => {
+    // 마지막 라인이 개행으로 끝나는 표준 파일 → split 마지막 원소가 빈 문자열.
+    const base = { 'a.txt': 'l1\nl2\nl3\n' };
+    const after = { 'a.txt': 'l1\nCHANGED\nl3\n' };
+    const diff = makeDiff(base, after);
+    const file = parseUnifiedDiff(diff).files[0];
+    const patch = reassemblePatch([{ file, hunkIndices: file.hunks.map((_, i) => i) }]);
+    // git 오라클: 재직렬화 결과가 실제로 적용되어 after와 일치.
+    const result = applyPatchInRepo(base, patch);
+    expect(result['a.txt']).toBe(after['a.txt']);
+  });
+});

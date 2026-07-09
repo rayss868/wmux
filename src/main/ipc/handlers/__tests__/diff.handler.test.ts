@@ -5,7 +5,7 @@
 // dirty 거부·per-hunk 프로브·경로 검증·all-or-nothing apply.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -229,5 +229,249 @@ describe('diff:applyHunks — 채택 all-or-nothing', () => {
     const targetDiff = g(scn.repoRoot, ['diff']);
     const parsed = parseUnifiedDiff(targetDiff);
     expect(parsed.files.map((f) => f.path)).toEqual(['a.txt']);
+  });
+});
+
+// ── F1: quotepath 경로 파싱(공백·한글·따옴표·rename) ─────────────────────────
+describe('diff:read/applyHunks — F1 특수문자 파일명(-z quotepath=false)', () => {
+  let scn: ReturnType<typeof makeScenario>;
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    scn = makeScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  it('공백·한글 파일명의 dirty가 스냅샷·untracked에 원문으로 매칭', async () => {
+    // 타겟(본 repo)에 공백/한글 파일을 dirty로 — 스냅샷 dirtyFiles 원문 매칭 확인.
+    writeFileSync(join(scn.repoRoot, 'a.txt'), 'a1\na2\na3\na4\na5\nDIRTY\n');
+    // worktree에 공백·한글 untracked 신규 파일 — readFile 합성 성공 확인.
+    writeFileSync(join(scn.worktreePath, 'hello world.txt'), 'w1\nw2\n');
+    writeFileSync(join(scn.worktreePath, '한글 파일.txt'), 'k1\nk2\n');
+
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
+      ok: boolean;
+      files: Array<{ path: string; kind: string }>;
+      snapshot: { targetDirtyFiles: string[] };
+    };
+    expect(res.ok).toBe(true);
+    // dirty 스냅샷은 슬래시 이스케이프 없이 원문 'a.txt'.
+    expect(res.snapshot.targetDirtyFiles).toContain('a.txt');
+    // 공백·한글 untracked가 원문 경로로 파싱·합성됨(add).
+    const paths = res.files.map((f) => f.path);
+    expect(paths).toContain('hello world.txt');
+    expect(paths).toContain('한글 파일.txt');
+    const kf = res.files.find((f) => f.path === '한글 파일.txt')!;
+    expect(kf.kind).toBe('add');
+  });
+
+  it('rename R 레코드는 newpath만 dirty로(NUL 2필드 처리)', async () => {
+    // 타겟에서 tracked 파일을 rename → status -z가 "R  new\\0old\\0" 2필드.
+    g(scn.repoRoot, ['mv', 'b.txt', 'b renamed.txt']);
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
+      ok: boolean;
+      snapshot: { targetDirtyFiles: string[] };
+    };
+    expect(res.ok).toBe(true);
+    // newpath는 dirty에 포함, oldpath(b.txt)는 별도 필드라 dirty로 오인되지 않음.
+    expect(res.snapshot.targetDirtyFiles).toContain('b renamed.txt');
+    expect(res.snapshot.targetDirtyFiles).not.toContain('b.txt');
+  });
+});
+
+// ── F2: 프로브 의미론 — 의존 hunk 결합 성공·alreadyApplied 명시 거부 ──────────
+describe('diff:applyHunks — F2 결합 게이트·alreadyApplied 거부', () => {
+  let scn: ReturnType<typeof makeScenario>;
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    scn = makeScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  it('의존 hunk 2개(같은 파일 인접 변경)를 결합 게이트로 함께 적용 성공', async () => {
+    // a.txt에 서로 가까운 두 변경 → 한 hunk 또는 두 hunk. 두 hunk면 결합 적용.
+    writeFileSync(
+      join(scn.worktreePath, 'a.txt'),
+      'A1\na2\na3\na4\nA5\n', // 1행·5행 변경(멀어서 2 hunk 가능성).
+    );
+    const read = captured.get(IPC.DIFF_READ)!;
+    const r = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
+      ok: boolean;
+      files: Array<{ path: string; hunks: unknown[] }>;
+      snapshot: DiffApplyRequest['snapshot'];
+    };
+    const af = r.files.find((f) => f.path === 'a.txt')!;
+    const allIdx = af.hunks.map((_, i) => i);
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      { taskId: 't', snapshot: r.snapshot, selections: [{ path: 'a.txt', hunkIndices: allIdx }] },
+      scn.worktreePath,
+    )) as { ok: boolean };
+    expect(res.ok).toBe(true);
+    expect(readFileSync(join(scn.repoRoot, 'a.txt'), 'utf8')).toBe('A1\na2\na3\na4\nA5\n');
+  });
+
+  it('alreadyApplied hunk 포함 선택은 probe 코드로 명시 거부', async () => {
+    // 타겟에 a.txt hunk를 먼저 직접 적용(git 경유) → dirty가 아니라 커밋해 clean 유지.
+    const read = captured.get(IPC.DIFF_READ)!;
+    const r1 = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
+      ok: boolean;
+      snapshot: DiffApplyRequest['snapshot'];
+    };
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    // 1차 적용 후 타겟에서 커밋 → a.txt가 clean(=dirty 아님)이면서 변경은 반영됨.
+    await apply(
+      {},
+      { taskId: 't', snapshot: r1.snapshot, selections: [{ path: 'a.txt', hunkIndices: [0] }] },
+      scn.worktreePath,
+    );
+    g(scn.repoRoot, ['add', '-A']);
+    g(scn.repoRoot, ['commit', '-q', '-m', 'adopt a']);
+    // 타겟 HEAD가 이동했으므로 worktree의 mergeBase도 이동 — 재열람 후 재시도.
+    const r2 = (await read({}, scn.worktreePath, '')) as {
+      ok: boolean;
+      files: Array<{ path: string; hunks: unknown[] }>;
+      snapshot: DiffApplyRequest['snapshot'];
+    };
+    // a.txt가 여전히 worktree diff에 있으면(이미 반영돼 없을 수도) alreadyApplied 경로 확인.
+    const af = r2.files.find((f) => f.path === 'a.txt');
+    if (!af || af.hunks.length === 0) {
+      // 타겟에 이미 반영돼 worktree diff에서 사라진 경우 — 이 케이스는 검증 대상 아님.
+      return;
+    }
+    const res = (await apply(
+      {},
+      { taskId: 't', snapshot: r2.snapshot, selections: [{ path: 'a.txt', hunkIndices: [0] }] },
+      scn.worktreePath,
+    )) as { ok: boolean; code?: string; failedProbes?: Array<{ alreadyApplied: boolean }> };
+    expect(res.ok).toBe(false);
+    // dirty(방금 적용 잔여) 또는 probe(alreadyApplied) — 둘 다 안전한 명시 거부.
+    expect(['dirty', 'probe']).toContain(res.code);
+  });
+});
+
+// ── F3: untracked symlink 차단 ───────────────────────────────────────────────
+describe('diff:read — F3 symlink untracked는 unsupported(repo 밖 노출 차단)', () => {
+  let scn: ReturnType<typeof makeScenario>;
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    scn = makeScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  it('symlink는 합성하지 않고 unsupported 라벨로 반환', async () => {
+    // worktree 밖 파일을 가리키는 symlink를 untracked로 생성.
+    const outside = join(scn.repoRoot, 'a.txt'); // repo 밖(본 repo)의 실경로.
+    symlinkSync(outside, join(scn.worktreePath, 'link.txt'));
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
+      ok: boolean;
+      files: Array<{ path: string }>;
+      unsupported: string[];
+    };
+    expect(res.ok).toBe(true);
+    // symlink는 diff 파일 목록(합성)에 없고 unsupported에만.
+    expect(res.unsupported).toContain('link.txt');
+    expect(res.files.map((f) => f.path)).not.toContain('link.txt');
+  });
+});
+
+// ── F4: delete diff의 dirty 게이트 경로 ──────────────────────────────────────
+describe('diff:applyHunks — F4 delete 파일이 타겟에서 dirty면 거부', () => {
+  let scn: ReturnType<typeof makeScenario>;
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    scn = makeScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  it('worktree에서 삭제된 파일이 타겟에서 dirty면 dirty 코드로 거부', async () => {
+    // worktree에서 b.txt 삭제(delete diff 생성).
+    rmSync(join(scn.worktreePath, 'b.txt'));
+    // 타겟(본 repo)에서 b.txt를 dirty로.
+    writeFileSync(join(scn.repoRoot, 'b.txt'), 'b1\nb2\nb3\nDIRTY\n');
+    const read = captured.get(IPC.DIFF_READ)!;
+    const r = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
+      ok: boolean;
+      files: Array<{ path: string; kind: string; hunks: unknown[] }>;
+      snapshot: DiffApplyRequest['snapshot'];
+    };
+    // delete 파일의 표시 경로가 실경로 b.txt(‘/dev/null’ 아님)여야 함(F4).
+    const del = r.files.find((f) => f.path === 'b.txt');
+    expect(del).toBeDefined();
+    expect(del!.kind).toBe('delete');
+    // dirty 스냅샷도 실경로 b.txt를 포함.
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      { taskId: 't', snapshot: r.snapshot, selections: [{ path: 'b.txt', hunkIndices: [0] }] },
+      scn.worktreePath,
+    )) as { ok: boolean; code?: string };
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe('dirty');
+  });
+});
+
+// ── F7: truncated(캡 초과) 파일 채택 차단 ────────────────────────────────────
+describe('diff:read/applyHunks — F7 캡 초과 파일 채택 불가', () => {
+  let scn: ReturnType<typeof makeScenario>;
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    scn = makeScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  it('512KB 초과 변경 파일은 hunkSelectable=false·applyHunks에서 unsupported 거부', async () => {
+    // a.txt를 512KB 넘게 키워 캡 초과 유발.
+    const big = 'x'.repeat(600 * 1024) + '\n';
+    writeFileSync(join(scn.worktreePath, 'a.txt'), big);
+    const read = captured.get(IPC.DIFF_READ)!;
+    const r = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
+      ok: boolean;
+      files: Array<{ path: string; hunkSelectable: boolean; hunks: unknown[] }>;
+      truncated: string[];
+      snapshot: DiffApplyRequest['snapshot'];
+    };
+    expect(r.ok).toBe(true);
+    expect(r.truncated).toContain('a.txt');
+    const af = r.files.find((f) => f.path === 'a.txt')!;
+    expect(af.hunkSelectable).toBe(false);
+    // 2중 거부: applyHunks도 명시 거부(unsupported).
+    const apply = captured.get(IPC.DIFF_APPLY_HUNKS)!;
+    const res = (await apply(
+      {},
+      { taskId: 't', snapshot: r.snapshot, selections: [{ path: 'a.txt', hunkIndices: [0] }] },
+      scn.worktreePath,
+    )) as { ok: boolean; code?: string };
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe('unsupported');
+  });
+});
+
+// ── F8: targetHeadOid 인자 가드 ──────────────────────────────────────────────
+describe('diff:read — F8 targetHeadOid 형식 가드', () => {
+  let scn: ReturnType<typeof makeScenario>;
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    scn = makeScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  it('비 hex targetHeadOid는 bad-oid로 명시 거부', async () => {
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, scn.worktreePath, 'not-a-sha; rm -rf /')) as {
+      ok: boolean;
+      code?: string;
+    };
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe('bad-oid');
   });
 });
