@@ -694,7 +694,8 @@ export function ChannelsPanel(): React.ReactElement {
   const company = useStore((s) => s.company);
   // P5: the human's creator identity is the reserved ws-human seat (see
   // selfWorkspaceId below), independent of which workspace is active.
-  const workspaces = useStore((s) => s.workspaces);
+  // A1: 이전 `workspaces` 통구독은 아래 handleJoinDiscoverable의 stale dep로만
+  // 남아 있었고 실제로 참조되지 않았다 — 구독과 dep를 함께 제거(동작 불변).
   const channelMembers = useStore((s) => s.channelMembers);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const createChannelDaemon = useStore((s) => s.createChannelDaemon);
@@ -760,7 +761,7 @@ export function ChannelsPanel(): React.ReactElement {
         }
       });
     },
-    [selfWorkspaceId, workspaces, channels, joinChannelDaemon, pushToast, t],
+    [selfWorkspaceId, channels, joinChannelDaemon, pushToast, t],
   );
 
   const handleCreate = useCallback(

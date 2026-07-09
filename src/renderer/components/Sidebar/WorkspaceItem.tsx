@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
-import type { PrStatus, Workspace, WorkspaceMetadata } from '../../../shared/types';
+import { useState, useRef, useEffect, memo } from 'react';
+import type { PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
+import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron } from '../icons';
@@ -11,16 +12,19 @@ import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 
 interface WorkspaceItemProps {
-  workspace: Workspace;
+  /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
+   *  자기 ws 변경에만 리렌더된다. 콜백은 모두 id 인자를 받아 부모에서 안정적으로
+   *  한 번만 생성될 수 있게 한다(React.memo가 실효하도록). */
+  workspaceId: string;
   isActive: boolean;
   isMultiview: boolean;
   index: number;
-  onSelect: () => void;
-  onCtrlSelect: () => void;
-  onRename: (name: string) => void;
-  onClose: () => void;
-  onCopyInfo: () => void;
-  onDuplicate: () => void;
+  onSelect: (id: string) => void;
+  onCtrlSelect: (id: string) => void;
+  onRename: (id: string, name: string) => void;
+  onClose: (id: string) => void;
+  onCopyInfo: (id: string) => void;
+  onDuplicate: (id: string) => void;
   onReorder: (fromIndex: number, toIndex: number) => void;
 }
 
@@ -149,10 +153,12 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-export default function WorkspaceItem({ workspace, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onCopyInfo, onDuplicate, onReorder }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onCopyInfo, onDuplicate, onReorder }: WorkspaceItemProps) {
   const t = useT();
+  // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
+  const workspace = useStore(selectWorkspaceById(workspaceId));
   const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState(workspace.name);
+  const [editName, setEditName] = useState(workspace?.name ?? '');
   const [dropIndicator, setDropIndicator] = useState<'above' | 'below' | null>(null);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [wdOpen, setWdOpen] = useState(false);
@@ -162,23 +168,23 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const dragStartTimeRef = useRef<number>(0);
 
   const unreadCount = useStore((s) =>
-    s.notifications.filter((n) => !n.read && n.workspaceId === workspace.id).length,
+    s.notifications.filter((n) => !n.read && n.workspaceId === workspaceId).length,
   );
   // Sidebar reorder source index lives in the store, not in dataTransfer.
   // See uiSlice.draggedWorkspaceIndex for why this is out-of-band.
   const setDraggedWorkspaceIndex = useStore((s) => s.setDraggedWorkspaceIndex);
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
-  const metadata = workspace.metadata;
+  const metadata = workspace?.metadata;
   // X5 wmux.json badge state for this workspace (transient, probe-driven).
-  const projectState = useStore((s) => s.projectConfigs[workspace.id]);
+  const projectState = useStore((s) => s.projectConfigs[workspaceId]);
 
   // X1→X3 bridge: a listening-port badge click jumps to the workspace and
   // shows http://localhost:<port> in its browser pane (reusing one if the
   // workspace already has it).
   const handlePortClick = (port: number) => {
-    useStore.getState().setActiveWorkspace(workspace.id);
-    openUrlInBrowserPane(`http://localhost:${port}`, { workspaceId: workspace.id });
+    useStore.getState().setActiveWorkspace(workspaceId);
+    openUrlInBrowserPane(`http://localhost:${port}`, { workspaceId });
   };
 
   useEffect(() => {
@@ -197,15 +203,16 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
 
   const commitRename = () => {
     const trimmed = editName.trim();
-    if (trimmed && trimmed !== workspace.name) {
-      onRename(trimmed);
+    if (trimmed && trimmed !== workspace?.name) {
+      onRename(workspaceId, trimmed);
     } else {
-      setEditName(workspace.name);
+      setEditName(workspace?.name ?? '');
     }
     setEditing(false);
   };
 
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!workspace) return;
     dragStartTimeRef.current = Date.now();
     // dataTransfer carries ONLY the markdown so external chat composers
     // see a clean text drop. The source index for sidebar reorder is
@@ -294,16 +301,16 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
     const cmdOrCtrl = window.electronAPI?.platform === 'darwin' ? e.metaKey : e.ctrlKey;
     if (cmdOrCtrl) {
       e.preventDefault();
-      onCtrlSelect();
+      onCtrlSelect(workspaceId);
     } else {
-      onSelect();
+      onSelect(workspaceId);
     }
   };
 
   const handleDoubleClick = () => {
     // 드래그 직후 더블클릭 이벤트 무시
     if (Date.now() - dragStartTimeRef.current < 300) return;
-    setEditName(workspace.name);
+    setEditName(workspace?.name ?? '');
     setEditing(true);
   };
 
@@ -339,6 +346,11 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
       document.removeEventListener('keydown', onKey);
     };
   }, [closeConfirmPos]);
+
+  // A1: 자기 ws가 (막 삭제되어) 없으면 렌더하지 않는다. 모든 훅 호출 이후에만
+  // 반환해 훅 순서를 보존한다. Sidebar는 삭제와 동시에 이 항목을 map에서 제거
+  // 하므로 이 창은 찰나다.
+  if (!workspace) return null;
 
   const hasProfile = workspace.profile !== undefined;
 
@@ -436,7 +448,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
                     aria-label={t('project.badgeTooltip')}
                     onClick={(e) => {
                       e.stopPropagation();
-                      useStore.getState().setProjectDialogWsId(workspace.id);
+                      useStore.getState().setProjectDialogWsId(workspaceId);
                     }}
                   >
                     <IconGear size={9} />
@@ -472,7 +484,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
         {/* Copy session info button */}
         <button
           className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity duration-150"
-          onClick={(e) => { e.stopPropagation(); onCopyInfo(); }}
+          onClick={(e) => { e.stopPropagation(); onCopyInfo(workspaceId); }}
           title={t('workspace.copyInfo')}
           aria-label={t('workspace.copyInfo')}
         >
@@ -520,7 +532,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
           <button
             className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
             style={{ color: 'var(--text-main)' }}
-            onClick={() => { setMenuPos(null); onDuplicate(); }}
+            onClick={() => { setMenuPos(null); onDuplicate(workspaceId); }}
           >
             {t('workspace.duplicate')}
           </button>
@@ -612,7 +624,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
             </button>
             <button
               className="px-2 py-0.5 text-[11px] rounded transition-colors text-[var(--accent-red)] hover:bg-[var(--bg-overlay)]"
-              onClick={() => { setCloseConfirmPos(null); onClose(); }}
+              onClick={() => { setCloseConfirmPos(null); onClose(workspaceId); }}
             >
               {t('workspace.closeConfirmYes')}
             </button>
@@ -627,3 +639,9 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
     </div>
   );
 }
+
+// A2: 리스트 자식 memo 방벽. 부모(Sidebar)가 리렌더돼도 이 항목의 props(id·
+// isActive·isMultiview·index·안정 콜백)가 그대로면 리렌더를 건너뛴다. 자기 ws
+// 내용 변경은 내부 self-subscribe가 직접 리렌더를 유발하므로 memo와 무관하게
+// 반영된다. 기본 얕은 비교로 충분(모든 콜백이 Sidebar에서 안정적으로 생성됨).
+export default memo(WorkspaceItem);

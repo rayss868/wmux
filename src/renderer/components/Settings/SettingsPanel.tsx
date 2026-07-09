@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
+import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProjections';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
@@ -491,7 +493,8 @@ const BUNDLED_FONTS = new Set([
 
 function ResetSection() {
   const t = useT();
-  const workspaces = useStore((s) => s.workspaces);
+  // A1: workspaces는 이 콜백 안에서만 명령형으로 쓰인다(렌더에 미사용) — 구독을
+  // 없애고 getState()로 읽어 불필요한 리렌더를 제거한다.
   const removeWorkspace = useStore((s) => s.removeWorkspace);
   const addWorkspace = useStore((s) => s.addWorkspace);
   const setVisible = useStore((s) => s.setSettingsPanelVisible);
@@ -499,6 +502,7 @@ function ResetSection() {
   const { invoke: ipcInvoke } = useIpc();
 
   const handleReset = useCallback(async () => {
+    const workspaces = useStore.getState().workspaces;
     // Dispose all PTYs across all workspaces
     for (const ws of workspaces) {
       disposePaneTree(ws.rootPane);
@@ -522,7 +526,7 @@ function ResetSection() {
 
     setConfirming(false);
     setVisible(false);
-  }, [workspaces, removeWorkspace, addWorkspace, setVisible, ipcInvoke]);
+  }, [removeWorkspace, addWorkspace, setVisible, ipcInvoke]);
 
   return (
     <div>
@@ -3140,16 +3144,18 @@ function TabNotifications() {
   const notificationSoundChoice  = useStore((s) => s.notificationSoundChoice);
   const setNotificationSoundChoice = useStore((s) => s.setNotificationSoundChoice);
 
-  const workspaces = useStore((s) => s.workspaces);
+  // A1: {id,name,notificationsMuted}만 필요 — 투영만 구독해 cwd/git/port churn에
+  // 리렌더되지 않게 한다.
+  const muteRows = useStore(useShallow(selectWorkspaceMuteRows));
   const updateWorkspaceMetadata = useStore((s) => s.updateWorkspaceMetadata);
 
   const workspaceRows: NotificationsViewWorkspaceRow[] = useMemo(
-    () => workspaces.map((ws) => ({
+    () => muteRows.map((ws) => ({
       id: ws.id,
       name: ws.name,
-      muted: ws.metadata?.notificationsMuted ?? false,
+      muted: ws.notificationsMuted,
     })),
-    [workspaces],
+    [muteRows],
   );
 
   return (

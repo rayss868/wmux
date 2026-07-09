@@ -968,6 +968,12 @@ export default function AppLayout() {
   // Periodic session save — protects against crashes.
   // Awaits scrollback dump completion before saving session.json to guarantee
   // files referenced in session data actually exist on disk.
+  //
+  // A4 (NB2 파동 0): 이 주기 틱은 크래시 세이프티 목적이므로 비동기 저장
+  // (session.saveAsync)으로 보낸다 — main-side 원자 쓰기가 async라 main 이벤트
+  // 루프를 블록하지 않는다. 유실 창은 그대로 ≤5초(틱 간격)다. 리부트 생존의
+  // 핵심인 이벤트 기반 저장(saveSessionNow)과 종료 경로(beforeunload/before-quit/
+  // session-end)는 여전히 동기 save/flushSync를 써서 마지막 상태 유실을 막는다.
   useEffect(() => {
     const interval = setInterval(() => {
       if (!sessionLoadedRef.current) return;
@@ -978,7 +984,7 @@ export default function AppLayout() {
       if (useStore.getState().paneGate !== 'ready') return;
       const dumped = dumpScrollbackBuffersSync();
       const data = buildSessionData(dumped);
-      window.electronAPI.session.save(data);
+      window.electronAPI.session.saveAsync(data);
     }, 5_000);
     return () => { clearInterval(interval); };
   }, []);

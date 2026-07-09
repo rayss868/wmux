@@ -1,5 +1,7 @@
 import { useState, useCallback } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
+import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import WorkspaceItem from './WorkspaceItem';
 import PresetPicker from './PresetPicker';
 import type { Pane } from '../../../shared/types';
@@ -27,7 +29,10 @@ function disposeAllPtys(pane: Pane) {
 export default function Sidebar() {
   const t = useT();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
-  const workspaces = useStore((s) => s.workspaces);
+  // A1: 통트리 구독 해체. Sidebar는 목록 구조(id·name·순서)만 구독하고, 각
+  // WorkspaceItem이 자기 ws를 self-subscribe한다. 배경 ws의 metadata/surface
+  // churn은 이 컴포넌트를 리렌더하지 않는다(이름/추가/삭제/재정렬 시에만).
+  const workspaces = useStore(useShallow(selectWorkspaceIdName));
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const addWorkspace = useStore((s) => s.addWorkspace);
   const removeWorkspace = useStore((s) => s.removeWorkspace);
@@ -52,12 +57,14 @@ export default function Sidebar() {
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
   const closePicker = useCallback(() => setPickerOpen(false), []);
 
-  const handleCtrlSelect = (wsId: string) => {
+  // A1: 콜백을 useCallback으로 안정화해 memo(WorkspaceItem)가 실효하게 한다.
+  // 요약만 구독하므로 개별 ws는 getState()로 명령형 조회한다(구독 다이어트).
+  const handleCtrlSelect = useCallback((wsId: string) => {
     toggleMultiviewWorkspace(wsId);
-  };
+  }, [toggleMultiviewWorkspace]);
 
-  const handleCopySessionInfo = async (wsId: string) => {
-    const ws = workspaces.find((w) => w.id === wsId);
+  const handleCopySessionInfo = useCallback(async (wsId: string) => {
+    const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
     if (!ws) return;
 
     await window.clipboardAPI.writeText(buildWorkspaceMarkdown(ws));
@@ -69,15 +76,15 @@ export default function Sidebar() {
     document.body.appendChild(toast);
     requestAnimationFrame(() => { toast.style.opacity = '1'; });
     setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 200); }, 1500);
-  };
+  }, [t]);
 
-  const handleClose = (wsId: string) => {
+  const handleClose = useCallback((wsId: string) => {
     // 삭제 전 해당 워크스페이스의 모든 PTY 정리
-    const ws = workspaces.find((w) => w.id === wsId);
+    const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
     if (ws) disposeAllPtys(ws.rootPane);
 
     removeWorkspace(wsId);
-  };
+  }, [removeWorkspace]);
 
   return (
     <div
@@ -165,19 +172,23 @@ export default function Sidebar() {
           }
         }}
       >
+        {/* A1/A2: 각 항목에 id + 안정 콜백만 내린다. 콜백은 모두 id 인자를 받는
+            스토어 액션/useCallback 핸들러라 렌더마다 새로 만들어지지 않아
+            memo(WorkspaceItem)가 실효한다. 항목 내용은 WorkspaceItem이 자기
+            ws를 self-subscribe해 반영한다. */}
         {workspaces.map((ws, i) => (
           <WorkspaceItem
             key={ws.id}
-            workspace={ws}
+            workspaceId={ws.id}
             isActive={ws.id === activeWorkspaceId}
             isMultiview={multiviewIds.includes(ws.id)}
             index={i}
-            onSelect={() => setActiveWorkspace(ws.id)}
-            onCtrlSelect={() => handleCtrlSelect(ws.id)}
-            onRename={(name) => renameWorkspace(ws.id, name)}
-            onClose={() => handleClose(ws.id)}
-            onCopyInfo={() => handleCopySessionInfo(ws.id)}
-            onDuplicate={() => duplicateWorkspace(ws.id)}
+            onSelect={setActiveWorkspace}
+            onCtrlSelect={handleCtrlSelect}
+            onRename={renameWorkspace}
+            onClose={handleClose}
+            onCopyInfo={handleCopySessionInfo}
+            onDuplicate={duplicateWorkspace}
             onReorder={reorderWorkspace}
           />
         ))}

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
+import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { resolveExecuteApproval } from '../../utils/executeApproval';
 import { t } from '../../i18n';
 
@@ -10,7 +12,9 @@ import { t } from '../../i18n';
  */
 export default function ExecuteApprovalDialog() {
   const approval = useStore((s) => s.pendingExecuteApproval);
-  const workspaces = useStore((s) => s.workspaces);
+  // A1: id→name 해석만 필요 — {id,name} 투영만 구독해 metadata/surface 변경에
+  // 리렌더되지 않게 한다.
+  const workspaces = useStore(useShallow(selectWorkspaceIdName));
   const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
   const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
   const [now, setNow] = useState(() => Date.now());

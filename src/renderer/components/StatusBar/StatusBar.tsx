@@ -1,8 +1,10 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import type { Notification, Workspace } from '../../../shared/types';
-import { UsageWidgetView } from './UsageWidget';
+import { StatusClockUsage, StatusClockTime } from './StatusClock';
+import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { sumUnread } from '../Channels/ChannelsPanel';
@@ -83,17 +85,13 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
 
 export default function StatusBar() {
   const t = useT();
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  const workspaces = useStore((s) => s.workspaces);
-  const activeWs = workspaces.find((w) => w.id === activeWorkspaceId);
-  // T9: derive unreadCount from workspaces + notifications, excluding muted
-  // workspaces. Read the source slices (stable refs under immer) and compute
-  // the primitive in useMemo so consumers re-render only when the count changes.
-  const notifications = useStore((s) => s.notifications);
-  const unreadCount = useMemo(
-    () => computeUnreadCount(notifications, workspaces),
-    [notifications, workspaces],
-  );
+  // A1: 통트리 구독 해체. StatusBar는 활성 ws의 name/branch 요약과 unreadCount
+  // 파생값만 필요하다 — workspaces 전체를 구독하지 않는다.
+  //  - activeWs 요약: 활성 ws의 name/gitBranch가 바뀔 때만 리렌더(useShallow).
+  //  - unreadCount: computeUnreadCount를 셀렉터 안으로 옮겨 number를 직접 구독.
+  //    number 반환이라 zustand 기본 Object.is 비교로 값이 바뀔 때만 리렌더된다.
+  const activeWs = useStore(useShallow(selectActiveWorkspaceSummary));
+  const unreadCount = useStore((s) => computeUnreadCount(s.notifications, s.workspaces));
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
   const toggleSettingsPanel = useStore((s) => s.toggleSettingsPanel);
 
@@ -109,63 +107,23 @@ export default function StatusBar() {
   const prefixMode = useStore((s) => s.prefixMode);
   const prefixError = useStore((s) => s.prefixError);
 
-  // Company 모드 비용 정보
+  // Company 모드 여부(사이드바 모드 기준). 비용/경과 분·시각·메모리는 시계
+  // 커서에 의존하므로 A5에서 StatusClock{Usage,Time}로 분리됐다 — 시계 틱이
+  // StatusBar 본체를 리렌더하지 않게 하기 위함.
   const sidebarMode = useStore((s) => s.sidebarMode);
-  const totalCost = useStore((s) => s.company?.totalCostEstimate ?? 0);
-  const sessionStartTime = useStore((s) => s.sessionStartTime);
 
-  const [time, setTime] = useState(new Date());
-  const [memUsage, setMemUsage] = useState('');
-  const [sessionMin, setSessionMin] = useState(0);
-
-  // Update clock every second
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setTime(new Date());
-      if (sessionStartTime) {
-        setSessionMin(Math.floor((Date.now() - sessionStartTime) / 60_000));
-      }
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [sessionStartTime]);
-
-  // Update memory usage every 5 seconds. Reads the TOTAL app footprint from
-  // main (app.getAppMetrics summed RSS across the whole Electron process tree)
-  // instead of the renderer-only performance.memory.usedJSHeapSize, which
-  // measured just this renderer's V8 JS heap (~10MB) and under-reported real
-  // memory usage by roughly an order of magnitude.
-  useEffect(() => {
-    let cancelled = false;
-    const update = () => {
-      void window.electronAPI.system.getMemoryUsage().then((bytes) => {
-        if (cancelled || typeof bytes !== 'number' || bytes <= 0) return;
-        setMemUsage(`${Math.round(bytes / 1024 / 1024)}MB`);
-      }).catch(() => { /* main not ready / handler swapped — keep last value */ });
-    };
-    update();
-    const timer = setInterval(update, 5000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, []);
-
-  const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-  const branch = activeWs?.metadata?.gitBranch;
+  const branch = activeWs.branch;
   // Company-mode UI is gated behind COMPANY_MODE_ENABLED (paid "wmux max").
   // Even with a leftover persisted `sidebarMode === 'company'` (from a build
   // where company mode was reachable), the status-bar badge + cost must stay
   // hidden so the deactivated build shows zero company traces.
   const isCompanyMode = COMPANY_MODE_ENABLED && sidebarMode === 'company';
 
-  // Anthropic 5h/7d usage state. Hidden entirely when status === 'idle'
-  // (Settings toggle off). `nowMs` is the existing per-second clock used
-  // for time display — countdown math reuses the same cursor.
-  const usage = useStore((s) => s.anthropicUsage);
-  const nowMs = time.getTime();
-
   return (
     <div className="flex items-center justify-between h-6 px-3 border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono" style={{ backgroundColor: 'var(--bg-mantle)' }} data-onboarding-target="status-bar" {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')} {...tokenAttrs('textMuted', 'text')}>
       {/* Left: workspace + branch */}
       <div className="flex items-center gap-3">
-        <span className="text-[var(--text-main)] font-medium" {...tokenAttrs('textMain', 'text')}>{activeWs?.name || 'wmux'}</span>
+        <span className="text-[var(--text-main)] font-medium" {...tokenAttrs('textMain', 'text')}>{activeWs.name || 'wmux'}</span>
         {prefixMode && (
           <span className="text-[var(--accent-red)] font-bold animate-pulse" {...tokenAttrs('danger', 'accent')}>
             [PREFIX]
@@ -193,19 +151,8 @@ export default function StatusBar() {
 
       {/* Right: status indicators */}
       <div className="flex items-center gap-3">
-        {/* Company 모드일 때 비용 표시 */}
-        {isCompanyMode && (
-          <span className="text-[var(--text-sub2)]" title={t('statusBar.session', { min: sessionMin })}>
-            ~${totalCost.toFixed(2)}
-          </span>
-        )}
-        <UsageWidgetView
-          status={usage.status}
-          snapshot={usage.snapshot}
-          lastError={usage.lastError}
-          subscriptionType={usage.subscriptionType}
-          nowMs={nowMs}
-        />
+        {/* A5: company 비용 + 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
+        <StatusClockUsage isCompanyMode={isCompanyMode} />
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}
         <PluginStatusBarWidgets alignment="right" />
         <button
@@ -225,8 +172,8 @@ export default function StatusBar() {
           )}
         </button>
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
-        {memUsage && <span>{memUsage}</span>}
-        <span>{timeStr}</span>
+        {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
+        <StatusClockTime />
         <button
           onClick={toggleSettingsPanel}
           className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors ml-1"

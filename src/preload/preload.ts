@@ -137,6 +137,9 @@ const electronAPI = {
   },
   session: {
     save: (data: unknown) => ipcRenderer.invoke(IPC.SESSION_SAVE, data),
+    // A4: non-blocking periodic autosave — main writes async (no main-loop
+    // block). Same payload/atomicity as save. Used by the 5s crash-safety tick.
+    saveAsync: (data: unknown) => ipcRenderer.invoke(IPC.SESSION_SAVE_ASYNC, data),
     load: () => ipcRenderer.invoke(IPC.SESSION_LOAD),
   },
   system: {

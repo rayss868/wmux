@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
+import { selectWorkspaceRailSummary } from '../../stores/selectors/workspaceProjections';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { tokenAttrs } from '../../themes';
@@ -10,7 +12,9 @@ import { FOCUS_RING } from '../focusRing';
 export default function MiniSidebar() {
   const t = useT();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
-  const workspaces = useStore((s) => s.workspaces);
+  // A1: 레일은 id/name + 에이전트 상태만 그린다 — 요약 투영만 구독해 cwd/git/
+  // port 변경에는 리렌더되지 않게 한다.
+  const workspaces = useStore(useShallow(selectWorkspaceRailSummary));
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
@@ -63,7 +67,7 @@ export default function MiniSidebar() {
           const isMultiview = multiviewIds.includes(ws.id);
           const isDragging = draggingIndex === i;
           const unreadCount = notifications.filter((n) => !n.read && n.workspaceId === ws.id).length;
-          const agentStatus = ws.metadata?.agentStatus;
+          const agentStatus = ws.agentStatus;
           const agentIcon = agentStatus && agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
           // Initial + position so workspaces with identical prefixes (W, W, W…)
           // remain distinguishable in the 48px rail.
@@ -161,7 +165,7 @@ export default function MiniSidebar() {
                 {agentIcon && (
                   <span
                     className={`absolute -bottom-0.5 -right-0.5 text-[8px] leading-none ${agentIcon.className} ${agentStatus === 'running' ? 'animate-pulse' : ''}`}
-                    title={`${ws.metadata?.agentName ? `${ws.metadata.agentName} — ` : ''}${t(agentIcon.labelKey)}`}
+                    title={`${ws.agentName ? `${ws.agentName} — ` : ''}${t(agentIcon.labelKey)}`}
                   >
                     {agentIcon.dot}
                   </span>

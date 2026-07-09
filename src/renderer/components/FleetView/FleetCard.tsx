@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { FleetPane } from '../../stores/selectors/fleet';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { useT } from '../../hooks/useT';
@@ -14,7 +15,9 @@ function shortenPath(path: string, maxLen = 34): string {
 interface FleetCardProps {
   card: FleetPane;
   focused: boolean;
-  onJump: () => void;
+  /** A2: card를 인자로 받는다 — 부모가 안정적인 단일 콜백(useCallback)을 그대로
+   *  내릴 수 있어 memo(FleetCard)가 실효한다(카드마다 새 화살표 생성 회피). */
+  onJump: (card: FleetPane) => void;
   /** S-C2 live output tail — last ~3 plaintext lines of this pane's buffer.
    *  Only meaningful for terminal cards with a ptyId; already plaintext. */
   tail?: string[];
@@ -26,7 +29,7 @@ interface FleetCardProps {
  * unattended-loop money state — gets a yellow border + "needs your input"
  * affordance so a blocked agent is unmissable. Click jumps to its pane.
  */
-export default function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
+function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
   const t = useT();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
   const isAwaitingInput = card.agentStatus === 'awaiting_input';
@@ -61,7 +64,7 @@ export default function FleetCard({ card, focused, onJump, tail }: FleetCardProp
       aria-selected={focused}
       aria-label={`${displayName}, ${t(icon.labelKey)}, ${card.workspaceName}${supervision ? `, ${supervisionLabel}` : ''}`}
       tabIndex={focused ? 0 : -1}
-      onClick={onJump}
+      onClick={() => onJump(card)}
       data-fleet-card
       data-status={card.agentStatus}
       data-pty-id={card.ptyId}
@@ -163,3 +166,8 @@ export default function FleetCard({ card, focused, onJump, tail }: FleetCardProp
     </button>
   );
 }
+
+// A2: 그리드 자식 memo 방벽. 부모(FleetView)가 함대 갱신마다 리렌더돼도 이 카드의
+// props(card·focused·onJump·tail)가 참조상 같으면 리렌더를 건너뛴다. card/tail은
+// fleet 셀렉터가 값이 바뀐 pane에 대해서만 새 참조를 만들므로 얕은 비교로 실효.
+export default memo(FleetCard);

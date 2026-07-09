@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../../stores';
+import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
 
 interface FileTreePanelProps {
@@ -270,9 +271,8 @@ function TreeItem({
 }
 
 export default function FileTreePanel({ position }: FileTreePanelProps) {
-  const workspaces = useStore((s) => s.workspaces);
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
+  // A1: 활성 ws OBJECT만 구독(cwd/pane 트리 파생) — 배경 ws churn 무시.
+  const activeWorkspace = useStore(selectActiveWorkspace);
 
   // Resolve CWD: try workspace metadata first, then recursively find from panes
   let cwd = activeWorkspace?.metadata?.cwd;

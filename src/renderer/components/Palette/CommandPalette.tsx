@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
+import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import PaletteItem, { type PaletteItemData, type PaletteCategory } from './PaletteItem';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
@@ -125,8 +127,17 @@ export default function CommandPalette() {
   const t = useT();
   const visible = useStore((s) => s.commandPaletteVisible);
   const setVisible = useStore((s) => s.setCommandPaletteVisible);
-  const workspaces = useStore((s) => s.workspaces);
+  // A1: 워크스페이스 "목록" 항목은 id/name만 필요 — 통트리 대신 {id,name} 투영을
+  // 구독해 배경 ws churn에 재빌드/리렌더되지 않게 한다.
+  const workspaces = useStore(useShallow(selectWorkspaceIdName));
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // 리뷰 반영: 활성 ws surface 목록을 getState() 스냅샷으로만 읽으면 팔레트가
+  // 열린 동안의 surface 추가/삭제/개명이 반영되지 않는다(조용한 stale).
+  // visible-게이트 구독 — 닫혀 있으면 undefined 고정(구독 리렌더 0), 열려 있으면
+  // 활성 ws 참조 변경(자기 트리 변경에만 바뀜)에 반응해 목록을 재빌드한다.
+  const activeWorkspaceForItems = useStore((s) =>
+    s.commandPaletteVisible ? s.workspaces.find((w) => w.id === s.activeWorkspaceId) : undefined,
+  );
   const layoutTemplates = useStore((s) => s.layoutTemplates);
 
   const [query, setQuery] = useState('');
@@ -163,8 +174,9 @@ export default function CommandPalette() {
       });
     });
 
-    // Surfaces — gather from active workspace leaf panes
-    const activeWs = workspaces.find((w) => w.id === activeWorkspaceId);
+    // Surfaces — gather from active workspace leaf panes. 리뷰 반영: visible-게이트
+    // 구독(activeWorkspaceForItems)을 쓰므로 팔레트가 열린 동안의 surface 변경도 반영된다.
+    const activeWs = activeWorkspaceForItems;
     if (activeWs) {
       const collectSurfaces = (pane: import('../../../shared/types').Pane) => {
         if (pane.type === 'leaf') {
@@ -539,7 +551,7 @@ export default function CommandPalette() {
     }
 
     return items;
-  }, [workspaces, activeWorkspaceId, layoutTemplates, setVisible, ipcInvoke, recentCommands, togglePalette, plugins, projectConfigs, t]);
+  }, [workspaces, activeWorkspaceId, activeWorkspaceForItems, layoutTemplates, setVisible, ipcInvoke, recentCommands, togglePalette, plugins, projectConfigs, t]);
 
   // -------------------------------------------------------------------------
   // Filtered + scored results — useMemo to cache across renders

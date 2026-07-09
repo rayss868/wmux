@@ -124,3 +124,8 @@ core/harness/corpus-local/
 # Cloned at run time by fetch-esctest.sh (pinned commit); no GPL code in the
 # repo, CI cache, or any build artifact (spec §5-3 GPL isolation policy).
 core/harness/esctest/vendor/
+
+# Local working notes (never commit)
+HANDOFF-*.md
+plans/
+.workflow/

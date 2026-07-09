@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useStore } from '../../stores';
+import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { useT } from '../../hooks/useT';
 import { focusedTerminalPtyId } from '../../utils/focusedSurface';
 import { injectText, quotePathsForPrompt } from './inject';
@@ -10,15 +11,14 @@ import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconSparkles } from 
 
 export default function AgentToolbar() {
   const t = useT();
-  const workspaces = useStore((s) => s.workspaces);
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // A1: 활성 ws의 포커스 pty만 필요 — 활성 ws OBJECT만 구독(배경 ws churn 무시).
+  const activeWorkspace = useStore(selectActiveWorkspace);
   const popover = useStore((s) => s.toolbarPopover);
   const setPopover = useStore((s) => s.setToolbarPopover);
   const newCommand = useStore((s) => s.newConversationCommand);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const ptyId = focusedTerminalPtyId(activeWorkspace);
   const disabled = !ptyId;
 

@@ -15,6 +15,7 @@
 // Plan ref: U4 (wire-path entry), U8 (UI surface), R7, R22, R26.
 
 import {
+  memo,
   useState,
   useRef,
   useCallback,
@@ -639,7 +640,7 @@ export interface ComposerProps {
 
 const EMPTY_MEMBERS: ChannelMember[] = [];
 
-export function Composer({ channelId, onError }: ComposerProps): React.ReactElement {
+function ComposerImpl({ channelId, onError }: ComposerProps): React.ReactElement {
   const t = useT();
   const channel = useStore((s) => s.channels[channelId]);
   const members = useStore((s) => s.channelMembers[channelId] ?? EMPTY_MEMBERS);
@@ -758,4 +759,10 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
   );
 }
 
+// A2: 상시 마운트 대형 컴포넌트 memo 방벽. ChannelView가 리렌더돼도 props
+// (channelId·onError=pushToast 모두 안정)가 그대로면 Composer 재렌더를 건너뛴다.
+// 내부 자체 구독(멤버/멘션 등) 변경은 memo와 무관하게 반영된다.
+// 리뷰 반영: 실사용처(ChannelView)가 named import를 쓰므로 named export 자체가
+// memo 래핑이어야 방벽이 실제로 적용된다(초판은 default만 memo — 무효였음).
+export const Composer = memo(ComposerImpl);
 export default Composer;

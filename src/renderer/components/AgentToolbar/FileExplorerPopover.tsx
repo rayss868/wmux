@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useStore } from '../../stores';
+import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { useT } from '../../hooks/useT';
 import { parsePorcelain, type GitStatusCode } from '../../../shared/gitStatus';
 import { findActiveLeaf } from '../../utils/focusedSurface';
@@ -20,13 +21,10 @@ export default function FileExplorerPopover() {
   const addEditorSurface = useStore((s) => s.addEditorSurface);
   const setPopover = useStore((s) => s.setToolbarPopover);
 
-  // Subscribe to stable references (the workspaces array + the active id) and
-  // derive cwd/activePaneId in the render body. Returning a fresh object from
-  // the selector would fail Zustand's Object.is snapshot check every render and
-  // spin into an infinite update loop ("getSnapshot should be cached").
-  const workspaces = useStore((s) => s.workspaces);
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  const ws = workspaces.find((w) => w.id === activeWorkspaceId);
+  // A1: 활성 ws OBJECT만 구독한다. 셀렉터는 새 객체를 만들지 않고 immer가
+  // 관리하는 ws 참조를 그대로 돌려주므로 Object.is 스냅샷 검사를 통과한다(무한
+  // 루프 없음). 배경 ws의 metadata/surface churn에는 리렌더되지 않는다.
+  const ws = useStore(selectActiveWorkspace);
   const activePaneId = ws?.activePaneId;
   let cwd: string | undefined = ws?.metadata?.cwd;
   if (ws && !cwd) {

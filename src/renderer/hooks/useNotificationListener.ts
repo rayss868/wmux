@@ -10,6 +10,7 @@ import {
   type PolicyContext,
 } from './useNotificationPolicy';
 import { findSurfaceByPtyId, findActiveLeaf } from '../utils/paneTraversal';
+import { FrameCoalescer } from '../utils/frameCoalescer';
 
 // ─── Target resolution helpers (regression-locked, unchanged from pre-T8) ───
 // `findSurfaceByPtyId` / `findActiveLeaf` now live in ../utils/paneTraversal
@@ -394,6 +395,43 @@ export function useNotificationListener() {
       ringTimersRef.current.set(paneId, t);
     };
 
+    // A3 (NB2 파동 0) — 메타 기록 프레임 코얼레싱.
+    //
+    // 타이틀/cwd/gitBranch는 같은 pty로 초당 수 회(주기 틱마다) 도착하는데,
+    // 각 갱신이 updateSurface*/updateWorkspaceMetadata를 즉시 호출하면 immer
+    // set이 workspaces 참조를 매번 새로 만들고 s.workspaces 구독자 전부가
+    // 리렌더된다. 같은 pty의 연속 갱신을 프레임당 1회(마지막 값 승리)로 병합해
+    // 팬아웃을 줄인다.
+    //
+    // 동작 불변: 데몬 정본·session.json 영속에는 무영향 — 값은 이미 main이
+    // 소유하며, 여기서 미루는 것은 "렌더러 스토어에 반영하는 시점"(최대 ~16ms)
+    // 뿐이다. 시각/저장 시맨틱은 동일. onUpdate(meta)의 복잡 경로(agentStatus
+    // 전이·per-surface 맵·포트 유니온·principal 등록)는 중간 전이/부수효과를
+    // 잃을 수 있어 의도적으로 코얼레싱하지 않는다.
+    const cwdCoalescer = new FrameCoalescer<string, string>((ptyId, cwd) => {
+      const state = useStore.getState();
+      // Per-surface cwd + owning workspace metadata, 프레임당 1회로 병합.
+      state.updateSurfaceCwd(ptyId, cwd);
+      for (const ws of state.workspaces) {
+        if (findSurfaceByPtyId(ws.rootPane, ptyId)) {
+          state.updateWorkspaceMetadata(ws.id, { cwd });
+          break;
+        }
+      }
+    });
+    const titleCoalescer = new FrameCoalescer<string, string>((ptyId, title) => {
+      useStore.getState().updateSurfaceTitleByPty(ptyId, title);
+    });
+    const gitBranchCoalescer = new FrameCoalescer<string, string>((ptyId, branch) => {
+      const state = useStore.getState();
+      for (const ws of state.workspaces) {
+        if (findSurfaceByPtyId(ws.rootPane, ptyId)) {
+          state.updateWorkspaceMetadata(ws.id, { gitBranch: branch });
+          break;
+        }
+      }
+    });
+
     const handleNotification = createNotificationHandler({
       getState: () => useStore.getState(),
       isWindowFocused: () => (typeof document !== 'undefined' && typeof document.hasFocus === 'function' ? document.hasFocus() : true),
@@ -413,24 +451,20 @@ export function useNotificationListener() {
     });
 
     const unsubCwd = window.electronAPI.notification.onCwdChanged((ptyId, cwd) => {
-      const state = useStore.getState();
       // Per-surface cwd: every terminal tracks its own working directory (not
       // just the workspace's active cwd), so the "Working directories" menu and
       // the tab tooltip can show each powershell's path — and it persists.
-      state.updateSurfaceCwd(ptyId, cwd);
-      for (const ws of state.workspaces) {
-        const found = findSurfaceByPtyId(ws.rootPane, ptyId);
-        if (found) {
-          state.updateWorkspaceMetadata(ws.id, { cwd });
-          break;
-        }
-      }
+      // A3: 프레임당 1회로 병합(마지막 cwd 승리) — 실제 반영은 cwdCoalescer.
+      if (!ptyId) return;
+      cwdCoalescer.push(ptyId, cwd);
     });
 
     const unsubTitle = window.electronAPI.notification.onTitleChanged((ptyId, title) => {
       // OSC 0/2 window title (e.g. Claude Code `/rename`) → the tab title,
       // unless the user manually renamed this surface (titleLocked).
-      useStore.getState().updateSurfaceTitleByPty(ptyId, title);
+      // A3: 프레임당 1회로 병합(마지막 title 승리) — 반영은 titleCoalescer.
+      if (!ptyId) return;
+      titleCoalescer.push(ptyId, title);
     });
 
     const unsubMeta = window.electronAPI.metadata.onUpdate((payload) => {
@@ -615,14 +649,9 @@ export function useNotificationListener() {
     seedPaneLabels();
 
     const unsubGitBranch = window.electronAPI.notification.onGitBranchChanged((ptyId, branch) => {
-      const state = useStore.getState();
-      for (const ws of state.workspaces) {
-        const found = findSurfaceByPtyId(ws.rootPane, ptyId);
-        if (found) {
-          state.updateWorkspaceMetadata(ws.id, { gitBranch: branch });
-          break;
-        }
-      }
+      // A3: 프레임당 1회로 병합(마지막 branch 승리) — 반영은 gitBranchCoalescer.
+      if (!ptyId) return;
+      gitBranchCoalescer.push(ptyId, branch);
     });
 
     // Phase 1.5 — Claude Code hook signal health. Main throttles to 1Hz so
@@ -667,6 +696,11 @@ export function useNotificationListener() {
       snapCancelled = true;
       if (snapTimer) clearTimeout(snapTimer);
       ringTimersRef.current.clear();
+      // A3: 언마운트 직전 코얼레서에 남은 마지막 값을 동기 반영한 뒤 정리한다.
+      // (hot-reload/재마운트 시 마지막 title/cwd/branch 유실 방지.)
+      cwdCoalescer.flushNow();
+      titleCoalescer.flushNow();
+      gitBranchCoalescer.flushNow();
     };
   }, [flashFrameThrottler]);
 }

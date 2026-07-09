@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { useT } from '../../hooks/useT';
 
 export type PaletteCategory = 'workspace' | 'surface' | 'command' | 'recent';
@@ -24,7 +24,7 @@ const categoryColor: Record<PaletteCategory, string> = {
   recent: 'text-[var(--accent-yellow)]',
 };
 
-export default function PaletteItem({ item, isActive, onClick }: PaletteItemProps) {
+function PaletteItem({ item, isActive, onClick }: PaletteItemProps) {
   const t = useT();
 
   const categoryLabel: Record<PaletteCategory, string> = {
@@ -55,3 +55,8 @@ export default function PaletteItem({ item, isActive, onClick }: PaletteItemProp
     </button>
   );
 }
+
+// A2: 리스트 자식 memo 방벽. 팔레트에서 activeIdx만 바뀔 때, 활성/비활성 경계의
+// 두 항목 외 나머지 행은 리렌더를 건너뛴다(item.action은 buildItems 안에서
+// 안정적으로 생성되므로 onClick 참조가 안정적).
+export default memo(PaletteItem);

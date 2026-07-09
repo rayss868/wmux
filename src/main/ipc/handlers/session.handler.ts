@@ -59,6 +59,16 @@ export function registerSessionHandlers(
     return { success: true };
   }));
 
+  // A4: non-blocking periodic autosave. Same payload + atomicity as SESSION_SAVE
+  // but the write runs async so the renderer's 5s crash-safety tick never blocks
+  // the main event loop. Event-driven ptyId-change saves keep using SESSION_SAVE
+  // (sync) so reboot survival is unchanged.
+  ipcMain.removeHandler(IPC.SESSION_SAVE_ASYNC);
+  ipcMain.handle(IPC.SESSION_SAVE_ASYNC, wrapHandler(IPC.SESSION_SAVE_ASYNC, (_event: Electron.IpcMainInvokeEvent, data: SessionData) => {
+    sessionManager.saveAsync(data);
+    return { success: true };
+  }));
+
   ipcMain.removeHandler(IPC.SESSION_LOAD);
   ipcMain.handle(IPC.SESSION_LOAD, wrapHandler(IPC.SESSION_LOAD, () => {
     return sessionManager.load();
@@ -173,6 +183,7 @@ export function registerSessionHandlers(
     // suspect the renderer's scrollback.load lands in during cold boot.
     console.error(`[session.handler] register cycle: uninstall (ts=${new Date().toISOString()})`);
     ipcMain.removeHandler(IPC.SESSION_SAVE);
+    ipcMain.removeHandler(IPC.SESSION_SAVE_ASYNC);
     ipcMain.removeHandler(IPC.SESSION_LOAD);
     ipcMain.removeHandler(IPC.SCROLLBACK_DUMP);
     ipcMain.removeHandler(IPC.SCROLLBACK_LOAD);

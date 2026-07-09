@@ -32,6 +32,12 @@ export const IPC = {
   SHELL_LIST: 'shell:list',
   FONTS_LIST: 'fonts:list',
   SESSION_SAVE: 'session:save',
+  // A4 — non-blocking periodic autosave. Same payload/atomicity as SESSION_SAVE
+  // (tmp+rename+.bak) but the main-side write is async so the 5s crash-safety
+  // tick never blocks the main event loop. Event-driven ptyId-change saves and
+  // all exit paths keep using the synchronous SESSION_SAVE / flushSync, so
+  // reboot survival is unchanged.
+  SESSION_SAVE_ASYNC: 'session:saveAsync',
   SESSION_LOAD: 'session:load',
   NOTIFICATION: 'notification:new',
   // X2 — OS toast click → jump to the originating pane. Main sends the

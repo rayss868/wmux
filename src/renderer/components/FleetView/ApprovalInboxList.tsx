@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
+import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { useT } from '../../hooks/useT';
 import { groupCapabilities } from '../Approval/PermissionApprovalDialog';
 import type { RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
@@ -40,7 +42,8 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
   // Resolve A2A sender/receiver workspace IDs to display names (mirrors
   // ExecuteApprovalDialog) so the row tells the user WHICH workspace wants
   // bypassPermissions — security context, not just a title.
-  const workspaces = useStore((s) => s.workspaces);
+  // A1: id→name 해석만 필요 — {id,name} 투영만 구독.
+  const workspaces = useStore(useShallow(selectWorkspaceIdName));
   const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
   const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
   const wsName = (id: string) => workspaces.find((w) => w.id === id)?.name ?? id;

@@ -458,7 +458,7 @@ export default function FleetView() {
                   key={`${card.workspaceId}:${card.paneId}:${card.surfaceId}`}
                   card={card}
                   focused={idx === focusedIdx}
-                  onJump={() => jump(card)}
+                  onJump={jump}
                   tail={card.ptyId ? tails[card.ptyId] : undefined}
                 />
               ))}

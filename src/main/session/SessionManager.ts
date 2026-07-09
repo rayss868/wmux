@@ -38,6 +38,20 @@ export class SessionManager {
   private debounceTimer: NodeJS.Timeout | null = null;
   private pendingData: SessionData | null = null;
   private readonly queue = new AsyncQueue();
+  // A4: 저장 순서 보증용 단조 증가 에폭. 이벤트 기반 sync save()가 커밋할 때마다
+  // lastCommittedEpoch를 올린다. 비동기 쓰기(saveAsync/saveDebounced)는 스테이징
+  // 시점의 에폭을 캡처하고, 실제 쓰기 직전 더 새로운 sync 커밋이 있었으면(에폭이
+  // 앞서면) 자신의 오래된 스냅샷 쓰기를 건너뛴다.
+  //
+  // 리뷰 반영(파동 0 패널 — in-flight 역전): pre-write 검사만으로는 이미
+  // `await atomicWriteJSON`에 진입한 async 쓰기가, 그 사이 발생한 sync 커밋을
+  // 뒤늦은 rename으로 덮을 수 있다. 그래서 sync 커밋본을 `lastSyncCommit`으로
+  // 보관하고, async 쓰기 완료 직후 "내 에폭 < 최신 sync 에폭"이면 그 sync 데이터를
+  // 즉시 재기록해 복원한다(같은 큐 태스크 안 — 직렬). 최종 디스크 상태는 어떤
+  // 인터리빙에서도 최신 커밋과 일치한다.
+  private writeEpoch = 0;
+  private lastCommittedEpoch = 0;
+  private lastSyncCommit: { epoch: number; data: SessionData } | null = null;
 
   constructor() {
     this.filePath = path.join(app.getPath('userData'), 'session.json');
@@ -72,17 +86,88 @@ export class SessionManager {
     // persist a newer snapshot synchronously and do not want the
     // older async payload to overwrite it on completion.
     this.queue.clear();
+    // A4: 이 sync 커밋이 어떤 이전 async 스테이징보다 최신임을 에폭으로 표식.
+    const epoch = ++this.writeEpoch;
     try {
       atomicWriteJSONSync(this.filePath, data, {
         validate: SessionManager.isSessionData,
         rotationEnabled: true,
       });
       this.pendingData = null;
+      this.lastCommittedEpoch = epoch;
+      // in-flight async 역전 복원용 보관(위 필드 주석 참조).
+      this.lastSyncCommit = { epoch, data };
       // v2 RCA fix (axis A ③): log exactly which ptyIds this snapshot commits so
       // a fossil-vs-fresh persistence question is answerable from the log alone.
       console.log(`[SessionManager] save: ${SessionManager.summarizePtyIds(data)}`);
     } catch (err) {
       console.error('[SessionManager] Failed to save session:', err);
+    }
+  }
+
+  /**
+   * A4 (NB2 파동 0) — 비동기 주기 저장. 렌더러의 5초 크래시-세이프티 틱이 이
+   * 경로를 쓴다. `save()`와 동일한 원자성(tmp+rename+.bak)이지만 main-side 쓰기가
+   * 비동기라 main 이벤트 루프를 블록하지 않는다.
+   *
+   * 유실 창 불변: 이 경로는 debounce가 없다 — 매 5초 틱마다 즉시 비동기 쓰기를
+   * 큐에 넣으므로 크래시 시 최대 유실 창은 기존 동기 5초 틱과 동일(≤5초)하다.
+   * `saveDebounced`(30초)를 쓰지 않는 이유가 이것이다(창을 30초로 늘리므로).
+   *
+   * 정본 우선순위: 이벤트 기반 sync `save()`(ptyId 변경 — 리부트 생존 경로)가
+   * 이후 발생하면 큐를 비우고 pendingData=null로 만들어 더 최신 스냅샷이 이긴다.
+   * 종료 경로(flush/flushSync)는 pendingData를 동기 flush하므로 마지막 async
+   * 스테이징도 디스크에 반영된다.
+   */
+  saveAsync(data: SessionData): void {
+    this.pendingData = data;
+    const epoch = ++this.writeEpoch;
+    void this.queue.enqueue(QUEUE_KEY, async () => {
+      await this.writeStagedAsync(epoch, 'saveAsync');
+    });
+  }
+
+  /**
+   * 비동기 스테이징 쓰기 공통 경로(saveAsync·saveDebounced).
+   *  1) pre-write: 더 새로운 sync 커밋이 이미 있으면 stale 스냅샷 쓰기를 건너뛴다.
+   *  2) write: 원자적(tmp+rename+.bak) 비동기 쓰기.
+   *  3) post-write 복원(리뷰 반영): await 중 sync 커밋이 끼어들어 우리 rename이
+   *     그것을 덮었다면, 보관해 둔 sync 커밋본을 즉시 재기록한다. 복원 중 또
+   *     새 sync가 오면 루프가 다시 잡는다(에폭 단조 — 유한 종료).
+   */
+  private async writeStagedAsync(epoch: number, tag: string): Promise<void> {
+    const payload = this.pendingData;
+    if (payload === null) return;
+    if (this.lastCommittedEpoch > epoch) {
+      if (this.pendingData === payload) this.pendingData = null;
+      return;
+    }
+    try {
+      await atomicWriteJSON(this.filePath, payload, {
+        validate: SessionManager.isSessionData,
+        rotationEnabled: true,
+      });
+      this.lastCommittedEpoch = Math.max(this.lastCommittedEpoch, epoch);
+      if (this.pendingData === payload) {
+        this.pendingData = null;
+        console.log(`[SessionManager] ${tag}: ${SessionManager.summarizePtyIds(payload)}`);
+      }
+      // post-write 복원 루프: 우리(에폭 epoch)가 더 새로운 sync 커밋(에폭 >epoch)을
+      // rename으로 덮었을 수 있다 — 그 sync 데이터를 다시 커밋해 디스크를 최신으로.
+      let restoredEpoch = epoch;
+      while (this.lastSyncCommit && this.lastSyncCommit.epoch > restoredEpoch) {
+        const sync = this.lastSyncCommit;
+        await atomicWriteJSON(this.filePath, sync.data, {
+          validate: SessionManager.isSessionData,
+          rotationEnabled: true,
+        });
+        restoredEpoch = sync.epoch;
+        console.log(
+          `[SessionManager] ${tag}: restored newer sync commit (epoch ${sync.epoch}) over stale async write`,
+        );
+      }
+    } catch (err) {
+      console.error(`[SessionManager] Failed to save session (${tag}):`, err);
     }
   }
 
@@ -104,20 +189,11 @@ export class SessionManager {
       const snapshot = this.pendingData;
       if (snapshot === null) return;
 
+      // 리뷰 반영: debounce 경로도 saveAsync와 같은 에폭 가드·post-write 복원을
+      // 공유한다(in-flight 역전으로 sync 커밋을 덮는 동일 레이스가 있었음).
+      const epoch = ++this.writeEpoch;
       void this.queue.enqueue(QUEUE_KEY, async () => {
-        const payload = this.pendingData;
-        if (payload === null) return;
-        try {
-          await atomicWriteJSON(this.filePath, payload, {
-            validate: SessionManager.isSessionData,
-            rotationEnabled: true,
-          });
-          if (this.pendingData === payload) {
-            this.pendingData = null;
-          }
-        } catch (err) {
-          console.error('[SessionManager] Failed to save session (async):', err);
-        }
+        await this.writeStagedAsync(epoch, 'saveDebounced');
       });
     }, DEBOUNCE_MS);
   }
