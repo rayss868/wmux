@@ -35,7 +35,7 @@ J0가 명시 위임한 미결("paneGroupId의 실체 — 그룹 vs 페인 배열
 
 - **fanout 호출 멱등(리뷰 G1 — CRITICAL)**: `fanout:start` IPC는 **호출 단위 멱등키**(렌더러가 다이얼로그 제출 시 1회 발급)를 필수로 받는다. FanOutService는 `키 → 태스크별 결과` LRU를 유지: 동일 키 재호출은 재실행 없이 직전 결과 반환, **in-flight 중복은 거부**(진행 중 에러). 더블클릭·IPC 재시도가 N배 worktree를 못 찍는다. 하위 mission.start 멱등키는 `{fanout키}-{k}`로 파생(계층 정합).
 - **실패 보상(태스크 단위 원자성, fan-out 전체는 부분 성공 허용)**: k번째 태스크의 ②~④ 실패 시 그 태스크만 보상 — `mission.close`(J0 보상 경로 재사용 — 채널 archive 포함) + 생성된 worktree는 **삭제하지 않고 보존 목록에 기록**(§6.J "dirty 강제 삭제 금지"의 보수적 확장: 실패 시점의 디스크 상태를 지우는 쪽이 더 위험). 나머지 태스크는 계속. 결과는 태스크별 성공/실패 리포트로 반환.
-- **크래시 창**: ①~④ 사이 main 크래시 → 데몬엔 open 태스크(물질화 미완)가 남는다. J0 reconcile은 채널↔태스크만 본다. J1은 **물질화 reconcile을 추가하지 않는다** — open ∧ worktreePath 부재 태스크는 fan-out 리포트·`task.mission.list` 소비 지점에서 "미물질화"로 노출되고 사람이 close(J0 경로)한다. 자동 재물질화는 J3 수명주기 몫. (판단: 크래시 창이 좁고, 자동 재시도는 이중 worktree 위험이 더 크다.) **디스크 결측(리뷰 G3)**: worktreePath가 커밋됐는데 디스크에서 수동 삭제된 태스크는 데몬이 감지하지 않는다(데몬은 fs 접근 없음 — 정본은 로그) — fan-out 리포트·데모 스크립트가 표시 시점에 fs 검사로 "손상" 판정하고, 상시 감지·회수는 J3 정리 UX 몫(비목표 명시).
+- **크래시 창**: ①~④ 사이 main 크래시 → 데몬엔 open 태스크(물질화 미완)가 남는다. J0 reconcile은 채널↔태스크만 본다. J1은 **물질화 reconcile을 추가하지 않는다** — open ∧ worktreePath 부재 태스크는 fan-out 리포트·`task.mission.list` 소비 지점에서 "미물질화"로 노출되고 사람이 close(J0 경로)한다. 자동 재물질화는 J3 수명주기 몫. **역방향 창(코드 리뷰 D2 — Codex 수용 잔여)**: 렌더러 spawn RPC가 timeout으로 실패 판정된 뒤 렌더러가 늦게 실제로 워크스페이스를 spawn하면, 태스크는 보상 close됐는데 워크스페이스는 고아로 남는다(고아 워크스페이스 ↔ closed 태스크). J1은 이를 자동 수렴시키지 않는다 — 사람이 워크스페이스를 닫아 수렴한다(J3 정리 UX 이전까지 수용 잔여). (판단: 크래시 창이 좁고, 자동 재시도는 이중 worktree 위험이 더 크다.) **디스크 결측(리뷰 G3)**: worktreePath가 커밋됐는데 디스크에서 수동 삭제된 태스크는 데몬이 감지하지 않는다(데몬은 fs 접근 없음 — 정본은 로그) — fan-out 리포트·데모 스크립트가 표시 시점에 fs 검사로 "손상" 판정하고, 상시 감지·회수는 J3 정리 UX 몫(비목표 명시).
 - fan-out N 캡: 8 (상수 `FANOUT_MAX_TASKS` — 워크스페이스·PTY 폭주 방어. J0 open 캡 256과 별개로 1회 호출 캡).
 
 ## 3. 결정 D3 — `TaskWorktreeManager`: 고아 코드 일반화·첫 배선
@@ -44,7 +44,7 @@ J0가 명시 위임한 미결("paneGroupId의 실체 — 그룹 vs 페인 배열
 
 - **전용 루트(§6.J 문면 + 리뷰 C4 — suffix 격리 준수)**: `${getWmuxHomeDir()}/worktrees/{repoHash}/{taskSlug}` — 하드코딩 `~/.wmux`가 아니라 **getWmuxHomeDir()(src/shared/constants.ts:311-317) 파생**으로 dev/dogfood suffix 격리(`~/.wmux-dev` 등)를 상속한다. repoHash = 원본 repo 루트의 **realpath 기반 해시 12자**(J0 `normalizeWorktreePath` 주석의 "realpath는 호출측 몫" 이행 지점), taskSlug = `{title slug 절단 24자}-{taskId 말미 8자}`(충돌은 taskId가 흡수). Windows 260자: 루트+slug 조합 길이 사전 검증(⓪ 프리플라이트 편입), 초과 시 명시 에러 + `core.longpaths` 안내(doctor 편입은 후속).
 - **branch 네이밍**: `wtask/{taskSlug}` — 기존 브랜치 충돌 시 명시 에러(자동 접미사 금지 — 사용자 브랜치 공간을 조용히 오염하지 않는다).
-- **per-repo 직렬 큐(§6.J 인덱스 락 경합)**: repoHash 단위 뮤텍스로 worktree add/remove 순차화. fan-out N개는 같은 repo라 자연 직렬 — git index.lock 경합을 큐잉으로 원천 차단.
+- **per-repo 직렬 큐(§6.J 인덱스 락 경합)**: repoHash 단위 뮤텍스로 worktree add/remove 순차화. fan-out N개는 같은 repo라 자연 직렬 — git index.lock 경합을 큐잉으로 원천 차단. **한계(코드 리뷰 D3)**: 이 뮤텍스는 **프로세스 내 직렬화만** 보장한다 — 별도 프로세스(다른 wmux 인스턴스·외부 git)의 동시 add는 git 자체의 index.lock에 의존하고, 경합 시 명시 에러로 전파된다(조용한 성공 위장 없음).
 - **dirty 보존(§6.J)**: remove 진입 시 `git status --porcelain` 검사 → dirty면 제거 거부 + 보존 목록 반환(강제 삭제 API 자체를 만들지 않는다 — J3에서 "보존 후 목록" UX로 완성).
 - **에지 fail-closed**: bare repo·서브모듈 포함 repo·LFS는 감지 시 명시 에러(지원은 후속 — 조용한 반쪽 동작 금지). git 부재·repo 아님도 동일. 전부 ⓪ 프리플라이트에서 걸러 태스크 생성 전에 거부(리뷰 G2).
 - 배치: `src/main/worktask/TaskWorktreeManager.ts` 신설(company/ 아님 — company 결합 제거).
@@ -54,7 +54,7 @@ J0가 명시 위임한 미결("paneGroupId의 실체 — 그룹 vs 페인 배열
 v1의 "레이스가 물리적으로 없는 경로" 주장은 **철회한다**(리뷰 C2 실코드): initialCommand 자체가 scheduleInitialCommand(src/main/ipc/handlers/scheduleInitialCommand.ts)의 완화 장치 위에 있다 — first-data 대기·settle·15회 재시도·3초 blind fallback, **onExhausted 시 유실 가능**. 정직한 계약:
 
 - 이 경로의 실제 이점 2가지: ① **주입 대상이 프롬프트 본문이 아니라 짧은 명령줄** — 유실 표면이 "수 KB 본문 중간 절단"에서 "한 줄 전체 성패"로 축소되고, 실패가 관측 가능(빈 셸)하다. ② **에이전트 CLI readiness 레이스가 없다** — CLI가 뜬 뒤 본문을 붙여넣는 방식과 달리, 셸 readiness만 문제고 그건 기존 완화 장치의 검증된 영역이다.
-- **onExhausted 배선**: initialCommand 유실 시 해당 태스크를 fan-out 리포트에 "프롬프트 미발사"로 표시(태스크는 성립 — 사람이 프롬프트 파일 경로로 수동 재발사. injectText 재사용).
+- **onExhausted 배선(J3 이연 — 코드 리뷰 D1 정정)**: scheduleInitialCommand는 fire-and-forget이라 유실을 FanOutService로 되돌리는 콜백 채널이 없다 — 리포트 "프롬프트 미발사" 필드를 채우려면 그 채널을 신설해야 하고, 이는 J1 범위를 넘는다. F1 경로 쿼팅 수정이 유실의 **지배 원인**(공백·특수문자 경로가 셸에 재해석돼 빈 프롬프트로 발사되던 것)을 제거하므로, 잔여 유실(셸 readiness 소진)은 best-effort로 명시한다. `FanOutTaskResult`의 관련 필드(예: 프롬프트 미발사 표식)는 스키마 자리만 유지하고 J3(수명주기·회수 UX)가 콜백 채널과 함께 채운다.
 - 프롬프트를 **태스크 메타 디렉토리**(worktree 밖 — `${getWmuxHomeDir()}/worktrees/{repoHash}/.meta/{taskSlug}/prompt.md`)에 파일로 쓰고, 페인 `initialCommand`는 `{agentCmd} "$(cat {promptPath})"`(POSIX) / PowerShell 동형(`Get-Content -Raw`) 한 줄. worktree 안에 두지 않는 이유: diff 오염 금지(J2가 딛는 diff의 청정성).
 - **argv 한계(리뷰 G5 — v1의 64KB 철회)**: `$(cat)` 치환 결과가 단일 argv가 된다 — Windows 명령줄 한계(8191자)·ARG_MAX를 고려해 **프롬프트 캡 8KB**(플랫폼 최소공배수, 상수). 초과 시 명시 에러 + "프롬프트를 줄이고 상세는 파일로 만들어 경로를 언급하라" 안내. stdin 파이프는 에이전트 CLI를 비대화형으로 떨어뜨려(claude -p 모드) 여정 자체가 깨지므로 채택 불가.
 - agentCmd는 fan-out 다이얼로그 입력(기본값 `claude`) — exec 화이트리스트 경로가 아니라 **셸에 타이핑되는 initialCommand 경로**(pty.handler 기존 계약)라 사용자 가시·감사 가능. 쿼팅은 경로만 대상(프롬프트 본문은 파일 안 — 본문 쿼팅 표면 제거는 유효한 논거로 유지).
@@ -133,3 +133,19 @@ Claude 적대(Opus, 실코드 검증 — startupCwd tolerant 계약·scheduleIni
 | G5 | GLM | `$(cat)` 64KB argv — ARG_MAX·Windows 8191자 | 캡 8KB로 축소 + stdin 불채택 논거(§4) |
 | G6 | GLM | N태스크 title 파생 미정 — 브랜치 공간 오염 | 태스크별 title 편집 + 자동 파생 규칙(§7) |
 | G7 | GLM | 고아(worktree·채널) 회수 수단 부재 | J1=발견·노출, 회수=J3 비목표 명시(§0·§9) |
+
+## 12. 코드 리뷰 로그 — 3모델 1라운드 (2026-07-10)
+
+구현 착지(feat/j1-fanout — 8커밋) 후 Codex·Claude·GLM 3모델 fan-out 리뷰. 합의 발견을 수정 5건(F1~F5) + 문서 3건(D1~D3) + 테스트 1건(T1)으로 반영. J0 문서 §8 형식 미러.
+
+| # | 합의 | 요지 | 반영 |
+|---|---|---|---|
+| F1 | 3-MODEL(conf10) | `buildInitialCommand` 경로 미쿼팅 — 공백·`'`·`$`·백틱 경로가 셸에 재해석 | 경로를 셸 단일따옴표로 감싸고 내부 `'` 이스케이프(POSIX `'\''`·PS `''`). 문자열 검증 + 실 `sh -c` 왕복 테스트(FanOutService.ts:370·테스트 3본) |
+| F2 | 2-MODEL | CEO 신원 자동 승격이 born-owned(§5.1 createdBy) 계약 위반 | `verifiedWorkspaceId`를 활성 워크스페이스로 고정, ceoWorkspaceId 참조·의존 제거(FanOutDialog.tsx) |
+| F3 | 2-MODEL | 전역 프리플라이트가 titles[0]만 검증 — titles[1] 부적격 시 부분 태스크 생성 | preflight를 titles 전체로 확장(slug·경로 길이·branch 충돌 rev-parse 선검증), 부적격 시 mission.start 전 N개 전부 거부. 테스트: titles[1] 부적격 시 태스크·spawn 0(FanOutService.ts:178·TaskWorktreeManager.ts checkBranchConflict) |
+| F4 | 2-MODEL | "MCP 도구 없음 = 파이프 미도달" 주석 오해 소지 | 주석 정정: 라우터 등록으로 first-party 도달 가능, 변이는 owner OR CEO authz + 단조 게이트 방어(#113 수용 잔여). 코드 무변경(a2a.channel.rpc.ts:250·FanOutService.ts ④ 주석) |
+| F5 | SOLO(GLM) | broadcast 라벨이 "에이전트 페인"이나 실동작은 모든 터미널 서피스 주입 | 라벨·확인 문구를 "현재 워크스페이스의 모든 터미널 페인에 전송"으로 정정(선별 구현 금지 — 라벨만 사실화, AgentToolbar.tsx) |
+| D1 | 2-MODEL | §4 onExhausted 배선이 미구현 콜백 채널 전제 | "J3 이연"으로 정정 — F1이 유실 지배 원인 제거, 잔여는 best-effort, 결과 필드는 자리 유지(§4) |
+| D2 | SOLO(Codex) | 렌더러 RPC timeout 후 늦은 spawn = 고아 워크스페이스 | §2 크래시 창에 역방향 창 1줄 추가(사람이 워크스페이스 닫기로 수렴 — 수용 잔여) |
+| D3 | 2-MODEL | 직렬 큐가 크로스 프로세스 보장처럼 읽힘 | §3·TaskWorktreeManager 주석에 "프로세스 내 직렬화만, 크로스 프로세스는 git index.lock 의존·명시 에러 전파" 1줄 |
+| T1 | SOLO(Claude) | invite memberId=workspaceId 규약 미고정 | 미션 채널 invite 후 그 workspaceId 멤버의 post가 멤버 게이트를 통과하는지 테스트로 고정(ChannelService.fanoutInvite.test.ts) |
