@@ -1,0 +1,11 @@
+# Rust 빌드 산출물
+/target/
+
+# 스파이크 빌드 산출물(.node / wasm / glue) — 로컬 재생성(build.sh). CI 편입은 S-A2.
+/dist/
+
+# napi CLI가 요구하는 crate-local package.json의 부산물(있을 경우)
+node_modules/
+
+# napi CLI가 자동 생성할 수 있는 파일
+*.node

@@ -1,0 +1,14 @@
+{
+  "name": "wmux-term",
+  "version": "0.0.0",
+  "private": true,
+  "description": "E0 스파이크 S-A1 — vte + 미니 그리드, 이중 타깃 배관 실증 (스켈레톤)",
+  "main": "dist/napi/index.cjs",
+  "types": "dist/napi/index.d.ts",
+  "napi": {
+    "binaryName": "wmux-term",
+    "targets": [
+      "aarch64-apple-darwin"
+    ]
+  }
+}
