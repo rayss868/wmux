@@ -21,6 +21,11 @@ function makeResult(overrides = {}) {
     frame8P95: 12,
     ramIdle: 200 * 1024 * 1024,
     ram8: 400 * 1024 * 1024,
+    // W2 frameBudget p95s (one per gated N) — present so the "equal baseline ==
+    // all PASS" invariant holds now that GATES includes the frameBudget entries.
+    frameBudgetN4: 20,
+    frameBudgetN8: 28,
+    frameBudgetN16: 40,
     schemaVersion: SCHEMA_VERSION,
     throttled: false,
     throttled8: false,
@@ -44,6 +49,11 @@ function makeResult(overrides = {}) {
       ram: {
         idle1Pane: { workingSetBytes: o.ramIdle },
         panes8: { workingSetBytes: o.ram8 },
+      },
+      frameBudget: {
+        N4: { frameDeltaMs: { p95: o.frameBudgetN4 } },
+        N8: { frameDeltaMs: { p95: o.frameBudgetN8 } },
+        N16: { frameDeltaMs: { p95: o.frameBudgetN16 } },
       },
     },
   };

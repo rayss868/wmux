@@ -77,6 +77,62 @@ export const GATES = [
     absMargin: 157286400, // 150 MiB
     unit: 'bytes',
   },
+  // W2 — N-pane concurrent-streaming frame budget (design §2.1/§3). ratio 2.0
+  // encodes the strategy doc's "예산 2배" trigger directly. absMargin is a
+  // CONSERVATIVE placeholder (this worktree is macOS; the packaged bench only
+  // runs on the Windows CI target, so no local frame-delta measurement was
+  // possible to calibrate it — the owner refreshes it when the first blessed
+  // CI baseline lands, exactly like the other gates). Each N gates against its
+  // OWN baseline entry (no single 16.7ms budget across N).
+  {
+    key: 'frameBudgetP95Ms_N4',
+    label: 'frameBudget.N4.frameDeltaMs.p95',
+    path: 'scenarios.frameBudget.N4.frameDeltaMs.p95',
+    scenarioPath: 'scenarios.frameBudget.N4',
+    ratio: 2.0,
+    absMargin: 8, // ms (conservative; see note above)
+    unit: 'ms',
+  },
+  {
+    key: 'frameBudgetP95Ms_N8',
+    label: 'frameBudget.N8.frameDeltaMs.p95',
+    path: 'scenarios.frameBudget.N8.frameDeltaMs.p95',
+    scenarioPath: 'scenarios.frameBudget.N8',
+    ratio: 2.0,
+    absMargin: 8, // ms
+    unit: 'ms',
+  },
+  {
+    key: 'frameBudgetP95Ms_N16',
+    label: 'frameBudget.N16.frameDeltaMs.p95',
+    path: 'scenarios.frameBudget.N16.frameDeltaMs.p95',
+    scenarioPath: 'scenarios.frameBudget.N16',
+    ratio: 2.0,
+    absMargin: 8, // ms
+    unit: 'ms',
+  },
+];
+
+// W2 — boolean consistency gates (design §3). Unlike GATES (numeric regression
+// vs a baseline), these are a pass/fail CORRECTNESS check with NO baseline: the
+// IME composition must echo back exactly, and the WebGL context must recover
+// after a forced loss. Judgment is baseline-independent — `current !== true` is
+// an immediate FAIL when the scenario is present. When the scenario is absent
+// (e.g. --skip-ime) the gate is SKIP, not FAIL. `path` points at the boolean
+// field; `scenarioPath` distinguishes "absent" from "present-but-false".
+export const BOOL_GATES = [
+  {
+    key: 'imePass',
+    label: 'ime.pass',
+    path: 'scenarios.ime.pass',
+    scenarioPath: 'scenarios.ime',
+  },
+  {
+    key: 'webglContextLossPass',
+    label: 'webglContextLoss.pass',
+    path: 'scenarios.webglContextLoss.pass',
+    scenarioPath: 'scenarios.webglContextLoss',
+  },
 ];
 
 // Below this fraction of the baseline we suggest re-blessing the baseline so it
@@ -117,6 +173,7 @@ function fmtMs(n) {
 
 export function fmtValue(v, unit) {
   if (v == null) return '—';
+  if (unit === 'bool') return v === true ? 'true' : 'false';
   if (unit === 'bytes') return fmtBytes(v);
   return fmtMs(v);
 }
@@ -210,6 +267,47 @@ export function compareResults(current, baseline, gates = GATES) {
         r.improved = true;
         r.note = 'improved — consider refreshing baseline';
       }
+    }
+    results.push(r);
+  }
+  return results;
+}
+
+/**
+ * Pure boolean-gate core (W2). Baseline-independent correctness check — no
+ * ratio, no margin. Per gate:
+ *   status: 'PASS'  — scenario present AND value === true
+ *           'FAIL'  — scenario present AND value !== true
+ *           'SKIP'  — scenario absent (e.g. skipped by a flag)
+ * Structurally shaped like compareResults() entries so renderTable/renderMarkdown
+ * can render both in one table.
+ */
+export function compareBoolGates(current, gates = BOOL_GATES) {
+  const results = [];
+  for (const gate of gates) {
+    const scenarioPresent = getPath(current, gate.scenarioPath) != null;
+    const val = getPath(current, gate.path);
+    const r = {
+      key: gate.key,
+      label: gate.label,
+      unit: 'bool',
+      baseline: null,
+      current: val === true ? true : val === false ? false : null,
+      deltaPct: null,
+      status: 'SKIP',
+      improved: false,
+      note: '',
+      bool: true,
+    };
+    if (!scenarioPresent) {
+      r.status = 'SKIP';
+      r.note = 'scenario absent (skipped?)';
+    } else if (val === true) {
+      r.status = 'PASS';
+      r.note = 'consistency check passed';
+    } else {
+      r.status = 'FAIL';
+      r.note = 'consistency check failed (expected true)';
     }
     results.push(r);
   }
@@ -369,6 +467,14 @@ function historyLine(current, meta) {
     frame8P95Ms: v('scenarios.inputLatency8.frameMs.p95'),
     ramIdleBytes: v('scenarios.ram.idle1Pane.workingSetBytes'),
     ram8Bytes: v('scenarios.ram.panes8.workingSetBytes'),
+    // W2 trend fields (additive — older readers ignore unknown keys).
+    frameBudgetP95Ms_N4: v('scenarios.frameBudget.N4.frameDeltaMs.p95'),
+    frameBudgetP95Ms_N8: v('scenarios.frameBudget.N8.frameDeltaMs.p95'),
+    frameBudgetP95Ms_N16: v('scenarios.frameBudget.N16.frameDeltaMs.p95'),
+    imePass: getPath(current, 'scenarios.ime.pass') === true ? true
+      : getPath(current, 'scenarios.ime') != null ? false : null,
+    webglContextLossPass: getPath(current, 'scenarios.webglContextLoss.pass') === true ? true
+      : getPath(current, 'scenarios.webglContextLoss') != null ? false : null,
   });
 }
 
@@ -451,13 +557,20 @@ function main() {
 
   // Compare against baseline (null baseline → everything NEW/SKIP, never FAIL).
   const results = compareResults(current, baseline, GATES);
+  // W2 boolean consistency gates (baseline-independent). Displayed always; they
+  // only enforce (nonzero exit) once NOT record-only — i.e. once the owner has
+  // blessed a baseline file, which is the same "gate goes live after bless"
+  // signal the numeric gates use (design §3). This keeps the first landings
+  // record-only so the job doesn't fail before a baseline exists.
+  const boolResults = compareBoolGates(current, BOOL_GATES);
+  const allResults = [...results, ...boolResults];
 
   // Human-readable table to stdout.
   if (recordOnly) {
     process.stdout.write(`${recordReason}\n\n`);
   }
-  process.stdout.write(renderTable(results) + '\n');
-  const notes = results.filter((r) => r.note);
+  process.stdout.write(renderTable(allResults) + '\n');
+  const notes = allResults.filter((r) => r.note);
   if (notes.length) {
     process.stdout.write('\nNotes:\n');
     for (const r of notes) process.stdout.write(`  - ${r.label}: ${r.note}\n`);
@@ -468,7 +581,7 @@ function main() {
   if (args.summary) {
     const mdNotes = [...extraNotes];
     if (recordOnly) mdNotes.unshift(`Record-only: ${recordReason}.`);
-    const md = renderMarkdown(results, meta, mdNotes);
+    const md = renderMarkdown(allResults, meta, mdNotes);
     try {
       fs.mkdirSync(path.dirname(path.resolve(args.summary)), { recursive: true });
       fs.writeFileSync(args.summary, md + '\n', 'utf8');
@@ -487,7 +600,8 @@ function main() {
   }
 
   if (recordOnly) return 0;
-  return hasFailure(results) ? 1 : 0;
+  // Numeric OR boolean gate failure fails the job.
+  return hasFailure(allResults) ? 1 : 0;
 }
 
 // Guard the CLI entry so importing this module (vitest) does not run main().
