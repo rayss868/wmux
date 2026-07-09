@@ -137,6 +137,7 @@ export const en = {
   'fleet.needsAttention': '{count} need you',
   'fleet.needsYourInput': 'Needs your input',
   'fleet.jumpHint': 'jump to agent',
+  'fleet.close': 'Close fleet panel',
 
   // Fleet View — Remote tab (LanLink PR-5 read-only remote-peer inbox)
   'fleet.remote.empty': 'No remote messages',

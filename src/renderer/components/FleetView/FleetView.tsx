@@ -23,10 +23,16 @@ import ApprovalInboxList from './ApprovalInboxList';
 import RemoteInboxList from './RemoteInboxList';
 
 /**
- * S-C1 Fleet View — the cockpit. A full-screen overlay (Ctrl+Shift+A) that
- * shows every agent across every workspace on one screen, with the blocked
+ * S-C1 Fleet View — the cockpit. An always-on chrome panel (Ctrl+Shift+A
+ * toggles it) that shows every agent across every workspace, with the blocked
  * ones floated to the top. Click a card → jump straight to that pane. The
  * "Approvals" tab is a v2 stub (the unified A2A + MCP approval inbox).
+ *
+ * NB2 파동2 사이클 A: 전체화면 모달 → 상시 크롬 전환. ChannelDock과 같은 flex
+ * 형제 패턴으로 AppLayout에 배치돼 페인을 reflow한다(더 이상 fixed 오버레이가
+ * 아니라 워크스페이스 사이드바 반대편의 고정폭 사이드 패널). 백드롭·모달 포커스
+ * 트랩은 제거됐고, 키보드 상호작용은 패널에 포커스가 있을 때만 가로챈다 —
+ * 다른 페인으로 Tab 이동이 자유롭다.
  *
  * Mount-gated by AppLayout on `fleetViewVisible`, so this component (and its
  * store subscriptions / selector) only exists while the cockpit is open.
@@ -34,6 +40,11 @@ import RemoteInboxList from './RemoteInboxList';
 export default function FleetView() {
   const t = useT();
   const setVisible = useStore((s) => s.setFleetViewVisible);
+  // 상시 크롬 엣지 미러링: 워크스페이스 사이드바는 sidebarPosition에, 이 패널은
+  // 그 반대편에 앉는다(ChannelDock과 동일 규칙). 사이드바가 왼쪽(기본)이면 패널은
+  // 오른쪽이고 콘텐츠 경계선은 왼쪽을 향한다(border-l).
+  const sidebarPosition = useStore((s) => s.sidebarPosition);
+  const dockOnRight = sidebarPosition !== 'right';
   const workspaces = useStore((s) => s.workspaces);
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
   // Hook-driven per-pane activity line (fleet-activity-line-hook). Subscribed
@@ -191,67 +202,85 @@ export default function FleetView() {
     setRemoteIdx((i) => Math.min(i, Math.max(remoteInbox.length - 1, 0)));
   }, [remoteInbox.length]);
 
-  // Pull DOM focus INTO the overlay (the focused card, else the panel) so no
-  // keystroke — arrows, Enter, or typed text — can leak to the background
-  // pane's xterm textarea underneath the backdrop, and so the keyboard
-  // selection is announced by assistive tech (roving focus on role=option).
-  useEffect(() => {
-    const raf = requestAnimationFrame(() => {
-      if (tab === 'fleet' && panes.length > 0) {
-        const cards = gridRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card]');
-        (cards && cards[focusedIdx])?.focus();
-      } else if (tab === 'approvals' && inbox.length > 0) {
-        // Mirror the fleet-tab branch for the inbox listbox so arrows / Enter /
-        // deny-keys land on the focused row and can't leak to the background
-        // xterm underneath the backdrop.
-        const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
-        (rows && rows[inboxIdx])?.focus();
-      } else if (tab === 'remote' && remoteInbox.length > 0) {
-        // Same roving-focus pull for the remote-peer listbox.
-        const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
-        (rows && rows[remoteIdx])?.focus();
-      } else {
-        panelRef.current?.focus();
-      }
-    });
-    return () => cancelAnimationFrame(raf);
+  // 현재 탭·포커스 인덱스에 해당하는 카드/행에 실제 DOM 포커스를 건다. 성공 시 true.
+  // 패널 컨테이너(panelRef)가 아니라 항목 요소에 직접 걸어야 (1) 보조기술이 최초
+  // 선택을 announce하고 (2) 탭에 카드가 하나뿐이어도 로빙 인덱스 클램프에 갇히지
+  // 않는다. 마운트 효과와 로빙 효과가 공유하는 단일 포커스 경로.
+  const focusActiveItem = useCallback(() => {
+    if (tab === 'fleet' && panes.length > 0) {
+      const cards = gridRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card]');
+      const el = cards && cards[focusedIdx];
+      if (el) { el.focus(); return true; }
+    } else if (tab === 'approvals' && inbox.length > 0) {
+      const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
+      const el = rows && rows[inboxIdx];
+      if (el) { el.focus(); return true; }
+    } else if (tab === 'remote' && remoteInbox.length > 0) {
+      const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
+      const el = rows && rows[remoteIdx];
+      if (el) { el.focus(); return true; }
+    }
+    return false;
   }, [tab, focusedIdx, inboxIdx, remoteIdx, panes.length, inbox.length, remoteInbox.length]);
 
-  // Keyboard: Esc closes; unmodified arrows move card focus and are ALWAYS
-  // swallowed (capture-phase) so they never reach the background xterm or
-  // scroll the page, even on the Approvals tab / empty fleet. Enter/Space are
-  // left to native <button> activation on the focused card (one code path, no
-  // double-fire). The global useKeyboard handler ignores unmodified
-  // Esc/Arrow, and Ctrl+Shift+A still toggles closed through it.
+  // 마운트 효과([] deps)가 매 포커스 변경마다 재실행되지 않으면서도 최신 상태를
+  // 읽도록, 최신 focusActiveItem 클로저를 ref에 보관한다.
+  const focusActiveItemRef = useRef(focusActiveItem);
+  focusActiveItemRef.current = focusActiveItem;
+
+  // 닫힐 때 포커스를 되돌릴 대상(열기 트리거 시점의 activeElement)을 담아두는 ref.
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+
+  // 상시 크롬 전환: 열림(마운트) 시 딱 한 번 현재 항목으로 포커스를 당긴다. 예전엔
+  // 여기서 panelRef에만 포커스를 줬는데, 아래 로빙 효과의 "포커스가 이미 패널 안"
+  // 가드가 rAF 콜백보다 먼저 동기 실행돼 거짓이라 즉시 return → 어떤 카드에도 실제
+  // DOM 포커스가 안 걸리고, 카드가 하나뿐이면 화살표 클램프로 인덱스가 안 바뀌어
+  // 로빙이 영영 안 살아나는 레이스가 있었다. 이제 실제 카드/행에 직접 포커스하고,
+  // 항목이 하나도 없을 때만 패널 컨테이너로 폴백한다. 모달과 달리 그 뒤로는 절대
+  // 포커스를 강탈하지 않는다(아래 로빙 효과가 "이미 패널 안"일 때만 이동).
+  //
+  // 닫힘(Esc/닫기 버튼/Ctrl+Shift+A) 시엔 포커스가 있던 요소가 사라지며 브라우저가
+  // 포커스를 body로 되돌린다. 이를 막기 위해 마운트 시점(아직 아래 rAF가 포커스를
+  // 뺏기 전 = 열기 트리거 직후의 activeElement)을 저장해뒀다가 언마운트에서 복원한다.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const raf = requestAnimationFrame(() => {
+      if (!focusActiveItemRef.current()) panelRef.current?.focus();
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      // 열기 시점 요소가 아직 문서에 살아있으면 포커스를 되돌린다(예: 타이핑 중이던
+      // 페인의 xterm textarea). 그새 사라졌으면 억지로 옮기지 않고 브라우저 기본
+      // (body)에 맡긴다.
+      const el = restoreFocusRef.current;
+      if (el && el.isConnected) el.focus();
+    };
+  }, []);
+
+  // 로빙 포커스: 화살표 이동에 맞춰 DOM 포커스가 카드/행을 따라가고 보조기술이
+  // 선택을 읽어주도록 한다. 단 상시 크롬이므로 포커스가 "이미 패널 안"일 때만
+  // 이동한다 — 사용자가 다른 페인에서 타이핑 중일 때 리렌더가 포커스를 뺏으면
+  // 안 된다(모달 트랩과의 결정적 차이). 포커스가 밖이면 아무것도 하지 않는다.
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || !panel.contains(document.activeElement)) return;
+    const raf = requestAnimationFrame(() => { focusActiveItem(); });
+    return () => cancelAnimationFrame(raf);
+  }, [focusActiveItem]);
+
+  // Keyboard (상시 크롬 재설계): 모달 시절의 전역 window 캡처 리스너 + Tab 트랩을
+  // 걷어냈다. 대신 이 핸들러는 패널 DOM에 onKeyDownCapture로 붙어 "포커스가 패널
+  // 안에 있을 때만" 발동한다 — 다른 페인의 xterm에 포커스가 있으면 아무 키도
+  // 가로채지 않으므로 화면 전체를 가두지 않는다. Tab은 더 이상 붙잡지 않는다:
+  // 네이티브 Tab이 role=listbox 관례(로빙 tabindex, 화살표=내부 이동, Tab=위젯
+  // 진입/이탈)대로 포커스를 패널 밖 다른 페인으로 내보낼 수 있다. Esc는 포커스가
+  // 패널 안일 때 크롬을 닫는다. Ctrl+Shift+A 토글은 useKeyboard 전역 핸들러 담당.
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
         setVisible(false);
-        return;
-      }
-      if (e.key === 'Tab') {
-        // Modal focus trap: never let Tab escape the overlay. On the Fleet tab
-        // it drives roving card navigation (wrapping); otherwise it cycles the
-        // dialog's own controls (the tab buttons) so a keyboard user can still
-        // switch tabs instead of dead-ending on the empty / Approvals state.
-        e.preventDefault();
-        e.stopPropagation();
-        if (tab === 'fleet' && panes.length > 0) {
-          setFocusedIdx((i) =>
-            e.shiftKey ? (i - 1 + panes.length) % panes.length : (i + 1) % panes.length);
-          return;
-        }
-        const focusables = Array.from(
-          panelRef.current?.querySelectorAll<HTMLElement>('button:not([tabindex="-1"])') ?? [],
-        );
-        if (focusables.length === 0) { panelRef.current?.focus(); return; }
-        const cur = focusables.indexOf(document.activeElement as HTMLElement);
-        const next = e.shiftKey
-          ? (cur - 1 + focusables.length) % focusables.length
-          : (cur + 1) % focusables.length;
-        focusables[next]?.focus();
         return;
       }
       // Approvals tab: Enter approves the focused row (guard #5 — non-critical
@@ -269,10 +298,16 @@ export default function FleetView() {
       // explicit keyboard Approve (the sanctioned path per guard #5) would be
       // unreachable because the critical-row no-op swallows Enter first.
       const active = document.activeElement;
-      const onDialogButton =
-        active instanceof HTMLElement && active.tagName === 'BUTTON' &&
+      // 행 단축키(Enter=승인, Backspace/Delete=거부/dismiss)는 role=option 행 자체에
+      // 포커스가 있을 때만 발동한다. 예전엔 <button>만 예외 처리했는데, Tab 트랩을
+      // 걷어내며 A2A 행의 auto-approve 체크박스(input)도 키보드 포커스를 받게 됐다.
+      // 체크박스에 포커스가 있을 때 Enter/Backspace/Delete가 행 승인/거부로 오발화하면
+      // 신뢰경계 위반이다 — 그래서 버튼·체크박스 등 어떤 인터랙티브 컨트롤이든 행
+      // 자신이 아니면 가로채지 않고 네이티브 활성화(체크박스 토글, 버튼 클릭)에 맡긴다.
+      const onOptionRow =
+        active instanceof HTMLElement && active.getAttribute('role') === 'option' &&
         !!panelRef.current?.contains(active);
-      if (tab === 'approvals' && inbox.length > 0 && !onDialogButton) {
+      if (tab === 'approvals' && inbox.length > 0 && onOptionRow) {
         if (e.key === 'Enter') {
           e.preventDefault();
           e.stopPropagation();
@@ -291,9 +326,9 @@ export default function FleetView() {
         }
       }
       // Remote tab: read-only, so no Enter action — Backspace/Delete dismisses the
-      // focused card (mirrors approvals' deny-key path; same onDialogButton guard so
-      // a Tab-focused dismiss <button> keeps native activation).
-      if (tab === 'remote' && remoteInbox.length > 0 && !onDialogButton) {
+      // focused card (mirrors approvals' deny-key path; same onOptionRow guard so a
+      // Tab-focused dismiss <button> / checkbox keeps native activation).
+      if (tab === 'remote' && remoteInbox.length > 0 && onOptionRow) {
         if (e.key === 'Backspace' || e.key === 'Delete') {
           e.preventDefault();
           e.stopPropagation();
@@ -332,31 +367,26 @@ export default function FleetView() {
           setRemoteIdx((i) => Math.max(i - 1, 0));
         }
       }
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [tab, panes.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible]);
+    }, [tab, panes.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible]);
 
   return (
+    // 상시 크롬 패널: fixed 오버레이·백드롭 없이 AppLayout flex 트리의 형제로서
+    // 폭을 차지해 페인을 reflow한다. role=region(모달 아님), 사이드바 반대편 엣지에
+    // 붙는다. 키보드는 포커스가 이 패널 안에 있을 때만 onKeyDownCapture로 가로챈다.
     <div
-      className="fixed inset-0 z-[var(--z-fleet)] flex items-start justify-center pt-[8vh]"
-      style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
-      onMouseDown={(e) => { if (e.target === e.currentTarget) setVisible(false); }}
+      ref={panelRef}
+      tabIndex={-1}
+      role="region"
+      aria-label={t('fleet.title')}
+      data-fleet-view
+      onKeyDownCapture={handleKeyDown}
+      className={`flex flex-col h-full overflow-hidden outline-none ${dockOnRight ? 'border-l' : 'border-r'}`}
+      style={{
+        width: 'clamp(300px, 30vw, 460px)',
+        backgroundColor: 'var(--bg-base)',
+        borderColor: 'var(--bg-surface)',
+      }}
     >
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-label={t('fleet.title')}
-        className="w-[min(960px,92vw)] max-h-[82vh] flex flex-col rounded-xl overflow-hidden shadow-2xl outline-none"
-        style={{
-          backgroundColor: 'var(--bg-base)',
-          border: '1px solid var(--bg-surface)',
-          boxShadow: 'var(--shadow-modal-soft)',
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
         {/* Header: title + "N need you" chip */}
         <div
           className="flex items-center gap-3 px-4 py-3"
@@ -389,12 +419,18 @@ export default function FleetView() {
               {t('fleet.sort.label')}: {t(fleetSortMode === 'attention' ? 'fleet.sort.attention' : 'fleet.sort.workspace')}
             </button>
           )}
-          <kbd
-            className="text-xs text-[var(--text-muted)] px-1.5 py-0.5 rounded"
-            style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
+          {/* 상시 크롬: 백드롭 클릭-닫힘이 사라졌으므로 명시적 닫기 버튼이 필수.
+              Ctrl+Shift+A / Esc(포커스 내부)와 함께 닫기 경로를 제공한다. */}
+          <button
+            type="button"
+            onClick={() => setVisible(false)}
+            className="text-sm leading-none text-[var(--text-muted)] px-1.5 py-0.5 rounded transition-colors hover:text-[var(--text-main)]"
+            style={{ border: '1px solid var(--bg-overlay)' }}
+            title={t('fleet.close')}
+            aria-label={t('fleet.close')}
           >
-            ESC
-          </kbd>
+            ✕
+          </button>
         </div>
 
         {/* Tabs: Fleet (v1) + Approvals (v2 stub) */}
@@ -451,7 +487,10 @@ export default function FleetView() {
               role="listbox"
               aria-label={t('fleet.title')}
               className="grid gap-3"
-              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}
+              // 상시 크롬 폭(모달 92vw/960px보다 좁음)에 맞춰 카드 최소폭을 축소해
+              // 좁은 패널에서도 그리드가 넘치지 않게 한다. 카드 내부는 전부 truncate라
+              // 200px에서도 레이아웃이 깨지지 않는다(기능 불변, 시각은 자연히 변화).
+              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}
             >
               {panes.map((card, idx) => (
                 <FleetCard
@@ -523,7 +562,6 @@ export default function FleetView() {
             </span>
           )}
         </div>
-      </div>
     </div>
   );
 }

@@ -1336,6 +1336,15 @@ export default function AppLayout() {
           <ChannelDock />
         </ErrorBoundary>
       )}
+      {/* S-C1 Fleet View (Ctrl+Shift+A) — NB2 파동2 사이클 A에서 전체화면 모달을
+          상시 크롬으로 전환. ChannelDock과 같은 flex 형제 패턴으로 워크스페이스
+          사이드바 반대편 엣지에 고정폭으로 앉아 페인을 reflow한다(더 이상 z-fleet
+          fixed 오버레이가 아니다). Mount-gated on fleetViewVisible. */}
+      {fleetViewVisible && (
+        <ErrorBoundary name="FleetView">
+          <FleetView />
+        </ErrorBoundary>
+      )}
       {fileTreeVisible && (
         <ErrorBoundary name="FileTree">
           <FileTreePanel position={sidebarPosition === 'left' ? 'right' : 'left'} />
@@ -1352,14 +1361,6 @@ export default function AppLayout() {
         </ErrorBoundary>
       )}
       <CommandPalette />
-      {/* S-C1 Fleet View overlay (--z-fleet 55, Ctrl+Shift+A) — above the
-          palette (--z-overlay 50), below inspect (--z-inspect 65). Mount-gated
-          on fleetViewVisible. */}
-      {fleetViewVisible && (
-        <ErrorBoundary name="FleetView">
-          <FleetView />
-        </ErrorBoundary>
-      )}
       <SettingsPanel />
       {/* Color inspect-mode overlay (S4). Sits at --z-inspect (65, declared
           inside the component) — above SettingsPanel (--z-overlay 50) so it
