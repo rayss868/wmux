@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # S-A1 스파이크 검증 5종 — V1~V5 순차 실행, 하나라도 실패 시 비영 종료.
-# 선행: build.sh로 산출물 생성 필요.
+# 리뷰 반영: stale artifact로 통과하는 구멍을 막기 위해 검증 전 빌드를 강제한다
+# (현재 소스에서 재빌드된 산출물만 검증 대상 — cargo/wasm-pack 증분 빌드라 반복 비용 낮음).
 set -uo pipefail
 
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -9,6 +10,9 @@ REPO_ROOT="$(cd "$CRATE_DIR/../.." && pwd)"
 ELECTRON="$REPO_ROOT/node_modules/.bin/electron"
 
 cd "$CRATE_DIR"
+
+echo "==> 검증 전 빌드 강제(stale artifact 방지)"
+bash "$CRATE_DIR/build.sh" || { echo ">>> 빌드 실패 — 검증 중단"; exit 1; }
 FAIL=0
 run() { echo ""; echo "======== $1 ========"; shift; "$@"; local rc=$?; if [ $rc -ne 0 ]; then echo ">>> 실패(exit $rc)"; FAIL=1; fi; }
 

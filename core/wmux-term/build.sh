@@ -8,8 +8,8 @@ CRATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$CRATE_DIR/../.." && pwd)"
 NAPI="$REPO_ROOT/node_modules/.bin/napi"
 WASM_PACK="$REPO_ROOT/node_modules/.bin/wasm-pack"
-# wasm-pack가 캐시에 설치한 wasm-bindgen 바이너리 PATH(웹/노드 타깃 공용).
-export PATH="$PATH:$HOME/Library/Caches/.wasm-pack/.wasm-bindgen-cargo-install-0.2.126/bin"
+# wasm-bindgen CLI는 wasm-pack이 Cargo.lock의 wasm-bindgen 버전에 맞춰 자체
+# 다운로드·캐시·실행한다 — 홈 캐시 PATH 주입 금지(글로벌 상태 의존, 리뷰 반영).
 
 cd "$CRATE_DIR"
 

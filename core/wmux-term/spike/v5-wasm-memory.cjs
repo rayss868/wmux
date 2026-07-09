@@ -42,7 +42,10 @@ function snap(label) {
   };
 }
 
-console.log('[V5] wasm 인스턴스 3개 동시 — 메모리 오더');
+// 리뷰 반영: 이것은 WebAssembly.Instance 3개가 아니다 — nodejs glue는 모듈당
+// 단일 인스턴스이고, 아래는 그 선형 메모리를 공유하는 WmuxTerm 객체 3개다.
+// per-pane 독립 Instance(각자 선형 메모리)의 실측은 E2(web glue 다중 로드)로 이월.
+console.log('[V5] 단일 wasm 모듈 내 WmuxTerm 객체 3개 — 메모리 오더');
 console.log(`  node ${process.version}`);
 
 const stream = synth1MB();

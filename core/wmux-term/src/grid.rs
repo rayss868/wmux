@@ -5,8 +5,16 @@
 //! SGR·스크롤·reflow·유니코드 폭은 **구현하지 않는다**(E1 몫). 이건 배관 실증이다.
 //!
 //! `no_std` 미사용(스켈레톤은 std 허용 — wasm/napi 양측 std 타깃).
+//!
+//! 구조: `Grid = Parser + Screen` 필드 분리 — `feed`가 `self.parser.advance(&mut self.screen, ..)`로
+//! 필드별 분리 대여를 쓰므로 파서를 소유권에서 꺼낼 필요가 없다(`std::mem::take` 불사용).
+//! Perform 콜백이 언와인드해도 파서 상태가 default로 유실되는 경로 자체가 없다(리뷰 반영).
 
 use vte::{Params, Parser, Perform};
+
+/// 그리드 치수 상한 — cols·rows 각각 클램프. 4096²=16M 셀이라 `cols*rows` usize
+/// 오버플로가 원천 차단된다(리뷰 반영 — checked_mul 대신 도메인 상한).
+const MAX_DIM: u32 = 4096;
 
 /// feed() 반환 표면 — §6 계약의 최소 부분집합.
 /// writeback은 스켈레톤에선 항상 0(표면만 예약 — E1의 Interactive 모드에서 실채움).
@@ -17,11 +25,9 @@ pub struct FeedResult {
     pub writeback_len: u32,
 }
 
-/// 미니 그리드 + vte 파서 상태.
-///
-/// 셀은 `char` 1개(스켈레톤 — grapheme 클러스터·폭2 스페이서 없음).
-/// 파서(`Parser`)를 그리드에 소유시켜 `feed`가 재진입 없이 왕복하도록 한다.
-pub struct Grid {
+/// 화면 상태(셀·커서·dirty) — `Perform` 구현체.
+/// 파서와 분리된 필드라 `advance` 동안 파서와 동시 대여가 성립한다.
+struct Screen {
     cols: u32,
     rows: u32,
     /// 행 우선(row-major) 셀 저장 — cols*rows 길이.
@@ -31,41 +37,43 @@ pub struct Grid {
     cursor_y: u32,
     /// 이번 feed에서 터치된 행 표시(dirty 집계용).
     dirty: Vec<bool>,
+}
+
+/// 미니 그리드 + vte 파서 상태. 공개 표면은 스파이크 계약(§6 최소 부분집합)만.
+pub struct Grid {
     parser: Parser,
+    screen: Screen,
 }
 
 impl Grid {
     /// 신규 그리드 — cols×rows 공백 셀 + 커서 (0,0).
+    /// 치수는 [1, 4096]으로 클램프(0 방어 + 곱 오버플로 원천 차단).
     pub fn new(cols: u32, rows: u32) -> Self {
-        // 0 방어: 최소 1×1 (파서 왕복이 패닉하지 않도록).
-        let cols = cols.max(1);
-        let rows = rows.max(1);
-        let len = (cols as usize) * (rows as usize);
+        let cols = cols.clamp(1, MAX_DIM);
+        let rows = rows.clamp(1, MAX_DIM);
+        let len = (cols as usize) * (rows as usize); // ≤ 16M — 오버플로 불가.
         Grid {
-            cols,
-            rows,
-            cells: vec![' '; len],
-            cursor_x: 0,
-            cursor_y: 0,
-            dirty: vec![false; rows as usize],
             parser: Parser::new(),
+            screen: Screen {
+                cols,
+                rows,
+                cells: vec![' '; len],
+                cursor_x: 0,
+                cursor_y: 0,
+                dirty: vec![false; rows as usize],
+            },
         }
     }
 
     /// 바이트 스트림을 파서에 흘려보내고 dirty 집계를 반환.
-    ///
-    /// 소유 파서를 잠시 꺼내(std::mem::take) `advance`에 `self`(Perform)를 넘긴다 —
-    /// vte 0.15 `advance(&mut self, perform, bytes)` 시그니처의 대여 충돌 회피.
+    /// 파서(self.parser)와 화면(self.screen)은 별개 필드라 분리 대여 — take/복귀 없음.
     pub fn feed(&mut self, bytes: &[u8]) -> FeedResult {
-        for d in self.dirty.iter_mut() {
+        for d in self.screen.dirty.iter_mut() {
             *d = false;
         }
-        // 파서를 소유권에서 분리 → self를 Perform으로 대여 → 복귀.
-        let mut parser = std::mem::take(&mut self.parser);
-        parser.advance(self, bytes);
-        self.parser = parser;
+        self.parser.advance(&mut self.screen, bytes);
 
-        let dirty_rows = self.dirty.iter().filter(|&&d| d).count() as u32;
+        let dirty_rows = self.screen.dirty.iter().filter(|&&d| d).count() as u32;
         FeedResult {
             dirty_rows,
             writeback_len: 0, // 스켈레톤 — 표면만 예약.
@@ -74,35 +82,37 @@ impl Grid {
 
     /// 지정 행의 문자열 스냅샷(trailing 공백 유지 — cols 폭 고정).
     pub fn snapshot_row(&self, y: u32) -> String {
-        if y >= self.rows {
+        if y >= self.screen.rows {
             return String::new();
         }
-        let start = (y as usize) * (self.cols as usize);
-        let end = start + (self.cols as usize);
-        self.cells[start..end].iter().collect()
+        let start = (y as usize) * (self.screen.cols as usize);
+        let end = start + (self.screen.cols as usize);
+        self.screen.cells[start..end].iter().collect()
     }
 
     /// 전체 초기화 — 셀 공백, 커서 원점, 파서 리셋.
     pub fn reset(&mut self) {
-        for c in self.cells.iter_mut() {
+        for c in self.screen.cells.iter_mut() {
             *c = ' ';
         }
-        self.cursor_x = 0;
-        self.cursor_y = 0;
-        for d in self.dirty.iter_mut() {
+        self.screen.cursor_x = 0;
+        self.screen.cursor_y = 0;
+        for d in self.screen.dirty.iter_mut() {
             *d = false;
         }
         self.parser = Parser::new();
     }
 
     pub fn cols(&self) -> u32 {
-        self.cols
+        self.screen.cols
     }
 
     pub fn rows(&self) -> u32 {
-        self.rows
+        self.screen.rows
     }
+}
 
+impl Screen {
     /// 커서 위치의 셀에 문자를 기록하고 커서를 전진.
     /// 줄 끝 도달 시 다음 행 0열로 랩(스켈레톤 — 자동 랩만, DECAWM 미구현).
     fn put_char(&mut self, c: char) {
@@ -138,8 +148,8 @@ impl Grid {
 }
 
 /// vte raw `Perform` — 8콜백 전부 구현(ansi 피처 금지, 결정 문서 D1 파서 서브결정).
-/// 스켈레톤에선 `print`/`execute`만 그리드에 반영, 나머지 6개는 no-op 표면 유지.
-impl Perform for Grid {
+/// 스켈레톤에선 `print`/`execute`만 화면에 반영, 나머지 6개는 no-op 표면 유지.
+impl Perform for Screen {
     fn print(&mut self, c: char) {
         self.put_char(c);
     }
@@ -229,5 +239,23 @@ mod tests {
         g.feed(b"abcd");
         assert_eq!(g.snapshot_row(0), "abc");
         assert_eq!(g.snapshot_row(1), "d  ");
+    }
+
+    #[test]
+    fn dimensions_clamped_to_max() {
+        // 치수 상한 클램프 — 곱 오버플로 원천 차단(리뷰 반영).
+        let g = Grid::new(u32::MAX, u32::MAX);
+        assert_eq!(g.cols(), MAX_DIM);
+        assert_eq!(g.rows(), MAX_DIM);
+    }
+
+    #[test]
+    fn split_csi_across_feed_chunks_survives() {
+        // 청크 경계에 걸친 CSI — 파서 상태가 feed 호출 사이에 보존되는가
+        // (mem::take 제거 구조의 회귀 방지 — 리뷰 반영).
+        let mut g = Grid::new(20, 2);
+        g.feed(b"\x1b[3"); // CSI 파라미터 중간에서 절단.
+        g.feed(b"1mred\x1b[0m");
+        assert_eq!(g.snapshot_row(0), "red                 "); // 분할 시퀀스도 삼켜짐.
     }
 }
