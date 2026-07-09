@@ -79,6 +79,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright-core';
 import { accumulateBreakdown, RAM_CATEGORIES } from './perf-process-classify.mjs';
+import { summarizeSamples, compareImeEcho, judgeFrameStall } from './perf-scenarios.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -103,6 +104,13 @@ function parseArgs(argv) {
     // scrollback-cap go/no-go. webglOccupancy: log the 8-pane WebGL-canvas
     // count (approximation; see measureWebglOccupancy).
     scrollbackLines: null, webglOccupancy: false,
+    // W2 N-pane instrumentation (design plans/w2-harness-instrumentation-*).
+    // These scenarios run BY DEFAULT (design §4: "상시 기록") on a dedicated
+    // instance; the skip flags exist only to keep local iteration light.
+    // frameBudgetPanes: N-values for the concurrent-streaming frame-budget
+    // sweep (measured incrementally on one instance).
+    frameBudgetPanes: [4, 8, 16],
+    skipFrameBudget: false, skipIme: false, skipWebglRecovery: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -125,6 +133,21 @@ function parseArgs(argv) {
       }
     }
     else if (a === '--webgl-occupancy') out.webglOccupancy = true;
+    else if (a === '--frame-budget-panes') {
+      // Comma-separated positive integers, e.g. "4,8,16". Reject garbage rather
+      // than coercing (a silently-dropped N would skew the sweep unnoticed).
+      const parts = String(argv[++i] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+      const nums = parts.map(Number);
+      if (nums.length === 0 || nums.some((n) => !Number.isInteger(n) || n < 1)) {
+        console.error(`--frame-budget-panes expects comma-separated positive integers, got: ${argv[i]}`);
+        out.help = true;
+      } else {
+        out.frameBudgetPanes = [...new Set(nums)].sort((a, b) => a - b);
+      }
+    }
+    else if (a === '--skip-frame-budget') out.skipFrameBudget = true;
+    else if (a === '--skip-ime') out.skipIme = true;
+    else if (a === '--skip-webgl-recovery') out.skipWebglRecovery = true;
     else if (a === '--skip-cold') out.skipCold = true;
     else if (a === '--skip-input') out.skipInput = true;
     else if (a === '--skip-ram') out.skipRam = true;
@@ -156,7 +179,16 @@ RAM-attribution flags (PR D):
                          (run twice, e.g. 10000 vs 1000, for a scrollback A/B).
   --webgl-occupancy      log the 8-pane WebGL canvas count (DOM approximation).
 ram results carry an additive ram.breakdown (per-process-category working set:
-main / renderer / gpu / utility / daemon / conhost / other) — never gated.`);
+main / renderer / gpu / utility / daemon / conhost / other) — never gated.
+
+W2 N-pane instrumentation (run by default on a dedicated instance):
+  --frame-budget-panes 4,8,16  N-values for the concurrent-streaming frame
+                               budget sweep (default 4,8,16).
+  --skip-frame-budget          skip the frame-budget sweep.
+  --skip-ime                   skip the Korean IME composition scenario.
+  --skip-webgl-recovery        skip the WebGL context-loss/restore scenario.
+scenarios.frameBudget.N{n}.frameDeltaMs, scenarios.ime.pass, and
+scenarios.webglContextLoss.pass feed perf-compare's numeric + BOOL gates.`);
   process.exit(0);
 }
 if (!fs.existsSync(APP_EXE)) {
@@ -1061,6 +1093,330 @@ async function measureWebglOccupancy(page) {
   });
 }
 
+// === W2: N-pane instrumentation (frame budget / IME / WebGL context-loss) ===
+//
+// These scenarios attach to the SAME packaged-app + CDP infrastructure the A1
+// bench already drives. They are pure additive fields under RESULTS.scenarios;
+// none of the existing coldStart/inputLatency/ram measurements change. Design:
+// plans/w2-harness-instrumentation-design-2026-07-10.md.
+
+// Open an authenticated main-pipe client for an instance (token read pattern is
+// identical to the split-to-8 / recover paths — factored so the three W2
+// scenarios don't each re-implement it).
+async function openMainClient(inst) {
+  const tokenPath = path.join(inst.home, `.wmux${inst.suffix}-auth-token`);
+  const token = await waitFor('main auth token', () => {
+    try { return fs.readFileSync(tokenPath, 'utf8').trim() || null; } catch { return null; }
+  }, 5000, 100);
+  const client = new PipeClient(inst.mainPipe, token);
+  await client.connect();
+  return client;
+}
+
+// Generalization of the hard-coded "split 7 times → 8 panes" loop. Splits with
+// alternating direction until the renderer shows >= n `.xterm` mounts. Assumes
+// the client is already connected. Idempotent-ish: if the layout already has
+// >= n panes it returns immediately.
+async function spawnPanes(client, page, n) {
+  const paneCount = async () =>
+    page.evaluate(() => document.querySelectorAll('.xterm').length);
+  let current = await paneCount();
+  let dir = 0;
+  // Guard the loop: each split adds exactly one leaf, but cap iterations so a
+  // wedged split (never mounts) can't spin forever.
+  for (let guard = 0; current < n && guard < n * 3; guard++) {
+    await client.call('pane.split', { direction: dir % 2 === 0 ? 'horizontal' : 'vertical' });
+    dir++;
+    await sleep(400);
+    try {
+      await waitFor(`${current + 1} panes mounted`, async () =>
+        (await paneCount()) > current, 30000, 250);
+    } catch { /* fall through — re-read below */ }
+    current = await paneCount();
+  }
+  return current;
+}
+
+// Collect every leaf pane's ptyId from pane.list (each entry exposes
+// surfacePtyIds). Used to flood N panes concurrently in the frame-budget
+// scenario.
+async function listPanePtyIds(client) {
+  const res = await client.call('pane.list', {});
+  const panes = Array.isArray(res?.panes) ? res.panes : Array.isArray(res) ? res : [];
+  const ids = [];
+  for (const p of panes) {
+    const arr = Array.isArray(p?.surfacePtyIds) ? p.surfacePtyIds : [];
+    for (const id of arr) if (typeof id === 'string' && id.length > 0 && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+// Sample `frames` rAF deltas (ms) inside the renderer — the same cadence probe
+// measureInputLatency uses, but WITHOUT any keystroke: it measures the compositor
+// cadence while whatever workload is currently running streams. Returns raw
+// deltas so the caller can summarize + detect throttling.
+async function sampleRafDeltas(page, frames) {
+  return page.evaluate((n) => new Promise((resolve) => {
+    const deltas = []; let last = null; let i = 0;
+    const tick = (ts) => {
+      if (last !== null) deltas.push(ts - last);
+      last = ts;
+      if (++i < n) requestAnimationFrame(tick); else resolve(deltas);
+    };
+    requestAnimationFrame(tick);
+  }), frames);
+}
+
+// A deterministic, unbounded text flood for one PTY. The packaged bench target
+// is Windows (powershell default shell): an infinite loop that writes a fixed
+// 80-char line per iteration is a platform-consistent, decision-free workload.
+// It is intentionally unbounded — the instance is force-torn-down after the
+// sweep (shutdownInstance kills the whole process tree), and we also send Ctrl+C
+// per pane between sweep steps. `raw:true` so the ANSI-free command reaches the
+// shell verbatim.
+const FLOOD_LINE = 'x'.repeat(80);
+const FLOOD_CMD = `while($true){[Console]::Out.WriteLine('${FLOOD_LINE}')}`;
+
+async function startFlood(client, ptyIds) {
+  for (const ptyId of ptyIds) {
+    try { await client.call('input.send', { ptyId, text: FLOOD_CMD, submit: true, raw: true }); }
+    catch (e) { console.error(`[frameBudget] flood start failed for ${ptyId}: ${e.message}`); }
+  }
+}
+async function stopFlood(client, ptyIds) {
+  for (const ptyId of ptyIds) {
+    try { await client.call('input.sendKey', { ptyId, key: 'ctrl+c' }); } catch { /* best effort */ }
+  }
+}
+
+// === Scenario 2.1: N-pane concurrent-streaming frame budget ===
+//
+// Panes are spawned incrementally to each N in `paneCounts`. At each N we flood
+// EVERY pane's PTY with continuous output, sample the rAF cadence while all N
+// stream concurrently, then stop the flood before growing to the next N. The
+// per-N result records frameDeltaMs (p50/p95/…) — perf-compare gates each N
+// independently against its own blessed baseline (design §2.1/§3), so there is
+// NO single 16.7ms budget across N.
+async function measureFrameBudget(inst, paneCounts) {
+  const page = inst.page;
+  const client = await openMainClient(inst);
+  const byN = {};
+  try {
+    const sorted = [...paneCounts].sort((a, b) => a - b);
+    for (const n of sorted) {
+      const mounted = await spawnPanes(client, page, n);
+      await sleep(1500); // let the new panes settle before flooding
+      const ptyIds = await listPanePtyIds(client);
+      const targets = ptyIds.slice(0, n);
+      await startFlood(client, targets);
+      // Give the flood a beat to actually be streaming, then sample the cadence
+      // while all panes are hot.
+      await sleep(800);
+      const deltas = await sampleRafDeltas(page, 60);
+      await stopFlood(client, targets);
+      await sleep(600); // let Ctrl+C drain before the next split
+      const stats = summarizeSamples(deltas);
+      const throttled = (stats.p50 ?? 999) > 50;
+      byN[`N${n}`] = {
+        paneCount: mounted,
+        flooded: targets.length,
+        throttled,
+        frameDeltaMs: stats,
+      };
+      console.log(`[frameBudget N${n}] panes=${mounted} flooded=${targets.length} frame p50=${stats.p50}ms p95=${stats.p95}ms${throttled ? ' (THROTTLED — untrustworthy)' : ''}`);
+    }
+  } finally {
+    client.close();
+  }
+  return byN;
+}
+
+// === Scenario 2.2: Korean IME composition ===
+//
+// CDP page.keyboard emits only raw keydown/keyup — it cannot drive a real IME
+// composition. playwright-core does not expose CDP Input.imeSetComposition, so
+// we synthesize the DOM-observable composition contract that xterm.js's
+// CompositionHelper consumes directly on the focused pane's hidden
+// `.xterm-helper-textarea`: compositionstart → compositionupdate(s) (with the
+// growing composing string mirrored into textarea.value + an input event with
+// inputType 'insertCompositionText', isComposing:true) → compositionend (final
+// string in textarea.value) → a final input event (isComposing:false).
+//
+// EQUIVALENCE BASIS (reported honestly): this reproduces the exact event set
+// wmux/xterm key off — the repo's own imeResidueGuard.ts and imeStormGuard.ts
+// document that xterm's committed-text path is driven by
+// compositionstart/compositionend + the textarea.value diff (plus the 229
+// keydown path, which is a no-op for committed text). It does NOT reproduce the
+// OS/TSF keyCode-229 keydown storm timing; equivalence is at the DOM event
+// contract, not the OS layer. The scenario is SELF-VALIDATING: if the synthetic
+// sequence were non-equivalent, the PTY would echo nothing / garbage and the
+// echo comparison would fail — so a passing run is positive evidence the
+// composed text actually reached the shell.
+const IME_EXPECTED = '안녕하세요';
+async function measureImeScenario(inst) {
+  const page = inst.page;
+  // Focus the largest pane and confirm the hidden textarea took focus (same
+  // robustness dance measureInputLatency uses).
+  const box = await page.evaluate(() => {
+    let best = null;
+    for (const el of document.querySelectorAll('.xterm-screen')) {
+      const r = el.getBoundingClientRect();
+      const area = r.width * r.height;
+      if (r.width >= 80 && r.height >= 60 && (!best || area > best.area)) {
+        best = { x: r.x, y: r.y, width: r.width, height: r.height, area };
+      }
+    }
+    return best;
+  });
+  if (!box) throw new Error('IME: no usable .xterm-screen');
+  let focused = false;
+  for (let attempt = 0; attempt < 4 && !focused; attempt++) {
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await sleep(300);
+    focused = await page.evaluate(() =>
+      !!document.activeElement?.classList?.contains('xterm-helper-textarea'));
+    if (!focused) await dismissOverlays(page);
+  }
+  if (!focused) throw new Error('IME: terminal never took focus');
+
+  // Install a fresh capture-all echo accumulator (only the focused pane echoes
+  // — siblings are idle in this scenario, so ptyId matching is unnecessary).
+  await page.evaluate(() => {
+    window.__wmuxImeCap = { buf: '' };
+    const api = window.electronAPI;
+    if (api?.pty?.onData) api.pty.onData((_id, data) => { window.__wmuxImeCap.buf += String(data); });
+  });
+
+  // Calm-window frame baseline BEFORE composing (for the stall check).
+  const baseStats = summarizeSamples(await sampleRafDeltas(page, 30));
+
+  // Synthesize the composition. Build "안녕하세요" one syllable at a time.
+  await page.evaluate((expected) => {
+    const ta = document.activeElement;
+    if (!ta || !ta.classList.contains('xterm-helper-textarea')) throw new Error('textarea lost focus');
+    const fire = (type, EventCtor, init) => ta.dispatchEvent(new EventCtor(type, init));
+    fire('compositionstart', CompositionEvent, { data: '', bubbles: true });
+    let acc = '';
+    for (const ch of expected) {
+      acc += ch;
+      ta.value = acc;
+      fire('compositionupdate', CompositionEvent, { data: acc, bubbles: true });
+      fire('input', InputEvent, { data: acc, inputType: 'insertCompositionText', isComposing: true, bubbles: true });
+    }
+    ta.value = expected;
+    fire('compositionend', CompositionEvent, { data: expected, bubbles: true });
+    fire('input', InputEvent, { data: expected, inputType: 'insertCompositionText', isComposing: false, bubbles: true });
+  }, IME_EXPECTED);
+
+  // Sample frames DURING/right-after the commit, and give the round-trip
+  // (renderer→main→daemon→PTY→echo) time to land.
+  const duringStats = summarizeSamples(await sampleRafDeltas(page, 30));
+  await sleep(1200);
+  const echoedRaw = await page.evaluate(() => window.__wmuxImeCap?.buf ?? '');
+
+  const echoVerdict = compareImeEcho(IME_EXPECTED, echoedRaw);
+  const stall = judgeFrameStall({ baselineP95: baseStats.p95, duringP95: duringStats.p95 });
+  const pass = echoVerdict.pass && !stall.stalled;
+  console.log(`[ime] expected="${IME_EXPECTED}" echoMatch=${echoVerdict.pass} stalled=${stall.stalled} → pass=${pass}`);
+  return {
+    pass,
+    expected: IME_EXPECTED,
+    echoMatch: echoVerdict.pass,
+    echoedSanitized: echoVerdict.echoedSanitized.slice(0, 120),
+    echoReason: echoVerdict.reason,
+    frameStalled: stall.stalled,
+    stallReason: stall.reason,
+    baselineFrameP95Ms: baseStats.p95,
+    duringFrameP95Ms: duringStats.p95,
+    method: 'synthetic-dom-composition',
+    note: 'Synthesized compositionstart/update/end + input on .xterm-helper-textarea; reproduces the DOM contract xterm keys off, not OS TSF timing. Self-validating via PTY echo.',
+  };
+}
+
+// === Scenario 2.4: WebGL context-loss / restore ===
+//
+// Force a GPU context loss on the focused pane's WebGL canvas via the standard
+// WEBGL_lose_context extension, wait, then restoreContext(). The measurable
+// recovery signals (design §2.4 asked the worker to pin these down):
+//   1. the canvas fires a 'webglcontextrestored' event — xterm's WebglAddon
+//      listens for exactly this to re-initialize its renderer;
+//   2. the WebGL context reports isContextLost() === false after restore;
+//   3. (corroborating) a re-count of live WebGL canvases still shows the pane's
+//      canvas holding a live context (not degraded to the DOM-renderer
+//      fallback, which would leave a black pane).
+// recoveryMs is measured from the restoreContext() call to signal (1)/(2).
+// pass = restored event fired AND context not lost. A pixel-level "glyphs
+// actually redrew" proof would need forcing shell output + readPixels sampling,
+// which is fragile across the DOM proxy — noted as a limitation; the
+// context-lifecycle signals above are the reliable, measurable proxy.
+async function measureWebglContextLoss(inst) {
+  const page = inst.page;
+  const result = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // Pick the largest .xterm-screen's WebGL canvas (the focused/representative
+    // pane). Fall back to the first live-context canvas.
+    const canvases = [...document.querySelectorAll('.xterm-screen canvas')];
+    let target = null; let gl = null;
+    for (const c of canvases) {
+      try {
+        const ctx = c.getContext('webgl2') || c.getContext('webgl');
+        if (ctx && !ctx.isContextLost()) { target = c; gl = ctx; break; }
+      } catch { /* ignore */ }
+    }
+    if (!target || !gl) {
+      return { pass: false, recovered: false, reason: 'no live WebGL canvas found', recoveryMs: null };
+    }
+    const ext = gl.getExtension('WEBGL_lose_context');
+    if (!ext) {
+      return { pass: false, recovered: false, reason: 'WEBGL_lose_context unavailable', recoveryMs: null };
+    }
+    let lostFired = false; let restoredFired = false; let tRestore = null; let tRestored = null;
+    target.addEventListener('webglcontextlost', () => { lostFired = true; }, { once: true });
+    target.addEventListener('webglcontextrestored', () => { restoredFired = true; tRestored = performance.now(); }, { once: true });
+
+    ext.loseContext();
+    // Wait for the loss to propagate + a few frames of "black".
+    for (let i = 0; i < 60 && !lostFired; i++) await sleep(16);
+    await sleep(200);
+
+    tRestore = performance.now();
+    ext.restoreContext();
+    // Wait for the restored event (xterm re-inits its addon on this).
+    for (let i = 0; i < 120 && !restoredFired; i++) await sleep(16);
+    await sleep(200);
+
+    const notLost = (() => {
+      try {
+        const ctx = target.getContext('webgl2') || target.getContext('webgl');
+        return !!ctx && !ctx.isContextLost();
+      } catch { return false; }
+    })();
+    // Corroborate: does the pane still hold a live WebGL context (not degraded)?
+    const liveCanvasCount = [...document.querySelectorAll('.xterm-screen canvas')].filter((c) => {
+      try { const g = c.getContext('webgl2') || c.getContext('webgl'); return !!g && !g.isContextLost(); }
+      catch { return false; }
+    }).length;
+
+    const recovered = restoredFired && notLost;
+    return {
+      pass: recovered,
+      recovered,
+      lostFired,
+      restoredFired,
+      contextNotLost: notLost,
+      liveCanvasCountAfter: liveCanvasCount,
+      recoveryMs: (tRestored != null && tRestore != null) ? Math.round(tRestored - tRestore) : null,
+      reason: recovered
+        ? 'context restored (webglcontextrestored fired + !isContextLost)'
+        : `not recovered (restoredFired=${restoredFired} notLost=${notLost})`,
+    };
+  });
+  result.method = 'WEBGL_lose_context + webglcontextrestored/isContextLost';
+  result.note = 'Measures the GPU context lifecycle recovery, not a pixel-diff redraw proof (see design §2.4 / measureWebglContextLoss).';
+  console.log(`[webglContextLoss] lost=${result.lostFired} restored=${result.restoredFired} notLost=${result.contextNotLost} recoveryMs=${result.recoveryMs} → pass=${result.pass}`);
+  return result;
+}
+
 // === Results ===
 function appVersion() {
   try { return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).version ?? null; } catch { return null; }
@@ -1090,6 +1446,8 @@ const RESULTS = {
       // not seeded). Records the run's identity so two result files can be
       // diffed unambiguously.
       scrollbackLines: ARGS.scrollbackLines,
+      // W2: which N-pane counts the frame-budget sweep measured this run.
+      frameBudgetPanes: ARGS.frameBudgetPanes,
     },
   },
   scenarios: {},
@@ -1345,10 +1703,10 @@ process.on('exit', () => {
     const client = new PipeClient(lastInst.mainPipe, token);
     await client.connect();
     try {
-      for (let i = 0; i < 7; i++) {
-        await client.call('pane.split', { direction: i % 2 === 0 ? 'horizontal' : 'vertical' });
-        await sleep(400);
-      }
+      // Generalized split loop (spawnPanes) — same alternating-direction split
+      // to 8 the bench has always done, now shared with the W2 frame-budget
+      // sweep's variable N.
+      await spawnPanes(client, lastInst.page, 8);
     } finally {
       client.close(); // a mid-loop RPC failure must not leak the pipe socket
     }
@@ -1387,12 +1745,67 @@ process.on('exit', () => {
     RESULTS.scenarios.inputLatency8 = await measureInputLatency(lastInst.page, ARGS.samples8, 'input 8-pane');
   }
 
-  // ---------- teardown + write ----------
+  // ---------- teardown of the A1 instance ----------
+  // The W2 scenarios below run on a DEDICATED fresh instance so their pane
+  // flooding / IME focus / forced GPU context loss cannot perturb the A1
+  // coldStart/input/ram numbers above (and vice-versa).
   if (ARGS.keepApp) {
     console.log(`--keep-app: leaving instance running (home: ${lastInst.home}, suffix: ${lastInst.suffix})`);
     liveInstances.delete(lastInst);
   } else if (lastInst) {
     await shutdownInstance(lastInst);
+  }
+
+  // ---------- W2: N-pane instrumentation (dedicated instance) ----------
+  const runIme = !ARGS.skipIme;
+  const runFrameBudget = !ARGS.skipFrameBudget;
+  const runWebglRecovery = !ARGS.skipWebglRecovery;
+  if ((runIme || runFrameBudget || runWebglRecovery) && !ARGS.keepApp) {
+    console.log('--- W2: booting dedicated instance for N-pane instrumentation ---');
+    let w2 = null;
+    try {
+      w2 = await bootFreshInstance();
+      await dismissOverlays(w2.page);
+
+      // IME first — on the clean, un-flooded boot layout (only the focused pane
+      // echoes; siblings would otherwise pollute the capture).
+      if (runIme) {
+        try {
+          console.log('--- W2 ime: Korean composition on the focused pane ---');
+          RESULTS.scenarios.ime = await measureImeScenario(w2);
+        } catch (e) {
+          console.error(`[ime] scenario failed (recording pass=false): ${e.message}`);
+          RESULTS.scenarios.ime = { pass: false, error: e.message, method: 'synthetic-dom-composition' };
+        }
+      }
+
+      // Frame budget sweep — spawns to each N and floods; leaves the layout at
+      // max(N) panes, which the context-loss scenario then reuses.
+      if (runFrameBudget) {
+        try {
+          console.log(`--- W2 frameBudget: N=${ARGS.frameBudgetPanes.join(',')} ---`);
+          RESULTS.scenarios.frameBudget = await measureFrameBudget(w2, ARGS.frameBudgetPanes);
+        } catch (e) {
+          console.error(`[frameBudget] scenario failed (continuing): ${e.message}`);
+        }
+      }
+
+      // WebGL context-loss LAST — forcibly losing the GPU context can
+      // destabilize the addon, so run it right before teardown.
+      if (runWebglRecovery) {
+        try {
+          console.log('--- W2 webglContextLoss: force loseContext/restoreContext ---');
+          RESULTS.scenarios.webglContextLoss = await measureWebglContextLoss(w2);
+        } catch (e) {
+          console.error(`[webglContextLoss] scenario failed (recording pass=false): ${e.message}`);
+          RESULTS.scenarios.webglContextLoss = { pass: false, error: e.message };
+        }
+      }
+    } catch (e) {
+      console.error(`[W2] dedicated instance boot/scenarios failed (continuing to write results): ${e.message}`);
+    } finally {
+      if (w2) { try { await shutdownInstance(w2); } catch { /* best effort */ } }
+    }
   }
 
   RESULTS.meta.finishedAt = new Date().toISOString();
