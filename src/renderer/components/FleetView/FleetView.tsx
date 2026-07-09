@@ -282,10 +282,16 @@ export default function FleetView() {
       // explicit keyboard Approve (the sanctioned path per guard #5) would be
       // unreachable because the critical-row no-op swallows Enter first.
       const active = document.activeElement;
-      const onDialogButton =
-        active instanceof HTMLElement && active.tagName === 'BUTTON' &&
+      // 행 단축키(Enter=승인, Backspace/Delete=거부/dismiss)는 role=option 행 자체에
+      // 포커스가 있을 때만 발동한다. 예전엔 <button>만 예외 처리했는데, Tab 트랩을
+      // 걷어내며 A2A 행의 auto-approve 체크박스(input)도 키보드 포커스를 받게 됐다.
+      // 체크박스에 포커스가 있을 때 Enter/Backspace/Delete가 행 승인/거부로 오발화하면
+      // 신뢰경계 위반이다 — 그래서 버튼·체크박스 등 어떤 인터랙티브 컨트롤이든 행
+      // 자신이 아니면 가로채지 않고 네이티브 활성화(체크박스 토글, 버튼 클릭)에 맡긴다.
+      const onOptionRow =
+        active instanceof HTMLElement && active.getAttribute('role') === 'option' &&
         !!panelRef.current?.contains(active);
-      if (tab === 'approvals' && inbox.length > 0 && !onDialogButton) {
+      if (tab === 'approvals' && inbox.length > 0 && onOptionRow) {
         if (e.key === 'Enter') {
           e.preventDefault();
           e.stopPropagation();
@@ -304,9 +310,9 @@ export default function FleetView() {
         }
       }
       // Remote tab: read-only, so no Enter action — Backspace/Delete dismisses the
-      // focused card (mirrors approvals' deny-key path; same onDialogButton guard so
-      // a Tab-focused dismiss <button> keeps native activation).
-      if (tab === 'remote' && remoteInbox.length > 0 && !onDialogButton) {
+      // focused card (mirrors approvals' deny-key path; same onOptionRow guard so a
+      // Tab-focused dismiss <button> / checkbox keeps native activation).
+      if (tab === 'remote' && remoteInbox.length > 0 && onOptionRow) {
         if (e.key === 'Backspace' || e.key === 'Delete') {
           e.preventDefault();
           e.stopPropagation();
