@@ -201,3 +201,51 @@ export interface WorkTaskMetaStamp {
 
 /** meta dir에 스탬프를 쓰는 파일명(J3 §1 — 정리 스캔 역추적 정본). */
 export const WORKTASK_META_FILENAME = 'task.json';
+
+// ── J3 IPC wire 결과 타입(렌더러 안전 — node import 없는 순수 데이터) ──────────
+// main측 서비스(TaskCloseService·TaskPrService·WorktaskScanService)는 node를
+// import하므로 렌더러 번들에 못 들어간다. preload·렌더러가 공유하는 이 wire 타입은
+// 그 서비스 반환을 그대로 미러링한다(계약 표류 시 tsc가 잡도록 손으로 정합 유지).
+
+/** task:close 결과(TaskCloseService.CloseTaskResult 미러). */
+export type CloseTaskResultWire =
+  | { ok: true; taskId: string; archivePending: boolean; unmaterialized?: boolean }
+  | {
+      ok: false;
+      taskId: string;
+      reason: 'unpushed' | 'dirty' | 'error';
+      error: string;
+      preservedWorktree?: string;
+      aheadCount?: number;
+    };
+
+/** task:create-pr 결과(TaskPrService.CreatePrResult 미러). */
+export type CreatePrResultWire =
+  | { ok: true; prUrl: string; recovered?: boolean; commitPending?: boolean }
+  | {
+      ok: false;
+      reason: 'gh-missing' | 'gh-unauth' | 'dirty' | 'no-origin' | 'push-failed' | 'pr-failed' | 'error';
+      error: string;
+      browseFallback?: string;
+    };
+
+/** 정리 스캔 항목 4종(WorktaskScanService.WorktaskScanEntry 미러). */
+export type WorktaskScanCategoryWire =
+  | 'unmaterialized-open'
+  | 'disk-missing'
+  | 'preserved'
+  | 'orphan-dir';
+
+export interface WorktaskScanEntryWire {
+  category: WorktaskScanCategoryWire;
+  taskId?: string;
+  title?: string;
+  worktreePath?: string;
+  closedAt?: number;
+  detail?: string;
+}
+
+/** worktask:scan 결과(핸들러 반환 미러). */
+export type WorktaskScanResultWire =
+  | { ok: true; scannedRoot: string; entries: WorktaskScanEntryWire[] }
+  | { ok: false; error: string; scannedRoot: string; entries: WorktaskScanEntryWire[] };

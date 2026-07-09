@@ -210,6 +210,8 @@ interface FanOutResultLike {
     taskId?: string;
     workspaceId?: string;
     worktreePath?: string;
+    // J3 §3 — onExhausted 토스트 매핑 재료(ptyId→태스크).
+    ptyId?: string;
   }>;
 }
 
@@ -239,6 +241,14 @@ function reportResult(res: unknown, pushToast: PushToast): void {
     return;
   }
   const tasks = r.tasks ?? [];
+
+  // J3 §3 — onExhausted 토스트가 소비할 ptyId→태스크 매핑을 등록(발사 실패 통지는
+  // fan-out 반환 이후 비동기로 오므로 store에 남겨둔다). ptyId 없는 태스크는 생략.
+  const ptyEntries = tasks
+    .filter((t) => t.ptyId && t.taskId)
+    .map((t) => ({ ptyId: t.ptyId as string, taskId: t.taskId as string, title: t.title ?? (t.taskId as string), ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}) }));
+  if (ptyEntries.length > 0) useStore.getState().registerTaskPtys(ptyEntries);
+
   const ok = tasks.filter((t) => t.ok).length;
   const fail = tasks.length - ok;
   const unmaterialized = tasks.filter((t) => t.unmaterialized).length;

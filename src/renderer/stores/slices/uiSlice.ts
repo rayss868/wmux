@@ -78,6 +78,11 @@ export interface UISlice {
   toggleFleetView: () => void;
   setFleetViewVisible: (visible: boolean) => void;
 
+  // J3 §1 — 태스크 정리 목록(팔레트 진입). 전용 루트 디스크 정본 스캔 결과를
+  // 4종(미물질화·디스크 결측·보존·무연결)으로 보여준다. 전이 UI 상태(미영속).
+  worktaskCleanupVisible: boolean;
+  setWorktaskCleanupVisible: (visible: boolean) => void;
+
   // S-C2 — which tab the Fleet View cockpit shows: the agent grid ('fleet',
   // S-C1) or the unified approval inbox ('approvals', S-C2). Lifted to uiSlice
   // (rather than FleetView-local) so the A2A / MCP approval modals can suppress
@@ -572,6 +577,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   setNotificationPanelVisible: (visible) => set((state) => {
     state.notificationPanelVisible = visible;
     if (visible && state.inspectModeActive) resetInspectState(state);
+  }),
+
+  // ─── J3 태스크 정리 목록 ──────────────────────────────────────────────────
+  worktaskCleanupVisible: false,
+  setWorktaskCleanupVisible: (visible) => set((state) => {
+    state.worktaskCleanupVisible = visible;
   }),
 
   // ─── Command palette ─────────────────────────────────────────────────────

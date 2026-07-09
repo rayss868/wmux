@@ -134,10 +134,29 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
         return { ok: false, error: 'worktask:scan: verifiedWorkspaceId가 필요합니다', scannedRoot: '', entries: [] };
       }
       const tasks = await listMissions(daemonPort, verifiedWorkspaceId);
-      const openTasks: ScanOpenTask[] = tasks
-        .filter((t) => t.status === 'open')
-        .map((t) => ({ taskId: t.id, title: t.title, ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}) }));
-      const result = await scanService.scan(openTasks);
+      // 정본=디스크, 보조=projection(§1 CL5). reconcile 대상 open 집합은 데몬
+      // 권위 목록(요청 owner) ∪ 렌더러가 아는 전체 open(다른 부모 워크스페이스의
+      // 활성 worktree가 orphan으로 오분류되는 것을 방지). taskId로 dedup.
+      const byId = new Map<string, ScanOpenTask>();
+      for (const t of tasks) {
+        if (t.status !== 'open') continue;
+        byId.set(t.id, { taskId: t.id, title: t.title, ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}) });
+      }
+      const known = Array.isArray((raw as Record<string, unknown>).knownOpen)
+        ? ((raw as Record<string, unknown>).knownOpen as unknown[])
+        : [];
+      for (const k of known) {
+        if (!k || typeof k !== 'object') continue;
+        const kt = k as Record<string, unknown>;
+        const taskId = typeof kt.taskId === 'string' ? kt.taskId : '';
+        if (!taskId || byId.has(taskId)) continue;
+        byId.set(taskId, {
+          taskId,
+          title: typeof kt.title === 'string' ? kt.title : taskId,
+          ...(typeof kt.worktreePath === 'string' ? { worktreePath: kt.worktreePath } : {}),
+        });
+      }
+      const result = await scanService.scan([...byId.values()]);
       return { ok: true, ...result };
     }),
   );

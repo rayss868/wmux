@@ -69,11 +69,23 @@ function rebuildPaneGroupIndex(byWorkspace: Record<string, WorkTask[]>): Record<
   return index;
 }
 
+/** J3 §3 — onExhausted 토스트/재발사 매핑 항목(ptyId → 태스크 좌표). */
+export interface TaskPtyEntry {
+  taskId: string;
+  title: string;
+  /** prompt.md 재발사 재료(§3 — main이 파일 실존 검사). 미물질화면 부재. */
+  worktreePath?: string;
+}
+
 export interface WorkTaskSlice {
   /** 부모 워크스페이스 id → 그 워크스페이스가 owner인 미션(WorkTask) 목록 캐시. */
   missionsByWorkspace: Record<string, WorkTask[]>;
   /** paneGroupId(=자식 워크스페이스 id) → WorkTask 역인덱스(O(1) 조회). */
   missionByPaneGroup: Record<string, WorkTask>;
+  /** J3 §3 — ptyId → 태스크 좌표(fan-out 결과가 등록. onExhausted 소비용). */
+  taskPtyRegistry: Record<string, TaskPtyEntry>;
+  /** J3 §4 — paneGroupId(=태스크 워크스페이스 id) → 이탈한 cwd(경계 밖). 없으면 부재. */
+  departedPaneGroups: Record<string, string>;
 
   /** 한 부모의 미션 목록을 통째로 교체하고 역인덱스를 재구성한다(정본=데몬). */
   setMissions: (parentWorkspaceId: string, tasks: WorkTask[]) => void;
@@ -83,6 +95,10 @@ export interface WorkTaskSlice {
   clearMissionsFor: (parentWorkspaceId: string) => void;
   /** paneGroupId로 미션 조회(사이드바/FleetCard 매칭). */
   getMissionForPaneGroup: (paneGroupId: string) => WorkTask | undefined;
+  /** J3 §3 — fan-out 결과의 (ptyId,태스크) 매핑을 등록(onExhausted 토스트용). */
+  registerTaskPtys: (entries: Array<{ ptyId: string } & TaskPtyEntry>) => void;
+  /** J3 §4 — 태스크 워크스페이스의 이탈 상태 설정(cwd=null이면 해제). */
+  setPaneGroupDeparted: (paneGroupId: string, cwd: string | null) => void;
 }
 
 export const createWorkTaskSlice: StateCreator<
@@ -93,6 +109,30 @@ export const createWorkTaskSlice: StateCreator<
 > = (set, get) => ({
   missionsByWorkspace: {},
   missionByPaneGroup: {},
+  taskPtyRegistry: {},
+  departedPaneGroups: {},
+
+  registerTaskPtys: (entries) =>
+    set((state: StoreState) => {
+      for (const e of entries) {
+        if (!e.ptyId) continue;
+        state.taskPtyRegistry[e.ptyId] = {
+          taskId: e.taskId,
+          title: e.title,
+          ...(e.worktreePath ? { worktreePath: e.worktreePath } : {}),
+        };
+      }
+    }),
+
+  setPaneGroupDeparted: (paneGroupId, cwd) =>
+    set((state: StoreState) => {
+      if (!paneGroupId) return;
+      if (cwd === null) {
+        delete state.departedPaneGroups[paneGroupId];
+      } else if (state.departedPaneGroups[paneGroupId] !== cwd) {
+        state.departedPaneGroups[paneGroupId] = cwd;
+      }
+    }),
 
   setMissions: (parentWorkspaceId, tasks) =>
     set((state: StoreState) => {

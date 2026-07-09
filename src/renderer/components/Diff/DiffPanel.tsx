@@ -11,6 +11,7 @@ import type {
   DiffApplyResult,
   DiffTargetSnapshot,
 } from '../../../shared/diffParse';
+import { useStore } from '../../stores';
 
 interface DiffPanelProps {
   taskId: string;
@@ -195,6 +196,9 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
   const [applying, setApplying] = useState(false);
   // F10: 미션 채널에서 역조회한 diff 코멘트.
   const [comments, setComments] = useState<DiffComment[]>([]);
+  // J3 §1·§2: close·PR 진행 상태(중복 클릭 방지).
+  const [lifecycleBusy, setLifecycleBusy] = useState<'close' | 'pr' | null>(null);
+  const pushToast = useStore((s) => s.pushToast);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -321,6 +325,84 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
     [meta, taskId, verifiedWorkspaceId],
   );
 
+  // J3 §1 — close(remove 성공→close 순서). 확인 1회 후 결과를 토스트로 구분
+  // (dirty=보존/unpushed=경고+PR 제안/archivePending). main이 데몬 projection에서
+  // 물질화 필드를 역참조하므로 taskId만 전달한다.
+  const handleClose = useCallback(async () => {
+    if (lifecycleBusy) return;
+    const api = (window as unknown as { electronAPI?: { workTask?: import('../../../preload/preload').ElectronAPI['workTask'] } }).electronAPI;
+    if (!api?.workTask) return;
+    if (!window.confirm('이 태스크를 닫습니다. clean이면 worktree를 제거하고 미션 채널을 아카이브합니다. 계속할까요?')) return;
+    setLifecycleBusy('close');
+    try {
+      const res = await api.workTask.close(taskId, verifiedWorkspaceId);
+      if (res.ok) {
+        pushToast({
+          level: res.archivePending ? 'warn' : 'info',
+          message: res.unmaterialized
+            ? '태스크를 닫았습니다(미물질화 — worktree 없음).'
+            : res.archivePending
+              ? '태스크를 닫았습니다 — 채널 아카이브는 보류(부트 reconcile이 수렴).'
+              : '태스크를 닫았습니다 — worktree 제거·채널 아카이브 완료.',
+        });
+      } else if (res.reason === 'dirty') {
+        pushToast({
+          level: 'warn',
+          message: '미커밋 산출물이 있어 보존했습니다 — diff를 확인해 커밋/PR 또는 폐기하세요(태스크는 열린 채 유지).',
+        });
+      } else if (res.reason === 'unpushed') {
+        pushToast({
+          level: 'warn',
+          message: `push되지 않은 커밋 ${res.aheadCount ?? ''}개가 있습니다 — PR 생성 또는 push 후 다시 닫으세요.`,
+        });
+      } else {
+        pushToast({ level: 'error', message: `close 실패: ${res.error}` });
+      }
+    } catch (e) {
+      pushToast({ level: 'error', message: `close 실패: ${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      setLifecycleBusy(null);
+    }
+  }, [lifecycleBusy, taskId, verifiedWorkspaceId, pushToast]);
+
+  // J3 §2 — 1클릭 PR(확인 1회 포함). gh 4중 게이트·멱등 재진입은 main이 수행.
+  const handleCreatePr = useCallback(async () => {
+    if (lifecycleBusy) return;
+    const api = (window as unknown as { electronAPI?: { workTask?: import('../../../preload/preload').ElectronAPI['workTask'] } }).electronAPI;
+    if (!api?.workTask) return;
+    const branchHint = meta?.branch ? `\n브랜치: ${meta.branch}` : '';
+    if (
+      !window.confirm(
+        `origin에 push하고 PR을 생성합니다.${branchHint}\npre-push hook이 실행될 수 있습니다. 계속할까요?`,
+      )
+    ) {
+      return;
+    }
+    setLifecycleBusy('pr');
+    try {
+      const res = await api.workTask.createPr(taskId, verifiedWorkspaceId);
+      if (res.ok) {
+        pushToast({
+          level: res.commitPending ? 'warn' : 'info',
+          message: res.recovered
+            ? `기존 PR을 회수했습니다: ${res.prUrl}`
+            : `PR을 생성했습니다: ${res.prUrl}${res.commitPending ? ' (prUrl 기록 보류)' : ''}`,
+          action: { label: 'PR 열기', onClick: () => window.open(res.prUrl, '_blank') },
+        });
+      } else if (res.reason === 'gh-missing' || res.reason === 'gh-unauth') {
+        pushToast({ level: 'warn', message: `${res.error}${res.browseFallback ? ` — ${res.browseFallback}` : ''}` });
+      } else if (res.reason === 'dirty') {
+        pushToast({ level: 'warn', message: res.error });
+      } else {
+        pushToast({ level: 'error', message: `PR 생성 실패: ${res.error}` });
+      }
+    } catch (e) {
+      pushToast({ level: 'error', message: `PR 생성 실패: ${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      setLifecycleBusy(null);
+    }
+  }, [lifecycleBusy, taskId, verifiedWorkspaceId, meta, pushToast]);
+
   const activeFile = selectedFile ? filesByPath.get(selectedFile) : null;
 
   // F10 — 활성 파일의 코멘트를 hunkHeader별로 그룹핑. 현재 diff의 hunk 헤더와
@@ -368,6 +450,24 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
           title="선택한 hunk를 타겟 워킹트리에 채택"
         >
           {applying ? '채택 중...' : `채택 (${selectedCount})`}
+        </button>
+        {/* J3 §2 — 1클릭 PR(확인 1회). */}
+        <button
+          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)] disabled:opacity-40"
+          onClick={() => void handleCreatePr()}
+          disabled={lifecycleBusy !== null}
+          title="push + PR 생성(gh 4중 게이트·멱등 재진입)"
+        >
+          {lifecycleBusy === 'pr' ? 'PR 중...' : 'PR'}
+        </button>
+        {/* J3 §1 — close(remove 성공→close). */}
+        <button
+          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--accent-red,#f87171)] border border-[var(--bg-mantle)] disabled:opacity-40"
+          onClick={() => void handleClose()}
+          disabled={lifecycleBusy !== null}
+          title="태스크 닫기(clean이면 worktree 제거·채널 아카이브)"
+        >
+          {lifecycleBusy === 'close' ? '닫는 중...' : '닫기'}
         </button>
       </div>
 

@@ -76,6 +76,36 @@ describe('workTaskSlice', () => {
     expect(store.getState().getMissionForPaneGroup('child-1')).toBeUndefined();
   });
 
+  describe('J3 §3 registerTaskPtys (onExhausted 토스트 매핑)', () => {
+    it('ptyId→태스크 매핑을 등록하고 worktreePath를 보존한다', () => {
+      store.getState().registerTaskPtys([
+        { ptyId: 'pty-1', taskId: 'wtask-1', title: 'A', worktreePath: '/wt/a' },
+        { ptyId: 'pty-2', taskId: 'wtask-2', title: 'B' }, // worktreePath 없음(미물질화).
+      ]);
+      expect(store.getState().taskPtyRegistry['pty-1']).toEqual({ taskId: 'wtask-1', title: 'A', worktreePath: '/wt/a' });
+      expect(store.getState().taskPtyRegistry['pty-2']).toEqual({ taskId: 'wtask-2', title: 'B' });
+    });
+
+    it('빈 ptyId 항목은 건너뛴다', () => {
+      store.getState().registerTaskPtys([{ ptyId: '', taskId: 'x', title: 'X' }]);
+      expect(Object.keys(store.getState().taskPtyRegistry)).toHaveLength(0);
+    });
+  });
+
+  describe('J3 §4 setPaneGroupDeparted (이탈 뱃지)', () => {
+    it('이탈 cwd를 설정하고 null로 해제한다', () => {
+      store.getState().setPaneGroupDeparted('child-1', '/somewhere/else');
+      expect(store.getState().departedPaneGroups['child-1']).toBe('/somewhere/else');
+      store.getState().setPaneGroupDeparted('child-1', null);
+      expect(store.getState().departedPaneGroups['child-1']).toBeUndefined();
+    });
+
+    it('빈 paneGroupId는 무시한다', () => {
+      store.getState().setPaneGroupDeparted('', '/x');
+      expect(Object.keys(store.getState().departedPaneGroups)).toHaveLength(0);
+    });
+  });
+
   describe('refreshMissions (브리지 경유)', () => {
     afterEach(() => {
       delete (globalThis as { window?: unknown }).window;

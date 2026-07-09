@@ -303,6 +303,30 @@ const electronAPI = {
         import('../shared/diffParse').DiffApplyResult
       >,
   },
+  // J3 태스크 수명주기 — close(remove→close)·1클릭 PR(gh 4중 게이트)·정리 스캔·
+  // 미발사 재발사. 물질화 필드는 main이 데몬 projection에서 역참조하므로 렌더러는
+  // taskId + verifiedWorkspaceId만 싣는다.
+  workTask: {
+    close: (taskId: string, verifiedWorkspaceId: string) =>
+      ipcRenderer.invoke(IPC.TASK_CLOSE, { taskId, verifiedWorkspaceId }) as Promise<
+        import('../shared/workTask').CloseTaskResultWire
+      >,
+    createPr: (taskId: string, verifiedWorkspaceId: string) =>
+      ipcRenderer.invoke(IPC.TASK_CREATE_PR, { taskId, verifiedWorkspaceId }) as Promise<
+        import('../shared/workTask').CreatePrResultWire
+      >,
+    scan: (
+      verifiedWorkspaceId: string,
+      knownOpen?: Array<{ taskId: string; title: string; worktreePath?: string }>,
+    ) =>
+      ipcRenderer.invoke(IPC.WORKTASK_SCAN, { verifiedWorkspaceId, knownOpen }) as Promise<
+        import('../shared/workTask').WorktaskScanResultWire
+      >,
+    readPrompt: (worktreePath: string) =>
+      ipcRenderer.invoke(IPC.WORKTASK_READ_PROMPT, { worktreePath }) as Promise<
+        { ok: true; text: string } | { ok: false; error: string }
+      >,
+  },
   dialog: {
     pickFile: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FILE) as Promise<string[]>,
   },

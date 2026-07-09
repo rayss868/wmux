@@ -117,6 +117,7 @@ export const en = {
   'palette.cmd.openSettings': 'Open Settings',
   'palette.cmd.openBrowser': 'Open Browser',
   'palette.cmd.openFleetView': 'Open Fleet View',
+  'palette.cmd.openWorktaskCleanup': 'Open Task Cleanup List',
   'palette.cmd.saveLayout': 'Save Current Layout as Template',
   'palette.cmd.layoutPrefix': 'Layout: ',
   'palette.cmd.projectPrefix': 'Project: ',

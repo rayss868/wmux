@@ -72,6 +72,7 @@ export const ko = {
   'palette.cmd.openSettings': '설정 열기',
   'palette.cmd.openBrowser': '브라우저 열기',
   'palette.cmd.openFleetView': 'Fleet View 열기',
+  'palette.cmd.openWorktaskCleanup': '태스크 정리 목록 열기',
   'palette.cmd.saveLayout': '현재 레이아웃을 템플릿으로 저장',
   'palette.cmd.layoutPrefix': '레이아웃: ',
   'palette.cmd.projectPrefix': '프로젝트: ',
