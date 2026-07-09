@@ -135,9 +135,16 @@ async function readDiff(
     return { ok: false, error: '타겟 repo를 찾을 수 없음(worktree 손상?)', code: 'no-repo' };
   }
 
+  // targetHeadOid 미지정 시 타겟 repo의 현 HEAD를 사용(렌더러가 미리 알 필요 없음).
+  let headOid = targetHeadOid;
+  if (!headOid) {
+    const h = await git(['rev-parse', 'HEAD'], targetRepoPath);
+    headOid = h.code === 0 ? h.stdout.trim() : '';
+  }
+
   // mergeBase = merge-base HEAD {targetHeadOid} — 단일 출처(§2 G8).
-  const mb = await git(['merge-base', 'HEAD', targetHeadOid], worktreePath);
-  const mergeBase = mb.code === 0 && mb.stdout.trim() ? mb.stdout.trim() : targetHeadOid;
+  const mb = await git(['merge-base', 'HEAD', headOid], worktreePath);
+  const mergeBase = mb.code === 0 && mb.stdout.trim() ? mb.stdout.trim() : headOid;
 
   // 1-arg 워킹트리 대조(미커밋 포함). untracked 제외 — 별도 합성.
   const diffRes = await git(['diff', mergeBase], worktreePath);
@@ -349,10 +356,9 @@ export function registerDiffHandlers(): () => void {
         if (typeof worktreePath !== 'string' || !worktreePath) {
           return { ok: false, error: 'worktreePath 필요', code: 'bad-args' };
         }
-        if (typeof targetHeadOid !== 'string' || !targetHeadOid) {
-          return { ok: false, error: 'targetHeadOid 필요', code: 'bad-args' };
-        }
-        return readDiff(worktreePath, targetHeadOid);
+        // targetHeadOid는 선택 — 미지정 시 타겟 repo HEAD로 도출.
+        const head = typeof targetHeadOid === 'string' ? targetHeadOid : '';
+        return readDiff(worktreePath, head);
       },
     ),
   );
