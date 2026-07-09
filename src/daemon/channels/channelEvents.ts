@@ -95,6 +95,21 @@ export type ChannelEventPayload =
       ackedAt: number;
     }
   | {
+      /**
+       * operator-join (설계 §2.1.1) — 오퍼레이터(사람) 좌석 push + 서버-발행 시스템
+       * 메시지 append를 **하나의 envelope**로 묶는다. 두 효과를 한 커밋에 실어
+       * 원자성을 보장한다: append-only 로그에서는 좌석만 커밋되고 메시지가 실패하는
+       * 부분 상태가 구조적으로 불가능해야 하므로("persist 실패 시 좌석·메시지 원자
+       * 롤백"), join+post 두 envelope로 쪼갤 수 없다. 1 커밋 = 1 envelope 불변식
+       * 유지(D16). 적용기는 멱등: 좌석은 (workspaceId, memberId) 존재 가드, 메시지는
+       * seq 존재/trim된 과거 seq 가드(post 적용기와 동형).
+       */
+      kind: 'operator-join';
+      channelId: string;
+      member: ChannelMember;
+      message: ChannelMessage;
+    }
+  | {
       /** §6.4c reseed 마커(migrateToEventLog가 append). 상태는 스냅샷이 운반 — replay 무동작. */
       kind: 'legacy-reseed';
       reseedNumber: number;
@@ -265,6 +280,36 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
           if (row.workspaceId !== p.workspaceId || row.memberId !== p.memberId) continue;
           const current = typeof row.lastReadSeq === 'number' ? row.lastReadSeq : -1;
           if (cursorTarget > current) row.lastReadSeq = cursorTarget;
+        }
+      }
+      return;
+    }
+    case 'operator-join': {
+      const ch = state.channels.find((c) => c.id === p.channelId);
+      if (!ch) return;
+      // 두 효과를 독립 멱등 가드로 적용(라이브는 항상 둘 다 실행하지만, 재적용
+      // 시 부분 반영 스냅샷도 안전하게 흡수한다).
+      // 1) 사람 좌석 push — (workspaceId, memberId) 존재 시 no-op(join 적용기와 동형).
+      const members = state.members[p.channelId] ?? [];
+      if (
+        !members.some(
+          (m) => m.workspaceId === p.member.workspaceId && m.memberId === p.member.memberId,
+        )
+      ) {
+        members.push({ ...p.member });
+        state.members[p.channelId] = members;
+        // operatorJoin은 leave 후 재진입도 "새 좌석" → join과 동일하게 emptySince 해제.
+        delete ch.emptySince;
+      }
+      // 2) 시스템 메시지 append — seq 존재/trim된 과거 seq 가드(post 적용기와 동형).
+      //    clientMsgId·cursorRide·nameRefresh 없음(시스템 마커).
+      const msgs = (state.messages[p.channelId] ??= []);
+      const seq = p.message.seq;
+      if (!msgs.some((m) => m.seq === seq) && seq >= ch.nextSeq) {
+        msgs.push({ ...p.message });
+        if (ch.nextSeq <= seq) ch.nextSeq = seq + 1;
+        if (msgs.length > CHANNEL_MESSAGES_MAX) {
+          state.messages[p.channelId] = msgs.slice(msgs.length - CHANNEL_MESSAGES_MAX);
         }
       }
       return;

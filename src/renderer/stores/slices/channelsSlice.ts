@@ -62,6 +62,7 @@ import type {
   ChannelMention,
   ChannelMessage,
   ChannelVisibility,
+  OperatorChannelSummary,
 } from '../../../shared/channels';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { panePrincipalId } from '../../../shared/principals';
@@ -140,6 +141,7 @@ export interface ChannelError {
     | 'CHANNEL_NOT_FOUND'
     | 'CHANNEL_ARCHIVED'
     | 'NOT_A_MEMBER'
+    | 'DUPLICATE_MEMBER'
     | 'PERSIST_FAILED'
     | 'ALREADY_EXISTS'
     | 'NOT_AUTHORIZED'
@@ -282,6 +284,20 @@ export interface ChannelsSlice {
     channelId: string,
     workspaceId: string,
   ) => Promise<ChannelActionResult<Channel>>;
+
+  // ── operator-join (설계 §2.1/§2.2) — humans-only 발견 + 자가 입장 ────────────
+  /** 발견 어포던스: 전 채널(공개+비공개, active+archived)의 메타데이터만 가져온다.
+   *  private 채널은 list()에서 비멤버에게 숨겨지므로 오퍼레이터 섹션이 "들어갈 수
+   *  있는 방"을 보여주려면 이 목록이 필요하다. 읽기지만 humans-only 트랜스포트
+   *  (mutateLocal)로만 도달한다(§2.2). 실패 시 빈 배열 + 콘솔 경고(비파괴적 조회). */
+  operatorListDaemon: (workspaceId: string) => Promise<OperatorChannelSummary[]>;
+  /** 오퍼레이터(사람)가 비공개 채널에 스스로 들어간다(§2.1). 성공 시 데몬이 사람
+   *  좌석을 심고 서버-발행 시스템 메시지를 남긴다(§2.1.1). 채널 행은 지금까지
+   *  private+비멤버라 미러에 없었을 수 있으므로, 성공만 신호하고 새로 보이게 된
+   *  채널 행 재동기는 호출자의 카탈로그 재-hydrate(+ membership 이벤트)에 맡긴다. */
+  operatorJoinDaemon: (
+    channelId: string,
+  ) => Promise<ChannelActionResult<Record<string, never>>>;
 
   // ── R2: Principal registry / system cleanup (renderer-only, fire-and-forget) ──
   // All take the same humans-only mutateLocal path as kick. Failures are left as
@@ -812,6 +828,11 @@ export const createChannelsSlice: StateCreator<
           // non-creator archive). Model it so the toast shows the real reason
           // instead of bucketing to UNKNOWN with the code mangled into the text.
           'NOT_AUTHORIZED',
+          // 6g2: join + operatorJoin branch on "already a member" for a benign
+          // info toast. Modeled so callers can test `.code` — the previous
+          // behavior (UNKNOWN bucket with the code prepended to the message)
+          // made that branch depend on a message-substring accident.
+          'DUPLICATE_MEMBER',
           'UNKNOWN',
         ]);
         if (KNOWN_CODES.has(code as ChannelError['code'])) {
@@ -1068,5 +1089,63 @@ export const createChannelsSlice: StateCreator<
       archivedAt: Date.now(),
       archivedBy: workspaceId,
     });
+  },
+
+  operatorListDaemon: async (workspaceId) => {
+    const bridge = get().channelsRpc();
+    if (!bridge) {
+      console.warn('[channelsSlice] operatorListDaemon invoked before bridge mounted — call ignored');
+      return [];
+    }
+    let raw: unknown;
+    try {
+      // 발견 어포던스(§2.2). 읽기지만 humans-only 트랜스포트라 mutateLocal로 탄다.
+      // 데몬은 { ok: true, channels: OperatorChannelSummary[] }를 반환한다.
+      raw = await bridge.mutateLocal('a2a.channel.operatorList', {
+        verifiedWorkspaceId: workspaceId,
+      });
+    } catch (err) {
+      console.warn('[channelsSlice] operatorListDaemon failed:', err);
+      return [];
+    }
+    if (
+      raw !== null &&
+      typeof raw === 'object' &&
+      'ok' in raw &&
+      (raw as { ok: unknown }).ok === true &&
+      'channels' in raw &&
+      Array.isArray((raw as { channels: unknown }).channels)
+    ) {
+      return (raw as { channels: OperatorChannelSummary[] }).channels;
+    }
+    console.warn('[channelsSlice] operatorListDaemon: unexpected reply shape', raw);
+    return [];
+  },
+
+  operatorJoinDaemon: async (channelId) => {
+    const bridge = get().channelsRpc();
+    if (!bridge) {
+      console.warn('[channelsSlice] operatorJoinDaemon invoked before bridge mounted — call ignored');
+      return { ok: false, error: { code: 'UNKNOWN', message: 'channels bridge not mounted' } };
+    }
+    let raw: unknown;
+    try {
+      // 좌석은 데몬이 상수로 심는다(§2.1) — verifiedWorkspaceId=ws-human만 보낸다.
+      // 여분 필드(member/includeHistory 등)는 데몬이 읽지 않으므로 전달하지 않는다.
+      raw = await bridge.mutateLocal('a2a.channel.operatorJoin', {
+        channelId,
+        verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
+      });
+    } catch (err) {
+      return { ok: false, error: { code: 'UNKNOWN', message: err instanceof Error ? err.message : String(err) } };
+    }
+    if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
+      return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.operatorJoin failed') };
+    }
+    // 낙관적 미러 갱신: 채널 행은 지금까지 private+비멤버라 미러에 없었을 수 있으므로
+    // 좌석만 optimistic-add하지 않고, 호출자(ChannelsPanel)가 카탈로그를 재-hydrate해
+    // 새로 보이게 된 채널 행 + 멤버를 끌어온다. 데몬의 membership 카탈로그 이벤트도
+    // 동일 재동기를 유발한다(이중 안전). 여기선 성공만 신호한다.
+    return { ok: true, value: {} };
   },
 });

@@ -517,6 +517,24 @@ export function ChannelViewContent({
               </button>
             )}
             {rendered.map((m) => {
+            // operator-join (§2.1.1/§3): a server-published system marker renders as
+            // a centered muted line, not an attributed chat message. The durable
+            // append is the audit trail; the copy is viewpoint-neutral because
+            // every member's view renders this same marker.
+            if (m.systemKind === 'operator-join') {
+              return (
+                <div
+                  key={`${channel.id}:${m.seq}`}
+                  data-channel-message
+                  data-channel-system-message="operator-join"
+                  data-seq={m.seq}
+                  className="flex items-center justify-center py-0.5 text-[10px] font-mono italic text-[var(--text-muted)]"
+                  {...tokenAttrs('textMuted', 'text')}
+                >
+                  {t('channels.systemOperatorJoin') || 'Operator joined this channel'}
+                </div>
+              );
+            }
             const myStatus = viewerDeliveryStatus(m, viewer?.memberId ?? null);
             const mentionsMe =
               !!viewer && !!m.mentions?.some((mn) => mn.workspaceId === viewer.workspaceId);

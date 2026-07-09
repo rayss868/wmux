@@ -1959,6 +1959,54 @@ function registerRpcHandlers(
     });
   });
 
+  // a2a.channel.operatorJoin — 오퍼레이터(사람)가 에이전트들이 만든 비공개 채널에
+  // 스스로 들어가는 신뢰 경로(operator-join 설계 §2.1). kick/purgeMembership과 동일한
+  // HUMANS-ONLY 관례: 파이프 라우터(a2a.channel.rpc.ts)에 등록되지 않고 렌더러 전용
+  // channels:mutate-local IPC로만 도달한다. stampCaller를 돌리지 않는다(archive/kick과
+  // 동일 근거): 스탬프하면 senderPtyId만 가진 파이프 에이전트에게 humans-only 목적지로
+  // 향하는 정직한 데몬-파이프 경로를 열어주게 된다. 렌더러가 미리 채운
+  // verifiedWorkspaceId만 수용한다.
+  //
+  // §2.1.2 직결 잔여(명시 수용, kick 선례와 동일 클래스): 데몬 소켓 직결 호출자(같은
+  // OS 유저)는 이 메서드를 임의 verifiedWorkspaceId로 호출해 사람 좌석을 임의 채널에
+  // 심을 수 있다. 그러나 이 호출자는 이미 channels.json을 디스크에서 메시지 전문 포함
+  // 읽을 수 있으므로(L3 천장, #113) operatorJoin이 새로 주는 읽기 능력은 없다. 새로
+  // 생기는 "위조된 사람 입장 신호"는 ChannelService가 남기는 서버-발행 시스템 메시지
+  // (§2.1.1)가 사람에게 가시화한다 — 유일하게 가능한 방어 형태다.
+  pipeServer.onRpc('a2a.channel.operatorJoin', async (params) => {
+    // Deliberately NOT stamped (humans-only, kick/purgeMembership과 동일 근거).
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!channelId || !verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'channelId and a server-resolved verifiedWorkspaceId are required',
+        },
+      };
+    }
+    // 좌석 행은 ChannelService.operatorJoin이 상수로만 구성한다 — 여기서 params의
+    // 여분 필드(member/includeHistory 등)를 전달하지 않는다(§2.1 파라미터 표면 제거).
+    return channelService.operatorJoin({ channelId, verifiedWorkspaceId });
+  });
+
+  // a2a.channel.operatorList — 비공개 채널 발견 어포던스(설계 §2.2, 읽기 전용).
+  // operatorJoin과 동일한 humans-only 트랜스포트: private 채널은 list()에서 비멤버에게
+  // 숨겨지므로 GUI가 "들어갈 수 있는 방"을 보여주려면 이 메서드가 필요하다. 읽기지만
+  // 파이프에 노출하면 에이전트가 전 private 채널 이름을 열거할 수 있으므로 파이프
+  // 미등록 + 렌더러 전용 경로만. §2.2 직결 잔여: 같은 호출자는 이미 디스크에서 동일
+  // 정보+메시지 전문을 읽는다 — API가 디스크보다 강하지 않다(명시 수용).
+  pipeServer.onRpc('a2a.channel.operatorList', async (params) => {
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    return { ok: true, channels: channelService.operatorList({ verifiedWorkspaceId }) };
+  });
+
   // ── A2A task registry (envelope PR4 §5 D11) ─────────────────────────
   // 데몬 정본 A2A 태스크 서비스. main의 a2a.rpc.ts가 렌더러 delivery와 병행해 이
   // 핸들러로 정본 상태(생성·전이·취소)를 커밋한다(dual-write 브리지 — D1). 정본은

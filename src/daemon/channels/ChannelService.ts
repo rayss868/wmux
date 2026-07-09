@@ -41,6 +41,8 @@ import {
   type ChannelVisibility,
   HUMAN_WORKSPACE_ID,
   HUMAN_MEMBER_ID,
+  OPERATOR_JOIN_SYSTEM_TEXT,
+  type OperatorChannelSummary,
 } from '../../shared/channels';
 import { HUMAN_SELF_PRINCIPAL_ID } from '../../shared/principals';
 import { CHANNELS_EPOCH, EMPTY_CHANNEL_STATE } from '../../shared/channels';
@@ -265,6 +267,29 @@ export interface JoinChannelParams {
    * only — never an authz input (#113).
    */
   senderPtyId?: string;
+}
+
+/**
+ * operator-join (설계 §2.1) — 오퍼레이터(사람)가 에이전트들이 만든 비공개 채널에
+ * 스스로 들어가는 파라미터. **정확히 두 필드뿐**이다(타입 수준 강제, Codex #2):
+ * 좌석 행은 본문이 상수로만 구성하며, caller가 실어 보낸 member/includeHistory 등은
+ * 절대 읽지 않는다 — P5류 주입(create의 members[] 우회)의 재발 방지 핵심이다. 원시
+ * params 객체에 여분 필드가 실려 와도 이 타입엔 존재하지 않으므로 본문이 접근할
+ * 수 없다(join()과 별도 본문인 이유 — 공용 헬퍼로 caller 필드를 소비하는 형태 금지).
+ */
+export interface OperatorJoinParams {
+  channelId: string;
+  /** 서버-검증 workspaceId. 좌석이 하드코딩이라 authz 입력이 아니다 — "no anonymous
+   *  mutation" 자세 확인용 존재 검증만(kick 관례). 직결 잔여 함의는 설계 §2.1.2. */
+  verifiedWorkspaceId: string;
+}
+
+/**
+ * operator-list (설계 §2.2) — 비공개 채널 발견 어포던스. 파라미터는
+ * verifiedWorkspaceId 하나(존재 검증 전용). 전 채널의 메타데이터만 반환한다.
+ */
+export interface OperatorListParams {
+  verifiedWorkspaceId: string;
 }
 
 export interface LeaveChannelParams {
@@ -563,6 +588,36 @@ export class ChannelService {
     if (!channel) return null;
     if (!this.isVisibleTo(channel, verifiedWorkspaceId)) return null;
     return channel;
+  }
+
+  /**
+   * operator-list (설계 §2.2) — 발견 어포던스. private 채널은 list()에서 비멤버에게
+   * 숨겨지므로, GUI가 "들어갈 수 있는 방"을 보여줄 방법이 필요하다. 전 채널
+   * (공개+비공개, active+archived)의 **메타데이터만** 반환한다 — 메시지 미리보기·
+   * 멤버 상세 없음(내용을 읽으려면 operatorJoin해야 하고, 그건 시스템 메시지를
+   * 남긴다 §2.1.1). verifiedWorkspaceId는 필터가 아니라 존재 검증 전용이다: 전
+   * 채널을 반환하되(name 포함 유지 — 이름 없는 목록은 맹목 join 유발로 오히려
+   * 해롭다 §2.2), 부재 시엔 빈 목록(no anonymous). 우발 노출은 GUI 의도 게이트로
+   * 해소한다(접힘 기본 오퍼레이터 섹션 §3). 직결 잔여에서 이 메서드가 "전 private
+   * 채널 name·memberCount 열거 오라클"이 됨은 §2.2에서 디스크 등가로 명시 수용.
+   *
+   * 정렬 결정성: createdAt 오름차순, 동률은 id 사전순 tiebreak(안정 결정성).
+   */
+  operatorList(params: OperatorListParams): OperatorChannelSummary[] {
+    // 존재 검증(no anonymous). 부재는 handler가 이미 거르지만, 심층 방어로 여기서도
+    // 빈 목록을 반환한다 — 직결 잔여 호출자에게도 정체성 스탬프 없이는 열거를 주지
+    // 않는다(디스크 등가라 방어 경계는 아니나, API가 디스크보다 강하지 않게 유지).
+    if (!params.verifiedWorkspaceId) return [];
+    return this.state.channels
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        visibility: c.visibility,
+        status: c.status,
+        memberCount: (this.state.members[c.id] ?? []).length,
+        createdAt: c.createdAt,
+      }))
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   }
 
   /**
@@ -1121,6 +1176,151 @@ export class ChannelService {
         'membership',
       );
       return { ok: true, memberId: joinMemberId };
+    });
+  }
+
+  /**
+   * operator-join (설계 §2.1) — 오퍼레이터(사람)가 에이전트들이 만든 비공개 채널에
+   * **스스로** 들어가는 신뢰 경로. #288 가시성 게이트를 의식적으로 우회하지만(존재
+   * → archived → duplicate 게이트는 join()과 동일), **좌석 행은 caller 파라미터를
+   * 일절 읽지 않고 상수로만 구성**한다 — join()과 별도 본문인 이유(공용 헬퍼로
+   * caller 필드를 소비하는 형태 금지, P5류 주입 재발 방지, Codex #2).
+   *
+   * 에러 코드(§2.1): 없는 id → CHANNEL_NOT_FOUND(주인 상대 존재 은폐 불필요 —
+   * join()의 private 마스킹과 달리 여기선 실제 부재만 이 코드), archived →
+   * CHANNEL_ARCHIVED, 이미 멤버 → DUPLICATE_MEMBER(GUI가 no-op으로 처리;
+   * silent-success 아님 — join()과 의미론 일치).
+   *
+   * 성공 시 서버-발행 시스템 메시지 1건을 채널 히스토리에 **영속 append**한다
+   * (§2.1.1 필수): 좌석 push와 메시지 append를 하나의 커밋(operator-join envelope)
+   * 으로 묶어 원자성을 보장한다 — persist 실패 시 둘 다 미적용(로그 모드) 또는 둘 다
+   * 롤백(레거시 모드). 이 흔적은 (a) leave 후에도 남는 내구 감사이고 (b) #113 잔여로
+   * 위조된 입장(§2.1.2)을 사람이 GUI에서 발견하는 유일한 장치다.
+   *
+   * authz: verifiedWorkspaceId는 좌석이 하드코딩이라 authz 입력이 아니다 — 존재
+   * 검증만(kick 관례). humans-only는 트랜스포트가 강제한다(파이프 미등록 §2.3).
+   * 재진입: leave 후 재-operatorJoin은 일반 join과 같은 "새 좌석"(unread 리셋) —
+   * 상태 이월 없음(§2.1, GLM ①).
+   */
+  async operatorJoin(params: OperatorJoinParams): Promise<Result<{ memberId: string }>> {
+    // "no anonymous mutation" — verifiedWorkspaceId 부재 거부(handler와 대칭 심층
+    // 방어). 좌석은 하드코딩이라 authz 입력은 아니지만, 스탬프 없는 호출은 받지
+    // 않는다(kick/archive 관례). handler도 동일 거부(daemon/index.ts).
+    if (!params.verifiedWorkspaceId) {
+      return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
+    }
+    return this.withChannelLock(params.channelId, async () => {
+      const channel = this.state.channels.find((c) => c.id === params.channelId);
+      if (!channel) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
+      }
+      // archived 게이트 — join()/invite()/kick()과 동일. archived 채널엔 좌석을
+      // 심지 않는다(§2.1: join은 CHANNEL_ARCHIVED로 거부).
+      if (channel.status === 'archived') {
+        return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot join an archived channel' } };
+      }
+      const members = this.state.members[channel.id] ?? [];
+      // duplicate 게이트 — 사람 좌석은 (HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID) 상수라
+      // caller 입력과 무관하게 이 한 행의 존재로 판정한다.
+      if (members.some((m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID)) {
+        return { ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } };
+      }
+      const now = this.now();
+      // 시스템 메시지가 소비할 seq — 좌석 lastReadSeq 계산에 쓸 nextSeq를 append
+      // 전에 캡처(§2.1: lastReadSeq = nextSeq-1). 메시지는 이 seq를 소비하고
+      // 오퍼레이터 본인이 작성자이므로 unread 계산이 자기-작성 메시지를 면제 →
+      // 오퍼레이터 unread = 0(§2.1 "unread = 0").
+      const seq = channel.nextSeq;
+      // 좌석 행 — **상수로만** 구성(설계 §2.1). caller params를 읽지 않는다. shape는
+      // P5 병합 human 행과 동일(memberName 없음 — 렌더러가 localized "Me"로 대체):
+      // workspaceId / memberId / joinedAt / historyFromSeq(전체 히스토리=0) /
+      // lastReadSeq(nextSeq-1) / principalId.
+      const seatRow: ChannelMember = {
+        workspaceId: HUMAN_WORKSPACE_ID,
+        memberId: HUMAN_MEMBER_ID,
+        joinedAt: now,
+        historyFromSeq: 0,
+        lastReadSeq: channel.nextSeq - 1,
+        principalId: HUMAN_SELF_PRINCIPAL_ID,
+      };
+      // 서버-발행 시스템 메시지(§2.1.1). systemKind로 판별하고 text는 폴백이다.
+      // nudge 억제의 실제 장치는 unreadFor()의 systemKind 면제다 — 감사 마커는
+      // 누구의 unread도 만들지 않으므로 wake worker가 이 행으로 nudge를 걸지
+      // 않는다. deliveryStatus='delivered'는 "배달이 아니다"의 표기일 뿐 unread/
+      // wake 판정에는 관여하지 않는다.
+      const systemMessage: ChannelMessage = {
+        channelId: channel.id,
+        seq,
+        workspaceId: HUMAN_WORKSPACE_ID,
+        memberId: HUMAN_MEMBER_ID,
+        memberName: this.deriveMemberName(HUMAN_MEMBER_ID, HUMAN_SELF_PRINCIPAL_ID),
+        text: OPERATOR_JOIN_SYSTEM_TEXT,
+        postedAt: now,
+        deliveryStatus: 'delivered',
+        systemKind: 'operator-join',
+      };
+      if (this.eventLog) {
+        // 로그 모드: 좌석+메시지를 하나의 operator-join envelope로 원자 커밋. fsync
+        // 배리어 성공 후에만 둘 다 적용된다 — 실패 = 무적용(부분 상태 구조적 불가,
+        // 롤백 블록 불요). 이것이 "persist 실패 시 원자 롤백"의 로그-모드 형태다.
+        if (
+          !(await this.commitAndApply(
+            { kind: 'operator-join', channelId: channel.id, member: seatRow, message: systemMessage },
+            { verifiedWorkspaceId: params.verifiedWorkspaceId, principalId: HUMAN_SELF_PRINCIPAL_ID },
+          ))
+        ) {
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist operator join' } };
+        }
+      } else {
+        // 레거시 모드: 좌석 push + seq 소비 + 메시지 append를 적용한 뒤 동기 저장.
+        // 실패 시 셋 다 원자 롤백(§2.1.1): pop 메시지 → un-bump nextSeq → pop 좌석 →
+        // emptySince 복원. join()/post()의 레거시 롤백 패턴과 동형.
+        const previousEmptySince = channel.emptySince;
+        if (channel.emptySince !== undefined) delete channel.emptySince;
+        members.push(seatRow);
+        this.state.members[channel.id] = members;
+        channel.nextSeq++;
+        (this.state.messages[channel.id] ??= []).push(systemMessage);
+        if (!this.saveOrFail()) {
+          const msgs = this.state.messages[channel.id];
+          if (msgs) msgs.pop();
+          channel.nextSeq--;
+          members.pop();
+          channel.emptySince = previousEmptySince;
+          return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist operator join' } };
+        }
+      }
+      // 멤버십 변경 팬아웃 — post-join 멤버 집합(사람 포함)에 roster/sidebar 재동기
+      // (join()과 동일 신호). 최선노력·비내구라 §2.1.1 시스템 메시지가 내구 흔적을
+      // 별도로 남긴다(단 채널 히스토리는 CHANNEL_MESSAGES_MAX에서 tail-evict되므로
+      // 이 흔적의 보존도 그 한계 내다 — 무한 감사 로그가 아니다).
+      this.emitCatalog(
+        channel.id,
+        HUMAN_WORKSPACE_ID,
+        (this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
+        'membership',
+      );
+      // 시스템 메시지 라이브 팬아웃(best-effort) — 열린 ChannelView에 즉시 표시.
+      // 실패는 post()와 동일하게 무시(내구성은 위 영속 append가 이미 보장). 시스템
+      // 마커라 recipients는 빈 목록.
+      try {
+        this.emit({
+          type: 'channel.message',
+          channelId: channel.id,
+          seq,
+          sender: {
+            workspaceId: HUMAN_WORKSPACE_ID,
+            memberId: HUMAN_MEMBER_ID,
+            memberName: systemMessage.memberName,
+          },
+          recipients: [],
+          message: systemMessage,
+          workspaceId: HUMAN_WORKSPACE_ID,
+        });
+      } catch (err) {
+        console.error('[ChannelService] operatorJoin system-message emit failed:', err);
+      }
+      return { ok: true, memberId: HUMAN_MEMBER_ID };
     });
   }
 
@@ -2379,6 +2579,12 @@ export class ChannelService {
           // the full row identity (workspaceId AND memberId) so a same-ws
           // SIBLING agent still owes it (same-ws A2A stays a conversation).
           if (m.workspaceId === row.workspaceId && m.memberId === row.memberId) continue;
+          // System rows (systemKind) are audit markers, not deliverable work:
+          // this exemption is what actually keeps the wake worker away from
+          // them — without it every agent member owes one plain unread for an
+          // "Operator joined" marker and gets a PTY nudge (three-model review
+          // consensus). deliveryStatus/recipientSnapshot play no role here.
+          if (m.systemKind) continue;
           unread += 1;
           const mentioned = (m.mentions ?? []).some(
             (men) =>

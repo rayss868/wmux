@@ -136,9 +136,15 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'a2a.channel.getMessages',
   'a2a.channel.getMembers',
   'a2a.channel.create',
-  // NOTE: a2a.channel.archive is NOT here (nor is kick). Both are humans-only —
-  // routed via the renderer-only channels:mutate-local IPC, never the MCP/pipe
-  // surface — so a first-party agent is not granted them.
+  // NOTE: a2a.channel.archive is NOT here (nor is kick, nor operatorJoin /
+  // operatorList). All are humans-only — routed via the renderer-only
+  // channels:mutate-local IPC, never the MCP/pipe surface — so a first-party
+  // agent is not granted them. operatorJoin/operatorList are deliberately
+  // excluded here (operator-join design §2.3 / Codex #7): registering them in
+  // RpcMethod + METHOD_CAPABILITY for completeness must NOT leak an agent-
+  // reachable operator path. firstParty.test.ts (which parses src/mcp/ for the
+  // methods the bundled server actually calls) never requires them, since the
+  // bundled MCP server does not call operatorJoin/operatorList.
   'a2a.channel.join',
   'a2a.channel.leave',
   'a2a.channel.post',

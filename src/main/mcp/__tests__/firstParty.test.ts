@@ -88,6 +88,11 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
       'workspace.close',
       'company.create',
       'company.destroy',
+      // operator-join (§2.3 / Codex #7): registered in RpcMethod + METHOD_CAPABILITY
+      // for completeness, but MUST NOT be first-party-granted — that would leak an
+      // agent-reachable path to the humans-only operator surface.
+      'a2a.channel.operatorJoin',
+      'a2a.channel.operatorList',
     ] as const) {
       expect(FIRST_PARTY_METHODS.has(m)).toBe(false);
     }
