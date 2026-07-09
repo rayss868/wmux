@@ -1,0 +1,19 @@
+{
+  "_comment": "(d) 의도된 개선 명시 승인 목록 (스펙 §5-2). 여기 등재된 (workloadName,x,y,field)만 diff 리포트에서 'intended'로 승격된다. 미등재 불일치는 'unclassified'로 남아 사람이 판정해야 한다(암묵 (d) 금지). 아래 항목들은 E1 우리 코어(U16+grapheme, 이상적 reflow)가 xterm.js U11 기준선과 갈릴 지점을 **미리 예약**한 것이다 — E0 현재는 피검체가 xterm.js 하나뿐이라 교차 diff가 없어 실제로 승격되는 항목은 없고, E1에서 우리 코어가 꽂히면 이 좌표들에서 (d)로 승격된다. loadIntendedDiffs()가 이 배열을 읽어 diffGrids의 intended 파라미터로 넘긴다.",
+  "intended": [
+    {
+      "workloadName": "cjk-emoji",
+      "x": 0,
+      "y": 2,
+      "field": "width",
+      "reason": "VS16 하트(U+2764 U+FE0F ❤️)의 폭. xterm.js U11 기준선은 VS16 emoji-presentation 폭 승격을 테이블에 반영하지 않아 폭1을 낸다(관측). E1 우리 코어는 Unicode 16 + grapheme 세그멘테이션으로 VS16 하트를 emoji-presentation 폭2로 처리한다 — 1→2는 버그가 아니라 의도된 개선(U16 정합). 이 셀이 폭2로 갈 때 width 불일치가 여기 등재로 intended 승격된다."
+    },
+    {
+      "workloadName": "resize-reflow",
+      "x": 79,
+      "y": 0,
+      "field": "char",
+      "reason": "resize-reflow 왕복(80→79→80) 후 wrap 경계 셀(row0 col79)의 복원. xterm.js U11 기준선은 이 셀을 빈 셀로 남긴다(120자 마크 중 마지막 J 미복원 — 왕복 후 119자만 잔존, 실측). E1 우리 코어는 이상적 reflow idempotency를 개선 목표로 삼아 왕복 후 원본 120자를 완전 복원한다 — 이 셀이 빈 셀→'J'로 갈 때 char 불일치가 여기 등재로 intended 승격된다(R2와 연계, 이상적 복원은 E1 코어의 (d)의도된 개선)."
+    }
+  ]
+}
