@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { useT } from '../../hooks/useT';
 import { focusedTerminalPtyId } from '../../utils/focusedSurface';
+import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { injectText, quotePathsForPrompt } from './inject';
 import RichInput from './RichInput';
 import SnippetsMenu from './SnippetsMenu';
 import FileExplorerPopover from './FileExplorerPopover';
+import FanOutDialog from './FanOutDialog';
 import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconSparkles } from '../icons';
 
 export default function AgentToolbar() {
@@ -18,9 +20,28 @@ export default function AgentToolbar() {
   const newCommand = useStore((s) => s.newConversationCommand);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const [showFanOut, setShowFanOut] = useState(false);
 
   const ptyId = focusedTerminalPtyId(activeWorkspace);
   const disabled = !ptyId;
+
+  // §6 broadcast-only(별개 동작 — WorkTask·worktree·채널 0). 현재 워크스페이스의
+  // 모든 에이전트 페인(terminal surface)에 같은 텍스트를 inject. C10의 격리 해제
+  // 옵션을 fan-out에 두지 않고 별도 진입으로 봉쇄한다. 최소 구현(§6 재량).
+  const handleBroadcast = useCallback(async () => {
+    if (!activeWorkspace) return;
+    const text = window.prompt('broadcast — 현재 워크스페이스의 모든 에이전트 페인에 보낼 텍스트');
+    if (!text || text.trim().length === 0) return;
+    const ptyIds: string[] = [];
+    for (const leaf of findLeafPanes(activeWorkspace.rootPane)) {
+      for (const s of leaf.surfaces) {
+        if (s.ptyId && (s.surfaceType ?? 'terminal') === 'terminal') ptyIds.push(s.ptyId);
+      }
+    }
+    for (const id of ptyIds) {
+      await injectText(id, text, true);
+    }
+  }, [activeWorkspace]);
 
   const handleAttach = useCallback(async () => {
     if (!ptyId) return;
@@ -102,6 +123,22 @@ export default function AgentToolbar() {
         <IconKeyboard size={13} /> {t('toolbar.richInput')}
         <kbd className="ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[9px] leading-tight opacity-60 font-sans">{window.electronAPI?.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
       </button>
+      <button
+        className={`${btn} ${showFanOut ? active : idle}`}
+        onClick={() => setShowFanOut((v) => !v)}
+        title="Fan-out — 프롬프트 1개 → N 격리 태스크"
+        data-testid="fanout-button"
+      >
+        <IconSparkles size={13} /> Fan-out
+      </button>
+      <button
+        className={`${btn} ${idle}`}
+        onClick={handleBroadcast}
+        title="Broadcast — 현재 워크스페이스 에이전트 페인에 같은 텍스트(격리 없음)"
+        data-testid="broadcast-button"
+      >
+        Broadcast
+      </button>
       <div className="flex-1" />
       {disabled && <span className="text-[10px] text-[var(--text-muted)]">{t('toolbar.noTerminal')}</span>}
       <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleNew} title={t('toolbar.new')}>
@@ -111,6 +148,7 @@ export default function AgentToolbar() {
       {popover === 'explorer' && <FileExplorerPopover />}
       {popover === 'snippets' && ptyId && <SnippetsMenu ptyId={ptyId} />}
       {popover === 'rich' && ptyId && <RichInput ptyId={ptyId} />}
+      {showFanOut && <FanOutDialog onClose={() => setShowFanOut(false)} />}
     </div>
   );
 }
