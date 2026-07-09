@@ -202,12 +202,43 @@ export default function FleetView() {
     setRemoteIdx((i) => Math.min(i, Math.max(remoteInbox.length - 1, 0)));
   }, [remoteInbox.length]);
 
-  // 상시 크롬 전환: 열림(마운트) 시 딱 한 번 패널로 포커스를 당긴다. 사용자가
-  // Ctrl+Shift+A로 명시적으로 연 직후이므로 키보드 사용자가 바로 상호작용할 수
-  // 있게 하는 게 자연스럽다. 모달과 달리 그 뒤로는 절대 포커스를 강탈하지 않는다
-  // (아래 로빙 효과가 "이미 패널 안에 있을 때"만 이동).
+  // 현재 탭·포커스 인덱스에 해당하는 카드/행에 실제 DOM 포커스를 건다. 성공 시 true.
+  // 패널 컨테이너(panelRef)가 아니라 항목 요소에 직접 걸어야 (1) 보조기술이 최초
+  // 선택을 announce하고 (2) 탭에 카드가 하나뿐이어도 로빙 인덱스 클램프에 갇히지
+  // 않는다. 마운트 효과와 로빙 효과가 공유하는 단일 포커스 경로.
+  const focusActiveItem = useCallback(() => {
+    if (tab === 'fleet' && panes.length > 0) {
+      const cards = gridRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card]');
+      const el = cards && cards[focusedIdx];
+      if (el) { el.focus(); return true; }
+    } else if (tab === 'approvals' && inbox.length > 0) {
+      const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
+      const el = rows && rows[inboxIdx];
+      if (el) { el.focus(); return true; }
+    } else if (tab === 'remote' && remoteInbox.length > 0) {
+      const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
+      const el = rows && rows[remoteIdx];
+      if (el) { el.focus(); return true; }
+    }
+    return false;
+  }, [tab, focusedIdx, inboxIdx, remoteIdx, panes.length, inbox.length, remoteInbox.length]);
+
+  // 마운트 효과([] deps)가 매 포커스 변경마다 재실행되지 않으면서도 최신 상태를
+  // 읽도록, 최신 focusActiveItem 클로저를 ref에 보관한다.
+  const focusActiveItemRef = useRef(focusActiveItem);
+  focusActiveItemRef.current = focusActiveItem;
+
+  // 상시 크롬 전환: 열림(마운트) 시 딱 한 번 현재 항목으로 포커스를 당긴다. 예전엔
+  // 여기서 panelRef에만 포커스를 줬는데, 아래 로빙 효과의 "포커스가 이미 패널 안"
+  // 가드가 rAF 콜백보다 먼저 동기 실행돼 거짓이라 즉시 return → 어떤 카드에도 실제
+  // DOM 포커스가 안 걸리고, 카드가 하나뿐이면 화살표 클램프로 인덱스가 안 바뀌어
+  // 로빙이 영영 안 살아나는 레이스가 있었다. 이제 실제 카드/행에 직접 포커스하고,
+  // 항목이 하나도 없을 때만 패널 컨테이너로 폴백한다. 모달과 달리 그 뒤로는 절대
+  // 포커스를 강탈하지 않는다(아래 로빙 효과가 "이미 패널 안"일 때만 이동).
   useEffect(() => {
-    const raf = requestAnimationFrame(() => panelRef.current?.focus());
+    const raf = requestAnimationFrame(() => {
+      if (!focusActiveItemRef.current()) panelRef.current?.focus();
+    });
     return () => cancelAnimationFrame(raf);
   }, []);
 
@@ -218,20 +249,9 @@ export default function FleetView() {
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel || !panel.contains(document.activeElement)) return;
-    const raf = requestAnimationFrame(() => {
-      if (tab === 'fleet' && panes.length > 0) {
-        const cards = gridRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card]');
-        (cards && cards[focusedIdx])?.focus();
-      } else if (tab === 'approvals' && inbox.length > 0) {
-        const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
-        (rows && rows[inboxIdx])?.focus();
-      } else if (tab === 'remote' && remoteInbox.length > 0) {
-        const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
-        (rows && rows[remoteIdx])?.focus();
-      }
-    });
+    const raf = requestAnimationFrame(() => { focusActiveItem(); });
     return () => cancelAnimationFrame(raf);
-  }, [tab, focusedIdx, inboxIdx, remoteIdx, panes.length, inbox.length, remoteInbox.length]);
+  }, [focusActiveItem]);
 
   // Keyboard (상시 크롬 재설계): 모달 시절의 전역 window 캡처 리스너 + Tab 트랩을
   // 걷어냈다. 대신 이 핸들러는 패널 DOM에 onKeyDownCapture로 붙어 "포커스가 패널
