@@ -82,6 +82,15 @@ export const IPC = {
   // 조립한다. 렌더러 신뢰 신원(verifiedWorkspaceId)은 channelLocal과 동일 trust
   // basis(Electron 프로세스 경계). 파이프 미노출 — 같은 사용자 MCP 클라가 못 닿는다.
   FANOUT_START: 'fanout:start',
+  // J3 태스크 수명주기 — renderer → main(파이프 미노출, channelLocal과 동일 trust).
+  //  TASK_CLOSE: remove 성공→close 커밋 순서 오케스트레이션(TaskCloseService).
+  //  TASK_CREATE_PR: gh 4중 게이트 1클릭 PR(TaskPrService).
+  //  WORKTASK_SCAN: 전용 루트 디스크 정본 정리 스캔(WorktaskScanService).
+  //  WORKTASK_READ_PROMPT: 미발사 재발사용 prompt.md 실존 검사·읽기(§3).
+  TASK_CLOSE: 'task:close',
+  TASK_CREATE_PR: 'task:create-pr',
+  WORKTASK_SCAN: 'worktask:scan',
+  WORKTASK_READ_PROMPT: 'worktask:read-prompt',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

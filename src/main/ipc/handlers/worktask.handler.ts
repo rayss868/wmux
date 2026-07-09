@@ -1,0 +1,242 @@
+// J3 태스크 수명주기 IPC 핸들러(renderer → main). channelLocal·fanout과 동일
+// renderer-trusted 신원(Electron 프로세스 경계, 파이프 미노출).
+//
+// 4 채널:
+//   task:close        — TaskCloseService(remove 성공→close 순서 역전 §1).
+//   task:create-pr    — TaskPrService(gh 4중 게이트 1클릭 PR §2).
+//   worktask:scan     — WorktaskScanService(디스크 정본 정리 스캔 §1).
+//   worktask:read-prompt — 미발사 재발사용 prompt.md 실존 검사·읽기(§3).
+//
+// close·createPr는 taskId만 받고 물질화 필드(branch·worktreePath·title)는 데몬
+// projection(task.mission.list)에서 역참조한다 — 렌더러가 stale 필드를 실어보내
+// 엉뚱한 worktree를 건드리는 표면을 없앤다(단일 정본).
+
+import { ipcMain } from 'electron';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as crypto from 'node:crypto';
+import { IPC } from '../../../shared/constants';
+import { wrapHandler } from '../wrapHandler';
+import type { DaemonClient } from '../../DaemonClient';
+import type { RpcMethod } from '../../../shared/rpc';
+import { TaskWorktreeManager, metaDirForWorktree } from '../../worktask/TaskWorktreeManager';
+import { TaskCloseService } from '../../worktask/TaskCloseService';
+import { TaskPrService } from '../../worktask/TaskPrService';
+import { WorktaskScanService, type ScanOpenTask } from '../../worktask/WorktaskScanService';
+import { prStatusCache } from '../../metadata/PrStatusCache';
+
+const execFileAsync = promisify(execFile);
+
+/** projection 태스크 최소 형태(task.mission.list 반환). */
+interface ProjectionTask {
+  id: string;
+  title: string;
+  status: 'open' | 'closed';
+  branch?: string;
+  worktreePath?: string;
+  paneGroupId?: string;
+  prUrl?: string;
+}
+
+export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | null): () => void {
+  const daemonPort = {
+    rpc: async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+      const dc = getDaemonClient();
+      if (!dc) throw new Error('Daemon not connected');
+      return dc.rpc(method as RpcMethod, params);
+    },
+  };
+
+  // 프로세스 수명 단일 인스턴스: TaskWorktreeManager는 repoHash 단위 뮤텍스 체인을
+  // 유지해야 하므로(index.lock 경합 차단) 재사용한다. fan-out과는 별도 인스턴스지만
+  // 크로스 인스턴스 worktree add/remove 경합은 git 자체의 index.lock이 backstop.
+  const worktrees = new TaskWorktreeManager();
+  const closeService = new TaskCloseService({ daemon: daemonPort, worktrees });
+  const prService = new TaskPrService({ daemon: daemonPort, cache: prStatusCache });
+  const scanService = new WorktaskScanService();
+
+  // ── task:close ──────────────────────────────────────────────────────
+  ipcMain.removeHandler(IPC.TASK_CLOSE);
+  ipcMain.handle(
+    IPC.TASK_CLOSE,
+    wrapHandler(IPC.TASK_CLOSE, async (_event, raw: unknown) => {
+      const { taskId, verifiedWorkspaceId, error } = parseTaskRef(raw);
+      if (error) return { ok: false, taskId: '', reason: 'error' as const, error };
+
+      const task = await resolveTask(daemonPort, taskId, verifiedWorkspaceId);
+      if (!task) return { ok: false, taskId, reason: 'error' as const, error: 'task:close: 태스크를 찾을 수 없음(projection 부재)' };
+
+      // 미물질화(worktreePath 부재): worktree 단계 생략 close만(CX4).
+      if (!task.worktreePath) {
+        return closeService.closeTask({ taskId, verifiedWorkspaceId });
+      }
+
+      // 물질화: repoRoot·repoHash·metaDir을 worktreePath에서 역산.
+      const repo = await resolveRepoInfo(task.worktreePath);
+      if (!repo) {
+        return {
+          ok: false,
+          taskId,
+          reason: 'error' as const,
+          error: 'task:close: worktree의 본 repo를 해석할 수 없음(worktree 손상?)',
+        };
+      }
+      return closeService.closeTask({
+        taskId,
+        verifiedWorkspaceId,
+        repoRoot: repo.repoRoot,
+        repoHash: repo.repoHash,
+        worktreePath: task.worktreePath,
+        metaDir: metaDirForWorktree(task.worktreePath),
+      });
+    }),
+  );
+
+  // ── task:create-pr ──────────────────────────────────────────────────
+  ipcMain.removeHandler(IPC.TASK_CREATE_PR);
+  ipcMain.handle(
+    IPC.TASK_CREATE_PR,
+    wrapHandler(IPC.TASK_CREATE_PR, async (_event, raw: unknown) => {
+      const { taskId, verifiedWorkspaceId, error } = parseTaskRef(raw);
+      if (error) return { ok: false, reason: 'error' as const, error };
+
+      const task = await resolveTask(daemonPort, taskId, verifiedWorkspaceId);
+      if (!task) return { ok: false, reason: 'error' as const, error: 'task:create-pr: 태스크를 찾을 수 없음' };
+      if (!task.worktreePath || !task.branch) {
+        return {
+          ok: false,
+          reason: 'error' as const,
+          error: 'task:create-pr: 미물질화 태스크(worktree·branch 부재)는 PR을 생성할 수 없습니다',
+        };
+      }
+      return prService.createPr({
+        taskId,
+        verifiedWorkspaceId,
+        worktreePath: task.worktreePath,
+        branch: task.branch,
+        title: task.title,
+      });
+    }),
+  );
+
+  // ── worktask:scan ───────────────────────────────────────────────────
+  ipcMain.removeHandler(IPC.WORKTASK_SCAN);
+  ipcMain.handle(
+    IPC.WORKTASK_SCAN,
+    wrapHandler(IPC.WORKTASK_SCAN, async (_event, raw: unknown) => {
+      const verifiedWorkspaceId =
+        raw && typeof raw === 'object' && typeof (raw as Record<string, unknown>).verifiedWorkspaceId === 'string'
+          ? ((raw as Record<string, unknown>).verifiedWorkspaceId as string)
+          : '';
+      if (!verifiedWorkspaceId) {
+        return { ok: false, error: 'worktask:scan: verifiedWorkspaceId가 필요합니다', scannedRoot: '', entries: [] };
+      }
+      const tasks = await listMissions(daemonPort, verifiedWorkspaceId);
+      const openTasks: ScanOpenTask[] = tasks
+        .filter((t) => t.status === 'open')
+        .map((t) => ({ taskId: t.id, title: t.title, ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}) }));
+      const result = await scanService.scan(openTasks);
+      return { ok: true, ...result };
+    }),
+  );
+
+  // ── worktask:read-prompt ────────────────────────────────────────────
+  // 미발사 재발사(§3): worktreePath에서 prompt.md 실존 검사 후 본문 반환. 파일
+  // 소실 시 사유. 실제 inject(pty.write)는 렌더러 몫(파일 접근만 main).
+  ipcMain.removeHandler(IPC.WORKTASK_READ_PROMPT);
+  ipcMain.handle(
+    IPC.WORKTASK_READ_PROMPT,
+    wrapHandler(IPC.WORKTASK_READ_PROMPT, async (_event, raw: unknown) => {
+      const worktreePath =
+        raw && typeof raw === 'object' && typeof (raw as Record<string, unknown>).worktreePath === 'string'
+          ? ((raw as Record<string, unknown>).worktreePath as string)
+          : '';
+      if (!worktreePath) return { ok: false as const, error: 'worktask:read-prompt: worktreePath가 필요합니다' };
+      const promptPath = path.join(metaDirForWorktree(worktreePath), 'prompt.md');
+      try {
+        const text = fs.readFileSync(promptPath, 'utf8');
+        return { ok: true as const, text };
+      } catch {
+        return { ok: false as const, error: '프롬프트 파일이 소실되었습니다 — 재발사할 원본이 없습니다' };
+      }
+    }),
+  );
+
+  return () => {
+    ipcMain.removeHandler(IPC.TASK_CLOSE);
+    ipcMain.removeHandler(IPC.TASK_CREATE_PR);
+    ipcMain.removeHandler(IPC.WORKTASK_SCAN);
+    ipcMain.removeHandler(IPC.WORKTASK_READ_PROMPT);
+  };
+}
+
+/** {taskId, verifiedWorkspaceId} 방어적 파싱(렌더러 신뢰이나 형태 검증). */
+function parseTaskRef(raw: unknown): { taskId: string; verifiedWorkspaceId: string; error?: string } {
+  if (!raw || typeof raw !== 'object') return { taskId: '', verifiedWorkspaceId: '', error: '요청 객체가 필요합니다' };
+  const r = raw as Record<string, unknown>;
+  const taskId = typeof r.taskId === 'string' ? r.taskId : '';
+  const verifiedWorkspaceId = typeof r.verifiedWorkspaceId === 'string' ? r.verifiedWorkspaceId : '';
+  if (!taskId) return { taskId, verifiedWorkspaceId, error: 'taskId가 필요합니다' };
+  if (!verifiedWorkspaceId) return { taskId, verifiedWorkspaceId, error: 'verifiedWorkspaceId가 필요합니다' };
+  return { taskId, verifiedWorkspaceId };
+}
+
+/** task.mission.list → 태스크 배열(형태 방어). */
+async function listMissions(
+  daemon: { rpc(m: string, p: Record<string, unknown>): Promise<unknown> },
+  verifiedWorkspaceId: string,
+): Promise<ProjectionTask[]> {
+  const res = (await daemon.rpc('task.mission.list', { verifiedWorkspaceId })) as {
+    ok?: boolean;
+    tasks?: ProjectionTask[];
+  };
+  if (!res || res.ok !== true || !Array.isArray(res.tasks)) return [];
+  return res.tasks;
+}
+
+/** taskId → projection 태스크(owner 스코프). 부재면 null. */
+async function resolveTask(
+  daemon: { rpc(m: string, p: Record<string, unknown>): Promise<unknown> },
+  taskId: string,
+  verifiedWorkspaceId: string,
+): Promise<ProjectionTask | null> {
+  const tasks = await listMissions(daemon, verifiedWorkspaceId);
+  return tasks.find((t) => t.id === taskId) ?? null;
+}
+
+/**
+ * worktree 경로 → 본 repo 루트 + repoHash. diff.handler.resolveTargetRepo와 동형:
+ * common-dir(`<repo>/.git`)의 상위에서 `--show-toplevel`을 실행해 본 repo 루트를
+ * 얻는다(worktree cwd 직접 --show-toplevel은 worktree 자신을 반환). repoHash는
+ * preflight와 동일 규칙(realpath sha256 12자)이라 뮤텍스 키가 정합.
+ */
+async function resolveRepoInfo(worktreePath: string): Promise<{ repoRoot: string; repoHash: string } | null> {
+  try {
+    const common = await execFileAsync(
+      'git',
+      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { cwd: worktreePath, timeout: 30000, windowsHide: true },
+    );
+    const commonDir = common.stdout.trim();
+    if (!commonDir) return null;
+    const top = await execFileAsync(
+      'git',
+      ['-C', path.dirname(commonDir), 'rev-parse', '--show-toplevel'],
+      { cwd: worktreePath, timeout: 30000, windowsHide: true },
+    );
+    const repoRoot = top.stdout.trim();
+    if (!repoRoot) return null;
+    let real: string;
+    try {
+      real = fs.realpathSync(repoRoot);
+    } catch {
+      real = repoRoot;
+    }
+    const repoHash = crypto.createHash('sha256').update(real).digest('hex').slice(0, 12);
+    return { repoRoot, repoHash };
+  } catch {
+    return null;
+  }
+}

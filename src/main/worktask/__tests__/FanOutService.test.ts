@@ -172,6 +172,16 @@ describe('§0 E2E 정상 — N=2 전부 성공', () => {
       expect(t.taskId).toBeTruthy();
       expect(t.workspaceId).toBeTruthy();
       expect(t.channelDisconnected).toBe(false);
+      // J3 §3: onExhausted 토스트 매핑 재료로 ptyId가 결과에 실린다(spawn 반환).
+      expect(t.ptyId).toBeTruthy();
+      // J3 §1 CL5: task.json 스탬프가 metaDir에 각인된다(GC 이후 역추적 정본).
+      const slug = t.taskId!.slice(-8);
+      const stampPath = path.join(metaRoot, 'meta', slug, 'task.json');
+      expect(fs.existsSync(stampPath)).toBe(true);
+      const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8')) as { taskId: string; title: string; createdAt: number };
+      expect(stamp.taskId).toBe(t.taskId);
+      expect(stamp.title).toBe(t.title);
+      expect(typeof stamp.createdAt).toBe('number');
     }
     // mission.start·update 각 2회, invite 2회.
     const methods = daemon.calls.map((c) => c.method);

@@ -184,3 +184,20 @@ export function normalizeWorktreePath(raw: string, platform: NodeJS.Platform = p
   if (platform === 'win32' || platform === 'darwin') p = p.toLowerCase();
   return p;
 }
+
+/**
+ * 태스크 meta dir에 각인하는 디스크 정본 스탬프(J3 §1 D1 — CL5). 태스크
+ * projection이 GC(WORKTASK_CLOSED_GC_MS)로 소멸한 뒤에도 전용 루트에 남은
+ * worktree 디렉토리를 taskId·title로 역추적할 수 있게 하는 사이드카다.
+ * closedAt은 clean close 시 meta dir째 삭제되므로 대개 부재 — close↔meta삭제
+ * 사이 크래시로 worktree가 잔존하는 창에서만 관측된다.
+ */
+export interface WorkTaskMetaStamp {
+  taskId: string;
+  title: string;
+  createdAt: number;
+  closedAt?: number;
+}
+
+/** meta dir에 스탬프를 쓰는 파일명(J3 §1 — 정리 스캔 역추적 정본). */
+export const WORKTASK_META_FILENAME = 'task.json';
