@@ -634,3 +634,84 @@ describe('§5 task.mission.update (J1 물질화)', () => {
     expect(t?.paneGroupId).toBe('ws-keep');
   });
 });
+
+describe('J3 §2 prUrl — 비단조·closed 단독 허용·형식 검증', () => {
+  async function started() {
+    const { port } = makeFakeChannelPort();
+    const svc = newWorkTaskService(newLog(), port);
+    await svc.boot();
+    const s = await svc.startMission({ title: 'PR task', verifiedWorkspaceId: 'ws-owner', memberId: 'l' });
+    if (!s.ok) throw new Error('start');
+    return { svc, port, taskId: s.taskId };
+  }
+  const PR1 = 'https://github.com/acme/repo/pull/12';
+  const PR2 = 'https://github.com/acme/repo/pull/13';
+
+  it('open 태스크에 prUrl을 커밋하고, 다른 값으로 갱신(비단조)할 수 있다', async () => {
+    const { svc, taskId } = await started();
+    const r1 = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR1 });
+    expect(r1.ok).toBe(true);
+    expect(svc.getTask(taskId)?.prUrl).toBe(PR1);
+    // 비단조: 재생성 URL로 갱신 허용(물질화 필드와 달리 write-once 아님).
+    const r2 = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR2 });
+    expect(r2.ok).toBe(true);
+    expect(svc.getTask(taskId)?.prUrl).toBe(PR2);
+  });
+
+  it('closed 태스크에 prUrl 단독 갱신은 허용, 물질화 필드 동반은 거부', async () => {
+    const { svc, taskId } = await started();
+    const closed = await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
+    expect(closed.ok).toBe(true);
+    // prUrl 단독 → 허용(PR은 close 후에도 생성 가능 — CX6).
+    const solo = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR1 });
+    expect(solo.ok).toBe(true);
+    expect(svc.getTask(taskId)?.prUrl).toBe(PR1);
+    // 물질화 동반 → 기존 closed 거부 유지.
+    const mixed = await svc.updateMission({
+      taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR2, branch: 'wtask/x',
+    });
+    expect(mixed.ok).toBe(false);
+    // prUrl 없는 물질화 단독도 여전히 거부(기존 계약 불변).
+    const mat = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', branch: 'wtask/x' });
+    expect(mat.ok).toBe(false);
+  });
+
+  it('GitHub PR URL 형식이 아니면 거부한다(G5 — 임의 URL 차단)', async () => {
+    const { svc, taskId } = await started();
+    for (const bad of [
+      'https://evil.example.com/acme/repo/pull/1',
+      'http://github.com/acme/repo/pull/1',
+      'https://github.com/acme/repo/issues/1',
+      'javascript:alert(1)',
+    ]) {
+      const r = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: bad });
+      expect(r.ok).toBe(false);
+    }
+    expect(svc.getTask(taskId)?.prUrl).toBeUndefined();
+  });
+
+  it('동일 prUrl 재쓰기는 append 없는 멱등 no-op이다', async () => {
+    const { svc, taskId } = await started();
+    await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR1 });
+    const again = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR1 });
+    expect(again.ok).toBe(true);
+    expect(svc.getTask(taskId)?.prUrl).toBe(PR1);
+  });
+
+  it('authz: 타 워크스페이스는 prUrl 갱신 불가', async () => {
+    const { svc, taskId } = await started();
+    const r = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-intruder', prUrl: PR1 });
+    expect(r.ok).toBe(false);
+  });
+
+  it('closed 태스크의 prUrl이 재부트 replay에서 복원된다', async () => {
+    const { svc, port, taskId } = await started();
+    await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
+    await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR1 });
+    const svc2 = newWorkTaskService(newLog(), port);
+    await svc2.boot();
+    const t = svc2.getTask(taskId);
+    expect(t?.status).toBe('closed');
+    expect(t?.prUrl).toBe(PR1);
+  });
+});

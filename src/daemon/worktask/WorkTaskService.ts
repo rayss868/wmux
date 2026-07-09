@@ -33,6 +33,7 @@ import {
   WORKTASK_CLOSED_GC_MS,
   WORKTASK_IDEMPOTENCY_CAP,
   WORKTASK_MAX_OPEN_PER_WORKSPACE,
+  WORKTASK_PR_URL_RE,
   missionTopicFor,
   normalizeWorktreePath,
   taskIdFromMissionTopic,
@@ -140,11 +141,18 @@ export interface UpdateMissionInput {
   branch?: string;
   worktreePath?: string;
   paneGroupId?: string;
+  /** J3 §2: 비단조 mutable(PR 재생성 갱신 허용) — closed 태스크에도 단독 갱신 가능. */
+  prUrl?: string;
 }
 
 export type WorkTaskErr = { ok: false; error: string };
 export type StartMissionOk = { ok: true; taskId: string; channelId: string };
-export type CloseMissionOk = { ok: true; taskId: string };
+export type CloseMissionOk = {
+  ok: true;
+  taskId: string;
+  /** J3 §1(CX2): 채널 archive 미확정 — 부트 reconcile이 재시도 수렴. */
+  archivePending?: boolean;
+};
 export type UpdateMissionOk = { ok: true; taskId: string };
 
 export class WorkTaskService {
@@ -258,7 +266,13 @@ export class WorkTaskService {
       // 적용자이므로 여기서는 존재하는 필드만 덮는다(구 레코드 안전: 부재 필드 무변).
       const u = payload as WorkTaskUpdatePayload;
       const task = this.tasks.get(u.taskId);
-      if (!task || task.status === 'closed') return;
+      if (!task) return;
+      if (task.status === 'closed') {
+        // J3 §2: closed 태스크에는 prUrl만 반영(게이트가 append 전에 물질화
+        // 동반을 거부하지만, replay 안전을 위해 적용자도 동일 필터).
+        if (u.prUrl !== undefined) task.prUrl = u.prUrl;
+        return;
+      }
       if (u.branch !== undefined) task.branch = u.branch;
       if (u.worktreePath !== undefined) task.worktreePath = u.worktreePath;
       if (u.paneGroupId !== undefined) task.paneGroupId = u.paneGroupId;
@@ -464,9 +478,13 @@ export class WorkTaskService {
       // 2. 미션 채널 archive — 데몬 내부(owner 신원으로). 실패 내성: 이미 archived/
       //    부재/reaper 소실이면 no-op. close 자체는 성립(로그 커밋됨)이므로 archive
       //    실패는 close를 무르지 않는다(§3 owner-leave 수용 잔여 + reaper 몫).
-      await this.tryArchive(task.missionChannelId, task.owner.verifiedWorkspaceId);
+      const archived = await this.tryArchive(task.missionChannelId, task.owner.verifiedWorkspaceId);
 
-      const result: CloseMissionOk = { ok: true, taskId: task.id };
+      const result: CloseMissionOk = {
+        ok: true,
+        taskId: task.id,
+        ...(archived ? {} : { archivePending: true }),
+      };
       this.idempotencyRecord('close', input.verifiedWorkspaceId, input.idempotencyKey, result);
       return result;
     });
@@ -490,7 +508,15 @@ export class WorkTaskService {
         return { ok: false, error: `task.mission.update: task not found: ${input.taskId}` };
       }
       if (task.status === 'closed') {
-        return { ok: false, error: `task.mission.update: task is closed: ${input.taskId}` };
+        // J3 §2(리뷰 CX6): closed 태스크는 prUrl 단독 갱신만 허용 — PR은 close
+        // 후에도 생성 가능하다. 물질화 필드 동반 시엔 기존대로 거부.
+        const hasMaterialization =
+          input.branch !== undefined ||
+          input.worktreePath !== undefined ||
+          input.paneGroupId !== undefined;
+        if (hasMaterialization || input.prUrl === undefined) {
+          return { ok: false, error: `task.mission.update: task is closed: ${input.taskId}` };
+        }
       }
       // authz(§5): owner OR CEO — close 게이트와 동일 앵커.
       const isOwner = task.owner.verifiedWorkspaceId === input.verifiedWorkspaceId;
@@ -500,6 +526,15 @@ export class WorkTaskService {
         return {
           ok: false,
           error: `task.mission.update: caller ${input.verifiedWorkspaceId} is not the task owner or CEO`,
+        };
+      }
+
+      // prUrl 형식 게이트(J3 §2 — 리뷰 G5): GitHub PR URL 정합만. 비단조라
+      // write-once 방어가 없으므로 형식이 유일한 wire 방어선이다.
+      if (input.prUrl !== undefined && !WORKTASK_PR_URL_RE.test(input.prUrl)) {
+        return {
+          ok: false,
+          error: `task.mission.update: prUrl must match https://github.com/{owner}/{repo}/pull/{n}`,
         };
       }
 
@@ -561,6 +596,11 @@ export class WorkTaskService {
         patch.paneGroupId = input.paneGroupId;
         changed = true;
       }
+      // prUrl(J3 §2): 비단조 — 현재 값과 다르면 갱신(동일 값 재쓰기는 no-op).
+      if (input.prUrl !== undefined && task.prUrl !== input.prUrl) {
+        patch.prUrl = input.prUrl;
+        changed = true;
+      }
       // 변경 없음(전부 동일 값 재시도) = 멱등 성공 no-op(append 없이).
       if (!changed) {
         return { ok: true, taskId: task.id };
@@ -604,17 +644,20 @@ export class WorkTaskService {
    * NOT_AUTHORIZED(owner-leave 수용 잔여)·PERSIST_FAILED도 삼킨다 — 부트/close
    * 경로 모두 archive 실패가 정본(태스크 로그)을 무르지 않게 한다.
    */
-  private async tryArchive(channelId: string, verifiedWorkspaceId: string): Promise<void> {
+  private async tryArchive(channelId: string, verifiedWorkspaceId: string): Promise<boolean> {
     try {
-      await this.channels.archive({
+      const res = await this.channels.archive({
         channelId,
         archivedBy: verifiedWorkspaceId,
         verifiedWorkspaceId,
       });
       // 성공·실패 코드 모두 무해 처리 — CHANNEL_NOT_FOUND/CHANNEL 이미 archived/
-      // NOT_AUTHORIZED는 §3 계약상 no-op으로 삼킨다.
+      // NOT_AUTHORIZED는 §3 계약상 no-op으로 삼킨다. 확정 여부만 반환(J3 CX2:
+      // 미확정이면 close 응답에 archivePending으로 표시 — 부트 reconcile 수렴).
+      return res.ok === true;
     } catch {
       // 채널 서비스 예외도 삼킨다 — 태스크 무결성은 채널 실존에 의존하지 않는다.
+      return false;
     }
   }
 

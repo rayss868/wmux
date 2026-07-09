@@ -177,6 +177,12 @@ const electronAPI = {
       ipcRenderer.on(IPC.NOTIFICATION_FOCUS, listener);
       return () => { ipcRenderer.removeListener(IPC.NOTIFICATION_FOCUS, listener); };
     },
+    // J3 §3: initialCommand 재시도 소진(프롬프트 미발사) 통지 — fan-out 토스트 소비.
+    onInitialCmdExhausted: (callback: (ptyId: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, ptyId: string) => callback(ptyId);
+      ipcRenderer.on(IPC.PTY_INITIAL_CMD_EXHAUSTED, listener);
+      return () => { ipcRenderer.removeListener(IPC.PTY_INITIAL_CMD_EXHAUSTED, listener); };
+    },
     onCwdChanged: (callback: (ptyId: string, cwd: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, ptyId: string, cwd: string) =>
         callback(ptyId, cwd);

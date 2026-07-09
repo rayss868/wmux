@@ -134,6 +134,13 @@ export const FANOUT_PROMPT_MAX_BYTES = 8 * 1024;
 /** closed projection GC 임계(§1 D — 리뷰 반영 GLM: 7일). 인메모리 뷰 바운드다. */
 export const WORKTASK_CLOSED_GC_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * prUrl wire 검증(J3 §2 — 리뷰 G5): GitHub PR URL 정합만 수용. prUrl은 비단조
+ * mutable 필드라(PR 재생성 갱신 허용) write-once 게이트가 없다 — 형식 게이트가
+ * 임의 URL 덮어쓰기를 방어한다.
+ */
+export const WORKTASK_PR_URL_RE = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/;
+
 /** 미션 채널 topic 앵커 접두(§3) — 고아 reconcile의 유일 마킹. */
 export const MISSION_TOPIC_PREFIX = 'wmux:mission:';
 

@@ -414,10 +414,18 @@ export function registerPTYHandlers(
       // is a no-op (its onFirstData stays a harmless call below).
       const initialCmd = scheduleInitialCommand(execCommand !== undefined ? undefined : options?.initialCommand, {
         write: (cmd) => daemonClient.writeToSession(sessionId, sanitizePtyText(cmd) + '\r'),
-        onExhausted: () => console.warn(
-          `[pty:create] startup command for ${sessionId} not delivered after ` +
-          `retries — session pipe never became writable (pane may be empty).`,
-        ),
+        onExhausted: () => {
+          console.warn(
+            `[pty:create] startup command for ${sessionId} not delivered after ` +
+            `retries — session pipe never became writable (pane may be empty).`,
+          );
+          // J3 §3: 프롬프트 미발사를 렌더러에 통지(fan-out 토스트·재발사 소비 —
+          // 사후 이벤트가 정본, 동기 리포트엔 싣지 못한다. 상태 영속 없음).
+          const win = getWindow?.();
+          if (win && !win.isDestroyed()) {
+            win.webContents.send(IPC.PTY_INITIAL_CMD_EXHAUSTED, sessionId);
+          }
+        },
       });
 
       // Forward session data to renderer. Routed through the per-id helper so
