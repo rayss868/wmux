@@ -1,0 +1,723 @@
+{
+  "subject": "xterm.js@6 (+Unicode11)",
+  "generatedAt": "2026-07-09T07:44:18.400Z",
+  "esctestPin": "664be3cf2c1e3f06bc93a8bafb48a0db83c607db",
+  "results": [
+    {
+      "include": "(?i)^CUPTests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "CUPTests.test_CUP_ColumnOnly",
+          "status": "pass"
+        },
+        {
+          "name": "CUPTests.test_CUP_DefaultParams",
+          "status": "pass"
+        },
+        {
+          "name": "CUPTests.test_CUP_OutOfBoundsParams",
+          "status": "pass"
+        },
+        {
+          "name": "CUPTests.test_CUP_RespectsOriginMode",
+          "status": "pass"
+        },
+        {
+          "name": "CUPTests.test_CUP_RowOnly",
+          "status": "pass"
+        },
+        {
+          "name": "CUPTests.test_CUP_ZeroIsTreatedAsOne",
+          "status": "pass"
+        }
+      ],
+      "passCount": 6,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 1,
+      "winopsBridgeUses": 8,
+      "esctestSummary": {
+        "passed": 6,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^CUFTests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "CUFTests.test_CUF_DefaultParam",
+          "status": "pass"
+        },
+        {
+          "name": "CUFTests.test_CUF_ExplicitParam",
+          "status": "pass"
+        },
+        {
+          "name": "CUFTests.test_CUF_StopsAtRightEdgeWhenBegunRightOfScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "CUFTests.test_CUF_StopsAtRightMarginInScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "CUFTests.test_CUF_StopsAtRightSide",
+          "status": "pass"
+        }
+      ],
+      "passCount": 5,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 0,
+      "winopsBridgeUses": 9,
+      "esctestSummary": {
+        "passed": 5,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^CUBTests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "CUBTests.test_CUB_AfterNoWrappedInlines",
+          "status": "pass"
+        },
+        {
+          "name": "CUBTests.test_CUB_AfterOneWrappedInline",
+          "status": "pass"
+        },
+        {
+          "name": "CUBTests.test_CUB_DefaultParam",
+          "status": "pass"
+        },
+        {
+          "name": "CUBTests.test_CUB_ExplicitParam",
+          "status": "pass"
+        },
+        {
+          "name": "CUBTests.test_CUB_StopsAtLeftEdge",
+          "status": "pass"
+        },
+        {
+          "name": "CUBTests.test_CUB_StopsAtLeftEdgeWhenBegunLeftOfScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "CUBTests.test_CUB_StopsAtLeftMarginInScrollRegion",
+          "status": "pass"
+        }
+      ],
+      "passCount": 7,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 0,
+      "winopsBridgeUses": 10,
+      "esctestSummary": {
+        "passed": 7,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^CUUTests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "CUUTests.test_CUU_DefaultParam",
+          "status": "pass"
+        },
+        {
+          "name": "CUUTests.test_CUU_ExplicitParam",
+          "status": "pass"
+        },
+        {
+          "name": "CUUTests.test_CUU_StopsAtTopLine",
+          "status": "pass"
+        },
+        {
+          "name": "CUUTests.test_CUU_StopsAtTopLineWhenBegunAboveScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "CUUTests.test_CUU_StopsAtTopMarginInScrollRegion",
+          "status": "pass"
+        }
+      ],
+      "passCount": 5,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 0,
+      "winopsBridgeUses": 6,
+      "esctestSummary": {
+        "passed": 5,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^CUDTests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "CUDTests.test_CUD_DefaultParam",
+          "status": "pass"
+        },
+        {
+          "name": "CUDTests.test_CUD_ExplicitParam",
+          "status": "pass"
+        },
+        {
+          "name": "CUDTests.test_CUD_StopsAtBottomLine",
+          "status": "pass"
+        },
+        {
+          "name": "CUDTests.test_CUD_StopsAtBottomLineWhenBegunBelowScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "CUDTests.test_CUD_StopsAtBottomMarginInScrollRegion",
+          "status": "pass"
+        }
+      ],
+      "passCount": 5,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 0,
+      "winopsBridgeUses": 8,
+      "esctestSummary": {
+        "passed": 5,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^CHATests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "CHATests.test_CHA_DefaultParam",
+          "status": "pass"
+        },
+        {
+          "name": "CHATests.test_CHA_ExplicitParam",
+          "status": "pass"
+        },
+        {
+          "name": "CHATests.test_CHA_IgnoresScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "CHATests.test_CHA_OutOfBoundsLarge",
+          "status": "pass"
+        },
+        {
+          "name": "CHATests.test_CHA_RespectsOriginMode",
+          "status": "pass"
+        },
+        {
+          "name": "CHATests.test_CHA_ZeroParam",
+          "status": "pass"
+        }
+      ],
+      "passCount": 6,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 1,
+      "winopsBridgeUses": 8,
+      "esctestSummary": {
+        "passed": 6,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^VPATests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "VPATests.test_VPA_DefaultParams",
+          "status": "pass"
+        },
+        {
+          "name": "VPATests.test_VPA_DoesNotChangeColumn",
+          "status": "pass"
+        },
+        {
+          "name": "VPATests.test_VPA_IgnoresOriginMode",
+          "status": "pass"
+        },
+        {
+          "name": "VPATests.test_VPA_StopsAtBottomEdge",
+          "status": "pass"
+        }
+      ],
+      "passCount": 4,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 0,
+      "winopsBridgeUses": 6,
+      "esctestSummary": {
+        "passed": 4,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^HPATests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "HPATests.test_HPA_DefaultParams",
+          "status": "pass"
+        },
+        {
+          "name": "HPATests.test_HPA_DoesNotChangeRow",
+          "status": "pass"
+        },
+        {
+          "name": "HPATests.test_HPA_IgnoresOriginMode",
+          "status": "pass"
+        },
+        {
+          "name": "HPATests.test_HPA_StopsAtRightEdge",
+          "status": "pass"
+        }
+      ],
+      "passCount": 4,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 0,
+      "winopsBridgeUses": 6,
+      "esctestSummary": {
+        "passed": 4,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^DECCRATests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "DECCRATests.test_DECCRA_cursorDoesNotMove",
+          "status": "pass"
+        },
+        {
+          "name": "DECCRATests.test_DECCRA_defaultValuesInDest",
+          "status": "pass"
+        },
+        {
+          "name": "DECCRATests.test_DECCRA_defaultValuesInSource",
+          "status": "pass"
+        },
+        {
+          "name": "DECCRATests.test_DECCRA_destinationPartiallyOffscreen",
+          "status": "pass"
+        },
+        {
+          "name": "DECCRATests.test_DECCRA_ignoresMargins",
+          "status": "pass"
+        },
+        {
+          "name": "DECCRATests.test_DECCRA_invalidSourceRectDoesNothing",
+          "status": "pass"
+        },
+        {
+          "name": "DECCRATests.test_DECCRA_nonOverlappingSourceAndDest",
+          "status": "pass"
+        },
+        {
+          "name": "DECCRATests.test_DECCRA_overlappingSourceAndDest",
+          "status": "pass"
+        },
+        {
+          "name": "DECCRATests.test_DECCRA_overlyLargeSourceClippedToScreenSize",
+          "status": "pass"
+        },
+        {
+          "name": "DECCRATests.test_DECCRA_respectsOriginMode",
+          "status": "pass"
+        }
+      ],
+      "passCount": 10,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 456,
+      "winopsBridgeUses": 13,
+      "esctestSummary": {
+        "passed": 10,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^DECFRATests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "DECFRATests.test_DECFRA_basic",
+          "status": "pass"
+        },
+        {
+          "name": "DECFRATests.test_DECFRA_cursorDoesNotMove",
+          "status": "pass"
+        },
+        {
+          "name": "DECFRATests.test_DECFRA_defaultArgs",
+          "status": "pass"
+        },
+        {
+          "name": "DECFRATests.test_DECFRA_ignoresMargins",
+          "status": "pass"
+        },
+        {
+          "name": "DECFRATests.test_DECFRA_invalidRectDoesNothing",
+          "status": "pass"
+        },
+        {
+          "name": "DECFRATests.test_DECFRA_overlyLargeSourceClippedToScreenSize",
+          "status": "pass"
+        },
+        {
+          "name": "DECFRATests.test_DECFRA_respectsOriginMode",
+          "status": "pass"
+        }
+      ],
+      "passCount": 7,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 264,
+      "winopsBridgeUses": 10,
+      "esctestSummary": {
+        "passed": 7,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^EDTests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "EDTests.test_ED_0",
+          "status": "pass"
+        },
+        {
+          "name": "EDTests.test_ED_0_WithScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "EDTests.test_ED_1",
+          "status": "pass"
+        },
+        {
+          "name": "EDTests.test_ED_1_WithScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "EDTests.test_ED_2",
+          "status": "pass"
+        },
+        {
+          "name": "EDTests.test_ED_2_WithScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "EDTests.test_ED_3",
+          "status": "pass"
+        },
+        {
+          "name": "EDTests.test_ED_Default",
+          "status": "pass"
+        },
+        {
+          "name": "EDTests.test_ED_doesNotRespectDECProtection",
+          "status": "pass"
+        },
+        {
+          "name": "EDTests.test_ED_respectsISOProtection",
+          "status": "pass"
+        }
+      ],
+      "passCount": 10,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 126,
+      "winopsBridgeUses": 11,
+      "esctestSummary": {
+        "passed": 10,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^ELTests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "ELTests.test_EL_0",
+          "status": "pass"
+        },
+        {
+          "name": "ELTests.test_EL_1",
+          "status": "pass"
+        },
+        {
+          "name": "ELTests.test_EL_2",
+          "status": "pass"
+        },
+        {
+          "name": "ELTests.test_EL_Default",
+          "status": "pass"
+        },
+        {
+          "name": "ELTests.test_EL_IgnoresScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "ELTests.test_EL_doesNotRespectDECProtection",
+          "status": "pass"
+        },
+        {
+          "name": "ELTests.test_EL_respectsISOProtection",
+          "status": "pass"
+        }
+      ],
+      "passCount": 7,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 56,
+      "winopsBridgeUses": 8,
+      "esctestSummary": {
+        "passed": 7,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^ICHTests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "ICHTests.test_ICH_DefaultParam",
+          "status": "pass"
+        },
+        {
+          "name": "ICHTests.test_ICH_ExplicitParam",
+          "status": "pass"
+        },
+        {
+          "name": "ICHTests.test_ICH_IsNoOpWhenCursorBeginsOutsideScrollRegion",
+          "status": "pass"
+        },
+        {
+          "name": "ICHTests.test_ICH_ScrollEntirelyOffRightEdge",
+          "status": "pass"
+        },
+        {
+          "name": "ICHTests.test_ICH_ScrollOffRightEdge",
+          "status": "pass"
+        },
+        {
+          "name": "ICHTests.test_ICH_ScrollOffRightMarginInScrollRegion",
+          "status": "pass"
+        }
+      ],
+      "passCount": 6,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 120,
+      "winopsBridgeUses": 9,
+      "esctestSummary": {
+        "passed": 6,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^DCHTests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "DCHTests.test_DCH_DefaultParam",
+          "status": "pass"
+        },
+        {
+          "name": "DCHTests.test_DCH_DeleteAllWithMargins",
+          "status": "pass"
+        },
+        {
+          "name": "DCHTests.test_DCH_DoesNothingOutsideLeftRightMargin",
+          "status": "pass"
+        },
+        {
+          "name": "DCHTests.test_DCH_ExplicitParam",
+          "status": "pass"
+        },
+        {
+          "name": "DCHTests.test_DCH_RespectsMargins",
+          "status": "pass"
+        },
+        {
+          "name": "DCHTests.test_DCH_WorksOutsideTopBottomMargin",
+          "status": "pass"
+        }
+      ],
+      "passCount": 6,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 28,
+      "winopsBridgeUses": 7,
+      "esctestSummary": {
+        "passed": 6,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^DATests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "DATests.test_DA_0",
+          "status": "pass"
+        },
+        {
+          "name": "DATests.test_DA_NoParameter",
+          "status": "pass"
+        }
+      ],
+      "passCount": 2,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 0,
+      "winopsBridgeUses": 3,
+      "esctestSummary": {
+        "passed": 2,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    },
+    {
+      "include": "(?i)^DA2Tests\\.",
+      "exitCode": 0,
+      "signal": 0,
+      "timedOut": false,
+      "cases": [
+        {
+          "name": "DA2Tests.test_DA2_0",
+          "status": "pass"
+        },
+        {
+          "name": "DA2Tests.test_DA2_NoParameter",
+          "status": "pass"
+        }
+      ],
+      "passCount": 2,
+      "failCount": 0,
+      "errorCount": 0,
+      "knownBugCount": 0,
+      "skippedCount": 0,
+      "decrqcraBridgeUses": 0,
+      "winopsBridgeUses": 3,
+      "esctestSummary": {
+        "passed": 2,
+        "knownBugs": 0,
+        "failed": 0
+      },
+      "reconciled": true
+    }
+  ],
+  "totals": {
+    "pass": 92,
+    "fail": 0,
+    "error": 0,
+    "knownBug": 0,
+    "skipped": 0,
+    "timedOutRuns": 0,
+    "nonzeroExitRuns": 0,
+    "unreconciledRuns": 0,
+    "decrqcraBridgeUses": 1052,
+    "winopsBridgeUses": 125
+  }
+}

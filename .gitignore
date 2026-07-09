@@ -119,3 +119,8 @@ mcps/
 # E0 conformance harness — miner output from real .buf dumps (local-only, NEVER commit).
 # Real-session-derived bytes are opt-in, scrubbed, and stay out of the repo (spec §3 D4).
 core/harness/corpus-local/
+
+# E0 conformance harness M3 — esctest2 vendor (GPL-2.0, NEVER commit).
+# Cloned at run time by fetch-esctest.sh (pinned commit); no GPL code in the
+# repo, CI cache, or any build artifact (spec §5-3 GPL isolation policy).
+core/harness/esctest/vendor/
