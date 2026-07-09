@@ -298,7 +298,7 @@ export default function CompanyView({ onClose }: CompanyViewProps) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+      style={{ backgroundColor: 'var(--backdrop-modal)' }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
@@ -311,7 +311,7 @@ export default function CompanyView({ onClose }: CompanyViewProps) {
           border: '1px solid var(--bg-surface)',
           borderRadius: 12,
           padding: '24px 28px',
-          boxShadow: '0 25px 60px rgba(0,0,0,0.7)',
+          boxShadow: 'var(--shadow-modal-soft)',
         }}
       >
         <ManageView onClose={onClose} />

@@ -455,6 +455,7 @@ export const en = {
   'settings.token.textSub': 'Sub',
   'settings.token.textMuted': 'Muted',
   'settings.token.accent': 'Accent',
+  'settings.token.accentSecondary': 'Link accent',
   'settings.token.success': 'Success',
   'settings.token.danger': 'Danger',
   'settings.token.warning': 'Warning',

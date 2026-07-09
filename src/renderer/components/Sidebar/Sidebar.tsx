@@ -52,6 +52,7 @@ export default function Sidebar() {
   // toggle below is the UI entry/exit point.
   const sidebarMode = useStore((s) => s.sidebarMode);
   const setSidebarMode = useStore((s) => s.setSidebarMode);
+  const pushToast = useStore((s) => s.pushToast);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
@@ -69,14 +70,9 @@ export default function Sidebar() {
 
     await window.clipboardAPI.writeText(buildWorkspaceMarkdown(ws));
 
-    // Toast feedback
-    const toast = document.createElement('div');
-    toast.textContent = t('workspace.copied');
-    toast.style.cssText = 'position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:var(--bg-surface);color:var(--text-main);padding:4px 12px;border-radius:4px;font-size:12px;z-index:9999;opacity:0;transition:opacity .2s';
-    document.body.appendChild(toast);
-    requestAnimationFrame(() => { toast.style.opacity = '1'; });
-    setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 200); }, 1500);
-  }, [t]);
+    // 정본 토스트(toastSlice)로 피드백 — 기존 수동 DOM 토스트는 store 우회였다.
+    pushToast({ level: 'info', message: t('workspace.copied') });
+  }, [t, pushToast]);
 
   const handleClose = useCallback((wsId: string) => {
     // 삭제 전 해당 워크스페이스의 모든 PTY 정리

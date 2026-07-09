@@ -138,7 +138,7 @@ export default function AddMemberDialog({ deptName, onConfirm, onCancel }: AddMe
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+      style={{ backgroundColor: 'var(--backdrop-modal)' }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}
     >
       <div
@@ -150,7 +150,7 @@ export default function AddMemberDialog({ deptName, onConfirm, onCancel }: AddMe
           border: '1px solid var(--bg-surface)',
           borderRadius: 8,
           padding: 20,
-          boxShadow: '0 25px 60px rgba(0,0,0,0.7)',
+          boxShadow: 'var(--shadow-modal-soft)',
         }}
       >
         {/* header */}

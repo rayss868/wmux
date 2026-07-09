@@ -64,7 +64,7 @@ export function PermissionApprovalDialogView(
   const hasCritical = groups.some((g) => g.copy.severity === 'critical');
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center"
+      className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center"
       style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}
       role="alertdialog"
       aria-labelledby="permission-approval-title"
@@ -78,7 +78,7 @@ export function PermissionApprovalDialogView(
           overflowY: 'auto',
           backgroundColor: 'var(--bg-base)',
           border: `1px solid ${hasCritical ? 'var(--accent-red)' : 'var(--accent-yellow)'}`,
-          boxShadow: '0 25px 60px rgba(0,0,0,0.75)',
+          boxShadow: 'var(--shadow-modal)',
         }}
       >
         <div className="flex items-center gap-2">

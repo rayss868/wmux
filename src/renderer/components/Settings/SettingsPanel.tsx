@@ -1977,10 +1977,11 @@ const UI_TOKEN_GROUPS: { label: string; tokens: UITokenSpec[] }[] = [
   {
     label: 'Accents',
     tokens: [
-      { key: 'accent',  labelKey: 'settings.token.accent',  hueScope: 'color' },
-      { key: 'success', labelKey: 'settings.token.success', hueScope: 'color' },
-      { key: 'danger',  labelKey: 'settings.token.danger',  hueScope: 'color' },
-      { key: 'warning', labelKey: 'settings.token.warning', hueScope: 'color' },
+      { key: 'accent',          labelKey: 'settings.token.accent',          hueScope: 'color' },
+      { key: 'accentSecondary', labelKey: 'settings.token.accentSecondary', hueScope: 'color' },
+      { key: 'success',         labelKey: 'settings.token.success',         hueScope: 'color' },
+      { key: 'danger',          labelKey: 'settings.token.danger',          hueScope: 'color' },
+      { key: 'warning',         labelKey: 'settings.token.warning',         hueScope: 'color' },
     ],
   },
 ];
@@ -2006,6 +2007,7 @@ const TOKEN_DESCRIPTIONS: Record<UITokenSpec['key'], string> = {
   textSub: 'Secondary text / labels',
   textMuted: 'Disabled / hints',
   accent: 'Selection / focus / brand',
+  accentSecondary: 'Links / info accent',
   success: 'OK / running / complete',
   danger: 'Errors / destructive',
   warning: 'Waiting / caution',
@@ -2029,6 +2031,7 @@ const TOKEN_INSPECT_ROLE: Record<UITokenSpec['key'], TokenRole> = {
   textSub: 'text',
   textMuted: 'text',
   accent: 'accent',
+  accentSecondary: 'accent',
   success: 'accent',
   danger: 'accent',
   warning: 'accent',
@@ -3207,7 +3210,7 @@ function KeyCaptureOverlay({ label, onCapture, onCancel }: { label: string; onCa
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center"
+      className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center"
       style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
       onClick={onCancel}
     >
@@ -3993,7 +3996,7 @@ export default function SettingsPanel() {
     // Backdrop
     <div
       className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh]"
-      style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+      style={{ backgroundColor: 'var(--backdrop-modal)' }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) handleClose();
       }}
@@ -4007,7 +4010,7 @@ export default function SettingsPanel() {
           height: 560,
           backgroundColor: 'var(--bg-base)',
           border: '1px solid var(--bg-surface)',
-          boxShadow: '0 25px 60px rgba(0,0,0,0.75)',
+          boxShadow: 'var(--shadow-modal)',
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
@@ -4016,7 +4019,7 @@ export default function SettingsPanel() {
           className="flex items-center justify-between px-5 py-3 shrink-0"
           style={{ borderBottom: '1px solid var(--bg-surface)' }}
         >
-          <span className="text-sm font-semibold text-[color:var(--text-main)] font-mono tracking-wide">{t('settings.title')}</span>
+          <span className="text-title text-[color:var(--text-main)] font-mono tracking-wide">{t('settings.title')}</span>
           <button
             className={`inline-flex items-center rounded p-0.5 text-[color:var(--text-subtle)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}
             onClick={handleClose}

@@ -69,13 +69,15 @@ const VALID_TOKENS = new Set<string>(Object.keys(UI_THEME_TOKENS['catppuccin-moc
 const VALID_DERIVED = new Set<string>(Object.keys(DERIVED_TO_SOURCE));
 
 describe('inspect token markers — CI invariant (plan §6)', () => {
-  it('there are exactly 10 editable UI token keys', () => {
+  it('there are exactly 11 editable UI token keys', () => {
     // Guards the whole suite: if the token set changes, the per-token coverage
-    // assertion below must be revisited (it asserts each of the 10 is marked).
-    expect(VALID_TOKENS.size).toBe(10);
+    // assertion below must be revisited (it asserts each is marked).
+    // accentSecondary was split from accent (--accent-blue) — defaults to the
+    // same value per theme, so it's editable but visually inert by default.
+    expect(VALID_TOKENS.size).toBe(11);
     expect([...VALID_TOKENS].sort()).toEqual(
       [
-        'accent', 'bgBase', 'bgMantle', 'bgSurface', 'danger',
+        'accent', 'accentSecondary', 'bgBase', 'bgMantle', 'bgSurface', 'danger',
         'success', 'textMain', 'textMuted', 'textSub', 'warning',
       ].sort(),
     );

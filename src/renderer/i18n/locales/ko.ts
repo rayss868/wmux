@@ -384,6 +384,7 @@ export const ko = {
   'settings.token.textSub': '보조',
   'settings.token.textMuted': '흐릿함',
   'settings.token.accent': '강조',
+  'settings.token.accentSecondary': '링크 강조',
   'settings.token.success': '성공',
   'settings.token.danger': '위험',
   'settings.token.warning': '주의',

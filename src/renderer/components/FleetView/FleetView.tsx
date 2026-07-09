@@ -339,7 +339,7 @@ export default function FleetView() {
 
   return (
     <div
-      className="fixed inset-0 z-[55] flex items-start justify-center pt-[8vh]"
+      className="fixed inset-0 z-[var(--z-fleet)] flex items-start justify-center pt-[8vh]"
       style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) setVisible(false); }}
     >
@@ -353,7 +353,7 @@ export default function FleetView() {
         style={{
           backgroundColor: 'var(--bg-base)',
           border: '1px solid var(--bg-surface)',
-          boxShadow: '0 25px 60px rgba(0,0,0,0.7)',
+          boxShadow: 'var(--shadow-modal-soft)',
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
@@ -362,7 +362,7 @@ export default function FleetView() {
           className="flex items-center gap-3 px-4 py-3"
           style={{ borderBottom: '1px solid var(--bg-surface)' }}
         >
-          <span className="text-sm font-semibold text-[var(--text-main)]">{t('fleet.title')}</span>
+          <span className="text-title text-[var(--text-main)]">{t('fleet.title')}</span>
           {needsCount > 0 && (
             <span
               className="text-[11px] font-medium px-2 py-0.5 rounded-full"

@@ -107,6 +107,26 @@ describe('themes — 10-token system', () => {
       expect(full.textSub2).toMatch(/^#[0-9A-Fa-f]{6}$/);
     });
 
+    it('accentBlue derives from accentSecondary, not accent', () => {
+      // Secondary accent was split out of the brand accent. deriveFullPalette
+      // must now source --accent-blue from accentSecondary so a theme can make
+      // links diverge from the brand hue.
+      const custom = { ...UI_THEME_TOKENS['catppuccin-mocha'], accentSecondary: '#123456' };
+      const full = deriveFullPalette(custom);
+      expect(full.accentBlue).toBe('#123456');
+      // accentCursor still tracks the primary accent, unaffected by the split.
+      expect(full.accentCursor).toBe(custom.accent);
+    });
+
+    it('accentSecondary defaults to accent on every built-in (visually inert)', () => {
+      for (const id of builtinIds) {
+        const tokens = UI_THEME_TOKENS[id];
+        expect(tokens.accentSecondary, `${id} accentSecondary must default to accent`).toBe(tokens.accent);
+        // And the derived --accent-blue stays identical to the pre-split value.
+        expect(deriveFullPalette(tokens).accentBlue).toBe(tokens.accent);
+      }
+    });
+
     it('bgOverlay shifts lighter on dark themes and darker on light themes', () => {
       const dark = deriveFullPalette(UI_THEME_TOKENS['catppuccin-mocha']);
       const light = deriveFullPalette(UI_THEME_TOKENS.hinomaru);

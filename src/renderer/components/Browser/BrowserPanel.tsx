@@ -200,6 +200,9 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
   const injectInspector = useCallback(() => {
     const wv = webviewRef.current;
     if (!wv || !isReady) return;
+    // 이 오버레이/라벨은 게스트 웹뷰(임의의 외부 페이지) 내부에 주입된다.
+    // wmux 테마 CSS 변수가 없는 문서라서 색은 의도적으로 자립 hex로 둔다
+    // (테마 토큰 승격 대상 아님 — 외부 페이지 위 오버레이).
     wv.executeJavaScript(`
       (function() {
         if (window.__wmuxInspector) return;
@@ -358,7 +361,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
       {/* Title bar strip showing page title */}
       <div
         className="flex items-center gap-2 px-3 py-0.5 shrink-0"
-        style={{ backgroundColor: '#11111b', borderBottom: '1px solid var(--bg-base)' }}
+        style={{ backgroundColor: 'var(--bg-mantle)', borderBottom: '1px solid var(--bg-base)' }}
       >
         {isLoading && (
           <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-blue)] animate-pulse shrink-0" />

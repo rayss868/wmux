@@ -166,7 +166,7 @@ export default function StatusBar() {
         >
           <span aria-hidden="true" className="font-mono">#</span>
           {channelUnreadTotal > 0 && (
-            <span className="text-[var(--accent-blue)]" data-statusbar-channel-unread {...tokenAttrs('accent', 'text')}>
+            <span className="text-[var(--accent-blue)]" data-statusbar-channel-unread {...tokenAttrs('accentSecondary', 'text')}>
               {channelUnreadTotal > 99 ? '99+' : channelUnreadTotal}
             </span>
           )}

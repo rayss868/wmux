@@ -591,6 +591,7 @@ export interface CustomThemeColors {
   textMuted: string;
   // Semantic accents
   accent: string;
+  accentSecondary: string; // link/info accent (--accent-blue); defaults to `accent`
   success: string;
   danger: string;
   warning: string;

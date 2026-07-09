@@ -39,7 +39,7 @@ export default function ExecuteApprovalDialog() {
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center"
+      className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center"
       style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}
       role="alertdialog"
       aria-labelledby="execute-approval-title"
@@ -51,7 +51,7 @@ export default function ExecuteApprovalDialog() {
           maxWidth: '90vw',
           backgroundColor: 'var(--bg-base)',
           border: '1px solid var(--accent-red)',
-          boxShadow: '0 25px 60px rgba(0,0,0,0.75)',
+          boxShadow: 'var(--shadow-modal)',
         }}
       >
         <div className="flex items-center gap-2">
