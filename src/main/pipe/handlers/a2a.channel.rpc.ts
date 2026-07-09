@@ -247,6 +247,10 @@ export function registerA2aChannelRpc(
   router.register('task.mission.start', (p) => forward('task.mission.start', p, true));
   router.register('task.mission.close', (p) => forward('task.mission.close', p, true));
   router.register('task.mission.list', (p) => forward('task.mission.list', p, false));
+  // task.mission.update(J1 §5) — 물질화 커밋. 변이라 verifiable caller 필수(start/
+  // close와 동일 forwarder·스탬프 규율). MCP 도구 표면은 없고(FanOutService 내부
+  // 경로), 여기 router 등록이 파이프 도달의 유일한 배선이다.
+  router.register('task.mission.update', (p) => forward('task.mission.update', p, true));
 
   // NOTE: a2a.channel.archive and a2a.channel.kick are intentionally NOT registered
   // here. BOTH are HUMANS-ONLY actions (product decision): archiving tears a channel

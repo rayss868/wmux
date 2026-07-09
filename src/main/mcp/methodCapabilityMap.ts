@@ -377,6 +377,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'task.mission.start': { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'task.mission.close': { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'task.mission.list':  { capability: 'a2a.channel.read', riskClass: 'a2a' },
+  // J1 §5 — 물질화 커밋. start/close와 동일 mutation 등급(a2a.channel.send).
+  // 단조 물질화·배타 불변식·owner|CEO authz는 데몬 WorkTaskService에서 강제.
+  'task.mission.update': { capability: 'a2a.channel.send', riskClass: 'a2a' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.

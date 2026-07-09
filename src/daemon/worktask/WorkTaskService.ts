@@ -42,6 +42,7 @@ import type {
   WorkTaskClosePayload,
   WorkTaskCreatePayload,
   WorkTaskRef,
+  WorkTaskUpdatePayload,
 } from '../../shared/workTask';
 import { CHANNEL_TOPIC_MAX } from '../../shared/channels';
 
@@ -98,6 +99,13 @@ export interface WorkTaskServiceOptions {
   ceoWorkspaceId?: string;
   /** GC/타임스탬프 주입(테스트). 기본 Date.now. */
   now?: () => number;
+  /**
+   * worktreePath 배타 불변식(§5)의 realpath 해석기. 데몬은 fs 접근이 없으므로
+   * 주입한다(테스트 = identity, 배선 시 fs.realpathSync 폴백 래핑). 실패(경로
+   * 부재 등)는 호출측이 문자열 정규화만으로 폴백하도록 원본을 반환한다. shared
+   * normalizeWorktreePath(순수 문자열 정규화) 위에 심링크 해석만 얹는 역할.
+   */
+  realpath?: (p: string) => string;
 }
 
 /** mission.start 입력 — wire 화이트리스트(§2)는 라우터가 강제, 여기선 서버 신원 포함. */
@@ -120,9 +128,24 @@ export interface CloseMissionInput {
   idempotencyKey?: string;
 }
 
+/**
+ * task.update 입력(§5 — J0 예약 이행). wire 화이트리스트는 {taskId, branch?,
+ * worktreePath?, paneGroupId?}만(prUrl은 J2 몫이라 J1 wire에서 제외). 물질화는
+ * 단조 — 이미 설정된 필드의 덮어쓰기는 거부한다.
+ */
+export interface UpdateMissionInput {
+  taskId: string;
+  /** 서버핀 authz 앵커(§5 — close와 동일: owner OR CEO). */
+  verifiedWorkspaceId: string;
+  branch?: string;
+  worktreePath?: string;
+  paneGroupId?: string;
+}
+
 export type WorkTaskErr = { ok: false; error: string };
 export type StartMissionOk = { ok: true; taskId: string; channelId: string };
 export type CloseMissionOk = { ok: true; taskId: string };
+export type UpdateMissionOk = { ok: true; taskId: string };
 
 export class WorkTaskService {
   private readonly log: WorkTaskLogLike;
@@ -130,6 +153,8 @@ export class WorkTaskService {
   private readonly origin: { machineId: string; daemonEpoch: number };
   private readonly ceoWorkspaceId: string | undefined;
   private readonly now: () => number;
+  /** §5 배타 불변식 realpath 해석기(주입). 기본 = identity(순수 문자열 정규화만). */
+  private readonly realpath: (p: string) => string;
 
   /** projection: taskId → WorkTask(정본 상태의 인메모리 뷰, 로그에서 재파생 가능). */
   private readonly tasks = new Map<string, WorkTask>();
@@ -151,6 +176,7 @@ export class WorkTaskService {
     this.origin = opts.origin;
     this.ceoWorkspaceId = opts.ceoWorkspaceId;
     this.now = opts.now ?? Date.now;
+    this.realpath = opts.realpath ?? ((p) => p);
   }
 
   // ── 부트 복원 (순서 고정: replay → reconcile → GC) ────────────────────
@@ -225,7 +251,20 @@ export class WorkTaskService {
       task.closedAt = c.closedAt;
       return;
     }
-    // task.update: J1 몫(J0 핸들러 없음). 예약 슬롯 — projection 무시.
+    if (p.kind === 'task.update') {
+      // J1 §5: 물질화 필드 단조 커밋. replay/런타임 모두 이 경로로 projection에
+      // 반영된다. 단조성(최초 1회 쓰기)·배타 불변식·authz는 updateMission이 append
+      // **전에** 게이트한다 — applyPayload는 커밋된 레코드를 그대로 반영하는 순수
+      // 적용자이므로 여기서는 존재하는 필드만 덮는다(구 레코드 안전: 부재 필드 무변).
+      const u = payload as WorkTaskUpdatePayload;
+      const task = this.tasks.get(u.taskId);
+      if (!task || task.status === 'closed') return;
+      if (u.branch !== undefined) task.branch = u.branch;
+      if (u.worktreePath !== undefined) task.worktreePath = u.worktreePath;
+      if (u.paneGroupId !== undefined) task.paneGroupId = u.paneGroupId;
+      if (u.prUrl !== undefined) task.prUrl = u.prUrl;
+      return;
+    }
   }
 
   /**
@@ -433,6 +472,111 @@ export class WorkTaskService {
     });
   }
 
+  /**
+   * task.update(§5 — J0 예약 이행): 물질화 필드 단조 커밋. 게이트 순서:
+   *   1. 존재·open 검사(closed 거부 — 물질화는 살아있는 태스크만).
+   *   2. authz(owner OR CEO — close 미러). 물질화는 소유자 행위다.
+   *   3. 단조성: 이미 설정된 branch/worktreePath/paneGroupId의 덮어쓰기 거부
+   *      (동일 값 재쓰기는 멱등 no-op 허용 — 재시도 흡수).
+   *   4. worktreePath 배타 불변식: canonical(realpath+normalize) 정규화 후 동일
+   *      경로를 가진 **다른** open 태스크가 있으면 거부. 전역 write 뮤텍스 하 검사라
+   *      서로 다른 태스크의 동시 update가 같은 경로를 이중 점유하지 못한다.
+   * 통과 시 task.update envelope append → projection 적용.
+   */
+  updateMission(input: UpdateMissionInput): Promise<UpdateMissionOk | WorkTaskErr> {
+    return this.withWriteLock(async () => {
+      const task = this.tasks.get(input.taskId);
+      if (!task) {
+        return { ok: false, error: `task.mission.update: task not found: ${input.taskId}` };
+      }
+      if (task.status === 'closed') {
+        return { ok: false, error: `task.mission.update: task is closed: ${input.taskId}` };
+      }
+      // authz(§5): owner OR CEO — close 게이트와 동일 앵커.
+      const isOwner = task.owner.verifiedWorkspaceId === input.verifiedWorkspaceId;
+      const isCeo =
+        this.ceoWorkspaceId !== undefined && this.ceoWorkspaceId === input.verifiedWorkspaceId;
+      if (!isOwner && !isCeo) {
+        return {
+          ok: false,
+          error: `task.mission.update: caller ${input.verifiedWorkspaceId} is not the task owner or CEO`,
+        };
+      }
+
+      // 단조성 게이트: 이미 물질화된 필드를 다른 값으로 덮으려 하면 거부.
+      // 동일 값은 통과(멱등 재시도 — 아래 patch 조립에서 no-op 필드는 제거).
+      const monotonicViolation = (
+        field: 'branch' | 'worktreePath' | 'paneGroupId',
+        next: string | undefined,
+      ): string | null => {
+        if (next === undefined) return null;
+        const cur = task[field];
+        if (cur !== undefined && cur !== next) {
+          return `task.mission.update: ${field} is already materialized (monotonic; overwrite refused)`;
+        }
+        return null;
+      };
+      for (const [field, next] of [
+        ['branch', input.branch],
+        ['worktreePath', input.worktreePath],
+        ['paneGroupId', input.paneGroupId],
+      ] as const) {
+        const err = monotonicViolation(field, next);
+        if (err) return { ok: false, error: err };
+      }
+
+      // 배타 불변식(§5): worktreePath 신규 설정 시 canonical로 정규화 후 다른 open
+      // 태스크와 충돌 검사. 이미 같은 값이 설정된 self는 위 단조 게이트를 통과했으니
+      // 여기서 재검사할 필요 없지만, 신규 설정 케이스만 걸러 타 태스크와 대조한다.
+      const isNewWorktreePath =
+        input.worktreePath !== undefined && task.worktreePath === undefined;
+      if (isNewWorktreePath) {
+        const canonical = this.canonicalWorktreePath(input.worktreePath as string);
+        for (const other of this.tasks.values()) {
+          if (other.id === task.id) continue;
+          if (other.status !== 'open') continue;
+          if (other.worktreePath === undefined) continue;
+          if (this.canonicalWorktreePath(other.worktreePath) === canonical) {
+            return {
+              ok: false,
+              error: `task.mission.update: worktreePath already claimed by open task ${other.id}`,
+            };
+          }
+        }
+      }
+
+      // patch 조립: 실제 변경(신규 값)만 담는다. 동일 값 재쓰기 필드는 제외해
+      // 로그를 no-op 레코드로 오염시키지 않는다.
+      const patch: WorkTaskUpdatePayload = { kind: 'task.update', taskId: task.id };
+      let changed = false;
+      if (input.branch !== undefined && task.branch === undefined) {
+        patch.branch = input.branch;
+        changed = true;
+      }
+      if (input.worktreePath !== undefined && task.worktreePath === undefined) {
+        patch.worktreePath = input.worktreePath;
+        changed = true;
+      }
+      if (input.paneGroupId !== undefined && task.paneGroupId === undefined) {
+        patch.paneGroupId = input.paneGroupId;
+        changed = true;
+      }
+      // 변경 없음(전부 동일 값 재시도) = 멱등 성공 no-op(append 없이).
+      if (!changed) {
+        return { ok: true, taskId: task.id };
+      }
+
+      const committed = await this.log.append(
+        this.envelope(patch, input.verifiedWorkspaceId),
+      );
+      if (!committed) {
+        return { ok: false, error: 'task.mission.update: daemon log append failed (uncommitted)' };
+      }
+      this.applyPayload(patch);
+      return { ok: true, taskId: task.id };
+    });
+  }
+
   // ── read ───────────────────────────────────────────────────────────
 
   /** task.mission.list(§3): caller가 owner인 미션 목록(J0 파이프 RPC 전용). */
@@ -492,6 +636,21 @@ export class WorkTaskService {
 
   private generateTaskId(): string {
     return `wtask-${this.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  /**
+   * worktreePath의 canonical 형(§5 배타 불변식 비교 키). 심링크 해석(realpath —
+   * 주입, 실패 시 원본)을 먼저 적용한 뒤 순수 문자열 정규화(shared)로 접는다.
+   * 서로 다른 표기·심링크 경유의 같은 체크아웃을 하나로 모은다.
+   */
+  private canonicalWorktreePath(raw: string): string {
+    let resolved = raw;
+    try {
+      resolved = this.realpath(raw);
+    } catch {
+      // realpath 실패(경로 부재 등) — 문자열 정규화만으로 폴백.
+    }
+    return normalizeWorktreePath(resolved);
   }
 
   /** makeEnvelope 초안 조립(발급 필드는 append 소관). trustTier는 채널·A2A와 동형 보수 등급. */

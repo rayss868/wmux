@@ -499,3 +499,138 @@ describe('§2 open 태스크 캡', () => {
     expect(svc.listMissions('ws-c')).toHaveLength(0);
   });
 });
+
+// ═══ §5 task.update — 단조 물질화·배타 불변식·authz·closed 거부 ══════════
+
+describe('§5 task.mission.update (J1 물질화)', () => {
+  async function startedSvc(opts?: { ceoWorkspaceId?: string }) {
+    const { port, channels } = makeFakeChannelPort();
+    const svc = newWorkTaskService(newLog(), port, opts);
+    await svc.boot();
+    const started = await svc.startMission({
+      title: 'Mat task',
+      verifiedWorkspaceId: 'ws-owner',
+      memberId: 'lead',
+    });
+    if (!started.ok) throw new Error('start failed');
+    return { svc, port, channels, taskId: started.taskId };
+  }
+
+  it('물질화 필드를 커밋하고 projection에 반영한다', async () => {
+    const { svc, taskId } = await startedSvc();
+    const res = await svc.updateMission({
+      taskId,
+      verifiedWorkspaceId: 'ws-owner',
+      branch: 'wtask/mat-task-abc',
+      worktreePath: '/wt/abc',
+      paneGroupId: 'ws-task-1',
+    });
+    expect(res.ok).toBe(true);
+    const t = svc.getTask(taskId);
+    expect(t?.branch).toBe('wtask/mat-task-abc');
+    expect(t?.worktreePath).toBe('/wt/abc');
+    expect(t?.paneGroupId).toBe('ws-task-1');
+  });
+
+  it('단조: 이미 설정된 필드의 덮어쓰기를 거부한다', async () => {
+    const { svc, taskId } = await startedSvc();
+    await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', branch: 'wtask/a' });
+    const res = await svc.updateMission({
+      taskId,
+      verifiedWorkspaceId: 'ws-owner',
+      branch: 'wtask/b',
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toMatch(/monotonic/);
+    expect(svc.getTask(taskId)?.branch).toBe('wtask/a');
+  });
+
+  it('단조: 동일 값 재쓰기는 멱등 no-op 성공', async () => {
+    const { svc, taskId } = await startedSvc();
+    await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', worktreePath: '/wt/x' });
+    const again = await svc.updateMission({
+      taskId,
+      verifiedWorkspaceId: 'ws-owner',
+      worktreePath: '/wt/x',
+    });
+    expect(again.ok).toBe(true);
+    expect(svc.getTask(taskId)?.worktreePath).toBe('/wt/x');
+  });
+
+  it('배타 불변식: 같은 canonical worktreePath를 다른 open 태스크가 못 점유', async () => {
+    const { port } = makeFakeChannelPort();
+    const svc = newWorkTaskService(newLog(), port);
+    await svc.boot();
+    // 두 태스크를 같은 owner로 만들고 첫째에 경로를 심는다.
+    const s1 = await svc.startMission({ title: 'T1', verifiedWorkspaceId: 'ws-o', memberId: 'l' });
+    const s2 = await svc.startMission({ title: 'T2', verifiedWorkspaceId: 'ws-o', memberId: 'l' });
+    if (!s1.ok || !s2.ok) throw new Error('start');
+    await svc.updateMission({ taskId: s1.taskId, verifiedWorkspaceId: 'ws-o', worktreePath: '/wt/shared/' });
+    // 표기만 다른 같은 경로(trailing slash·대소문자) → 거부.
+    const clash = await svc.updateMission({
+      taskId: s2.taskId,
+      verifiedWorkspaceId: 'ws-o',
+      worktreePath: '/wt/shared',
+    });
+    expect(clash.ok).toBe(false);
+    if (clash.ok) return;
+    expect(clash.error).toMatch(/already claimed/);
+  });
+
+  it('authz: owner/CEO 아닌 caller 거부', async () => {
+    const { svc, taskId } = await startedSvc({ ceoWorkspaceId: 'ws-ceo' });
+    const stranger = await svc.updateMission({
+      taskId,
+      verifiedWorkspaceId: 'ws-stranger',
+      branch: 'wtask/x',
+    });
+    expect(stranger.ok).toBe(false);
+    if (stranger.ok) return;
+    expect(stranger.error).toMatch(/not the task owner or CEO/);
+    // CEO는 통과.
+    const ceo = await svc.updateMission({
+      taskId,
+      verifiedWorkspaceId: 'ws-ceo',
+      branch: 'wtask/x',
+    });
+    expect(ceo.ok).toBe(true);
+  });
+
+  it('closed 태스크의 update는 거부', async () => {
+    const { svc, taskId } = await startedSvc();
+    await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
+    const res = await svc.updateMission({
+      taskId,
+      verifiedWorkspaceId: 'ws-owner',
+      branch: 'wtask/x',
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toMatch(/closed/);
+  });
+
+  it('물질화 필드가 재시작 replay 후 잔존한다', async () => {
+    const { port } = makeFakeChannelPort();
+    const log = newLog();
+    const svc = newWorkTaskService(log, port);
+    await svc.boot();
+    const started = await svc.startMission({ title: 'M', verifiedWorkspaceId: 'ws-owner', memberId: 'l' });
+    if (!started.ok) throw new Error('start');
+    await svc.updateMission({
+      taskId: started.taskId,
+      verifiedWorkspaceId: 'ws-owner',
+      branch: 'wtask/keep',
+      worktreePath: '/wt/keep',
+      paneGroupId: 'ws-keep',
+    });
+    // 재부트: 같은 로그·port 위에 서비스 재생성 + replay.
+    const svc2 = newWorkTaskService(newLog(), port);
+    await svc2.boot();
+    const t = svc2.getTask(started.taskId);
+    expect(t?.status).toBe('open');
+    expect(t?.branch).toBe('wtask/keep');
+    expect(t?.worktreePath).toBe('/wt/keep');
+    expect(t?.paneGroupId).toBe('ws-keep');
+  });
+});
