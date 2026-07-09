@@ -251,8 +251,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       // J3 F4: 이 ws가 태스크 워크스페이스(paneGroupId=이 ws id)였다면 이탈 뱃지·
       // onExhausted 매핑을 evict(무한 성장 방지). departed는 ws id 키, registry는
-      // ptyId 키라 제거 ws의 모든 surface ptyId를 훑는다.
-      delete state.departedPaneGroups[id];
+      // ptyId 키라 제거 ws의 모든 surface ptyId를 훑는다. workTaskSlice 없이 조립된
+      // 최소 목 스토어(단위 테스트)에선 두 맵이 부재하므로 존재 가드.
+      if (state.departedPaneGroups) delete state.departedPaneGroups[id];
       if (state.taskPtyRegistry) {
         const removedWs = state.workspaces[idx];
         const collectPtyIds = (p: Pane): string[] =>
