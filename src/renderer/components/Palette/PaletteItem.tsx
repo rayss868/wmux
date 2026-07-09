@@ -42,7 +42,7 @@ function PaletteItem({ item, isActive, onClick }: PaletteItemProps) {
         'w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors',
         isActive
           ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
-          : 'text-[var(--text-sub)] hover:bg-[#2a2a3d] hover:text-[var(--text-main)]',
+          : 'text-[var(--text-sub)] hover:bg-[var(--bg-overlay)] hover:text-[var(--text-main)]',
       ].join(' ')}
     >
       <span className="shrink-0 w-4 h-4 flex items-center justify-center text-[var(--text-subtle)]">

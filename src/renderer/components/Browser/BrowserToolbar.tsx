@@ -205,7 +205,7 @@ export default function BrowserToolbar({
         <div
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-md"
           style={{
-            backgroundColor: isFocused ? 'var(--bg-base)' : '#11111b',
+            backgroundColor: isFocused ? 'var(--bg-base)' : 'var(--bg-mantle)',
             border: `1px solid ${isFocused ? 'var(--accent-blue)' : 'var(--bg-surface)'}`,
             transition: 'border-color 0.15s',
           }}
@@ -271,7 +271,7 @@ export default function BrowserToolbar({
 
       {/* Close */}
       <button
-        className={`${btnBase} text-[var(--text-sub2)] hover:text-[var(--accent-red)] hover:bg-[#3b1e1e] cursor-pointer`}
+        className={`${btnBase} text-[var(--text-sub2)] hover:text-[var(--accent-red)] hover:bg-[var(--bg-overlay)] cursor-pointer`}
         onClick={onClose}
         title={t('browser.close')}
         tabIndex={-1}
