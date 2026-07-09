@@ -37,6 +37,7 @@ import {
   type ChannelMessage,
   type ChannelRecipientStatus,
   type ChannelState,
+  type ChannelStatus,
   type ChannelVisibility,
   HUMAN_WORKSPACE_ID,
   HUMAN_MEMBER_ID,
@@ -2299,6 +2300,23 @@ export class ChannelService {
       }
     }
     return Array.from(out);
+  }
+
+  /**
+   * Daemon-INTERNAL enumeration of every channel's `(id, topic, status)`,
+   * membership-unscoped (J0 §3 mission reconcile). Unlike `list()` — which is
+   * caller-scoped by membership/visibility — reconcile must see channels the
+   * caller is NOT a member of (an orphan mission channel whose only member is a
+   * now-gone creator, or a closed-task channel to re-archive). Returns a shallow
+   * copy so callers cannot mutate service state. NOT a wire surface: only the
+   * daemon-internal WorkTaskService reconcile path calls it.
+   */
+  listAllForReconcile(): Array<{ id: string; topic?: string; status: ChannelStatus }> {
+    return this.state.channels.map((c) => ({
+      id: c.id,
+      ...(c.topic !== undefined ? { topic: c.topic } : {}),
+      status: c.status,
+    }));
   }
 
   unreadFor(

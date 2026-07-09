@@ -24,6 +24,7 @@ import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // envelope PR4 (§5 D11): A2A 태스크 정본을 렌더러 인메모리에서 데몬 이벤트 로그로.
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
 import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
+import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
@@ -1051,6 +1052,8 @@ function registerRpcHandlers(
   principalStateWriter: PrincipalStateWriter,
   // envelope PR4: A2A 태스크 데몬 정본. 로그 개방 실패 시 null → 렌더러-only 폴백.
   a2aTaskService: A2aTaskService | null,
+  // J0: WorkTask 미션 채널 정본. 로그 개방 실패 시 null → 미션 RPC fail-closed.
+  workTaskService: WorkTaskService | null,
 ): void {
   // daemon.createSession
   pipeServer.onRpc('daemon.createSession', async (params) => {
@@ -2032,6 +2035,97 @@ function registerRpcHandlers(
       ...(typeof p.updatedSince === 'string' && p.updatedSince ? { updatedSince: p.updatedSince } : {}),
     });
     return { ok: true, workspaceId, tasks };
+  });
+
+  // ── WorkTask 미션 채널 (J0 §3) ──────────────────────────────────────
+  // start/close/list. 신원은 a2a.channel.* 변이와 동일 규율(stampCaller로
+  // senderPtyId→verifiedWorkspaceId 서버 해석, 해석 불가 fail-closed). owner는
+  // 서비스가 born-owned로 강제 투입(§5.1) — wire는 title·invite·memberId만.
+  // 로그 미가용(workTaskService=null)이면 명시 에러(fail-closed, §1 D).
+
+  pipeServer.onRpc('task.mission.start', async (rawParams) => {
+    if (!workTaskService) {
+      return { ok: false, error: { code: 'NOT_AVAILABLE', message: 'task.mission.start: mission log unavailable' } };
+    }
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params;
+    const verifiedWorkspaceId =
+      typeof p['verifiedWorkspaceId'] === 'string' ? p['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: { code: 'NOT_AUTHORIZED', message: 'task.mission.start: a server-resolved verifiedWorkspaceId is required' },
+      };
+    }
+    const title = typeof p['title'] === 'string' ? p['title'] : '';
+    if (!title) {
+      return { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'task.mission.start: title is required' } };
+    }
+    // memberId: 채널 생성자 멤버 좌표. 미제공이면 verifiedWorkspaceId를 폴백으로 삼는다
+    // (a2a.channel.create의 createdBy.memberId와 동일 시멘틱 — pipe 클라이언트는 자신의
+    // memberId를 알 수도, 모를 수도 있다).
+    const memberId =
+      typeof p['memberId'] === 'string' && p['memberId'].length > 0 ? p['memberId'] : verifiedWorkspaceId;
+    // invite: 선택 초대 목록(채널 초기 멤버). 형태 방어적 파싱.
+    const invite = Array.isArray(p['invite'])
+      ? (p['invite'] as unknown[])
+          .map((m) => (m && typeof m === 'object' ? (m as Record<string, unknown>) : null))
+          .filter((m): m is Record<string, unknown> => m !== null)
+          .filter((m) => typeof m['workspaceId'] === 'string' && typeof m['memberId'] === 'string')
+          .map((m) => ({ workspaceId: m['workspaceId'] as string, memberId: m['memberId'] as string }))
+      : undefined;
+    return workTaskService.startMission({
+      title,
+      verifiedWorkspaceId,
+      memberId,
+      ...(invite && invite.length > 0 ? { invite } : {}),
+      ...(typeof p['idempotencyKey'] === 'string' ? { idempotencyKey: p['idempotencyKey'] } : {}),
+    });
+  });
+
+  pipeServer.onRpc('task.mission.close', async (rawParams) => {
+    if (!workTaskService) {
+      return { ok: false, error: { code: 'NOT_AVAILABLE', message: 'task.mission.close: mission log unavailable' } };
+    }
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params;
+    const verifiedWorkspaceId =
+      typeof p['verifiedWorkspaceId'] === 'string' ? p['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: { code: 'NOT_AUTHORIZED', message: 'task.mission.close: a server-resolved verifiedWorkspaceId is required' },
+      };
+    }
+    const taskId = typeof p['taskId'] === 'string' ? p['taskId'] : '';
+    if (!taskId) {
+      return { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'task.mission.close: taskId is required' } };
+    }
+    return workTaskService.closeMission({
+      taskId,
+      verifiedWorkspaceId,
+      ...(typeof p['idempotencyKey'] === 'string' ? { idempotencyKey: p['idempotencyKey'] } : {}),
+    });
+  });
+
+  pipeServer.onRpc('task.mission.list', async (rawParams) => {
+    if (!workTaskService) {
+      return { ok: false, error: { code: 'NOT_AVAILABLE', message: 'task.mission.list: mission log unavailable' } };
+    }
+    const stamped = stampCaller(rawParams, { kind: 'none' });
+    if (!stamped.ok) return stamped;
+    const p = stamped.params;
+    const verifiedWorkspaceId =
+      typeof p['verifiedWorkspaceId'] === 'string' ? p['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: { code: 'NOT_AUTHORIZED', message: 'task.mission.list: a server-resolved verifiedWorkspaceId is required' },
+      };
+    }
+    return { ok: true, verifiedWorkspaceId, tasks: workTaskService.listMissions(verifiedWorkspaceId) };
   });
 
   // ── Principal registry (R2) ─────────────────────────────────────────
@@ -3086,6 +3180,39 @@ async function main(): Promise<void> {
     log('warn', 'A2A task service skipped — event log inactive this boot (legacy path)');
   }
 
+  // ── WorkTask 미션 채널 데몬 정본 (J0 — 공유 로그) ─────────────────────
+  // A2aTaskService와 동일하게 채널·A2A와 단일 AppendOnlyLog 인스턴스를 공유한다
+  // (§2.1 단일 논리 스트림). replay는 domain:'task' 필터로 자기 레코드만 소비.
+  // 부트 순서 고정(§1): replay → reconcile(양방향) → closed GC. 로그 미가용이면
+  // 미션 RPC는 fail-closed(null → 핸들러가 명시 에러). await 부트는 register
+  // 배선 전에 완료돼야 reconcile이 채널 상태를 정리한 뒤 첫 RPC를 받는다.
+  let workTaskService: WorkTaskService | null = null;
+  if (channelEventLogDeps) {
+    try {
+      const svc = new WorkTaskService({
+        log: channelEventLogDeps.log,
+        channels: channelService,
+        origin: { machineId: channelEventLogDeps.machineId, daemonEpoch: CHANNELS_EPOCH },
+        // 데몬은 오늘 ceoWorkspaceId를 알지 못한다(ChannelService.archive와 동일 —
+        // 렌더러가 Company.ceoWorkspaceId 소유). CEO 예외 활성은 배선 후속.
+        ceoWorkspaceId: undefined,
+      });
+      await svc.boot();
+      workTaskService = svc;
+      // closed GC 주기 배선(A2A projection GC와 동형). 부트 GC는 boot()가 1회 수행,
+      // 런타임 누적은 주기 GC 몫. unref로 이벤트 루프를 붙잡지 않는다.
+      const workTaskGcInterval = setInterval(() => {
+        svc.gcClosedTasks();
+      }, 60 * 60 * 1000);
+      workTaskGcInterval.unref();
+      log('info', `WorkTask mission service active (shared log, tasks=${svc.taskCount})`);
+    } catch (err) {
+      log('warn', 'WorkTask mission service unavailable — mission RPCs will fail closed:', err);
+    }
+  } else {
+    log('warn', 'WorkTask mission service skipped — event log inactive this boot (legacy path)');
+  }
+
   // Channels v2 Step 3a — the wake worker (see channelWakeWorker.ts for the
   // full strategy stack + safety rules). Adapters keep it decoupled: session
   // views come from the manager's live list, the workspace binding is the
@@ -3313,6 +3440,7 @@ async function main(): Promise<void> {
     principalService,
     principalStateWriter,
     a2aTaskService,
+    workTaskService,
   );
 
   // 6. Wire events
