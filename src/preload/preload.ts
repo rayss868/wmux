@@ -282,6 +282,21 @@ const electronAPI = {
   git: {
     status: (cwd: string) => ipcRenderer.invoke(IPC.GIT_STATUS, cwd) as Promise<string>,
   },
+  // J2 — diff 리뷰·hunk 채택. worktreePath는 태스크 워크트리, targetHeadOid는
+  // 태스크가 분기한 시점의 타겟 HEAD(드리프트 게이트 재료).
+  diff: {
+    read: (worktreePath: string, targetHeadOid?: string) =>
+      ipcRenderer.invoke(IPC.DIFF_READ, worktreePath, targetHeadOid ?? '') as Promise<
+        import('../shared/diffParse').DiffReadResult | import('../shared/diffParse').DiffReadError
+      >,
+    applyHunks: (
+      req: import('../shared/diffParse').DiffApplyRequest,
+      worktreePath: string,
+    ) =>
+      ipcRenderer.invoke(IPC.DIFF_APPLY_HUNKS, req, worktreePath) as Promise<
+        import('../shared/diffParse').DiffApplyResult
+      >,
+  },
   dialog: {
     pickFile: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FILE) as Promise<string[]>,
   },

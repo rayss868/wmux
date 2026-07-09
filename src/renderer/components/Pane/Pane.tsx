@@ -7,6 +7,7 @@ import { useIpc } from '../../hooks/useIpc';
 import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
+import DiffPanel from '../Diff/DiffPanel';
 import SurfaceTabs from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
@@ -88,6 +89,21 @@ export function pickSplitShownSurfaces(
     shownTerminalId: terminals.find((s) => s.id === activeSurfaceId)?.id ?? terminals[0]?.id,
     shownBrowserId: browsers.find((s) => s.id === activeSurfaceId)?.id ?? browsers[0]?.id,
   };
+}
+
+/**
+ * F6 — non-PTY overlay surfaces (diff / editor) for the terminal+browser split.
+ *
+ * The `hasBoth` split path lays out terminals and browsers side by side but
+ * consulted neither `diff` nor `editor` surfaces, so an active diff surface in
+ * a mixed pane rendered nothing. This pure predicate isolates the overlay set
+ * (diff + editor) so the routing is unit-testable without mounting the split
+ * (which pulls in xterm + DiffPanel's rpc bridge). Order-preserving.
+ */
+export function pickOverlaySurfaces<T extends { surfaceType?: string }>(
+  surfaces: ReadonlyArray<T>,
+): T[] {
+  return surfaces.filter((s) => s.surfaceType === 'diff' || s.surfaceType === 'editor');
 }
 
 export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true }: PaneProps) {
@@ -548,6 +564,11 @@ function SplitSurfaceView({
     () => pane.surfaces.filter((s) => s.surfaceType === 'browser'),
     [pane.surfaces],
   );
+  // F6 — terminal·browser 어디에도 속하지 않는 비PTY 서피스(diff·editor). hasBoth
+  // 스플릿 경로가 terminals·browsers만 렌더해 이들이 누락됐다(diff가 안 뜸). active
+  // 인 것만 split 위에 오버레이로 겹쳐 렌더한다(각 패널이 display:isActive로 자기
+  // 가시성을 관리하므로 비active는 보이지 않음 — editor 기존 단독 경로는 무회귀).
+  const others = useMemo(() => pickOverlaySurfaces(pane.surfaces), [pane.surfaces]);
 
   const hasBoth = terminals.length > 0 && browsers.length > 0;
 
@@ -579,6 +600,15 @@ function SplitSurfaceView({
               partition={surface.browserPartition || 'persist:wmux-default'}
               isActive={surface.id === activeSurfaceId}
               onClose={() => onCloseSurface(surface.id)}
+            />
+          ) : surface.surfaceType === 'diff' ? (
+            // J2 — diff 서피스는 PTY 없음. verifiedWorkspaceId는 태스크 워크스페이스 id.
+            <DiffPanel
+              key={surface.id}
+              taskId={surface.diffTaskId || ''}
+              isActive={surface.id === activeSurfaceId}
+              surfaceId={surface.id}
+              verifiedWorkspaceId={workspaceId}
             />
           ) : (
             <TerminalComponent
@@ -645,6 +675,26 @@ function SplitSurfaceView({
           </div>
         </Panel>
       </Group>
+      {/* F6 — active인 diff·editor 서피스를 스플릿 위에 오버레이(absolute inset-0).
+          비active는 각 패널의 display:none으로 숨으므로 겹쳐도 안전. */}
+      {others.map((surface) =>
+        surface.surfaceType === 'diff' ? (
+          <DiffPanel
+            key={surface.id}
+            taskId={surface.diffTaskId || ''}
+            isActive={surface.id === activeSurfaceId}
+            surfaceId={surface.id}
+            verifiedWorkspaceId={workspaceId}
+          />
+        ) : (
+          <EditorPanel
+            key={surface.id}
+            filePath={surface.editorFilePath || ''}
+            isActive={surface.id === activeSurfaceId}
+            surfaceId={surface.id}
+          />
+        ),
+      )}
     </div>
   );
 }

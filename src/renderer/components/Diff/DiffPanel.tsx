@@ -1,0 +1,491 @@
+// J2 — DiffPanel: 태스크 산출물 diff 리뷰·hunk 채택·코멘트 (스펙 §1·§3·§4)
+//
+// §6.J 문면 준수: "읽기·코멘트·체크아웃 3동작만 — 풀 IDE diff 에디터 금지."
+// 파일 트리(numstat) + unified diff(+/- 색만) + hunk 체크박스 + 채택 버튼 +
+// 실패 hunk 표시 + "적용됨"/"채택불가" 뱃지 + 코멘트 버튼.
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import type {
+  DiffFile,
+  DiffReadResult,
+  DiffApplyRequest,
+  DiffApplyResult,
+  DiffTargetSnapshot,
+} from '../../../shared/diffParse';
+
+interface DiffPanelProps {
+  taskId: string;
+  isActive: boolean;
+  surfaceId: string;
+  /** 렌더러 신원 앵커(채널 포스트용). */
+  verifiedWorkspaceId: string;
+}
+
+// 태스크 메타(task.mission.list에서 역참조).
+interface TaskMeta {
+  worktreePath: string;
+  branch: string;
+  missionChannelId: string;
+  channelArchived: boolean;
+}
+
+// F10 — diff 코멘트 역조회(미션 채널의 diff-comment 앵커 메시지).
+interface DiffComment {
+  file: string;
+  hunkHeader: string;
+  author: string;
+  text: string;
+  postedAt: number;
+}
+
+// 채널 메시지에서 이 태스크의 diff-comment 앵커만 추출한다(§4 data.kind 매칭).
+export function extractDiffComments(
+  messages: Array<{ text?: string; memberName?: string; postedAt?: number; data?: unknown }>,
+  taskId: string,
+): DiffComment[] {
+  const out: DiffComment[] = [];
+  for (const m of messages) {
+    const d = m.data as
+      | { kind?: string; taskId?: string; file?: string; hunkHeader?: string }
+      | undefined;
+    if (!d || d.kind !== 'diff-comment' || d.taskId !== taskId) continue;
+    if (typeof d.file !== 'string') continue;
+    out.push({
+      file: d.file,
+      hunkHeader: typeof d.hunkHeader === 'string' ? d.hunkHeader : '',
+      author: m.memberName ?? '(unknown)',
+      text: m.text ?? '',
+      postedAt: typeof m.postedAt === 'number' ? m.postedAt : 0,
+    });
+  }
+  return out;
+}
+
+// diff.read/applyHunks 브릿지(preload 노출).
+interface DiffBridge {
+  read: (worktreePath: string, targetHeadOid?: string) => Promise<DiffReadResult | { ok: false; error: string }>;
+  applyHunks: (req: DiffApplyRequest, worktreePath: string) => Promise<DiffApplyResult>;
+}
+
+function getDiffBridge(): DiffBridge | null {
+  const api = (window as unknown as { electronAPI?: { diff?: DiffBridge } }).electronAPI;
+  return api?.diff ?? null;
+}
+
+// task.mission.list로 taskId → 워크트리·채널 역참조.
+async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Promise<TaskMeta | null> {
+  const api = (window as unknown as {
+    electronAPI?: { rpc?: { invoke: (m: string, p: Record<string, unknown>) => Promise<unknown> } };
+  }).electronAPI;
+  if (!api?.rpc) return null;
+  try {
+    const res = (await api.rpc.invoke('task.mission.list', { verifiedWorkspaceId })) as {
+      ok?: boolean;
+      tasks?: Array<{
+        id: string;
+        worktreePath?: string;
+        branch?: string;
+        missionChannelId?: string;
+      }>;
+    };
+    const task = res?.tasks?.find((t) => t.id === taskId);
+    if (!task || !task.worktreePath) return null;
+    // 채널 archived 여부(코멘트 버튼 게이팅). F9 fail-safe: 채널 get이 실패하면
+    // archived=true로 간주해 코멘트를 비활성화한다 — 조회 불가 상태에서 코멘트
+    // 발사를 허용하면 소실·아카이브된 채널에 헛발사할 수 있으므로 안전측으로 닫는다.
+    let channelArchived = true;
+    const channelId = task.missionChannelId ?? '';
+    if (channelId) {
+      try {
+        const chRes = (await api.rpc.invoke('a2a.channel.get', {
+          verifiedWorkspaceId,
+          channelId,
+        })) as { ok?: boolean; channel?: { status?: string }; error?: unknown };
+        // get 성공 시에만 실제 status를 신뢰. 그 외(ok:false·형태 미상)는 닫힘 유지.
+        if (chRes && chRes.ok === true && chRes.channel) {
+          channelArchived = chRes.channel.status === 'archived';
+        }
+      } catch {
+        /* 조회 실패 → channelArchived=true 유지(코멘트 비활성) */
+      }
+    }
+    return {
+      worktreePath: task.worktreePath,
+      branch: task.branch ?? '',
+      missionChannelId: channelId,
+      channelArchived,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// F10 — 미션 채널의 diff-comment 앵커를 역조회한다(§4 read RPC 재사용).
+async function loadDiffComments(
+  channelId: string,
+  taskId: string,
+  verifiedWorkspaceId: string,
+): Promise<DiffComment[]> {
+  if (!channelId) return [];
+  const api = (window as unknown as {
+    electronAPI?: { rpc?: { invoke: (m: string, p: Record<string, unknown>) => Promise<unknown> } };
+  }).electronAPI;
+  if (!api?.rpc) return [];
+  try {
+    const res = (await api.rpc.invoke('a2a.channel.getMessages', {
+      verifiedWorkspaceId,
+      channelId,
+    })) as { ok?: boolean; messages?: Array<{ text?: string; memberName?: string; postedAt?: number; data?: unknown }> };
+    if (!res || res.ok !== true || !Array.isArray(res.messages)) return [];
+    return extractDiffComments(res.messages, taskId);
+  } catch {
+    return [];
+  }
+}
+
+// F10 — 코멘트 목록 렌더(작성자·본문·시각 — 최소).
+function CommentList({ comments }: { comments: DiffComment[] }) {
+  if (comments.length === 0) return null;
+  return (
+    <div className="px-2 py-1 border-t border-[var(--bg-mantle)] bg-[var(--bg-base)] space-y-1">
+      {comments.map((c, i) => (
+        <div key={i} className="text-[10px]">
+          <span className="text-[var(--text-main)] font-semibold">{c.author}</span>{' '}
+          <span className="text-[var(--text-muted)]">
+            {c.postedAt ? new Date(c.postedAt).toLocaleString() : ''}
+          </span>
+          <div className="text-[var(--text-sub)] whitespace-pre-wrap">{c.text}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// hunk 라인에 +/- 색만 입힌다(신택스 하이라이팅 금지 — 비목표).
+function HunkBody({ bodyLines }: { bodyLines: readonly string[] }) {
+  return (
+    <div className="font-mono text-[11px] leading-[1.5] whitespace-pre overflow-x-auto">
+      {bodyLines.map((line, i) => {
+        const c = line.charAt(0);
+        const color =
+          c === '+'
+            ? 'text-[var(--accent-green,#4ade80)]'
+            : c === '-'
+              ? 'text-[var(--accent-red,#f87171)]'
+              : 'text-[var(--text-sub)]';
+        return (
+          <div key={i} className={color}>
+            {line || ' '}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspaceId }: DiffPanelProps) {
+  const [meta, setMeta] = useState<TaskMeta | null>(null);
+  const [data, setData] = useState<DiffReadResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  // path → 선택된 hunk index Set.
+  const [selection, setSelection] = useState<Record<string, Set<number>>>({});
+  const [applyMsg, setApplyMsg] = useState<string | null>(null);
+  const [failedProbes, setFailedProbes] = useState<Set<string>>(new Set());
+  const [applying, setApplying] = useState(false);
+  // F10: 미션 채널에서 역조회한 diff 코멘트.
+  const [comments, setComments] = useState<DiffComment[]>([]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setApplyMsg(null);
+    setFailedProbes(new Set());
+    const m = await resolveTaskMeta(taskId, verifiedWorkspaceId);
+    if (!m) {
+      setError('태스크를 찾을 수 없음 — worktree 소실 또는 손상');
+      setLoading(false);
+      return;
+    }
+    setMeta(m);
+    // F10: 코멘트 역조회(실패는 빈 목록 — diff 렌더는 막지 않음).
+    setComments(await loadDiffComments(m.missionChannelId, taskId, verifiedWorkspaceId));
+    const bridge = getDiffBridge();
+    if (!bridge) {
+      setError('diff 브릿지 미가용');
+      setLoading(false);
+      return;
+    }
+    const res = await bridge.read(m.worktreePath);
+    if (!res.ok) {
+      setError(res.error);
+      setData(null);
+    } else {
+      setData(res);
+      if (res.files.length > 0) setSelectedFile(res.files[0].path);
+    }
+    setLoading(false);
+  }, [taskId, verifiedWorkspaceId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const filesByPath = useMemo(() => {
+    const map = new Map<string, DiffFile>();
+    for (const f of data?.files ?? []) map.set(f.path, f);
+    return map;
+  }, [data]);
+
+  const toggleHunk = useCallback((path: string, idx: number) => {
+    setSelection((prev) => {
+      const next = { ...prev };
+      const set = new Set(next[path] ?? []);
+      if (set.has(idx)) set.delete(idx);
+      else set.add(idx);
+      next[path] = set;
+      return next;
+    });
+  }, []);
+
+  const selectedCount = useMemo(
+    () => Object.values(selection).reduce((s, set) => s + set.size, 0),
+    [selection],
+  );
+
+  const handleAdopt = useCallback(async () => {
+    if (!meta || !data) return;
+    const bridge = getDiffBridge();
+    if (!bridge) return;
+    const selections = Object.entries(selection)
+      .filter(([, set]) => set.size > 0)
+      .map(([path, set]) => ({ path, hunkIndices: [...set].sort((a, b) => a - b) }));
+    if (selections.length === 0) {
+      setApplyMsg('선택된 hunk가 없습니다');
+      return;
+    }
+    setApplying(true);
+    setApplyMsg(null);
+    setFailedProbes(new Set());
+    const snapshot: DiffTargetSnapshot = data.snapshot;
+    const req: DiffApplyRequest = { taskId, snapshot, selections };
+    const res = await bridge.applyHunks(req, meta.worktreePath);
+    setApplying(false);
+    if (res.ok) {
+      setApplyMsg(`채택 완료 — 타겟 워킹트리에 반영됨(${res.appliedFiles.length}파일). 커밋은 직접 하세요.`);
+      // 재열람: 채택분은 여전히 태스크 worktree diff에 보이며 "적용됨" 뱃지로 표시됨.
+      void load();
+    } else {
+      if (res.code === 'probe' && res.failedProbes) {
+        setFailedProbes(new Set(res.failedProbes.map((p) => `${p.path}#${p.hunkIndex}`)));
+        setApplyMsg('일부 hunk가 적용 불가 — 표시된 hunk를 해제하고 재시도하세요.');
+      } else if (res.code === 'drift') {
+        setApplyMsg('타겟이 이동됨 — diff를 재열람하세요.');
+      } else if (res.code === 'dirty') {
+        setApplyMsg(res.error);
+      } else {
+        setApplyMsg(res.error);
+      }
+    }
+  }, [meta, data, selection, taskId, load]);
+
+  // 코멘트 발사(§4): 미션 채널에 diff-comment 앵커 포스트(렌더러 channelLocal 경로).
+  const handleComment = useCallback(
+    async (file: string, hunkHeader: string) => {
+      if (!meta || meta.channelArchived || !meta.missionChannelId) return;
+      const text = window.prompt(`코멘트 (${file})`);
+      if (!text) return;
+      const api = (window as unknown as {
+        electronAPI?: { rpc?: { mutateChannelLocal: (m: string, p: Record<string, unknown>) => Promise<unknown> } };
+      }).electronAPI;
+      if (!api?.rpc) return;
+      // F9: post 실패(채널 소실·권한·IPC 오류)를 삼키지 않고 에러 메시지로 표면화.
+      try {
+        const res = (await api.rpc.mutateChannelLocal('a2a.channel.post', {
+          verifiedWorkspaceId,
+          channelId: meta.missionChannelId,
+          text,
+          data: { kind: 'diff-comment', taskId, file, hunkHeader, side: 'new', line: 0 },
+        })) as { ok?: boolean; error?: string } | undefined;
+        if (res && res.ok === false) {
+          setApplyMsg(`코멘트 발사 실패: ${res.error ?? '알 수 없는 오류'}`);
+          return;
+        }
+        setApplyMsg('코멘트를 미션 채널에 발사했습니다.');
+        // F10: 발사 직후 역조회 갱신 — 방금 단 코멘트가 인라인에 바로 뜬다.
+        setComments(await loadDiffComments(meta.missionChannelId, taskId, verifiedWorkspaceId));
+      } catch (e) {
+        setApplyMsg(`코멘트 발사 실패: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [meta, taskId, verifiedWorkspaceId],
+  );
+
+  const activeFile = selectedFile ? filesByPath.get(selectedFile) : null;
+
+  // F10 — 활성 파일의 코멘트를 hunkHeader별로 그룹핑. 현재 diff의 hunk 헤더와
+  // 일치하는 코멘트는 해당 hunk 아래, 불일치분(라인 드리프트로 헤더가 바뀐 것)은
+  // 파일 하단 "위치 이동됨" 그룹으로 강등. (v1 앵커 정밀도 = hunkHeader 단위 — §4.)
+  const fileComments = useMemo(() => {
+    if (!activeFile) return { byHunk: new Map<string, DiffComment[]>(), moved: [] as DiffComment[] };
+    const headers = new Set(activeFile.hunks.map((h) => h.header));
+    const byHunk = new Map<string, DiffComment[]>();
+    const moved: DiffComment[] = [];
+    for (const c of comments) {
+      if (c.file !== activeFile.path) continue;
+      if (c.hunkHeader && headers.has(c.hunkHeader)) {
+        const list = byHunk.get(c.hunkHeader) ?? [];
+        list.push(c);
+        byHunk.set(c.hunkHeader, list);
+      } else {
+        moved.push(c);
+      }
+    }
+    return { byHunk, moved };
+  }, [activeFile, comments]);
+
+  return (
+    <div
+      className="absolute inset-0 flex flex-col bg-[var(--bg-base)]"
+      style={{ display: isActive ? 'flex' : 'none' }}
+      data-surface-id={surfaceId}
+    >
+      {/* Header */}
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--bg-surface)] border-b border-[var(--bg-mantle)] shrink-0 text-xs">
+        <span className="text-[var(--text-main)] font-semibold">Diff</span>
+        {meta && <span className="text-[var(--text-muted)] text-[10px]">{meta.branch}</span>}
+        <div className="flex-1" />
+        <button
+          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
+          onClick={() => void load()}
+        >
+          Reload
+        </button>
+        <button
+          className="px-2 py-0.5 rounded text-[10px] bg-[var(--accent-blue,#3b82f6)] text-white disabled:opacity-40"
+          onClick={() => void handleAdopt()}
+          disabled={applying || selectedCount === 0}
+          title="선택한 hunk를 타겟 워킹트리에 채택"
+        >
+          {applying ? '채택 중...' : `채택 (${selectedCount})`}
+        </button>
+      </div>
+
+      {applyMsg && (
+        <div className="px-3 py-1 text-[11px] text-[var(--text-sub)] bg-[var(--bg-mantle)] border-b border-[var(--bg-mantle)] shrink-0">
+          {applyMsg}
+        </div>
+      )}
+
+      {/* Body */}
+      <div className="flex-1 flex overflow-hidden">
+        {loading && (
+          <div className="flex items-center justify-center w-full text-[var(--text-muted)] text-sm">
+            Loading...
+          </div>
+        )}
+        {!loading && error && (
+          <div className="flex items-center justify-center w-full text-[var(--text-muted)] text-sm">
+            {error}
+          </div>
+        )}
+        {!loading && !error && data && (
+          <>
+            {/* 파일 트리(numstat) */}
+            <div className="w-56 shrink-0 overflow-y-auto border-r border-[var(--bg-mantle)] text-[11px]">
+              {data.files.map((f) => {
+                const num = data.numstat.find((n) => n.path === f.path);
+                const isTrunc = data.truncated.includes(f.path);
+                return (
+                  <button
+                    key={f.path}
+                    className={`w-full text-left px-2 py-1 truncate hover:bg-[var(--bg-mantle)] ${
+                      selectedFile === f.path ? 'bg-[var(--bg-mantle)] text-[var(--text-main)]' : 'text-[var(--text-sub)]'
+                    }`}
+                    onClick={() => setSelectedFile(f.path)}
+                    title={f.path}
+                  >
+                    <span className="truncate">{f.path}</span>
+                    {num && (
+                      <span className="ml-1 text-[10px]">
+                        <span className="text-[var(--accent-green,#4ade80)]">+{num.additions ?? '?'}</span>{' '}
+                        <span className="text-[var(--accent-red,#f87171)]">-{num.deletions ?? '?'}</span>
+                      </span>
+                    )}
+                    {!f.hunkSelectable && (
+                      <span className="ml-1 text-[9px] text-[var(--text-muted)]">[{f.kind}·채택불가]</span>
+                    )}
+                    {isTrunc && <span className="ml-1 text-[9px] text-[var(--text-muted)]">[표시전용]</span>}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* unified diff 뷰 + hunk 체크박스 */}
+            <div className="flex-1 overflow-auto p-2">
+              {!activeFile && <div className="text-[var(--text-muted)] text-sm">파일을 선택하세요</div>}
+              {activeFile && activeFile.hunks.length === 0 && (
+                <div className="text-[var(--text-muted)] text-xs">
+                  {activeFile.kind} — 표시 전용(hunk 없음 또는 채택 불가)
+                </div>
+              )}
+              {activeFile &&
+                activeFile.hunks.map((hunk, idx) => {
+                  const key = `${activeFile.path}#${idx}`;
+                  const checked = selection[activeFile.path]?.has(idx) ?? false;
+                  const failed = failedProbes.has(key);
+                  return (
+                    <div key={idx} className="mb-2 border border-[var(--bg-mantle)] rounded overflow-hidden">
+                      <div className="flex items-center gap-2 px-2 py-1 bg-[var(--bg-surface)] text-[10px]">
+                        {activeFile.hunkSelectable && (
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleHunk(activeFile.path, idx)}
+                            title="이 hunk를 채택 대상으로 선택"
+                          />
+                        )}
+                        <span className="font-mono text-[var(--text-sub)] truncate">{hunk.header}</span>
+                        {failed && (
+                          <span className="text-[9px] text-[var(--accent-red,#f87171)]">채택불가</span>
+                        )}
+                        <div className="flex-1" />
+                        {!meta?.channelArchived && meta?.missionChannelId && (
+                          <button
+                            className="text-[9px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
+                            onClick={() => void handleComment(activeFile.path, hunk.header)}
+                            title="이 hunk에 코멘트"
+                          >
+                            💬
+                          </button>
+                        )}
+                        {meta?.channelArchived && (
+                          <span className="text-[9px] text-[var(--text-muted)]" title="채널 아카이브됨">
+                            코멘트 비활성
+                          </span>
+                        )}
+                      </div>
+                      <div className="px-2 py-1">
+                        <HunkBody bodyLines={hunk.bodyLines} />
+                      </div>
+                      {/* F10: 이 hunk 헤더에 매칭된 코멘트 인라인 표시. */}
+                      <CommentList comments={fileComments.byHunk.get(hunk.header) ?? []} />
+                    </div>
+                  );
+                })}
+              {/* F10: hunkHeader 불일치(위치 이동됨) 코멘트 그룹 — 파일 하단. */}
+              {activeFile && fileComments.moved.length > 0 && (
+                <div className="mb-2 border border-[var(--accent-red,#f87171)] rounded overflow-hidden">
+                  <div className="px-2 py-1 bg-[var(--bg-surface)] text-[10px] text-[var(--text-muted)]">
+                    위치 이동됨 — 코멘트 앵커의 hunk가 현재 diff와 불일치({fileComments.moved.length})
+                  </div>
+                  <CommentList comments={fileComments.moved} />
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

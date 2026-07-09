@@ -20,6 +20,7 @@ import { startLocalContextWatch } from '../metadata/localContextWatch';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
 import { registerFsHandlers } from './handlers/fs.handler';
 import { registerToolbarHandlers } from './handlers/toolbar.handler';
+import { registerDiffHandlers } from './handlers/diff.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerLanLinkHandlers } from './handlers/lanlink.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
@@ -151,6 +152,8 @@ export function registerAllHandlers(
   registerClipboardHandlers();
   const cleanupFs = registerFsHandlers();
   const cleanupToolbar = registerToolbarHandlers();
+  // J2 — diff:read / diff:applyHunks. git 전용(데몬 무관) — 항상 등록.
+  const cleanupDiff = registerDiffHandlers();
   const cleanupMcp = options.mcpRegistrar
     ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
     : null;
@@ -280,6 +283,7 @@ export function registerAllHandlers(
     if (cleanupLocalContext) cleanupLocalContext();
     cleanupFs();
     cleanupToolbar();
+    cleanupDiff();
     if (cleanupMcp) cleanupMcp();
     if (cleanupLanLink) cleanupLanLink();
     // Mirror the register-side removeHandler so a teardown leaves no stale

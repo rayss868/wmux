@@ -14,6 +14,9 @@ export interface SurfaceSlice {
   addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
+  /** J2 — diff 리뷰 서피스 추가. taskId만 영속(diff 내용은 파생 데이터).
+   * 같은 taskId가 이미 열려 있으면 그 탭으로 전환. editor/browser처럼 ptyId 없음. */
+  addDiffSurface: (paneId: string, taskId: string, title?: string, workspaceId?: string) => void;
   /** Close a surface tab. `workspaceId` lets RPC/CLI callers target a
    * non-active workspace (defaults to the active one — existing callers are
    * unchanged). */
@@ -135,6 +138,31 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       cwd: '',
       surfaceType: 'editor',
       editorFilePath: filePath,
+    };
+    pane.surfaces.push(surface);
+    pane.activeSurfaceId = surface.id;
+  }),
+
+  addDiffSurface: (paneId, taskId, title, workspaceId) => set((state: StoreState) => {
+    const targetWsId = workspaceId || state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
+    if (!ws) return;
+    const pane = findLeafPane(ws.rootPane, paneId);
+    if (!pane) return;
+    // 같은 태스크 diff가 이미 열려 있으면 그 탭으로 전환.
+    const existing = pane.surfaces.find((s) => s.surfaceType === 'diff' && s.diffTaskId === taskId);
+    if (existing) {
+      pane.activeSurfaceId = existing.id;
+      return;
+    }
+    const surface: Surface = {
+      id: generateId('surface'),
+      ptyId: '',
+      title: title || 'Diff',
+      shell: '',
+      cwd: '',
+      surfaceType: 'diff',
+      diffTaskId: taskId,
     };
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;

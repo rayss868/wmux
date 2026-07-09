@@ -631,7 +631,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const walk = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
-            if (s.ptyId === ptyId && s.surfaceType !== 'browser' && s.surfaceType !== 'editor') {
+            if (s.ptyId === ptyId && s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff') {
               s.ptyId = '';
             }
           }
@@ -647,7 +647,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const walkAndClearPtyIds = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
-            if (s.surfaceType !== 'browser' && s.surfaceType !== 'editor') {
+            if (s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff') {
               s.ptyId = '';
             }
           }

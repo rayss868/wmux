@@ -130,6 +130,9 @@ export const IPC = {
   // Path is validated main-side: must be absolute, no NUL bytes, length-capped.
   SHELL_OPEN_PATH: 'shell:open-path',
   GIT_STATUS: 'git:status',
+  // J2 — diff 리뷰·hunk 채택
+  DIFF_READ: 'diff:read',
+  DIFF_APPLY_HUNKS: 'diff:applyHunks',
   DIALOG_PICK_FILE: 'dialog:pick-file',
   // File system
   FS_READ_DIR: 'fs:read-dir',

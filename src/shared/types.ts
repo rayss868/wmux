@@ -43,10 +43,12 @@ export interface Surface {
   title: string;
   shell: string;
   cwd: string;
-  surfaceType?: 'terminal' | 'browser' | 'editor';
+  surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff';
   browserUrl?: string;
   browserPartition?: string;
   editorFilePath?: string;
+  /** J2 — diff 서피스: 대상 태스크 id. diff 내용은 파생 데이터(열 때마다 재계산). */
+  diffTaskId?: string;
   scrollbackFile?: string;  // surfaceId used as filename for scrollback dump
   /** True once the user manually renamed this tab; blocks shell-set (OSC 0/2) titles. */
   titleLocked?: boolean;
