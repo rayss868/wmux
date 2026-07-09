@@ -83,6 +83,8 @@ const channelInvite = tools.get('channel_invite');
 const channelGetMembers = tools.get('channel_get_members');
 const channelAck = tools.get('channel_ack');
 const channelUnread = tools.get('channel_unread');
+const channelMissionStart = tools.get('channel_mission_start');
+const channelMissionClose = tools.get('channel_mission_close');
 
 if (
   !channelCreate ||
@@ -94,7 +96,9 @@ if (
   !channelInvite ||
   !channelGetMembers ||
   !channelAck ||
-  !channelUnread
+  !channelUnread ||
+  !channelMissionStart ||
+  !channelMissionClose
 ) {
   throw new Error('channel tools failed to register');
 }
@@ -129,6 +133,80 @@ describe('channel_* tools: registration', () => {
     // Archiving tears a channel down for everyone — like kick it is a humans-only
     // action that never reaches the agent/MCP surface (see a2a.channel.rpc.ts).
     expect(tools.get('channel_archive')).toBeUndefined();
+  });
+
+  it('registers the two WorkTask mission tools (J0)', () => {
+    expect(channelMissionStart).toBeDefined();
+    expect(channelMissionClose).toBeDefined();
+  });
+
+  it('does not register a channel_mission_list tool (list is pipe-only in J0)', () => {
+    // task.mission.list is a pipe RPC only; MCP exposure is deferred to J1
+    // (fan-out) per §3 tool-surface minimalism.
+    expect(tools.get('channel_mission_list')).toBeUndefined();
+  });
+});
+
+describe('channel_mission_start (J0)', () => {
+  it('forwards title/memberId (+ verifiedWorkspaceId) to task.mission.start', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, taskId: 'wtask-1', channelId: 'ch-m' });
+    const res = await channelMissionStart({ title: 'Ship it', member_id: 'lead' });
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.start', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      title: 'Ship it',
+      memberId: 'lead',
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('maps invite + idempotency_key to invite[] + idempotencyKey', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, taskId: 'wtask-2', channelId: 'ch-m2' });
+    await channelMissionStart({
+      title: 'T',
+      member_id: 'lead',
+      invite: [{ workspace_id: 'ws-b', member_id: 'dev' }],
+      idempotency_key: 'k1',
+    });
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.start', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      title: 'T',
+      memberId: 'lead',
+      invite: [{ workspaceId: 'ws-b', memberId: 'dev' }],
+      idempotencyKey: 'k1',
+    });
+  });
+
+  it('surfaces a daemon error envelope as isError', async () => {
+    mockSendRpc.mockResolvedValue({ ok: false, error: { code: 'NOT_AUTHORIZED', message: 'nope' } });
+    const res = await channelMissionStart({ title: 'T', member_id: 'lead' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('NOT_AUTHORIZED');
+  });
+});
+
+describe('channel_mission_close (J0)', () => {
+  it('forwards task_id (+ verifiedWorkspaceId) to task.mission.close', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, taskId: 'wtask-1' });
+    const res = await channelMissionClose({ task_id: 'wtask-1' });
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.close', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      taskId: 'wtask-1',
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('maps idempotency_key to idempotencyKey', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, taskId: 'wtask-1' });
+    await channelMissionClose({ task_id: 'wtask-1', idempotency_key: 'k2' });
+    expect(mockSendRpc).toHaveBeenCalledWith('task.mission.close', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      taskId: 'wtask-1',
+      idempotencyKey: 'k2',
+    });
   });
 });
 
