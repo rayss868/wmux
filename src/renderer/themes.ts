@@ -7,6 +7,7 @@ export type { XtermThemeColors };
 // ─── Theme IDs ─────────────────────────────────────────────────────────────
 
 export type BuiltinThemeId =
+  | 'amber'
   | 'catppuccin-mocha' | 'monochrome' | 'stars-and-stripes'
   | 'red-dynasty' | 'nightowl' | 'void'
   | 'hinomaru' | 'taegeuk';
@@ -16,6 +17,7 @@ export type ThemeId = BuiltinThemeId | 'custom';
 // Curated xterm palettes. Built-in themes pick one of these; users can also
 // override their custom theme palette independently of the UI tokens.
 export type XtermPaletteId =
+  | 'amber-graphite'
   | 'catppuccin-mocha'
   | 'tokyo-night'
   | 'one-dark'
@@ -27,6 +29,16 @@ export type XtermPaletteId =
   | 'paper-light';
 
 export const XTERM_PALETTES: Record<XtermPaletteId, XtermThemeColors> = {
+  // Amber design system (designs/design-system-20260711): warm graphite base,
+  // muted low-saturation ANSI hues so terminal output stays quiet next to the
+  // single amber accent. Cursor is the amber — the one colored thing.
+  'amber-graphite': {
+    background: '#121214', foreground: '#BDBAB4', cursor: '#E8A33D', selectionBackground: '#3A3833',
+    black: '#28282D', red: '#D96C6C', green: '#8FBF7F', yellow: '#D4B36A',
+    blue: '#8AAEE0', magenta: '#C79BC7', cyan: '#8FBFB2', white: '#BDBAB4',
+    brightBlack: '#5C5A55', brightRed: '#E28A8A', brightGreen: '#A8D19A', brightYellow: '#E2C687',
+    brightBlue: '#A6C3EA', brightMagenta: '#D7B3D7', brightCyan: '#A8D1C6', brightWhite: '#EFEEEC',
+  },
   'catppuccin-mocha': {
     background: '#1E1E2E', foreground: '#CDD6F4', cursor: '#F5E0DC', selectionBackground: '#585B70',
     black: '#45475A', red: '#F38BA8', green: '#A6E3A1', yellow: '#F9E2AF',
@@ -116,6 +128,17 @@ export interface UIThemeTokens {
 }
 
 export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
+  // The redesign default (designs/design-system-20260711/wmux-FINAL-amber.html).
+  // Three decisions: ONE amber for action/focus/attention; warm graphite (not
+  // blue-ink) neutrals for everything else; hierarchy from typography, not
+  // decoration. accentSecondary deliberately equals accent — links and jumps
+  // are amber too, so amber on screen always means "where meaning is".
+  // warning is ALSO amber (attention is the accent's third job in the design).
+  amber: {
+    bgBase: '#151517', bgSurface: '#202024', bgMantle: '#111113',
+    textMain: '#EFEEEC', textSub: '#A5A29C', textMuted: '#66645F',
+    accent: '#E8A33D', accentSecondary: '#E8A33D', success: '#8FBF7F', danger: '#D96C6C', warning: '#E8A33D',
+  },
   'catppuccin-mocha': {
     bgBase: '#1E1E2E', bgSurface: '#313244', bgMantle: '#181825',
     textMain: '#CDD6F4', textSub: '#BAC2DE', textMuted: '#7F849C',
@@ -162,6 +185,7 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
 
 // Which xterm palette each built-in theme uses for terminal rendering.
 export const BUILTIN_XTERM_PALETTE: Record<BuiltinThemeId, XtermPaletteId> = {
+  amber: 'amber-graphite',
   'catppuccin-mocha': 'catppuccin-mocha',
   monochrome: 'monochrome',
   'stars-and-stripes': 'one-dark',
@@ -245,6 +269,7 @@ for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
 // ─── Theme options for UI picker ────────────────────────────────────────────
 
 export const THEME_OPTIONS: Array<{ value: ThemeId; label: string; preview: [string, string, string, string] }> = [
+  { value: 'amber',             label: 'Amber',            preview: ['#151517', '#E8A33D', '#8FBF7F', '#D96C6C'] },
   { value: 'catppuccin-mocha',  label: 'Catppuccin',       preview: ['#1E1E2E', '#89B4FA', '#A6E3A1', '#F38BA8'] },
   { value: 'stars-and-stripes', label: 'Stars & Stripes',  preview: ['#0C1428', '#5B8DEF', '#4EBF8B', '#E8554E'] },
   { value: 'red-dynasty',       label: 'Red Dynasty',      preview: ['#1A0A0A', '#E84040', '#F2C744', '#6AA0CC'] },
@@ -257,6 +282,7 @@ export const THEME_OPTIONS: Array<{ value: ThemeId; label: string; preview: [str
 ];
 
 export const XTERM_PALETTE_OPTIONS: Array<{ value: XtermPaletteId; label: string }> = [
+  { value: 'amber-graphite',   label: 'Amber Graphite' },
   { value: 'catppuccin-mocha', label: 'Catppuccin Mocha' },
   { value: 'tokyo-night',      label: 'Tokyo Night' },
   { value: 'one-dark',         label: 'One Dark' },
