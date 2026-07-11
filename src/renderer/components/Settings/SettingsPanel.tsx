@@ -574,6 +574,48 @@ function disposePaneTree(pane: { type: string; surfaces?: Array<{ ptyId?: string
   }
 }
 
+// ─── Orchestrator (deck brain) settings ──────────────────────────────────────
+//
+// Model picker for the Command Deck orchestrator. The value is a claude model
+// alias handed to the Agent SDK ('' = the subscription's default). Applied
+// between turns: main swaps the brain adapter on the next send after a change —
+// the conversation itself survives via the persisted session id.
+
+const ORCHESTRATOR_MODEL_OPTIONS = [
+  { value: '',       labelKey: 'settings.orchestratorModelDefault' },
+  { value: 'opus',   labelKey: '' }, // product names — no translation
+  { value: 'sonnet', labelKey: '' },
+  { value: 'haiku',  labelKey: '' },
+];
+
+function OrchestratorSection() {
+  const t = useT();
+  const deckBrainModel = useStore((s) => s.deckBrainModel);
+  const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
+  const options = ORCHESTRATOR_MODEL_OPTIONS.map((o) => ({
+    value: o.value,
+    label: o.labelKey
+      ? t(o.labelKey)
+      : o.value.charAt(0).toUpperCase() + o.value.slice(1),
+  }));
+  return (
+    <div className="flex flex-col gap-3 mt-4" data-testid="orchestrator-section">
+      <SectionLabel label={t('settings.orchestrator')} />
+      <SettingRow
+        label={t('settings.orchestratorModel')}
+        description={t('settings.orchestratorModelDesc')}
+      >
+        <SettingSelect
+          value={deckBrainModel}
+          onChange={setDeckBrainModel}
+          options={options}
+          label={t('settings.orchestratorModel')}
+        />
+      </SettingRow>
+    </div>
+  );
+}
+
 // ─── MCP integration status ──────────────────────────────────────────────────
 
 /** Mirror of McpStatusPayload in main/ipc/handlers/mcp.handler.ts. */
@@ -4078,7 +4120,7 @@ export default function SettingsPanel() {
             {activeTab === 'appearance'         && <TabAppearance />}
             {activeTab === 'notifications'      && <TabNotifications />}
             {activeTab === 'shortcuts'          && <TabShortcuts />}
-            {activeTab === 'claude-integration' && <ClaudeIntegrationSection />}
+            {activeTab === 'claude-integration' && <><ClaudeIntegrationSection /><OrchestratorSection /></>}
             {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
             {activeTab === 'first-run-setup'    && <TabFirstRunSetup />}
             {activeTab === 'about'              && <TabAbout />}

@@ -128,6 +128,12 @@ export interface UISlice {
   defaultShell: string;
   setDefaultShell: (shell: string) => void;
 
+  // Orchestrator (deck brain) model override. '' = the subscription's default
+  // model; otherwise a claude model alias/id ('opus' | 'sonnet' | 'haiku' | full
+  // id) passed to the Agent SDK. Applied between turns — see deck.handler.
+  deckBrainModel: string;
+  setDeckBrainModel: (model: string) => void;
+
   // Issue #174: split panes inherit the splitting pane's cwd (default on).
   splitInheritsCwd: boolean;
   setSplitInheritsCwd: (enabled: boolean) => void;
@@ -735,6 +741,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setDefaultShell: (shell) => set((state) => {
     state.defaultShell = shell;
+  }),
+
+  deckBrainModel: '',
+
+  setDeckBrainModel: (model) => set((state) => {
+    state.deckBrainModel = model;
   }),
 
   splitInheritsCwd: true,

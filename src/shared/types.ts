@@ -496,6 +496,9 @@ export interface SessionData {
   terminalFontSize?: number;
   terminalFontFamily?: string;
   defaultShell?: string;
+  /** Orchestrator (deck brain) model override — '' / absent = the
+   *  subscription's default model. A claude model alias or full id. */
+  deckBrainModel?: string;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting

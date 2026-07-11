@@ -286,6 +286,12 @@ export const en = {
   'settings.tabNotifications': 'Notifications',
   'settings.tabShortcuts': 'Shortcuts',
   'settings.tabAbout': 'About',
+  // Orchestrator (command deck brain) settings
+  'settings.orchestrator': 'Orchestrator',
+  'settings.orchestratorModel': 'Orchestrator model',
+  'settings.orchestratorModelDesc':
+    'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',
+  'settings.orchestratorModelDefault': 'Default (subscription model)',
   // LanLink control plane (PR-3)
   'settings.lanlinkTab': 'LanLink',
   'settings.lanlink': 'LanLink (LAN agent messaging)',

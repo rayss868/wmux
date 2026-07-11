@@ -537,6 +537,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.terminalFontFamily = sanitizeFontFamily(data.terminalFontFamily) || 'Cascadia Code';
       }
       if (data.defaultShell) state.defaultShell = data.defaultShell;
+      if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;
       if (data.splitInheritsCwd != null) state.splitInheritsCwd = data.splitInheritsCwd;
       if (data.imeResidueGuardEnabled != null) state.imeResidueGuardEnabled = data.imeResidueGuardEnabled;
       // Fail closed: only an explicit boolean enables retention. A corrupted /

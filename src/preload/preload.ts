@@ -287,8 +287,12 @@ const electronAPI = {
   // fanout. A brain stream is NOT channel semantics, so it rides a dedicated
   // push channel, never the channels plumbing.
   deck: {
-    send: (text: string, fleetContext?: string) =>
-      ipcRenderer.invoke(IPC.DECK_SEND, { text, fleetContext }) as Promise<{
+    // `model` is the orchestrator model override ('' / undefined = the
+    // subscription's default). Passed on every send; main swaps the brain
+    // adapter between turns when it changes (the conversation itself survives
+    // via the persisted session id).
+    send: (text: string, fleetContext?: string, model?: string) =>
+      ipcRenderer.invoke(IPC.DECK_SEND, { text, fleetContext, model }) as Promise<{
         ok: boolean;
         code?: 'busy' | 'disposed' | 'empty';
       }>,

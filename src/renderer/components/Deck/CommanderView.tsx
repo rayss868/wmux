@@ -771,7 +771,9 @@ export function CommanderView(): React.ReactElement {
       });
       const fleetContext = recoveryLines ? `${recoveryLines}\n\n${fleetSummary}` : fleetSummary;
       try {
-        const res = await api.send(text, fleetContext);
+        // The orchestrator model override rides along on every send; main swaps
+        // the brain between turns when it changes (Settings → Claude tab).
+        const res = await api.send(text, fleetContext, useStore.getState().deckBrainModel || undefined);
         if (!res.ok) {
           // Rejected before any stream event (busy race / disposed): close the
           // open turn with an error so the placeholder doesn't spin forever.
