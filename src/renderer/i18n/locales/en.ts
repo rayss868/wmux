@@ -733,7 +733,7 @@ export const en = {
   'deck.tabsAriaLabel': 'Command deck tabs',
   'deck.tabCommander': 'Orchestrator',
   'deck.tabChannels': 'Channels',
-  'deck.commanderPlaceholder': 'Tell the orchestrator — @mention panes…',
+  'deck.commanderPlaceholder': 'Tell the orchestrator, or @mention panes…',
   'deck.commanderEmpty':
     'Ask the orchestrator to run your agents, or @mention agent panes to command them directly.',
   'deck.jumpToPane': 'Jump to this pane',
@@ -753,7 +753,7 @@ export const en = {
   'deck.qaPrStatus': 'PR status',
   // Command Deck P3d — orchestrator schedules (reboot-surviving).
   'deck.schedules': 'Schedules',
-  'deck.schedulesEmpty': 'No schedules yet — schedules survive reboots, and the orchestrator runs them when the time comes.',
+  'deck.schedulesEmpty': 'No schedules yet. Schedules survive reboots, and the orchestrator runs them when the time comes.',
   'deck.schedulePromptPlaceholder': 'What should the orchestrator do?',
   'deck.scheduleRepeat': 'Repeat',
   'deck.scheduleRepeatNone': 'Once',

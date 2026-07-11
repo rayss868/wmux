@@ -142,7 +142,7 @@ export function CommanderViewContent({
         {isEmpty && (
           <div
             data-commander-empty
-            className="text-caption font-mono text-[var(--text-muted)] text-center py-8 leading-relaxed"
+            className="text-[12.5px] text-[var(--text-muted)] text-center py-8 leading-relaxed"
             {...tokenAttrs('textMuted', 'text')}
           >
             {t('deck.commanderEmpty') ||
@@ -156,12 +156,11 @@ export function CommanderViewContent({
         {recoveryPanes.length > 0 && (
           <div
             data-commander-recovery
-            className="rounded-md border px-3 py-2.5 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.5)]"
-            style={{ borderColor: 'var(--border-soft)' }}
+            className="rounded-lg px-4 py-3 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.55)]"
             {...tokenAttrs('bgSurface', 'bg')}
           >
             <div
-              className="text-[11px] font-mono text-[var(--text-main)] leading-relaxed"
+              className="text-[12.5px] font-semibold text-[var(--text-main)] leading-relaxed"
               {...tokenAttrs('textMain', 'text')}
             >
               {(t('deck.recoveryTitle') ||
@@ -169,7 +168,7 @@ export function CommanderViewContent({
               ).replace('{count}', String(recoveryPanes.length))}
             </div>
             <div
-              className="text-[10px] font-mono text-[var(--text-sub)] leading-relaxed"
+              className="text-[11px] font-mono text-[var(--text-sub)] leading-relaxed"
               {...tokenAttrs('textSub', 'text')}
             >
               {recoveryPanes.map((p) => p.label).join(' · ')}
@@ -180,7 +179,7 @@ export function CommanderViewContent({
                 data-recovery-run
                 disabled={brainBusy}
                 onClick={onRecoverFleet}
-                className={`px-2.5 py-1 rounded text-[11px] font-mono text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
+                className={`px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
               >
                 {t('deck.recoveryRun') || 'Recover agents'}
               </button>
@@ -188,7 +187,7 @@ export function CommanderViewContent({
                 type="button"
                 data-recovery-dismiss
                 onClick={onDismissRecovery}
-                className={`px-2 py-1 rounded text-[10px] font-mono text-[var(--text-muted)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
+                className={`px-2 py-1 rounded-md text-[12px] text-[var(--text-muted)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
                 {...tokenAttrs('textMuted', 'text')}
               >
                 {t('deck.recoveryDismiss') || 'Dismiss'}
@@ -228,7 +227,7 @@ export function CommanderViewContent({
             className="inline-block w-3 h-3 rounded-full border-2 border-[var(--accent-blue)] border-t-transparent animate-spin"
           />
           <span
-            className="text-[10px] font-mono text-[var(--text-sub)] flex-1"
+            className="text-[12px] text-[var(--text-sub)] flex-1"
             {...tokenAttrs('textSub', 'text')}
           >
             {t('deck.commanderThinking') || 'Orchestrator is working…'}
@@ -237,7 +236,7 @@ export function CommanderViewContent({
             type="button"
             data-commander-interrupt
             onClick={onInterrupt}
-            className={`px-2 py-0.5 rounded text-[10px] font-mono text-[var(--accent-red)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
+            className={`px-2 py-0.5 rounded-md text-[12px] text-[var(--accent-red)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
             {...tokenAttrs('danger', 'text')}
           >
             {t('deck.commanderStop') || 'Stop'}
@@ -263,7 +262,7 @@ export function CommanderViewContent({
               data-action-id={action.id}
               disabled={brainBusy}
               onClick={() => onQuickAction?.(action)}
-              className={`px-2 py-0.5 rounded text-[10px] font-mono text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
+              className={`px-2.5 py-1 rounded-md text-[12px] text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
               {...tokenAttrs('textSub', 'text')}
             >
               {action.label}
@@ -289,7 +288,7 @@ export function CommanderViewContent({
           onSubmit={onSubmit}
           mentionCandidates={mentionCandidates}
           disabled={brainBusy}
-          placeholder={t('deck.commanderPlaceholder') || 'Tell the orchestrator — @mention panes…'}
+          placeholder={t('deck.commanderPlaceholder') || 'Tell the orchestrator, or @mention panes…'}
           t={t}
         />
       </div>
@@ -318,23 +317,24 @@ function CommanderBrainItem({
       className="flex flex-col gap-1"
     >
       <span
-        className={`text-caption font-mono font-bold ${isUser ? 'text-[var(--text-main)]' : 'text-[var(--accent-blue)]'}`}
+        className={`text-[12px] font-bold ${isUser ? 'text-[var(--text-main)]' : 'text-[var(--accent-blue)]'}`}
         {...(isUser ? tokenAttrs('textMain', 'text') : tokenAttrs('accent', 'text'))}
       >
         {isUser ? t('channels.me') || 'Me' : t('deck.commander') || 'Orchestrator'}
       </span>
       {message.text && (
         <div
-          className="text-[12px] font-mono text-[var(--text-main)] whitespace-pre-wrap break-words"
+          className="text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
           data-commander-brain-text
           {...tokenAttrs('textMain', 'text')}
         >
           {message.text}
         </div>
       )}
-      {/* Tool chips — one per fleet action, in call order. */}
+      {/* Tool calls — flat monospace LOG LINES in call order (design decision
+          3: hierarchy from typography, not chip boxes). */}
       {message.tools && message.tools.length > 0 && (
-        <div className="flex flex-wrap gap-1 pt-0.5" data-commander-brain-tools>
+        <div className="flex flex-col gap-0.5 pt-1" data-commander-brain-tools>
           {message.tools.map((chip, i) => (
             <CommanderToolChip key={chip.toolId ?? `${chip.name}-${i}`} chip={chip} onJumpToPane={onJumpToPane} t={t} />
           ))}
@@ -344,7 +344,7 @@ function CommanderBrainItem({
         <div
           role="alert"
           data-commander-brain-error
-          className="text-[10px] font-mono text-[var(--accent-red)]"
+          className="text-[11px] text-[var(--accent-red)]"
           {...tokenAttrs('danger', 'text')}
         >
           {message.errorText}
@@ -354,9 +354,10 @@ function CommanderBrainItem({
   );
 }
 
-/** A single tool-call chip. Shows the tool name + a compact input summary and a
- *  status dot (running / ok / failed); when the tool targeted a pane, the whole
- *  chip is a jump button. */
+/** A single tool call rendered as a flat MONOSPACE LOG LINE (the mock's
+ *  `.call` row): a ✓/✕ result glyph (● while running), the tool name, a
+ *  truncated input summary, and, when the tool targeted a pane, a right-
+ *  aligned jump link. No box, no decorative dot — the glyph IS the status. */
 function CommanderToolChip({
   chip,
   onJumpToPane,
@@ -366,52 +367,41 @@ function CommanderToolChip({
   onJumpToPane: (workspaceId: string, paneId: string) => void;
   t: (key: string) => string;
 }): React.ReactElement {
-  const dot =
+  const glyph = chip.ok === undefined ? '●' : chip.ok ? '✓' : '✕';
+  const glyphColor =
     chip.ok === undefined
       ? 'var(--text-muted)'
       : chip.ok
         ? 'var(--accent-green)'
         : 'var(--accent-red)';
   const canJump = !!chip.paneId && !!chip.workspaceId;
-  const label = (
-    <>
-      <span
-        aria-hidden="true"
-        className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-        style={{ backgroundColor: dot }}
-      />
-      <span className="font-bold">{chip.name}</span>
-      {chip.inputSummary && <span className="opacity-70 truncate max-w-[160px]">{chip.inputSummary}</span>}
-    </>
-  );
-  const base =
-    'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-[rgba(var(--bg-surface-rgb),0.6)]';
-  if (canJump) {
-    return (
-      <button
-        type="button"
-        data-commander-tool-chip
-        data-tool-name={chip.name}
-        data-pane-id={chip.paneId}
-        data-workspace-id={chip.workspaceId}
-        onClick={() => onJumpToPane(chip.workspaceId!, chip.paneId!)}
-        title={t('deck.jumpToPane') || 'Jump to this pane'}
-        className={`${base} text-[var(--accent-blue)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
-        {...tokenAttrs('accent', 'text')}
-      >
-        {label}
-      </button>
-    );
-  }
   return (
-    <span
+    <div
       data-commander-tool-chip
       data-tool-name={chip.name}
-      className={`${base} text-[var(--text-sub)]`}
-      {...tokenAttrs('textSub', 'text')}
+      {...(canJump ? { 'data-pane-id': chip.paneId, 'data-workspace-id': chip.workspaceId } : {})}
+      className="flex items-baseline gap-2 text-[11px] font-mono text-[var(--text-muted)] min-w-0"
+      {...tokenAttrs('textMuted', 'text')}
     >
-      {label}
-    </span>
+      <span aria-hidden="true" className="shrink-0" style={{ color: glyphColor }}>
+        {glyph}
+      </span>
+      <span className="text-[var(--text-sub)] shrink-0" {...tokenAttrs('textSub', 'text')}>
+        {chip.name}
+      </span>
+      {chip.inputSummary && <span className="truncate">{chip.inputSummary}</span>}
+      {canJump && (
+        <button
+          type="button"
+          data-commander-tool-jump
+          onClick={() => onJumpToPane(chip.workspaceId!, chip.paneId!)}
+          className={`ml-auto shrink-0 font-sans text-[11px] text-[var(--text-muted)] underline underline-offset-2 hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          {t('deck.jumpToPane') || 'Jump to this pane'}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -438,7 +428,7 @@ function CommanderThreadItem({
         <div data-commander-dispatch className="flex flex-col gap-0.5">
           <div className="flex items-baseline gap-2">
             <span
-              className="text-caption font-mono font-bold text-[var(--text-main)]"
+              className="text-[12px] font-bold text-[var(--text-main)]"
               {...tokenAttrs('textMain', 'text')}
             >
               {t('channels.me') || 'Me'}
@@ -451,7 +441,7 @@ function CommanderThreadItem({
             </span>
           </div>
           <div
-            className="text-[12px] font-mono text-[var(--text-main)] whitespace-pre-wrap break-words"
+            className="text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
             data-commander-dispatch-text
             {...tokenAttrs('textMain', 'text')}
           >
@@ -470,7 +460,7 @@ function CommanderThreadItem({
                   disabled={!m.paneId}
                   onClick={() => m.paneId && onJumpToPane(m.workspaceId, m.paneId)}
                   title={t('deck.jumpToPane') || 'Jump to this pane'}
-                  className={`px-1.5 py-0.5 rounded text-[10px] font-mono text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-default ${FOCUS_RING}`}
+                  className={`px-2 py-0.5 rounded-md text-[11.5px] text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-default ${FOCUS_RING}`}
                   {...tokenAttrs('accent', 'text')}
                 >
                   @{m.name}
@@ -504,14 +494,14 @@ function CommanderThreadItem({
                       data-commander-reply-author
                       onClick={() => onJumpToPane(pane.workspaceId, pane.paneId)}
                       title={t('deck.jumpToPane') || 'Jump to this pane'}
-                      className={`text-caption font-mono font-bold text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
+                      className={`text-[12px] font-bold text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
                       {...tokenAttrs('accent', 'text')}
                     >
                       {author.primary}
                     </button>
                   ) : (
                     <span
-                      className="text-caption font-mono font-bold text-[var(--text-main)]"
+                      className="text-[12px] font-bold text-[var(--text-main)]"
                       data-commander-reply-author
                       {...tokenAttrs('textMain', 'text')}
                     >
@@ -519,7 +509,7 @@ function CommanderThreadItem({
                     </span>
                   )}
                   {author.chip && (
-                    <span className="text-[10px] font-mono text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
+                    <span className="text-[11px] text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
                       {author.chip}
                     </span>
                   )}
@@ -531,7 +521,7 @@ function CommanderThreadItem({
                   </span>
                 </div>
                 <div
-                  className="text-[12px] font-mono text-[var(--text-main)] whitespace-pre-wrap break-words"
+                  className="text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
                   data-commander-reply-text
                   {...tokenAttrs('textMain', 'text')}
                 >

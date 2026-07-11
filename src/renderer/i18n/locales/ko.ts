@@ -656,7 +656,7 @@ export const ko = {
   'deck.tabsAriaLabel': '커맨드 데크 탭',
   'deck.tabCommander': '오케스트레이터',
   'deck.tabChannels': '채널',
-  'deck.commanderPlaceholder': '오케스트레이터에 지시 — @로 pane 멘션…',
+  'deck.commanderPlaceholder': '오케스트레이터에 지시하거나 @로 pane을 멘션…',
   'deck.commanderEmpty':
     '오케스트레이터에게 에이전트 운영을 맡기거나, @로 에이전트 pane을 멘션해 직접 지시하세요.',
   'deck.jumpToPane': '이 pane으로 이동',
@@ -676,7 +676,7 @@ export const ko = {
   'deck.qaPrStatus': 'PR 상태',
   // 커맨드 데크 P3d — 오케스트레이터 예약(재부팅 생존).
   'deck.schedules': '예약',
-  'deck.schedulesEmpty': '예약이 없습니다 — 예약은 재부팅 후에도 유지되고, 시간이 되면 오케스트레이터가 실행합니다.',
+  'deck.schedulesEmpty': '예약이 없습니다. 예약은 재부팅 후에도 유지되고, 시간이 되면 오케스트레이터가 실행합니다.',
   'deck.schedulePromptPlaceholder': '오케스트레이터가 무엇을 하면 될까요?',
   'deck.scheduleRepeat': '반복',
   'deck.scheduleRepeatNone': '한 번',
