@@ -51,7 +51,7 @@ export function DeckTabs({
             data-deck-tab={tab.id}
             data-active={isActive ? 'true' : undefined}
             onClick={() => onSelect(tab.id)}
-            className={`relative flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-mono uppercase tracking-widest transition-colors duration-150 ${FOCUS_RING} ${
+            className={`relative flex-1 flex items-center justify-center gap-1 px-3 py-2 text-[12.5px] font-semibold transition-colors duration-150 ${FOCUS_RING} ${
               isActive
                 ? 'text-[var(--text-main)] bg-[rgba(var(--bg-surface-rgb),0.5)]'
                 : 'text-[var(--text-muted)] hover:text-[var(--text-sub)]'

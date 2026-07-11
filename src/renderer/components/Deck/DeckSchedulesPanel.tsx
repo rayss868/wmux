@@ -116,7 +116,7 @@ export function DeckSchedulesPanel({
         data-deck-schedules-toggle
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`px-2 py-0.5 rounded text-[10px] font-mono transition-opacity hover:opacity-80 ${
+        className={`px-2.5 py-1 rounded-md text-[12px] transition-opacity hover:opacity-80 ${
           open ? 'text-[var(--accent-blue)]' : 'text-[var(--text-sub)]'
         } bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING}`}
         {...(open ? tokenAttrs('accent', 'text') : tokenAttrs('textSub', 'text'))}
@@ -128,17 +128,16 @@ export function DeckSchedulesPanel({
       {open && (
         <div
           data-deck-schedules-panel
-          className="w-full mt-1.5 rounded-md border px-3 py-2.5 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.4)]"
-          style={{ borderColor: 'var(--border-soft)' }}
+          className="w-full mt-1.5 rounded-lg px-4 py-3 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.55)]"
         >
           {/* Existing schedules */}
           {schedules.length === 0 ? (
             <div
-              className="text-[10px] font-mono text-[var(--text-muted)]"
+              className="text-[12px] text-[var(--text-muted)] leading-relaxed"
               data-deck-schedules-empty
               {...tokenAttrs('textMuted', 'text')}
             >
-              {t('deck.schedulesEmpty') || 'No schedules yet — the orchestrator runs them even after a reboot.'}
+              {t('deck.schedulesEmpty') || 'No schedules yet. Schedules survive reboots.'}
             </div>
           ) : (
             <div className="space-y-1.5">
@@ -147,7 +146,7 @@ export function DeckSchedulesPanel({
                   key={s.id}
                   data-deck-schedule-row
                   data-schedule-id={s.id}
-                  className="flex items-center gap-2 text-[11px] font-mono"
+                  className="flex items-center gap-2 text-[12.5px]"
                 >
                   <span
                     aria-hidden="true"
@@ -160,7 +159,7 @@ export function DeckSchedulesPanel({
                   >
                     {s.prompt}
                   </span>
-                  <span className="text-[10px] text-[var(--text-sub)] shrink-0" {...tokenAttrs('textSub', 'text')}>
+                  <span className="text-[11px] font-mono text-[var(--text-sub)] shrink-0" {...tokenAttrs('textSub', 'text')}>
                     {formatNextRun(s.nextRunAt)}
                     {s.intervalMinutes ? ` · ${
                       REPEAT_OPTIONS.find((o) => o.minutes === s.intervalMinutes)
@@ -175,7 +174,7 @@ export function DeckSchedulesPanel({
                     onClick={() => {
                       void resolvedApi.update({ id: s.id, enabled: !s.enabled }).then(() => refresh());
                     }}
-                    className={`px-1.5 py-0.5 rounded text-[10px] text-[var(--text-sub)] hover:opacity-80 ${FOCUS_RING}`}
+                    className={`px-1.5 py-0.5 rounded-md text-[11.5px] text-[var(--text-sub)] hover:opacity-80 ${FOCUS_RING}`}
                     {...tokenAttrs('textSub', 'text')}
                   >
                     {s.enabled ? t('deck.schedulePause') || 'Pause' : t('deck.scheduleResume') || 'Resume'}
@@ -186,7 +185,7 @@ export function DeckSchedulesPanel({
                     onClick={() => {
                       void resolvedApi.remove(s.id).then(() => refresh());
                     }}
-                    className={`px-1.5 py-0.5 rounded text-[10px] text-[var(--accent-red)] hover:opacity-80 ${FOCUS_RING}`}
+                    className={`px-1.5 py-0.5 rounded-md text-[11.5px] text-[var(--accent-red)] hover:opacity-80 ${FOCUS_RING}`}
                     {...tokenAttrs('danger', 'text')}
                   >
                     {t('deck.scheduleDelete') || 'Delete'}
@@ -197,14 +196,14 @@ export function DeckSchedulesPanel({
           )}
 
           {/* Create */}
-          <div className="flex flex-col gap-1.5 pt-1 border-t" style={{ borderColor: 'var(--border-soft)' }}>
+          <div className="flex flex-col gap-1.5 pt-2 border-t" style={{ borderColor: 'var(--border-soft)' }}>
             <input
               type="text"
               data-deck-schedule-prompt
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={t('deck.schedulePromptPlaceholder') || 'What should the orchestrator do?'}
-              className="w-full text-[11px] font-mono rounded px-2 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
+              className="w-full text-[12.5px] rounded-md px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
               style={{ borderColor: 'var(--border-soft)' }}
             />
             <div className="flex items-center gap-1.5">
@@ -213,14 +212,14 @@ export function DeckSchedulesPanel({
                 data-deck-schedule-when
                 value={when}
                 onChange={(e) => setWhen(e.target.value)}
-                className="text-[10px] font-mono rounded px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
+                className="text-[11px] font-mono rounded-md px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
                 style={{ borderColor: 'var(--border-soft)' }}
               />
               <select
                 data-deck-schedule-repeat
                 value={repeat}
                 onChange={(e) => setRepeat(Number(e.target.value))}
-                className="text-[10px] font-mono rounded px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
+                className="text-[11px] font-mono rounded-md px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
                 style={{ borderColor: 'var(--border-soft)' }}
                 aria-label={t('deck.scheduleRepeat') || 'Repeat'}
               >
@@ -235,14 +234,14 @@ export function DeckSchedulesPanel({
                 type="button"
                 data-deck-schedule-create
                 onClick={() => void handleCreate()}
-                className={`shrink-0 whitespace-nowrap px-2.5 py-1 rounded text-[11px] font-mono text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 ${FOCUS_RING}`}
+                className={`shrink-0 whitespace-nowrap px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 ${FOCUS_RING}`}
                 {...tokenAttrs('accent', 'text')}
               >
                 {t('deck.scheduleAdd') || 'Add schedule'}
               </button>
             </div>
             {error && (
-              <div role="alert" data-deck-schedule-error className="text-[10px] font-mono text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
+              <div role="alert" data-deck-schedule-error className="text-[11.5px] text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
                 {error}
               </div>
             )}

@@ -74,19 +74,19 @@ describe('CommanderViewContent — brain surface', () => {
     expect(container.querySelector('[data-commander-empty]')).toBeNull();
   });
 
-  it('makes a pane-targeting chip a clickable jump', () => {
+  it('makes a pane-targeting tool line a clickable jump', () => {
     const onJumpToPane = vi.fn();
     mount({ brainMessages: brainTurn(), onJumpToPane });
-    const jumpChip = container.querySelector(
-      'button[data-commander-tool-chip][data-pane-id="pane-9"]',
-    ) as HTMLButtonElement;
-    expect(jumpChip).not.toBeNull();
-    act(() => jumpChip.click());
+    const row = container.querySelector('[data-commander-tool-chip][data-pane-id="pane-9"]');
+    expect(row).not.toBeNull();
+    const jump = row!.querySelector('[data-commander-tool-jump]') as HTMLButtonElement;
+    expect(jump).not.toBeNull();
+    act(() => jump.click());
     expect(onJumpToPane).toHaveBeenCalledWith('ws-1', 'pane-9');
 
-    // The non-pane chip is a plain span, not a button.
+    // The non-pane tool line has no jump link.
     const plain = container.querySelector('[data-commander-tool-chip][data-tool-name="terminal_send"]');
-    expect(plain?.tagName).toBe('SPAN');
+    expect(plain?.querySelector('[data-commander-tool-jump]')).toBeNull();
   });
 
   it('shows the busy bar and Stop interrupts', () => {
