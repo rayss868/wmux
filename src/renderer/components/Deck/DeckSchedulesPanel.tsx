@@ -235,7 +235,7 @@ export function DeckSchedulesPanel({
                 type="button"
                 data-deck-schedule-create
                 onClick={() => void handleCreate()}
-                className={`px-2.5 py-1 rounded text-[11px] font-mono text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 ${FOCUS_RING}`}
+                className={`shrink-0 whitespace-nowrap px-2.5 py-1 rounded text-[11px] font-mono text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 ${FOCUS_RING}`}
                 {...tokenAttrs('accent', 'text')}
               >
                 {t('deck.scheduleAdd') || 'Add schedule'}
