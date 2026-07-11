@@ -1,0 +1,256 @@
+// ─── Command Deck — orchestrator schedules panel (P3d) ───────────────────────
+//
+// The deck-side surface for persisted schedules: a compact toggle chip (lives
+// visually with the quick-action chips) that expands an inline panel above the
+// composer — list existing schedules (next run, repeat, pause/resume, delete)
+// and create new ones (prompt + first run time + repeat).
+//
+// Self-contained on purpose: all IPC goes through the injected `api` prop
+// (defaulting to window.electronAPI.deck.schedules in the container), so the
+// whole panel unit-tests under jsdom with a fake api and zero store wiring.
+
+import { useCallback, useEffect, useState } from 'react';
+import { tokenAttrs } from '../../themes';
+import { FOCUS_RING } from '../focusRing';
+import type { DeckSchedule } from '../../../main/deck/deckScheduleStore';
+
+export interface DeckSchedulesApi {
+  list: () => Promise<{ schedules: DeckSchedule[] }>;
+  create: (args: {
+    prompt: string;
+    nextRunAt: number;
+    intervalMinutes?: number;
+  }) => Promise<{ ok: boolean; schedule?: DeckSchedule; code?: string }>;
+  update: (args: { id: string; enabled?: boolean }) => Promise<{ ok: boolean; code?: string }>;
+  remove: (id: string) => Promise<{ ok: boolean }>;
+}
+
+const REPEAT_OPTIONS: { minutes: number; labelKey: string; fallback: string }[] = [
+  { minutes: 0, labelKey: 'deck.scheduleRepeatNone', fallback: 'Once' },
+  { minutes: 30, labelKey: 'deck.scheduleRepeat30m', fallback: 'Every 30 min' },
+  { minutes: 60, labelKey: 'deck.scheduleRepeat1h', fallback: 'Every hour' },
+  { minutes: 360, labelKey: 'deck.scheduleRepeat6h', fallback: 'Every 6 hours' },
+  { minutes: 1440, labelKey: 'deck.scheduleRepeat24h', fallback: 'Every day' },
+];
+
+/** datetime-local value for "now + 5 minutes", in LOCAL time. */
+function defaultWhenValue(now = new Date()): string {
+  const d = new Date(now.getTime() + 5 * 60_000);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatNextRun(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+export function DeckSchedulesPanel({
+  api,
+  t: tProp,
+}: {
+  api?: DeckSchedulesApi;
+  t?: (key: string) => string;
+}): React.ReactElement | null {
+  const t = tProp ?? (() => '');
+  // Optional-chain the whole path — window.electronAPI itself is absent under
+  // jsdom and in dev shells without the preload.
+  const resolvedApi =
+    api ??
+    (window.electronAPI as unknown as { deck?: { schedules?: DeckSchedulesApi } } | undefined)?.deck
+      ?.schedules;
+  const [open, setOpen] = useState(false);
+  const [schedules, setSchedules] = useState<DeckSchedule[]>([]);
+  const [prompt, setPrompt] = useState('');
+  const [when, setWhen] = useState(defaultWhenValue);
+  const [repeat, setRepeat] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!resolvedApi) return;
+    try {
+      const r = await resolvedApi.list();
+      setSchedules(r.schedules);
+    } catch {
+      /* main gone — leave the stale list */
+    }
+  }, [resolvedApi]);
+
+  useEffect(() => {
+    if (open) void refresh();
+  }, [open, refresh]);
+
+  if (!resolvedApi) return null;
+
+  const handleCreate = async (): Promise<void> => {
+    setError(null);
+    const nextRunAt = new Date(when).getTime();
+    if (!prompt.trim() || !Number.isFinite(nextRunAt)) {
+      setError(t('deck.scheduleInvalid') || 'Enter a prompt and a valid time.');
+      return;
+    }
+    const res = await resolvedApi.create({
+      prompt,
+      nextRunAt,
+      ...(repeat > 0 ? { intervalMinutes: repeat } : {}),
+    });
+    if (!res.ok) {
+      setError(
+        res.code === 'limit'
+          ? t('deck.scheduleLimit') || 'Schedule limit reached.'
+          : t('deck.scheduleInvalid') || 'Enter a prompt and a valid time.',
+      );
+      return;
+    }
+    setPrompt('');
+    setWhen(defaultWhenValue());
+    setRepeat(0);
+    void refresh();
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        data-deck-schedules-toggle
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className={`px-2 py-0.5 rounded text-[10px] font-mono transition-opacity hover:opacity-80 ${
+          open ? 'text-[var(--accent-blue)]' : 'text-[var(--text-sub)]'
+        } bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING}`}
+        {...(open ? tokenAttrs('accent', 'text') : tokenAttrs('textSub', 'text'))}
+      >
+        {t('deck.schedules') || 'Schedules'}
+        {schedules.some((s) => s.enabled) ? ` (${schedules.filter((s) => s.enabled).length})` : ''}
+      </button>
+
+      {open && (
+        <div
+          data-deck-schedules-panel
+          className="w-full mt-1.5 rounded-md border px-3 py-2.5 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.4)]"
+          style={{ borderColor: 'var(--border-soft)' }}
+        >
+          {/* Existing schedules */}
+          {schedules.length === 0 ? (
+            <div
+              className="text-[10px] font-mono text-[var(--text-muted)]"
+              data-deck-schedules-empty
+              {...tokenAttrs('textMuted', 'text')}
+            >
+              {t('deck.schedulesEmpty') || 'No schedules yet — the orchestrator runs them even after a reboot.'}
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {schedules.map((s) => (
+                <div
+                  key={s.id}
+                  data-deck-schedule-row
+                  data-schedule-id={s.id}
+                  className="flex items-center gap-2 text-[11px] font-mono"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                    style={{ backgroundColor: s.enabled ? 'var(--accent-green)' : 'var(--text-muted)' }}
+                  />
+                  <span
+                    className={`flex-1 truncate ${s.enabled ? 'text-[var(--text-main)]' : 'text-[var(--text-muted)]'}`}
+                    title={s.prompt}
+                  >
+                    {s.prompt}
+                  </span>
+                  <span className="text-[10px] text-[var(--text-sub)] shrink-0" {...tokenAttrs('textSub', 'text')}>
+                    {formatNextRun(s.nextRunAt)}
+                    {s.intervalMinutes ? ` · ${
+                      REPEAT_OPTIONS.find((o) => o.minutes === s.intervalMinutes)
+                        ? t(REPEAT_OPTIONS.find((o) => o.minutes === s.intervalMinutes)!.labelKey) ||
+                          REPEAT_OPTIONS.find((o) => o.minutes === s.intervalMinutes)!.fallback
+                        : `${s.intervalMinutes}m`
+                    }` : ''}
+                  </span>
+                  <button
+                    type="button"
+                    data-deck-schedule-toggle-enabled
+                    onClick={() => {
+                      void resolvedApi.update({ id: s.id, enabled: !s.enabled }).then(() => refresh());
+                    }}
+                    className={`px-1.5 py-0.5 rounded text-[10px] text-[var(--text-sub)] hover:opacity-80 ${FOCUS_RING}`}
+                    {...tokenAttrs('textSub', 'text')}
+                  >
+                    {s.enabled ? t('deck.schedulePause') || 'Pause' : t('deck.scheduleResume') || 'Resume'}
+                  </button>
+                  <button
+                    type="button"
+                    data-deck-schedule-delete
+                    onClick={() => {
+                      void resolvedApi.remove(s.id).then(() => refresh());
+                    }}
+                    className={`px-1.5 py-0.5 rounded text-[10px] text-[var(--accent-red)] hover:opacity-80 ${FOCUS_RING}`}
+                    {...tokenAttrs('danger', 'text')}
+                  >
+                    {t('deck.scheduleDelete') || 'Delete'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Create */}
+          <div className="flex flex-col gap-1.5 pt-1 border-t" style={{ borderColor: 'var(--border-soft)' }}>
+            <input
+              type="text"
+              data-deck-schedule-prompt
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder={t('deck.schedulePromptPlaceholder') || 'What should the orchestrator do?'}
+              className="w-full text-[11px] font-mono rounded px-2 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
+              style={{ borderColor: 'var(--border-soft)' }}
+            />
+            <div className="flex items-center gap-1.5">
+              <input
+                type="datetime-local"
+                data-deck-schedule-when
+                value={when}
+                onChange={(e) => setWhen(e.target.value)}
+                className="text-[10px] font-mono rounded px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
+                style={{ borderColor: 'var(--border-soft)' }}
+              />
+              <select
+                data-deck-schedule-repeat
+                value={repeat}
+                onChange={(e) => setRepeat(Number(e.target.value))}
+                className="text-[10px] font-mono rounded px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
+                style={{ borderColor: 'var(--border-soft)' }}
+                aria-label={t('deck.scheduleRepeat') || 'Repeat'}
+              >
+                {REPEAT_OPTIONS.map((o) => (
+                  <option key={o.minutes} value={o.minutes}>
+                    {t(o.labelKey) || o.fallback}
+                  </option>
+                ))}
+              </select>
+              <div className="flex-1" />
+              <button
+                type="button"
+                data-deck-schedule-create
+                onClick={() => void handleCreate()}
+                className={`px-2.5 py-1 rounded text-[11px] font-mono text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 ${FOCUS_RING}`}
+                {...tokenAttrs('accent', 'text')}
+              >
+                {t('deck.scheduleAdd') || 'Add schedule'}
+              </button>
+            </div>
+            {error && (
+              <div role="alert" data-deck-schedule-error className="text-[10px] font-mono text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
+                {error}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+export default DeckSchedulesPanel;
