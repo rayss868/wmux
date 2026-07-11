@@ -22,10 +22,10 @@ export interface DeckQuickAction {
   prompt: string;
 }
 
-/** Fleet health in one glance — the brain reads each pane's screen. */
+/** Agent health in one glance — the brain reads each pane's screen. */
 export const FLEET_STATUS_PROMPT = [
-  'Give me a fleet status report. For each agent pane, read its screen with',
-  'terminal_read and summarize it in one line: what it is working on, and',
+  'Give me a status report on my agents. For each agent pane, read its screen',
+  'with terminal_read and summarize it in one line: what it is working on, and',
   'whether it is running, waiting for input, idle, or showing an error.',
   'Lead with anything that needs my attention.',
 ].join('\n');
@@ -57,7 +57,7 @@ export function buildQuickActions(args: {
   const actions: DeckQuickAction[] = [
     {
       id: 'fleet-status',
-      label: t('deck.qaFleetStatus') || 'Fleet status',
+      label: t('deck.qaFleetStatus') || 'Agent status',
       prompt: FLEET_STATUS_PROMPT,
     },
     {
@@ -69,7 +69,7 @@ export function buildQuickActions(args: {
   if (args.recoveryPanes.length > 0) {
     actions.push({
       id: 'recover-fleet',
-      label: t('deck.recoveryRun') || 'Recover fleet',
+      label: t('deck.recoveryRun') || 'Recover agents',
       prompt: buildRecoveryPrompt(args.recoveryPanes),
     });
   }

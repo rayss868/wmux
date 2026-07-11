@@ -721,26 +721,29 @@ export const en = {
   'channels.mentionUnmatched': 'These @mentions matched no one — not delivered: {names}',
   'channels.mentionNoMatch': 'No agents to mention',
   // Command Deck (Phase 1) — the tabbed dock + LLM-less command composer.
+  // Naming (owner decision 2026-07-11): the brain/feature is the
+  // "Orchestrator"; the pane collective is "agents". No "fleet" wording on
+  // user surfaces.
   'deck.tabsAriaLabel': 'Command deck tabs',
-  'deck.tabCommander': 'Commander',
+  'deck.tabCommander': 'Orchestrator',
   'deck.tabChannels': 'Channels',
-  'deck.commanderPlaceholder': 'Command your fleet — @mention panes…',
+  'deck.commanderPlaceholder': 'Tell the orchestrator — @mention panes…',
   'deck.commanderEmpty':
-    'Ask the commander to run your fleet, or @mention agent panes to command them directly.',
+    'Ask the orchestrator to run your agents, or @mention agent panes to command them directly.',
   'deck.jumpToPane': 'Jump to this pane',
-  // Command Deck Phase 2 — the Commander brain (an Agent-SDK orchestrator).
-  'deck.commander': 'Commander',
-  'deck.commanderThinking': 'Commander is working…',
+  // Command Deck Phase 2 — the Orchestrator brain (Agent SDK).
+  'deck.commander': 'Orchestrator',
+  'deck.commanderThinking': 'Orchestrator is working…',
   'deck.commanderStop': 'Stop',
-  'deck.commanderUnavailable': 'Commander is unavailable',
+  'deck.commanderUnavailable': 'The orchestrator is unavailable',
   'deck.commanderBusy': 'A command is already running.',
   'deck.commanderFailed': 'The command could not run.',
   // Command Deck P3b — the reboot-recovery greeting card.
   'deck.recoveryTitle': '{count} agent pane(s) were running before the last shutdown and can be recovered.',
-  'deck.recoveryRun': 'Recover fleet',
+  'deck.recoveryRun': 'Recover agents',
   'deck.recoveryDismiss': 'Dismiss',
   // Command Deck P3c — quick-action chips above the composer.
-  'deck.qaFleetStatus': 'Fleet status',
+  'deck.qaFleetStatus': 'Agent status',
   'deck.qaPrStatus': 'PR status',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
