@@ -149,7 +149,20 @@ export function registerDeckHandler(
   // DECK_STREAM like any typed command). A scheduled turn reuses the live
   // manager — and its model — or lazily creates one exactly like deck:send.
   const scheduler = new DeckScheduler({
-    runTurn: (prompt) => ensureManager(undefined, managerModel).send(prompt),
+    runTurn: (prompt) => {
+      const mgr = ensureManager(undefined, managerModel);
+      // A main-originated turn has no renderer-side optimistic message, so the
+      // stream would hit a thread with no open turn and be dropped. Announce
+      // the turn first — but only when the manager will actually accept it
+      // (a busy reject must not open a phantom stuck-streaming bubble). The
+      // status check and send are one synchronous sequence, so nothing can
+      // interleave between them.
+      if (mgr.getStatus().status !== 'idle') {
+        return Promise.resolve({ ok: false, code: 'busy' as const });
+      }
+      emit({ type: 'turn-start', prompt });
+      return mgr.send(prompt);
+    },
   });
   scheduler.start();
 

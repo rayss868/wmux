@@ -58,11 +58,36 @@
 
 /* ─── Theme CSS Variables ────────────────────────────────────────────────── */
 
+/* Amber — the redesign default (designs/design-system-20260711). Warm
+ * graphite neutrals + ONE amber for action/focus/attention; success/danger
+ * keep muted green/red for status semantics, warning IS the amber.
+ * `:root` rides this block so the pre-hydration frame already paints the
+ * default theme (index.tsx sets data-theme from the store before render). */
+:root, [data-theme="amber"] {
+  --bg-base: #151517;
+  --bg-mantle: #111113;
+  --bg-surface: #202024;
+  --bg-overlay: #28282D;
+  --text-muted: #66645F;
+  --text-subtle: #85827B;
+  --text-sub: #A5A29C;
+  --text-sub2: #CAC8C4;
+  --text-main: #EFEEEC;
+  --accent-cursor: #E8A33D;
+  --accent-blue: #E8A33D;
+  --accent-green: #8FBF7F;
+  --accent-red: #D96C6C;
+  --accent-yellow: #E8A33D;
+  --accent-blue-rgb: 232, 163, 61;
+  --bg-surface-rgb: 32, 32, 36;
+  --bg-base-rgb: 21, 21, 23;
+}
+
 /* Hinomaru — light theme. Text colors are DARK on the cream background.
  * Previous --text-muted #A8A098 / --text-subtle #8A827A were too pale and
  * read as "invisible white" against the light background. Tightened to
  * darker values that still feel quiet but pass WCAG AA on bgBase #FAF8F5. */
-:root, [data-theme="hinomaru"] {
+[data-theme="hinomaru"] {
   --bg-base: #FAF8F5;
   --bg-mantle: #F0ECE6;
   --bg-surface: #E2DDD4;

@@ -786,7 +786,9 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   // ─── Theme ──────────────────────────────────────────────────────────────
-  theme: 'catppuccin-mocha',
+  // Default = the amber design system (owner redesign decision 2026-07-11);
+  // persisted choices in session.json are untouched.
+  theme: 'amber',
 
   setTheme: (theme) => {
     document.documentElement.setAttribute('data-theme', theme);

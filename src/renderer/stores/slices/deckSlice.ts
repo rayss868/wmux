@@ -95,6 +95,21 @@ export const createDeckSlice: StateCreator<
 
   applyDeckBrainEvent: (event) =>
     set((state: StoreState) => {
+      // A main-originated turn (P3d scheduled run) announces itself with
+      // `turn-start` — open the turn exactly like startDeckBrainTurn so the
+      // scheduled run renders as visibly as a typed one.
+      if (event.type === 'turn-start') {
+        state.brainMessages.push({ id: generateId('dbu'), role: 'user', text: event.prompt });
+        state.brainMessages.push({
+          id: generateId('dba'),
+          role: 'assistant',
+          text: '',
+          tools: [],
+          status: 'streaming',
+        });
+        state.brainStatus = 'busy';
+        return;
+      }
       state.brainMessages = applyBrainEvent(state.brainMessages, event);
       if (event.type === 'turn-end' || event.type === 'error') {
         state.brainStatus = 'idle';
