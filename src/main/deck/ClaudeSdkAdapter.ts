@@ -26,6 +26,7 @@ import * as os from 'os';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
+import { loadGlobalMemory } from './commanderMemory';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import {
   type BrainAdapter,
@@ -136,6 +137,11 @@ export interface ClaudeSdkAdapterDeps {
   maxTurns?: number;
   /** Non-default backend (GLM/Z.ai). Omit for Claude subscription. */
   profile?: BrainEndpointProfile;
+  /** Durable-memory loader (M1a) — returns the formatted block injected into
+   *  the first turn alongside the fleet context, or '' for nothing. Injected
+   *  so tests control it; defaults to loadGlobalMemory (read-only L0 files
+   *  under <wmuxDir>/memory/_global). */
+  loadMemory?: () => string;
 }
 
 // ─── Permission defaults (D2) ────────────────────────────────────────────────
@@ -283,12 +289,16 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private readonly model?: string;
   private readonly maxTurns: number;
   private readonly profile?: BrainEndpointProfile;
+  private readonly loadMemory: () => string;
 
   private _sessionId: string | null = null;
   private _resumeUnvalidated = false;
   private _systemPrompt?: string;
   private _fleetContext?: string;
-  private _fleetContextInjected = false;
+  /** One-shot context (memory + fleet snapshot) goes into the FIRST composed
+   *  prompt only. A resume-fallback retry re-sends the same composed prompt,
+   *  so the flag lives here, not in the retry loop. */
+  private _contextInjected = false;
   private _active: SdkQueryHandle | null = null;
   private _disposed = false;
   /** Per-spawn trust token (commanderTrust) — injected into the MCP env so
@@ -303,6 +313,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     this.model = deps.model;
     this.maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
     this.profile = deps.profile;
+    this.loadMemory = deps.loadMemory ?? loadGlobalMemory;
   }
 
   get sessionId(): string | null {
@@ -318,7 +329,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   start(opts: BrainStartOptions): void {
     this._systemPrompt = opts.systemPrompt ?? buildCommanderSystemPrompt();
     this._fleetContext = opts.fleetContext;
-    this._fleetContextInjected = false;
+    this._contextInjected = false;
     // P3a: seed a persisted session id so the FIRST turn already resumes. The
     // id is unvalidated until a turn completes against it — send() falls back
     // to a fresh session when the claude side no longer knows it (transcript
@@ -396,13 +407,23 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     return options;
   }
 
-  /** Prepend the one-shot fleet context to the first turn's prompt only. */
+  /** Prepend the one-shot context (durable memory + fleet snapshot) to the
+   *  first turn's prompt only. Memory load failures are swallowed — a broken
+   *  memory store must never break a live turn (M1a is read-only anyway). */
   private composePrompt(text: string): string {
-    if (this._fleetContext && !this._fleetContextInjected) {
-      this._fleetContextInjected = true;
-      return `${this._fleetContext}\n\n---\n\n${text}`;
+    if (this._contextInjected) return text;
+    this._contextInjected = true;
+    const parts: string[] = [];
+    let memory = '';
+    try {
+      memory = this.loadMemory();
+    } catch {
+      /* memory is best-effort context, never a turn blocker */
     }
-    return text;
+    if (memory) parts.push(memory);
+    if (this._fleetContext) parts.push(this._fleetContext);
+    if (parts.length === 0) return text;
+    return `${parts.join('\n\n---\n\n')}\n\n---\n\n${text}`;
   }
 
   async *send(text: string): AsyncIterable<BrainEvent> {
