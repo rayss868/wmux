@@ -165,4 +165,35 @@ describe('CommanderViewContent — brain surface', () => {
     mount({ recoveryPanes: [] });
     expect(container.querySelector('[data-commander-recovery]')).toBeNull();
   });
+
+  it('renders quick-action chips and clicking one fires onQuickAction (P3c)', () => {
+    const onQuickAction = vi.fn();
+    const actions = [
+      { id: 'fleet-status' as const, label: 'Fleet status', prompt: 'status please' },
+      { id: 'pr-status' as const, label: 'PR status', prompt: 'pr please' },
+    ];
+    mount({ quickActions: actions, onQuickAction });
+
+    const chips = container.querySelectorAll('[data-deck-quick-action]');
+    expect(chips).toHaveLength(2);
+    expect(chips[0].textContent).toBe('Fleet status');
+
+    act(() => (chips[1] as HTMLButtonElement).click());
+    expect(onQuickAction).toHaveBeenCalledWith(actions[1]);
+  });
+
+  it('disables quick-action chips while a brain turn streams', () => {
+    mount({
+      quickActions: [{ id: 'fleet-status' as const, label: 'Fleet status', prompt: 'x' }],
+      brainBusy: true,
+      brainMessages: brainTurn(),
+    });
+    const chip = container.querySelector('[data-deck-quick-action]') as HTMLButtonElement;
+    expect(chip.disabled).toBe(true);
+  });
+
+  it('renders no chip row when there are no quick actions', () => {
+    mount({ quickActions: [] });
+    expect(container.querySelector('[data-deck-quick-actions]')).toBeNull();
+  });
 });
