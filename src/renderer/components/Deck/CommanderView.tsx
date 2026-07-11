@@ -60,6 +60,7 @@ import {
   type RecoveryPane,
 } from './deckRecovery';
 import { buildQuickActions, type DeckQuickAction } from './deckQuickActions';
+import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 
@@ -244,9 +245,9 @@ export function CommanderViewContent({
         </div>
       )}
 
-      {/* Quick-action chips (P3c) — one-click canned prompts to the brain,
-          sitting where the hand already is (right above the composer). Disabled
-          while a turn streams, same as the composer. */}
+      {/* Quick-action chips (P3c) + the schedules chip/panel (P3d) — one-click
+          canned prompts and persisted schedules, sitting where the hand already
+          is (right above the composer). Chips disable while a turn streams. */}
       {quickActions.length > 0 && (
         <div
           data-deck-quick-actions
@@ -268,6 +269,10 @@ export function CommanderViewContent({
               {action.label}
             </button>
           ))}
+          {/* Schedules chip + inline panel (self-contained IPC container —
+              renders nothing when the preload doesn't expose the API, so pure
+              jsdom tests of this view are unaffected). */}
+          <DeckSchedulesPanel t={t} />
         </div>
       )}
 

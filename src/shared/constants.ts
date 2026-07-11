@@ -116,6 +116,13 @@ export const IPC = {
   DECK_STREAM: 'deck:stream',
   DECK_INTERRUPT: 'deck:interrupt',
   DECK_STATUS: 'deck:status',
+  //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
+  //                    orchestrator schedules (P3d). Same renderer-only trust
+  //                    boundary as DECK_SEND.
+  DECK_SCHEDULES_LIST: 'deck:schedules:list',
+  DECK_SCHEDULES_CREATE: 'deck:schedules:create',
+  DECK_SCHEDULES_UPDATE: 'deck:schedules:update',
+  DECK_SCHEDULES_DELETE: 'deck:schedules:delete',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

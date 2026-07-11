@@ -302,6 +302,23 @@ const electronAPI = {
         status: 'idle' | 'busy' | 'disposed';
         sessionId: string | null;
       }>,
+    // P3d — persisted orchestrator schedules (fire as ordinary brain turns).
+    schedules: {
+      list: () =>
+        ipcRenderer.invoke(IPC.DECK_SCHEDULES_LIST) as Promise<{
+          schedules: import('../main/deck/deckScheduleStore').DeckSchedule[];
+        }>,
+      create: (args: { prompt: string; nextRunAt: number; intervalMinutes?: number }) =>
+        ipcRenderer.invoke(IPC.DECK_SCHEDULES_CREATE, args) as Promise<{
+          ok: boolean;
+          schedule?: import('../main/deck/deckScheduleStore').DeckSchedule;
+          code?: string;
+        }>,
+      update: (args: { id: string; enabled?: boolean }) =>
+        ipcRenderer.invoke(IPC.DECK_SCHEDULES_UPDATE, args) as Promise<{ ok: boolean; code?: string }>,
+      remove: (id: string) =>
+        ipcRenderer.invoke(IPC.DECK_SCHEDULES_DELETE, { id }) as Promise<{ ok: boolean }>,
+    },
     // Normalized BrainEvent push (see BrainAdapter.BrainEvent).
     onStream: (
       callback: (event: import('../main/deck/BrainAdapter').BrainEvent) => void,

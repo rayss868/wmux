@@ -674,6 +674,22 @@ export const ko = {
   // 커맨드 데크 P3c — composer 위 퀵액션 칩.
   'deck.qaFleetStatus': '에이전트 상태',
   'deck.qaPrStatus': 'PR 상태',
+  // 커맨드 데크 P3d — 오케스트레이터 예약(재부팅 생존).
+  'deck.schedules': '예약',
+  'deck.schedulesEmpty': '예약이 없습니다 — 예약은 재부팅 후에도 유지되고, 시간이 되면 오케스트레이터가 실행합니다.',
+  'deck.schedulePromptPlaceholder': '오케스트레이터가 무엇을 하면 될까요?',
+  'deck.scheduleRepeat': '반복',
+  'deck.scheduleRepeatNone': '한 번',
+  'deck.scheduleRepeat30m': '30분마다',
+  'deck.scheduleRepeat1h': '1시간마다',
+  'deck.scheduleRepeat6h': '6시간마다',
+  'deck.scheduleRepeat24h': '매일',
+  'deck.scheduleAdd': '예약 추가',
+  'deck.schedulePause': '일시정지',
+  'deck.scheduleResume': '재개',
+  'deck.scheduleDelete': '삭제',
+  'deck.scheduleInvalid': '지시 내용과 유효한 시간을 입력하세요.',
+  'deck.scheduleLimit': '예약 개수 한도에 도달했습니다.',
   // operator-join (설계 §3) — 접힘 기본 발견 섹션 + join 확인 다이얼로그. 이 접힘이
   // 의도 게이트다: 펼치기 전에는 비공개 채널명이 화면에 존재하지 않는다.
   'channels.operatorSection': '모든 채널',

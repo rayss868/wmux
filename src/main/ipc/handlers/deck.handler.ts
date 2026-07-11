@@ -23,6 +23,14 @@ import {
   type CommanderStatusSnapshot,
 } from '../../deck/CommanderSessionManager';
 import { loadCommanderSession, saveCommanderSession } from '../../deck/commanderSessionStore';
+import { DeckScheduler } from '../../deck/DeckScheduler';
+import {
+  loadDeckSchedules,
+  saveDeckSchedules,
+  createSchedule,
+  DECK_SCHEDULE_LIMITS,
+  type DeckSchedule,
+} from '../../deck/deckScheduleStore';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -136,6 +144,87 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── P3d: orchestrator schedules ─────────────────────────────────────────
+  // The tick loop fires due schedules as ordinary brain turns (streamed over
+  // DECK_STREAM like any typed command). A scheduled turn reuses the live
+  // manager — and its model — or lazily creates one exactly like deck:send.
+  const scheduler = new DeckScheduler({
+    runTurn: (prompt) => ensureManager(undefined, managerModel).send(prompt),
+  });
+  scheduler.start();
+
+  ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
+  ipcMain.handle(
+    IPC.DECK_SCHEDULES_LIST,
+    wrapHandler(IPC.DECK_SCHEDULES_LIST, async (): Promise<{ schedules: DeckSchedule[] }> => {
+      return { schedules: loadDeckSchedules() };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_SCHEDULES_CREATE);
+  ipcMain.handle(
+    IPC.DECK_SCHEDULES_CREATE,
+    wrapHandler(IPC.DECK_SCHEDULES_CREATE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; schedule?: DeckSchedule; code?: string }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const schedules = loadDeckSchedules();
+      if (schedules.length >= DECK_SCHEDULE_LIMITS.MAX_SCHEDULES) {
+        return { ok: false, code: 'limit' };
+      }
+      const schedule = createSchedule({
+        prompt: typeof req.prompt === 'string' ? req.prompt : '',
+        nextRunAt: typeof req.nextRunAt === 'number' ? req.nextRunAt : NaN,
+        ...(typeof req.intervalMinutes === 'number' ? { intervalMinutes: req.intervalMinutes } : {}),
+      });
+      if (!schedule) return { ok: false, code: 'invalid' };
+      await saveDeckSchedules([...schedules, schedule]);
+      return { ok: true, schedule };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_SCHEDULES_UPDATE);
+  ipcMain.handle(
+    IPC.DECK_SCHEDULES_UPDATE,
+    wrapHandler(IPC.DECK_SCHEDULES_UPDATE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; code?: string }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const id = typeof req.id === 'string' ? req.id : '';
+      const schedules = loadDeckSchedules();
+      const idx = schedules.findIndex((s) => s.id === id);
+      if (idx === -1) return { ok: false, code: 'not_found' };
+      // Only `enabled` is mutable in this cut (pause/resume). Re-enabling a
+      // fired one-shot re-arms it at its original time — immediately due.
+      if (typeof req.enabled === 'boolean') schedules[idx] = { ...schedules[idx], enabled: req.enabled };
+      await saveDeckSchedules(schedules);
+      return { ok: true };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_SCHEDULES_DELETE);
+  ipcMain.handle(
+    IPC.DECK_SCHEDULES_DELETE,
+    wrapHandler(IPC.DECK_SCHEDULES_DELETE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const id = typeof req.id === 'string' ? req.id : '';
+      const schedules = loadDeckSchedules();
+      await saveDeckSchedules(schedules.filter((s) => s.id !== id));
+      return { ok: true };
+    }),
+  );
+
   // Guarantee the brain subprocess is torn down on quit even if the caller
   // forgets to invoke the returned cleanup.
   const disposeOnQuit = (): void => manager?.dispose();
@@ -143,10 +232,15 @@ export function registerDeckHandler(
 
   return () => {
     app.removeListener('before-quit', disposeOnQuit);
+    scheduler.stop();
     manager?.dispose();
     manager = null;
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
     ipcMain.removeHandler(IPC.DECK_STATUS);
+    ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
+    ipcMain.removeHandler(IPC.DECK_SCHEDULES_CREATE);
+    ipcMain.removeHandler(IPC.DECK_SCHEDULES_UPDATE);
+    ipcMain.removeHandler(IPC.DECK_SCHEDULES_DELETE);
   };
 }

@@ -751,6 +751,22 @@ export const en = {
   // Command Deck P3c — quick-action chips above the composer.
   'deck.qaFleetStatus': 'Agent status',
   'deck.qaPrStatus': 'PR status',
+  // Command Deck P3d — orchestrator schedules (reboot-surviving).
+  'deck.schedules': 'Schedules',
+  'deck.schedulesEmpty': 'No schedules yet — schedules survive reboots, and the orchestrator runs them when the time comes.',
+  'deck.schedulePromptPlaceholder': 'What should the orchestrator do?',
+  'deck.scheduleRepeat': 'Repeat',
+  'deck.scheduleRepeatNone': 'Once',
+  'deck.scheduleRepeat30m': 'Every 30 min',
+  'deck.scheduleRepeat1h': 'Every hour',
+  'deck.scheduleRepeat6h': 'Every 6 hours',
+  'deck.scheduleRepeat24h': 'Every day',
+  'deck.scheduleAdd': 'Add schedule',
+  'deck.schedulePause': 'Pause',
+  'deck.scheduleResume': 'Resume',
+  'deck.scheduleDelete': 'Delete',
+  'deck.scheduleInvalid': 'Enter a prompt and a valid time.',
+  'deck.scheduleLimit': 'Schedule limit reached.',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.
