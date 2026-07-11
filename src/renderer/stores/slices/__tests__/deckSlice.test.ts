@@ -42,6 +42,21 @@ describe('deckSlice', () => {
       expect(s.brainMessages[1]).toMatchObject({ role: 'assistant', status: 'streaming' });
     });
 
+    it('turn-start (P3d scheduled run) opens a turn exactly like a typed send', () => {
+      const st = useStore.getState();
+      st.applyDeckBrainEvent({ type: 'turn-start', prompt: '[Scheduled task] check PRs' });
+      let s = useStore.getState();
+      expect(s.brainStatus).toBe('busy');
+      expect(s.brainMessages[0]).toMatchObject({ role: 'user', text: '[Scheduled task] check PRs' });
+      expect(s.brainMessages[1]).toMatchObject({ role: 'assistant', status: 'streaming' });
+      // The scheduled turn's stream lands in that open turn.
+      st.applyDeckBrainEvent({ type: 'text-delta', text: 'on it' });
+      st.applyDeckBrainEvent({ type: 'turn-end', sessionId: 'sess-s' });
+      s = useStore.getState();
+      expect(s.brainStatus).toBe('idle');
+      expect(s.brainMessages[1]).toMatchObject({ text: 'on it', status: 'done' });
+    });
+
     it('streams events into the open turn and returns to idle on turn-end', () => {
       const st = useStore.getState();
       st.startDeckBrainTurn('go');

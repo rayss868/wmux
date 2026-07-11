@@ -50,6 +50,12 @@ export interface BrainUsage {
  *                   for the turn — no `turn-end` follows an `error`.
  */
 export type BrainEvent =
+  // Emitted ONLY for turns the MAIN process originates (P3d scheduled runs):
+  // the renderer opens a turn (user bubble + streaming assistant) exactly as
+  // its own composer send would, so a scheduled run is as visible as a typed
+  // one. Adapters never emit this — deck.handler's scheduler does, right
+  // before manager.send.
+  | { type: 'turn-start'; prompt: string }
   | { type: 'text-delta'; text: string }
   | {
       type: 'tool-start';
