@@ -739,6 +739,9 @@ export const en = {
   'deck.recoveryTitle': '{count} agent pane(s) were running before the last shutdown and can be recovered.',
   'deck.recoveryRun': 'Recover fleet',
   'deck.recoveryDismiss': 'Dismiss',
+  // Command Deck P3c — quick-action chips above the composer.
+  'deck.qaFleetStatus': 'Fleet status',
+  'deck.qaPrStatus': 'PR status',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.

@@ -59,6 +59,7 @@ import {
   buildRecoveryContextLines,
   type RecoveryPane,
 } from './deckRecovery';
+import { buildQuickActions, type DeckQuickAction } from './deckQuickActions';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 
@@ -97,6 +98,10 @@ export interface CommanderViewContentProps {
   onRecoverFleet?: () => void;
   /** Hide the greeting card without recovering. */
   onDismissRecovery?: () => void;
+  /** P3c: canned-prompt chips rendered above the composer. */
+  quickActions?: DeckQuickAction[];
+  /** Fire a quick action (sends its canned prompt to the brain). */
+  onQuickAction?: (action: DeckQuickAction) => void;
   t?: (key: string) => string;
 }
 
@@ -115,6 +120,8 @@ export function CommanderViewContent({
   recoveryPanes = [],
   onRecoverFleet,
   onDismissRecovery,
+  quickActions = [],
+  onQuickAction,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -234,6 +241,33 @@ export function CommanderViewContent({
           >
             {t('deck.commanderStop') || 'Stop'}
           </button>
+        </div>
+      )}
+
+      {/* Quick-action chips (P3c) — one-click canned prompts to the brain,
+          sitting where the hand already is (right above the composer). Disabled
+          while a turn streams, same as the composer. */}
+      {quickActions.length > 0 && (
+        <div
+          data-deck-quick-actions
+          className="flex flex-wrap gap-1.5 px-4 py-1.5 border-t border-[var(--bg-surface)] shrink-0"
+          style={{ borderColor: 'var(--border-soft)' }}
+          {...tokenAttrs('bgSurface', 'border')}
+        >
+          {quickActions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              data-deck-quick-action
+              data-action-id={action.id}
+              disabled={brainBusy}
+              onClick={() => onQuickAction?.(action)}
+              className={`px-2 py-0.5 rounded text-[10px] font-mono text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
+              {...tokenAttrs('textSub', 'text')}
+            >
+              {action.label}
+            </button>
+          ))}
         </div>
       )}
 
@@ -768,6 +802,26 @@ export function CommanderView(): React.ReactElement {
     });
   }, [recoveryPanes, dismissRecoveryCard, handleBrainSend]);
 
+  // P3c quick actions: the chip set for the current deck state. The recover
+  // chip keys off the UNDISMISSED pane list — dismissing the greeting card must
+  // not take the one-click recovery away (the chip IS the re-entry path).
+  const quickActions = useMemo(
+    () => buildQuickActions({ recoveryPanes, t }),
+    [recoveryPanes, t],
+  );
+  const handleQuickAction = useCallback(
+    (action: DeckQuickAction) => {
+      // Recovery goes through the card's handler so the card retires once the
+      // send is accepted; everything else is a plain canned brain send.
+      if (action.id === 'recover-fleet') {
+        handleRecoverFleet();
+        return;
+      }
+      void handleBrainSend(action.prompt);
+    },
+    [handleRecoverFleet, handleBrainSend],
+  );
+
   // Unified composer submit: route on whether the message @-mentions panes.
   const handleSubmit = useCallback(
     (text: string, mentions: ChannelMention[]) =>
@@ -795,6 +849,8 @@ export function CommanderView(): React.ReactElement {
       recoveryPanes={recoveryCardDismissed ? [] : recoveryPanes}
       onRecoverFleet={handleRecoverFleet}
       onDismissRecovery={dismissRecoveryCard}
+      quickActions={quickActions}
+      onQuickAction={handleQuickAction}
       t={t}
     />
   );

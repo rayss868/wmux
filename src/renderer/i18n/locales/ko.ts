@@ -663,6 +663,9 @@ export const ko = {
   'deck.recoveryTitle': '마지막 종료 전 실행 중이던 에이전트 pane {count}개를 복구할 수 있습니다.',
   'deck.recoveryRun': '함대 복구',
   'deck.recoveryDismiss': '무시',
+  // 커맨드 데크 P3c — composer 위 퀵액션 칩.
+  'deck.qaFleetStatus': '함대 상태',
+  'deck.qaPrStatus': 'PR 상태',
   // operator-join (설계 §3) — 접힘 기본 발견 섹션 + join 확인 다이얼로그. 이 접힘이
   // 의도 게이트다: 펼치기 전에는 비공개 채널명이 화면에 존재하지 않는다.
   'channels.operatorSection': '모든 채널',
