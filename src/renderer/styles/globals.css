@@ -604,6 +604,20 @@ button {
   --border-soft: color-mix(in srgb, var(--bg-surface) 60%, transparent);
 }
 
+/* Agent toolbar is a size container: when the terminal-grid column gets
+ * narrow (small window, dock open, sidebar open), the button labels hide and
+ * the bar collapses to icon-only. The buttons keep their title tooltips, so
+ * nothing becomes undiscoverable — it just stops clipping. */
+.wmux-toolbar {
+  container-type: inline-size;
+  container-name: wmux-toolbar;
+}
+@container wmux-toolbar (max-width: 620px) {
+  .wmux-toolbar-label {
+    display: none;
+  }
+}
+
 .sidebar-row {
   transition: background-color 150ms ease, color 150ms ease;
 }

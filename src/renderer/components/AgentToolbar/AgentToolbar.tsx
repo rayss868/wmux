@@ -9,7 +9,7 @@ import RichInput from './RichInput';
 import SnippetsMenu from './SnippetsMenu';
 import FileExplorerPopover from './FileExplorerPopover';
 import FanOutDialog from './FanOutDialog';
-import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconSparkles } from '../icons';
+import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconSparkles, IconUsers } from '../icons';
 
 export default function AgentToolbar() {
   const t = useT();
@@ -111,21 +111,24 @@ export default function AgentToolbar() {
   return (
     <div
       ref={containerRef}
-      className="relative flex items-center gap-2 px-2.5 py-1.5 shrink-0 border-t border-[var(--bg-surface)] bg-[var(--bg-mantle)]"
+      // wmux-toolbar is a CSS size container: below the width threshold the
+      // label spans hide and the bar collapses to icon-only (titles keep the
+      // affordances discoverable). See globals.css.
+      className="wmux-toolbar relative flex items-center gap-2 px-2.5 py-1.5 shrink-0 border-t border-[var(--bg-surface)] bg-[var(--bg-mantle)]"
       data-testid="agent-toolbar"
     >
       <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleAttach} title={t('toolbar.attach')}>
-        <IconPaperclip size={13} /> {t('toolbar.attach')}
+        <IconPaperclip size={13} /> <span className="wmux-toolbar-label">{t('toolbar.attach')}</span>
       </button>
-      <button className={`${btn} ${popover === 'explorer' ? active : idle}`} onClick={() => togglePopover('explorer')}>
-        <IconFolder size={13} /> {t('toolbar.fileExplorer')}
+      <button className={`${btn} ${popover === 'explorer' ? active : idle}`} onClick={() => togglePopover('explorer')} title={t('toolbar.fileExplorer')}>
+        <IconFolder size={13} /> <span className="wmux-toolbar-label">{t('toolbar.fileExplorer')}</span>
       </button>
-      <button className={`${btn} ${popover === 'snippets' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('snippets')}>
-        <IconStar size={13} /> {t('toolbar.snippets')}
+      <button className={`${btn} ${popover === 'snippets' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('snippets')} title={t('toolbar.snippets')}>
+        <IconStar size={13} /> <span className="wmux-toolbar-label">{t('toolbar.snippets')}</span>
       </button>
-      <button className={`${btn} ${popover === 'rich' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('rich')}>
-        <IconKeyboard size={13} /> {t('toolbar.richInput')}
-        <kbd className="ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[9px] leading-tight opacity-60 font-sans">{window.electronAPI?.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
+      <button className={`${btn} ${popover === 'rich' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('rich')} title={t('toolbar.richInput')}>
+        <IconKeyboard size={13} /> <span className="wmux-toolbar-label">{t('toolbar.richInput')}</span>
+        <kbd className="wmux-toolbar-label ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[9px] leading-tight opacity-60 font-sans">{window.electronAPI?.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
       </button>
       <button
         className={`${btn} ${showFanOut ? active : idle}`}
@@ -133,7 +136,7 @@ export default function AgentToolbar() {
         title="Fan-out — 프롬프트 1개 → N 격리 태스크"
         data-testid="fanout-button"
       >
-        <IconSparkles size={13} /> Fan-out
+        <IconSparkles size={13} /> <span className="wmux-toolbar-label">Fan-out</span>
       </button>
       <button
         className={`${btn} ${idle}`}
@@ -141,12 +144,12 @@ export default function AgentToolbar() {
         title="Broadcast — 현재 워크스페이스의 모든 터미널 페인에 같은 텍스트(격리 없음)"
         data-testid="broadcast-button"
       >
-        Broadcast
+        <IconUsers size={13} /> <span className="wmux-toolbar-label">Broadcast</span>
       </button>
       <div className="flex-1" />
       {disabled && <span className="text-[10px] text-[var(--text-muted)]">{t('toolbar.noTerminal')}</span>}
       <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleNew} title={t('toolbar.new')}>
-        <IconSparkles size={13} /> {t('toolbar.new')}
+        <IconSparkles size={13} /> <span className="wmux-toolbar-label">{t('toolbar.new')}</span>
       </button>
 
       {popover === 'explorer' && <FileExplorerPopover />}
