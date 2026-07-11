@@ -23,7 +23,7 @@ describe('buildQuickActions', () => {
   it('always offers fleet status and PR status, in that order', () => {
     const actions = buildQuickActions({ recoveryPanes: [] });
     expect(actions.map((a) => a.id)).toEqual(['fleet-status', 'pr-status']);
-    expect(actions[0].label).toBe('Fleet status');
+    expect(actions[0].label).toBe('Agent status');
     expect(actions[1].label).toBe('PR status');
   });
 

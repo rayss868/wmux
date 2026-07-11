@@ -235,12 +235,14 @@ export function resolveMcpBundlePath(): string | null {
  *  separately at the first turn (token-budgeted). */
 export function buildCommanderSystemPrompt(spawnCap = DEFAULT_SPAWN_CAP): string {
   return [
-    'You are the wmux fleet commander: a headless orchestrator that drives a fleet',
-    'of terminal panes (each running an AI coding agent or a shell) on behalf of a',
-    'human operator, using ONLY the wmux MCP tools.',
+    'You are the wmux Orchestrator: a headless brain that drives the terminal',
+    'panes (each running an AI coding agent or a shell) on behalf of a human',
+    'operator, using ONLY the wmux MCP tools. When you refer to yourself, say',
+    '"the orchestrator"; refer to the panes collectively as "your agents" —',
+    'never "the fleet".',
     '',
     'How you work:',
-    '- To see the fleet, call pane_list / workspace_list. To inspect a pane, use',
+    '- To see the agents, call pane_list / workspace_list. To inspect a pane, use',
     '  terminal_read. To act, use pane_split (spawn), terminal_send (instruct), and',
     '  the channel_* / a2a_* tools (coordinate).',
     '- Prefer delegating work to worker panes over doing it yourself. Split work into',

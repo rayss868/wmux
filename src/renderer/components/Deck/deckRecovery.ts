@@ -130,7 +130,7 @@ export function buildRecoveryPanes(args: {
  */
 export function buildRecoveryPrompt(panes: RecoveryPane[]): string {
   const lines = [
-    'Recover my fleet after the reboot. For EACH pane below, type its resume',
+    'Recover my agents after the reboot. For EACH pane below, type its resume',
     'command into it with terminal_send (submit: true), then read the pane with',
     'terminal_read to confirm the agent came back. Run each command EXACTLY as',
     'given — never add or remove flags. When done, summarize per pane: did it',

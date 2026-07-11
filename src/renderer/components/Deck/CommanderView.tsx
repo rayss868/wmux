@@ -145,7 +145,7 @@ export function CommanderViewContent({
             {...tokenAttrs('textMuted', 'text')}
           >
             {t('deck.commanderEmpty') ||
-              'Ask the commander to run your fleet, or @mention agent panes to command them directly.'}
+              'Ask the orchestrator to run your agents, or @mention agent panes to command them directly.'}
           </div>
         )}
 
@@ -181,7 +181,7 @@ export function CommanderViewContent({
                 onClick={onRecoverFleet}
                 className={`px-2.5 py-1 rounded text-[11px] font-mono text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
               >
-                {t('deck.recoveryRun') || 'Recover fleet'}
+                {t('deck.recoveryRun') || 'Recover agents'}
               </button>
               <button
                 type="button"
@@ -230,7 +230,7 @@ export function CommanderViewContent({
             className="text-[10px] font-mono text-[var(--text-sub)] flex-1"
             {...tokenAttrs('textSub', 'text')}
           >
-            {t('deck.commanderThinking') || 'Commander is working…'}
+            {t('deck.commanderThinking') || 'Orchestrator is working…'}
           </span>
           <button
             type="button"
@@ -284,7 +284,7 @@ export function CommanderViewContent({
           onSubmit={onSubmit}
           mentionCandidates={mentionCandidates}
           disabled={brainBusy}
-          placeholder={t('deck.commanderPlaceholder') || 'Command your fleet — @mention panes…'}
+          placeholder={t('deck.commanderPlaceholder') || 'Tell the orchestrator — @mention panes…'}
           t={t}
         />
       </div>
@@ -316,7 +316,7 @@ function CommanderBrainItem({
         className={`text-caption font-mono font-bold ${isUser ? 'text-[var(--text-main)]' : 'text-[var(--accent-blue)]'}`}
         {...(isUser ? tokenAttrs('textMain', 'text') : tokenAttrs('accent', 'text'))}
       >
-        {isUser ? t('channels.me') || 'Me' : t('deck.commander') || 'Commander'}
+        {isUser ? t('channels.me') || 'Me' : t('deck.commander') || 'Orchestrator'}
       </span>
       {message.text && (
         <div
@@ -751,7 +751,7 @@ export function CommanderView(): React.ReactElement {
     async (text: string): Promise<{ ok: boolean; errorCode?: string; errorMessage?: string }> => {
       const api = window.electronAPI?.deck;
       if (!api) {
-        pushToast({ level: 'error', message: t('deck.commanderUnavailable') || 'Commander is unavailable' });
+        pushToast({ level: 'error', message: t('deck.commanderUnavailable') || 'The orchestrator is unavailable' });
         return { ok: false, errorCode: 'UNAVAILABLE' };
       }
       startDeckBrainTurn(text);
