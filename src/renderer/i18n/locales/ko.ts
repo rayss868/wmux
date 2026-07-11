@@ -229,6 +229,12 @@ export const ko = {
   'settings.tabNotifications': '알림',
   'settings.tabShortcuts': '단축키',
   'settings.tabAbout': '정보',
+  // 오케스트레이터 (커맨드 데크 브레인) 설정
+  'settings.orchestrator': '오케스트레이터',
+  'settings.orchestratorModel': '오케스트레이터 모델',
+  'settings.orchestratorModelDesc':
+    '커맨드 데크 오케스트레이터가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',
+  'settings.orchestratorModelDefault': '기본 (구독 기본 모델)',
   // LanLink 제어 평면 (PR-3)
   'settings.lanlinkTab': 'LanLink',
   'settings.lanlink': 'LanLink (LAN 에이전트 메시징)',

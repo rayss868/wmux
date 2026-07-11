@@ -28,8 +28,9 @@ type GetWindow = () => BrowserWindow | null;
 
 export interface RegisterDeckHandlerOptions {
   /** Adapter factory — injected in tests so no SDK subprocess spawns. Defaults
-   *  to a fresh ClaudeSdkAdapter (subscription Claude, wmux MCP auto-mounted). */
-  createAdapter?: () => BrainAdapter;
+   *  to a fresh ClaudeSdkAdapter (subscription Claude, wmux MCP auto-mounted).
+   *  `model` is the orchestrator model override ('' → SDK default). */
+  createAdapter?: (opts?: { model?: string }) => BrainAdapter;
 }
 
 /** Fleet-context token budget (~2KB). A larger snapshot is truncated so the
@@ -40,23 +41,39 @@ export function registerDeckHandler(
   getWindow: GetWindow,
   opts: RegisterDeckHandlerOptions = {},
 ): () => void {
-  const createAdapter = opts.createAdapter ?? (() => new ClaudeSdkAdapter());
+  const createAdapter =
+    opts.createAdapter ??
+    ((adapterOpts?: { model?: string }) =>
+      new ClaudeSdkAdapter(adapterOpts?.model ? { model: adapterOpts.model } : {}));
 
   // Single Commander session for the whole app (Phase 2 = single commander).
   let manager: CommanderSessionManager | null = null;
+  // The model the live manager's adapter was created with ('' = SDK default).
+  let managerModel = '';
 
   const emit = (event: BrainEvent): void => {
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_STREAM, event);
   };
 
-  const ensureManager = (fleetContext?: string): CommanderSessionManager => {
+  const ensureManager = (fleetContext?: string, model = ''): CommanderSessionManager => {
+    // Model changed in Settings: swap the brain between turns. The adapter is
+    // per-model (the SDK subprocess pins --model at spawn), but the
+    // CONVERSATION survives — the new adapter resumes the persisted session
+    // id, so this is a model switch mid-thread, not a new thread. Never swap
+    // while a turn streams: the busy manager keeps running and the send below
+    // gets the normal `busy` reject; the new model applies on the next send.
+    if (manager && model !== managerModel && manager.getStatus().status !== 'busy') {
+      manager.dispose();
+      manager = null;
+    }
     if (!manager) {
+      managerModel = model;
       // P3a: resume the persisted conversation from the previous app run. A
       // dead id is soft — the adapter falls back to a fresh session.
       const persisted = loadCommanderSession();
       manager = new CommanderSessionManager({
-        adapter: createAdapter(),
+        adapter: createAdapter(model ? { model } : {}),
         sink: emit,
         startOptions: {
           systemPrompt: buildCommanderSystemPrompt(),
@@ -91,7 +108,11 @@ export function registerDeckHandler(
       if (fleetContext && fleetContext.length > FLEET_CONTEXT_MAX_CHARS) {
         fleetContext = fleetContext.slice(0, FLEET_CONTEXT_MAX_CHARS) + '\n…(truncated)';
       }
-      const mgr = ensureManager(fleetContext);
+      // Model override: sanitize to a plausible model token — this ends up on
+      // the SDK subprocess command line, so reject anything but [A-Za-z0-9._-].
+      const rawModel = typeof req.model === 'string' ? req.model.trim() : '';
+      const model = /^[A-Za-z0-9._-]{1,64}$/.test(rawModel) ? rawModel : '';
+      const mgr = ensureManager(fleetContext, model);
       // Awaits the full turn (events stream over DECK_STREAM meanwhile); the
       // resolved value is only the accept/reject verdict.
       return mgr.send(text);
