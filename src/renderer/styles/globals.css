@@ -65,7 +65,7 @@
  * default theme (index.tsx sets data-theme from the store before render). */
 :root, [data-theme="amber"] {
   --bg-base: #151517;
-  --bg-mantle: #111113;
+  --bg-mantle: #19191C;
   --bg-surface: #202024;
   --bg-overlay: #28282D;
   --text-muted: #66645F;

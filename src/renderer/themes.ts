@@ -134,8 +134,11 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
   // decoration. accentSecondary deliberately equals accent — links and jumps
   // are amber too, so amber on screen always means "where meaning is".
   // warning is ALSO amber (attention is the accent's third job in the design).
+  // bgMantle is the mock's PANEL surface (#19191C — slightly lighter than the
+  // base): the dock, tab strips, and toolbar all sit on it, which is what
+  // makes the three regions read as one piece of chrome.
   amber: {
-    bgBase: '#151517', bgSurface: '#202024', bgMantle: '#111113',
+    bgBase: '#151517', bgSurface: '#202024', bgMantle: '#19191C',
     textMain: '#EFEEEC', textSub: '#A5A29C', textMuted: '#66645F',
     accent: '#E8A33D', accentSecondary: '#E8A33D', success: '#8FBF7F', danger: '#D96C6C', warning: '#E8A33D',
   },
