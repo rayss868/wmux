@@ -18,6 +18,10 @@ function statusDotColor(status: AgentStatus): string {
 interface SurfaceTabsProps {
   surfaces: Surface[];
   activeSurfaceId: string;
+  /** Whether the OWNING PANE is the focused pane — paints the amber underline
+   *  under the strip (the design system's focus signal; the pane border stays
+   *  a quiet hairline). */
+  paneActive?: boolean;
   // Owning workspace and pane id, used to build the drag-export payload.
   // These are now always provided by the PaneContainer prop chain so the
   // payload always names the correct workspace, even in multiview where
@@ -34,6 +38,7 @@ export default function SurfaceTabs({
   activeSurfaceId,
   workspace,
   paneId,
+  paneActive = false,
   onSelect,
   onClose,
 }: SurfaceTabsProps) {
@@ -162,7 +167,15 @@ export default function SurfaceTabs({
   };
 
   return (
-    <div className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-7 overflow-x-auto" {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
+    <div
+      className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-7 overflow-x-auto"
+      // Focused pane = amber underline under the strip (inset so it never
+      // shifts layout) — the single focus signal in the design system.
+      style={paneActive ? { boxShadow: 'inset 0 -2px 0 var(--accent-cursor)' } : undefined}
+      data-pane-tabs-active={paneActive ? 'true' : undefined}
+      {...tokenAttrs('bgMantle', 'bg')}
+      {...tokenAttrs('bgSurface', 'border')}
+    >
       {/* P2 — pane identity + double-click rename. A distinct element/handler
           from the surface tabs (different store: pane label via MetadataStore vs
           surface.title), so the two renames never collide. */}

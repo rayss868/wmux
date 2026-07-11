@@ -101,9 +101,12 @@ export default function AgentToolbar() {
     return () => document.removeEventListener('keydown', handler);
   }, [setPopover]);
 
-  const btn = 'inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
-  const idle = 'bg-[var(--bg-surface)] border-[var(--bg-overlay)] text-[var(--text-sub)] hover:text-[var(--text-main)]';
-  const active = 'bg-[var(--bg-overlay)] border-[var(--accent-blue)] text-[var(--accent-blue)]';
+  // Quiet chrome (design-system cohesion): buttons are text-first with no box
+  // until hovered/active — the toolbar reads as part of the frame, not a row
+  // of widgets competing with the terminals.
+  const btn = 'inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-transparent text-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+  const idle = 'bg-transparent text-[var(--text-sub)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--text-main)]';
+  const active = 'bg-[rgba(var(--bg-surface-rgb),0.8)] text-[var(--accent-blue)]';
 
   return (
     <div

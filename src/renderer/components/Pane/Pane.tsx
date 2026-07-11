@@ -269,7 +269,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     <div
       className={composePaneClassName({ hasUnread, ringState, paneRingEnabled, flashing, completeBlink })}
       style={{
-        border: `1px solid ${isActive ? 'var(--accent-cursor)' : 'var(--bg-surface)'}`,
+        // Design-system cohesion: panes keep a QUIET hairline in both states —
+        // focus is signaled by the amber underline on the tab strip (mock's
+        // .pane.focused .pane-head treatment), not a loud full border box.
+        border: `1px solid ${isActive ? 'var(--bg-overlay)' : 'var(--border-soft)'}`,
       }}
       onClick={handleClick}
       data-onboarding-target="pane-area"
@@ -517,6 +520,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         activeSurfaceId={pane.activeSurfaceId}
         workspace={workspace}
         paneId={pane.id}
+        paneActive={isActive}
         onSelect={(surfaceId) => setActiveSurface(pane.id, surfaceId)}
         onClose={handleCloseSurface}
         onAdd={handleAddSurface}
