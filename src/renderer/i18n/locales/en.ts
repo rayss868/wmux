@@ -768,6 +768,8 @@ export const en = {
   'git.viewFull': 'View full comment in browser',
   'git.commentsFailed': 'Could not load comments',
   'git.justNow': 'now',
+  'git.diff': 'Diff',
+  'git.diffDesc': 'Open the diff view for this worktree',
   'settings.gitTabVisible': 'Show Git tab',
   'settings.gitTabVisibleDesc':
     'Show the Git tab (worktrees) in the right dock. Informational surface — hide it for a minimal chrome.',
@@ -868,6 +870,10 @@ export const en = {
   'diff.commentFired': 'Comment posted to the mission channel — pinged {count} agent(s)',
   // Workspace git diff — palette entry rejected: the pane's cwd is not a git repo.
   'diff.noRepo': 'Not a git repository — open a pane inside a repo first',
+  // diff → orchestrator question (context block + question as one message).
+  'diff.ask': 'Ask',
+  'diff.askOrchestrator': 'Ask the orchestrator about this hunk',
+  'diff.askPrompt': 'Ask the orchestrator (the hunk context is attached automatically):',
 } as const;
 
 export type TranslationKey = keyof typeof en;

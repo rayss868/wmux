@@ -691,6 +691,8 @@ export const ko = {
   'git.viewFull': '브라우저에서 전체 코멘트 보기',
   'git.commentsFailed': '코멘트를 불러오지 못했습니다',
   'git.justNow': '방금',
+  'git.diff': 'Diff',
+  'git.diffDesc': '이 워크트리의 diff 뷰 열기',
   'settings.gitTabVisible': 'Git 탭 표시',
   'settings.gitTabVisibleDesc':
     '우측 도크에 Git 탭(워크트리)을 표시합니다. 정보성 표면 — 최소 크롬을 원하면 숨기세요.',
@@ -789,4 +791,8 @@ export const ko = {
   'diff.commentFired': '코멘트를 미션 채널에 발사했습니다 — {count}개 에이전트 호출',
   // 워크스페이스 git diff — 팔레트 진입 거부: 활성 pane cwd가 git repo가 아님.
   'diff.noRepo': 'git 저장소가 아닙니다 — repo 안의 pane에서 실행하세요',
+  // diff → 오케스트레이터 질문 (컨텍스트 블록 + 질문 단일 메시지).
+  'diff.ask': '질문',
+  'diff.askOrchestrator': '이 hunk에 대해 오케스트레이터에게 질문',
+  'diff.askPrompt': '오케스트레이터에게 질문 (hunk 컨텍스트는 자동 첨부됩니다):',
 } as const;
