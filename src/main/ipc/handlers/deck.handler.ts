@@ -49,6 +49,7 @@ import {
   type WorkspaceLoopState,
   type LoopTier,
 } from '../../deck/deckLoopStateStore';
+import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
 import { eventBus } from '../../events/EventBus';
 import {
   loadDeckSchedules,
@@ -508,6 +509,10 @@ export function registerDeckHandler(
       const taskTexts = Array.isArray(req.taskTexts)
         ? req.taskTexts.filter((t): t is string => typeof t === 'string')
         : [];
+      // 반복 절차(steps) — 문자열 배열만 수용, 정규화·캡은 store가 담당.
+      const steps = Array.isArray(req.steps)
+        ? req.steps.filter((s): s is string => typeof s === 'string')
+        : [];
       // Optional cadence: a HUMAN-authored repeating schedule created at click
       // time (this is NOT P4 brain self-scheduling). Out-of-range is a reject,
       // never a silent clamp.
@@ -560,6 +565,7 @@ export function registerDeckHandler(
       }
       const loop = await startLoop(workspaceId, {
         objective,
+        steps,
         taskTexts,
         tier,
         ...(iterations !== undefined ? { iterations } : {}),
@@ -635,6 +641,19 @@ export function registerDeckHandler(
     }),
   );
 
+  // 루프 설정 모달의 스킬 픽커 — pane 에이전트의 스킬/커맨드 카탈로그 스캔
+  // (읽기 전용, .claude/skills|commands 디스크 규약. skillCatalogScan 참조).
+  ipcMain.removeHandler(IPC.DECK_LOOP_SKILLS);
+  ipcMain.handle(
+    IPC.DECK_LOOP_SKILLS,
+    wrapHandler(IPC.DECK_LOOP_SKILLS, async (
+      _event: Electron.IpcMainInvokeEvent,
+      cwd: unknown,
+    ): Promise<{ skills: SkillCatalogEntry[] }> => {
+      return { skills: scanSkillCatalog(typeof cwd === 'string' ? cwd : '') };
+    }),
+  );
+
   const disposeAll = (): void => {
     for (const { manager } of managers.values()) manager.dispose();
     managers.clear();
@@ -663,5 +682,6 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_LOOP_PAUSE);
     ipcMain.removeHandler(IPC.DECK_LOOP_RESUME);
     ipcMain.removeHandler(IPC.DECK_LOOP_TASK);
+    ipcMain.removeHandler(IPC.DECK_LOOP_SKILLS);
   };
 }

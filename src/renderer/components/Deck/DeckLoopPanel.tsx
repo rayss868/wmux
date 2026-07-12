@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
+import { DeckLoopModal } from './DeckLoopModal';
 import type { WorkspaceLoopState, LoopTier } from '../../../main/deck/deckLoopStateStore';
 
 export interface DeckLoopApi {
@@ -39,6 +40,8 @@ export interface DeckLoopApi {
   start: (args: {
     workspaceId: string;
     objective: string;
+    /** 매 iteration 절차(선택) — 모달의 steps 편집기가 채운다. */
+    steps?: string[];
     taskTexts?: string[];
     tier?: LoopTier;
     intervalMinutes?: number;
@@ -47,26 +50,21 @@ export interface DeckLoopApi {
   stop: (workspaceId: string) => Promise<{ ok: boolean }>;
   pause: (workspaceId: string) => Promise<{ ok: boolean }>;
   resume: (workspaceId: string) => Promise<{ ok: boolean }>;
+  /** 스킬 픽커 카탈로그(선택 — 구 preload엔 없을 수 있다). */
+  skills?: (cwd: string) => Promise<{ skills: import('../../../main/deck/skillCatalogScan').SkillCatalogEntry[] }>;
 }
-
-/** Cadence choices (0 = event-driven only). Values respect main's 5-minute
- *  floor — anything lower is rejected there, never clamped silently. */
-const CADENCE_OPTIONS: { minutes: number; labelKey: string; fallback: string }[] = [
-  { minutes: 0, labelKey: 'deck.loopCadenceOff', fallback: 'Events only' },
-  { minutes: 30, labelKey: 'deck.loopCadence30m', fallback: 'Every 30 min' },
-  { minutes: 60, labelKey: 'deck.loopCadence1h', fallback: 'Every hour' },
-  { minutes: 360, labelKey: 'deck.loopCadence6h', fallback: 'Every 6 hours' },
-  { minutes: 1440, labelKey: 'deck.loopCadence24h', fallback: 'Every day' },
-];
 
 export function DeckLoopPanel({
   api,
   workspaceId,
+  cwd,
   t: tProp,
 }: {
   api?: DeckLoopApi;
   /** The workspace this deck view is bound to — the loop is per-workspace. */
   workspaceId?: string;
+  /** 활성 pane cwd — 모달의 스킬 카탈로그 스캔 기준(선택). */
+  cwd?: string;
   t?: (key: string) => string;
 }): React.ReactElement | null {
   const t = tProp ?? (() => '');
@@ -76,14 +74,11 @@ export function DeckLoopPanel({
     api ??
     (window.electronAPI as unknown as { deck?: { loop?: DeckLoopApi } } | undefined)?.deck?.loop;
   const [open, setOpen] = useState(false);
+  // 루프가 없을 때 칩은 설정 모달을 연다(인라인 폼은 도크 폭에서 넘쳐 Start가
+  // 화면 밖으로 밀리는 결함이 있어 모달로 승격 — DeckLoopModal 헤더 주석).
+  const [modalOpen, setModalOpen] = useState(false);
   const [loop, setLoop] = useState<WorkspaceLoopState | null>(null);
   const [wakeBudget, setWakeBudget] = useState<{ remaining: number; total: number } | null>(null);
-  const [objective, setObjective] = useState('');
-  const [doneWhen, setDoneWhen] = useState('');
-  const [tier, setTier] = useState<LoopTier>('report');
-  const [cadence, setCadence] = useState(0);
-  const [iterations, setIterations] = useState(25);
-  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!resolvedApi || !workspaceId) return;
@@ -104,37 +99,6 @@ export function DeckLoopPanel({
 
   if (!resolvedApi) return null;
 
-  const handleStart = async (): Promise<void> => {
-    setError(null);
-    if (!workspaceId) {
-      setError(t('deck.loopNoWorkspace') || 'Open a workspace first — a loop belongs to a workspace.');
-      return;
-    }
-    if (!objective.trim()) {
-      setError(t('deck.loopNeedsObjective') || 'Give the loop an objective.');
-      return;
-    }
-    const taskTexts = doneWhen
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-    const res = await resolvedApi.start({
-      workspaceId,
-      objective,
-      ...(taskTexts.length > 0 ? { taskTexts } : {}),
-      tier,
-      ...(cadence > 0 ? { intervalMinutes: cadence } : {}),
-      ...(Number.isFinite(iterations) && iterations >= 1 ? { iterations: Math.floor(iterations) } : {}),
-    });
-    if (!res.ok) {
-      setError(t('deck.loopStartFailed') || 'Could not start the loop.');
-      return;
-    }
-    setObjective('');
-    setDoneWhen('');
-    void refresh();
-  };
-
   const passing = loop ? loop.tasks.filter((task) => task.passes).length : 0;
   const running = loop?.status === 'running';
 
@@ -143,8 +107,12 @@ export function DeckLoopPanel({
       <button
         type="button"
         data-deck-loop-toggle
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        aria-expanded={loop ? open : modalOpen}
+        onClick={() => {
+          // 루프 있음 → 인라인 상태 카드 토글. 없음 → 설정 모달.
+          if (loop) setOpen((v) => !v);
+          else setModalOpen(true);
+        }}
         className={`px-2.5 py-1 rounded-md text-[12px] transition-opacity hover:opacity-80 ${
           open ? 'text-[var(--accent-blue)]' : 'text-[var(--text-sub)]'
         } bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING}`}
@@ -167,12 +135,12 @@ export function DeckLoopPanel({
           : t('deck.loopStartChip') || 'Start a loop'}
       </button>
 
-      {open && (
+      {open && loop && (
         <div
           data-deck-loop-panel
           className="w-full mt-1.5 rounded-[7px] px-4 py-3 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.55)]"
         >
-          {loop ? (
+          {(
             <>
               {/* Status card — objective is the headline; machine facts in mono. */}
               <div className="flex items-baseline gap-2">
@@ -261,89 +229,24 @@ export function DeckLoopPanel({
                 </button>
               </div>
             </>
-          ) : (
-            <>
-              {/* The one-click form. */}
-              <input
-                type="text"
-                data-deck-loop-objective-input
-                value={objective}
-                onChange={(e) => setObjective(e.target.value)}
-                placeholder={t('deck.loopObjectivePlaceholder') || 'Objective — what should this loop accomplish?'}
-                className="w-full text-[12.5px] rounded-[4px] px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
-                style={{ borderColor: 'var(--border-soft)' }}
-              />
-              <textarea
-                data-deck-loop-donewhen
-                value={doneWhen}
-                onChange={(e) => setDoneWhen(e.target.value)}
-                rows={2}
-                placeholder={t('deck.loopDoneWhenPlaceholder') || 'Done when… (optional, one item per line)'}
-                className="w-full text-[11.5px] font-mono rounded-[4px] px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none resize-y"
-                style={{ borderColor: 'var(--border-soft)' }}
-              />
-              <div className="flex items-center gap-1.5">
-                <select
-                  data-deck-loop-tier
-                  value={tier}
-                  onChange={(e) => setTier(e.target.value === 'continue' ? 'continue' : 'report')}
-                  className="text-[11px] font-mono rounded-[4px] px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
-                  style={{ borderColor: 'var(--border-soft)' }}
-                  aria-label={t('deck.loopTier') || 'Autonomy'}
-                >
-                  <option value="report">{t('deck.loopTierReport') || 'Report only'}</option>
-                  <option value="continue">{t('deck.loopTierContinue') || 'Continue (may nudge panes)'}</option>
-                </select>
-                <input
-                  type="number"
-                  data-deck-loop-iterations
-                  value={iterations}
-                  min={1}
-                  max={100}
-                  onChange={(e) => setIterations(Number(e.target.value))}
-                  title={t('deck.loopIterations') || 'Iterations — auto-wakes allowed before the loop pauses for you'}
-                  aria-label={t('deck.loopIterations') || 'Iterations'}
-                  className="w-[52px] text-[11px] font-mono rounded-[4px] px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
-                  style={{ borderColor: 'var(--border-soft)' }}
-                />
-                <select
-                  data-deck-loop-cadence
-                  value={cadence}
-                  onChange={(e) => setCadence(Number(e.target.value))}
-                  className="text-[11px] font-mono rounded-[4px] px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
-                  style={{ borderColor: 'var(--border-soft)' }}
-                  aria-label={t('deck.loopCadence') || 'Cadence'}
-                >
-                  {CADENCE_OPTIONS.map((o) => (
-                    <option key={o.minutes} value={o.minutes}>
-                      {t(o.labelKey) || o.fallback}
-                    </option>
-                  ))}
-                </select>
-                <div className="flex-1" />
-                <button
-                  type="button"
-                  data-deck-loop-start
-                  onClick={() => void handleStart()}
-                  className={`shrink-0 whitespace-nowrap px-2.5 py-1 rounded-[4px] text-[12px] font-semibold text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 ${FOCUS_RING}`}
-                  {...tokenAttrs('accent', 'text')}
-                >
-                  {t('deck.loopStart') || 'Start loop'}
-                </button>
-              </div>
-              {error && (
-                <div
-                  role="alert"
-                  data-deck-loop-error
-                  className="text-[11.5px] text-[var(--accent-red)]"
-                  {...tokenAttrs('danger', 'text')}
-                >
-                  {error}
-                </div>
-              )}
-            </>
           )}
         </div>
+      )}
+
+      {/* 설정 모달 — objective/steps(스킬 픽커)/done-when/고급. START 성공 시
+          상태 카드가 바로 보이도록 open을 켜고 refresh한다. */}
+      {modalOpen && (
+        <DeckLoopModal
+          api={resolvedApi}
+          workspaceId={workspaceId}
+          cwd={cwd}
+          t={t}
+          onClose={() => setModalOpen(false)}
+          onStarted={() => {
+            setOpen(true);
+            void refresh();
+          }}
+        />
       )}
     </>
   );

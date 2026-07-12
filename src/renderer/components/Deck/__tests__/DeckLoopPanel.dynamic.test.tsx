@@ -27,6 +27,7 @@ afterEach(() => {
 
 const loopState = (over: Partial<WorkspaceLoopState> = {}): WorkspaceLoopState => ({
   objective: 'keep CI green',
+  steps: [],
   tasks: [
     { id: 't1', text: 'tests pass', passes: true },
     { id: 't2', text: 'lint clean', passes: false },
@@ -221,7 +222,14 @@ describe('DeckLoopPanel', () => {
       (container.querySelector('[data-deck-loop-stop]') as HTMLButtonElement).click();
     });
     expect(api.stopped).toEqual(['ws-1']);
-    // Loop gone → back to the start form on next open state.
+    // Loop gone → the inline panel disappears; the chip reverts to the start
+    // affordance, and clicking it opens the SETUP MODAL (the inline form was
+    // promoted to DeckLoopModal — dock-width overflow fix).
+    expect(container.querySelector('[data-deck-loop-panel]')).toBeNull();
+    await act(async () => {
+      (container.querySelector('[data-deck-loop-toggle]') as HTMLButtonElement).click();
+    });
+    expect(container.querySelector('[data-deck-loop-modal]')).not.toBeNull();
     expect(container.querySelector('[data-deck-loop-objective-input]')).not.toBeNull();
   });
 });
