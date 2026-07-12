@@ -592,6 +592,8 @@ function OrchestratorSection() {
   const t = useT();
   const deckBrainModel = useStore((s) => s.deckBrainModel);
   const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
+  const channelsTabVisible = useStore((s) => s.channelsTabVisible);
+  const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
   const options = ORCHESTRATOR_MODEL_OPTIONS.map((o) => ({
     value: o.value,
     label: o.labelKey
@@ -610,6 +612,16 @@ function OrchestratorSection() {
           onChange={setDeckBrainModel}
           options={options}
           label={t('settings.orchestratorModel')}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('settings.channelsTabVisible')}
+        description={t('settings.channelsTabVisibleDesc')}
+      >
+        <Toggle
+          checked={channelsTabVisible}
+          onChange={setChannelsTabVisible}
+          label={t('settings.channelsTabVisible')}
         />
       </SettingRow>
     </div>

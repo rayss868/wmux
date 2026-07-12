@@ -44,7 +44,13 @@ export default function ChannelDock(): React.ReactElement {
   const activeDeckTab = useStore((s) => s.activeDeckTab);
   const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
   const channelUnread = useStore((s) => s.channelUnread);
+  // Human channel UI is frozen (PRD §4.1): the tab hides by default and is
+  // re-enabled in Settings as a read-only inspection surface. The setter
+  // snaps activeDeckTab back to commander when the tab is turned off, but a
+  // stale persisted 'channels' can never render either — the guard below.
+  const channelsTabVisible = useStore((s) => s.channelsTabVisible);
   const t = useT();
+  const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
 
   // Workspace sidebar is on `sidebarPosition`; the dock is on the opposite
   // edge. When the sidebar is on the LEFT (default), the dock is on the RIGHT,
@@ -60,13 +66,14 @@ export default function ChannelDock(): React.ReactElement {
       {...tokenAttrs('bgSurface', 'border')}
     >
       <DeckTabs
-        active={activeDeckTab}
+        active={showChannelsView ? 'channels' : 'commander'}
         onSelect={setActiveDeckTab}
         channelsUnread={sumUnread(channelUnread)}
+        showChannels={channelsTabVisible}
         t={t}
       />
 
-      {activeDeckTab === 'commander' ? (
+      {!showChannelsView ? (
         // Commander tab — the LLM-less command composer + fan-out thread.
         <CommanderView />
       ) : (

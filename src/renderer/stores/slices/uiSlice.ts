@@ -134,6 +134,13 @@ export interface UISlice {
   deckBrainModel: string;
   setDeckBrainModel: (model: string) => void;
 
+  // Whether the deck shows the Channels tab (the human channel UI). Default
+  // OFF: the orchestrator is the single interface and channels are its
+  // internal wiring (PRD §4.1 — human channel UI frozen); the tab stays
+  // available behind this setting as the read-only inspection surface.
+  channelsTabVisible: boolean;
+  setChannelsTabVisible: (visible: boolean) => void;
+
   // Issue #174: split panes inherit the splitting pane's cwd (default on).
   splitInheritsCwd: boolean;
   setSplitInheritsCwd: (enabled: boolean) => void;
@@ -747,6 +754,17 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setDeckBrainModel: (model) => set((state) => {
     state.deckBrainModel = model;
+  }),
+
+  channelsTabVisible: false,
+
+  setChannelsTabVisible: (visible) => set((state) => {
+    state.channelsTabVisible = visible;
+    // Hiding the tab while it is the active one must not leave the deck on an
+    // unreachable surface — snap back to the orchestrator.
+    if (!visible && state.activeDeckTab === 'channels') {
+      state.activeDeckTab = 'commander';
+    }
   }),
 
   splitInheritsCwd: true,

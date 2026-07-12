@@ -32,6 +32,16 @@ describe('deckSlice', () => {
       useStore.getState().setActiveDeckTab('commander');
       expect(useStore.getState().activeDeckTab).toBe('commander');
     });
+
+    it('hiding the Channels tab while on it snaps the deck back to the orchestrator', () => {
+      useStore.setState({ channelsTabVisible: true, activeDeckTab: 'channels' });
+      useStore.getState().setChannelsTabVisible(false);
+      expect(useStore.getState().channelsTabVisible).toBe(false);
+      expect(useStore.getState().activeDeckTab).toBe('commander');
+      // Re-enabling does not yank the user anywhere.
+      useStore.getState().setChannelsTabVisible(true);
+      expect(useStore.getState().activeDeckTab).toBe('commander');
+    });
   });
 
   describe('per-workspace commander brain (Phase 2, M1.5)', () => {

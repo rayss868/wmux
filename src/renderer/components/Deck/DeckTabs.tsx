@@ -15,6 +15,11 @@ export interface DeckTabsProps {
   /** Unread total across all channels — a small badge on the Channels tab so
    *  switching away from it doesn't hide new activity. Omit / 0 → no badge. */
   channelsUnread?: number;
+  /** Whether the Channels tab renders at all. Default true (pure component —
+   *  the store default is FALSE; the dock passes the setting through). With
+   *  it hidden the strip shows the single Orchestrator tab, doubling as the
+   *  deck's header. */
+  showChannels?: boolean;
   /** Translator — defaults to identity so tests can omit it. */
   t?: (key: string) => string;
 }
@@ -28,9 +33,11 @@ export function DeckTabs({
   active,
   onSelect,
   channelsUnread = 0,
+  showChannels = true,
   t: tProp,
 }: DeckTabsProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
+  const tabs = showChannels ? TABS : TABS.filter((tab) => tab.id !== 'channels');
   return (
     <div
       data-deck-tabs
@@ -40,7 +47,7 @@ export function DeckTabs({
       style={{ borderColor: 'var(--border-soft)' }}
       {...tokenAttrs('bgSurface', 'border')}
     >
-      {TABS.map((tab) => {
+      {tabs.map((tab) => {
         const isActive = active === tab.id;
         return (
           <button

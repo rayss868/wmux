@@ -15,13 +15,19 @@ import type { DeckTab } from '../../../stores/slices/deckSlice';
 let container: HTMLDivElement;
 let root: Root;
 
-function mount(props: { active: DeckTab; onSelect?: (t: DeckTab) => void; channelsUnread?: number }): void {
+function mount(props: {
+  active: DeckTab;
+  onSelect?: (t: DeckTab) => void;
+  channelsUnread?: number;
+  showChannels?: boolean;
+}): void {
   act(() => {
     root.render(
       createElement(DeckTabs, {
         active: props.active,
         onSelect: props.onSelect ?? vi.fn(),
         channelsUnread: props.channelsUnread,
+        ...(props.showChannels !== undefined ? { showChannels: props.showChannels } : {}),
         t: (k: string) => k,
       }),
     );
@@ -77,5 +83,12 @@ describe('DeckTabs', () => {
     mount({ active: 'commander', channelsUnread: 3 });
     const badge = container.querySelector('[data-deck-tab-unread]');
     expect(badge?.textContent).toContain('3');
+  });
+
+  it('hides the Channels tab (and its badge) when showChannels is false', () => {
+    mount({ active: 'commander', showChannels: false, channelsUnread: 5 });
+    expect(container.querySelector('[data-deck-tab="commander"]')).not.toBeNull();
+    expect(container.querySelector('[data-deck-tab="channels"]')).toBeNull();
+    expect(container.querySelector('[data-deck-tab-unread]')).toBeNull();
   });
 });
