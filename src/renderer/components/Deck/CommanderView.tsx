@@ -19,7 +19,7 @@
 // the fan-out orchestration (lazy-create #commander, invite-before-post the
 // mentioned workspaces, then post the pinned mentions).
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
@@ -139,6 +139,31 @@ export function CommanderViewContent({
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
   const isEmpty = threads.length === 0 && brainMessages.length === 0;
+
+  // Stick-to-bottom autoscroll. `stickToBottom` flips off when the user
+  // scrolls up to read history (>48px from the bottom) and back on when they
+  // return; every content change while stuck scrolls to the newest message.
+  // Streaming text-deltas re-render this component constantly, so the effect
+  // runs per delta — a plain scrollTop write is cheap.
+  const threadsRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottom = useRef(true);
+  const onThreadsScroll = useCallback(() => {
+    const el = threadsRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  }, []);
+  useEffect(() => {
+    const el = threadsRef.current;
+    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+  }, [brainMessages, threads]);
+  // Switching workspaces swaps the whole thread (M1.5) — always land on the
+  // newest message of the new conversation, whatever the old scroll state.
+  useEffect(() => {
+    stickToBottom.current = true;
+    const el = threadsRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [activeWorkspaceId]);
+
   return (
     <div
       data-commander-view
@@ -151,8 +176,12 @@ export function CommanderViewContent({
       {/* P2① — Fleet roster pinned above the thread (does not scroll with it). */}
       {fleetSlot}
       {/* Message list — the brain conversation (Phase 2) plus the Phase 1
-          @-mention fan-out threads. */}
+          @-mention fan-out threads. Chat convention: sticks to the bottom
+          (newest message) as content streams in, unless the user scrolled up
+          to read history — then it stays put until they return to the bottom. */}
       <div
+        ref={threadsRef}
+        onScroll={onThreadsScroll}
         className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3"
         data-commander-threads
       >
@@ -798,7 +827,14 @@ export function CommanderView(): React.ReactElement {
   // Brain send (P2d): NO @mention → the main-process Agent SDK commander. Push
   // the optimistic human + streaming-assistant messages, then invoke deck:send.
   // The turn's content streams back over deck:onStream (useDeckStream → the
-  // deckSlice reducer); deck:send resolves only with the accept/reject verdict.
+  // deckSlice reducer).
+  //
+  // Chat contract: this resolves IMMEDIATELY after the optimistic open — NOT
+  // when deck:send's promise settles. deck:send resolves only after the WHOLE
+  // turn finishes streaming (main awaits mgr.send), and the composer clears
+  // its input on this promise — awaiting it left the typed text sitting in
+  // the composer for the entire orchestrator turn. A late reject (busy race /
+  // disposed) is surfaced by failing the open turn's bubble instead.
   const handleBrainSend = useCallback(
     async (text: string): Promise<{ ok: boolean; errorCode?: string; errorMessage?: string }> => {
       const api = window.electronAPI?.deck;
@@ -806,7 +842,8 @@ export function CommanderView(): React.ReactElement {
         pushToast({ level: 'error', message: t('deck.commanderUnavailable') || 'The orchestrator is unavailable' });
         return { ok: false, errorCode: 'UNAVAILABLE' };
       }
-      startDeckBrainTurn(activeWorkspaceId, text);
+      const workspaceId = activeWorkspaceId;
+      startDeckBrainTurn(workspaceId, text);
       // One-shot workspace snapshot for the system prompt (main injects it on
       // the first turn only and re-caps to 2048 chars). Recovery facts (P3b)
       // ride along so a typed "recover my agents" works without the card —
@@ -816,39 +853,41 @@ export function CommanderView(): React.ReactElement {
       const recoveryLines = buildRecoveryContextLines(recoveryPanes);
       const wsSummary = buildWorkspaceContextSummary({
         workspaces,
-        activeWorkspaceId,
+        activeWorkspaceId: workspaceId,
         surfaceAgent,
         paneLabel,
         channels,
         ...(recoveryLines ? { maxChars: Math.max(400, 2000 - recoveryLines.length) } : {}),
       });
       const fleetContext = recoveryLines ? `${recoveryLines}\n\n${wsSummary}` : wsSummary;
-      try {
-        // The orchestrator model override rides along on every send; main swaps
-        // this workspace's brain between turns when it changes (Settings →
-        // Claude tab).
-        const res = await api.send({
-          workspaceId: activeWorkspaceId,
+      // The orchestrator model override rides along on every send; main swaps
+      // this workspace's brain between turns when it changes (Settings →
+      // Claude tab). Fire-and-observe: the verdict closes the bubble on
+      // rejection, the stream fills it on acceptance.
+      void api
+        .send({
+          workspaceId,
           text,
           fleetContext,
           ...(useStore.getState().deckBrainModel ? { model: useStore.getState().deckBrainModel } : {}),
+        })
+        .then((res) => {
+          if (!res.ok) {
+            // Rejected before any stream event (busy race / disposed): close
+            // the open turn with an error so the placeholder doesn't spin
+            // forever.
+            failDeckBrainTurn(
+              workspaceId,
+              res.code === 'busy'
+                ? t('deck.commanderBusy') || 'A command is already running.'
+                : t('deck.commanderFailed') || 'The command could not run.',
+            );
+          }
+        })
+        .catch((err) => {
+          failDeckBrainTurn(workspaceId, err instanceof Error ? err.message : String(err));
         });
-        if (!res.ok) {
-          // Rejected before any stream event (busy race / disposed): close the
-          // open turn with an error so the placeholder doesn't spin forever.
-          failDeckBrainTurn(
-            activeWorkspaceId,
-            res.code === 'busy'
-              ? t('deck.commanderBusy') || 'A command is already running.'
-              : t('deck.commanderFailed') || 'The command could not run.',
-          );
-          return { ok: false, errorCode: res.code };
-        }
-        return { ok: true };
-      } catch (err) {
-        failDeckBrainTurn(activeWorkspaceId, err instanceof Error ? err.message : String(err));
-        return { ok: false, errorMessage: err instanceof Error ? err.message : String(err) };
-      }
+      return { ok: true };
     },
     [activeWorkspaceId, workspaces, surfaceAgent, paneLabel, channels, recoveryPanes, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
   );
