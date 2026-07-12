@@ -166,6 +166,62 @@ describe('CommanderSessionManager', () => {
     expect(sink.mock.calls.map((c) => (c[0] as BrainEvent).type)).toEqual(['turn-end']);
   });
 
+  it('fires onIdle on a LATER tick after a turn flips busy→idle (never synchronously)', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: 's' }]);
+    const onIdle = vi.fn();
+    const deferred: Array<() => void> = [];
+    const mgr = new CommanderSessionManager({
+      adapter,
+      sink: vi.fn(),
+      onIdle,
+      deferIdle: (fn) => deferred.push(fn), // capture instead of setTimeout(0)
+    });
+
+    await mgr.send('go');
+    // The turn is done and idle, but onIdle has NOT fired — it was deferred.
+    expect(mgr.getStatus().status).toBe('idle');
+    expect(onIdle).not.toHaveBeenCalled();
+    expect(deferred).toHaveLength(1);
+
+    // Draining the deferred queue (the "later tick") fires it exactly once.
+    deferred.forEach((fn) => fn());
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it('a dispose() before the deferred tick cancels the onIdle wake', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: 's' }]);
+    const onIdle = vi.fn();
+    const deferred: Array<() => void> = [];
+    const mgr = new CommanderSessionManager({
+      adapter,
+      sink: vi.fn(),
+      onIdle,
+      deferIdle: (fn) => deferred.push(fn),
+    });
+    await mgr.send('go');
+    mgr.dispose();
+    deferred.forEach((fn) => fn());
+    expect(onIdle).not.toHaveBeenCalled();
+  });
+
+  it('a throwing onIdle never surfaces', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: 's' }]);
+    const deferred: Array<() => void> = [];
+    const mgr = new CommanderSessionManager({
+      adapter,
+      sink: vi.fn(),
+      onIdle: () => {
+        throw new Error('coalescer blew up');
+      },
+      deferIdle: (fn) => deferred.push(fn),
+    });
+    await mgr.send('go');
+    expect(() => deferred.forEach((fn) => fn())).not.toThrow();
+  });
+
   it('dispose() tears down the adapter and rejects further sends', async () => {
     const adapter = new FakeAdapter();
     const sink = vi.fn();

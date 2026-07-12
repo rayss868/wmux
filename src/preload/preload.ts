@@ -327,6 +327,44 @@ const electronAPI = {
       remove: (id: string) =>
         ipcRenderer.invoke(IPC.DECK_SCHEDULES_DELETE, { id }) as Promise<{ ok: boolean }>,
     },
+    // Loop engineering v1 — the one-click loop. START = loop-state + autonomy
+    // caps + optional cadence schedule in one action; STOP/PAUSE = the
+    // fail-closed OFF contract. Tier caps at 'continue' (no approval-press
+    // from this surface).
+    loop: {
+      get: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_LOOP_GET, { workspaceId }) as Promise<{
+          loop: import('../main/deck/deckLoopStateStore').WorkspaceLoopState | null;
+          wakeBudget: { remaining: number; total: number } | null;
+        }>,
+      // The human ticks a done-when item (the only writer of `passes`).
+      setTask: (args: { workspaceId: string; taskId: string; passes: boolean }) =>
+        ipcRenderer.invoke(IPC.DECK_LOOP_TASK, args) as Promise<{
+          ok: boolean;
+          loop?: import('../main/deck/deckLoopStateStore').WorkspaceLoopState;
+        }>,
+      start: (args: {
+        workspaceId: string;
+        objective: string;
+        taskTexts?: string[];
+        tier?: 'report' | 'continue';
+        intervalMinutes?: number;
+        /** Iteration budget (Ralph max-iterations) — auto-wakes allowed while
+         *  the loop runs before the human must weigh in. */
+        iterations?: number;
+      }) =>
+        ipcRenderer.invoke(IPC.DECK_LOOP_START, args) as Promise<{
+          ok: boolean;
+          loop?: import('../main/deck/deckLoopStateStore').WorkspaceLoopState;
+          code?: string;
+        }>,
+      stop: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_LOOP_STOP, { workspaceId }) as Promise<{ ok: boolean }>,
+      pause: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_LOOP_PAUSE, { workspaceId }) as Promise<{ ok: boolean }>,
+      resume: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_LOOP_RESUME, { workspaceId }) as Promise<{ ok: boolean }>,
+    },
     // Normalized BrainEvent push, enveloped with the workspace whose
     // orchestrator produced it (see BrainAdapter.BrainEvent).
     onStream: (
