@@ -22,7 +22,7 @@ export type GithubPrDetailResult =
   | { ok: true; detail: PrDetail }
   | { ok: false; code: 'error'; message: string };
 
-async function prList(repoPath: string): Promise<GithubPrListResult> {
+async function prList(repoPath: string, force: boolean): Promise<GithubPrListResult> {
   const host = await detectProviderHost(repoPath);
   if (host === 'none') return { ok: false, code: 'no-remote', message: 'no origin remote' };
   if (host !== 'github') {
@@ -37,7 +37,7 @@ async function prList(repoPath: string): Promise<GithubPrListResult> {
       message: gate.message,
     };
   }
-  const res = await ghPrService.listPrs(repoPath);
+  const res = await ghPrService.listPrs(repoPath, force);
   if (!res.ok) return { ok: false, code: 'error', message: res.error };
   return { ok: true, prs: res.prs };
 }
@@ -46,11 +46,11 @@ export function registerGithubHandlers(): () => void {
   ipcMain.removeHandler(IPC.GITHUB_PR_LIST);
   ipcMain.handle(
     IPC.GITHUB_PR_LIST,
-    wrapHandler(IPC.GITHUB_PR_LIST, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown) => {
+    wrapHandler(IPC.GITHUB_PR_LIST, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown, force: unknown) => {
       if (typeof repoPath !== 'string' || !repoPath) {
         return { ok: false, code: 'error', message: 'repoPath required' } satisfies GithubPrListResult;
       }
-      return prList(repoPath);
+      return prList(repoPath, force === true);
     }),
   );
 

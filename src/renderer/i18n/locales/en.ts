@@ -766,6 +766,7 @@ export const en = {
   'git.noRemote': 'This repository has no origin remote.',
   'git.openInBrowser': 'Open in browser',
   'git.viewFull': 'View full comment in browser',
+  'git.commentsFailed': 'Could not load comments',
   'git.justNow': 'now',
   'settings.gitTabVisible': 'Show Git tab',
   'settings.gitTabVisibleDesc':

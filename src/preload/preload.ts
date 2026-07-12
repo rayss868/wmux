@@ -407,8 +407,9 @@ const electronAPI = {
   // 태스크가 분기한 시점의 타겟 HEAD(드리프트 게이트 재료).
   // Deck Git 탭 PR 섹션 — gh CLI 기반 PR 목록·코멘트(렌더러 전용).
   github: {
-    prList: (repoPath: string) =>
-      ipcRenderer.invoke(IPC.GITHUB_PR_LIST, repoPath) as Promise<
+    // force=true는 수동 새로고침 — main의 30s TTL 캐시를 건너뛴다.
+    prList: (repoPath: string, force?: boolean) =>
+      ipcRenderer.invoke(IPC.GITHUB_PR_LIST, repoPath, force ?? false) as Promise<
         import('../main/ipc/handlers/github.handler').GithubPrListResult
       >,
     prDetail: (repoPath: string, number: number, updatedAt: string) =>

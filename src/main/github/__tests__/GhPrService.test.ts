@@ -87,6 +87,21 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
     expect(out[3]).toMatchObject({ kind: 'review', reviewState: 'CHANGES_REQUESTED', body: '' });
   });
 
+  it('인라인 리뷰 코멘트(gh api)를 파일:라인 앵커와 함께 병합(Codex P2)', () => {
+    const out = mapGhDetail(
+      { comments: [], reviews: [] },
+      'pr-url',
+      [
+        { user: { login: 'rev' }, body: 'nit here', created_at: '2026-07-12T05:00:00Z', html_url: 'h', path: 'src/a.ts', line: 42 },
+        { user: { login: 'rev2' }, body: 'no path', created_at: '2026-07-12T06:00:00Z' },
+      ],
+    );
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({ author: 'rev', kind: 'review', url: 'h' });
+    expect(out[0].body).toBe('src/a.ts:42 — nit here');
+    expect(out[1].body).toBe('no path'); // path 없으면 앵커 없음.
+  });
+
   it('HTML 주석(봇 마커)은 본문에서 스트립된다', () => {
     const out = mapGhDetail(
       {
@@ -135,6 +150,19 @@ describe('GhPrService — 목록 TTL·상세 updatedAt 캐시', () => {
     expect(calls.filter((c) => c.args[1] === 'list').length).toBe(1);
     nowRef.t = 31_000;
     await svc.listPrs('D:/r');
+    expect(calls.filter((c) => c.args[1] === 'list').length).toBe(2);
+  });
+
+  it('force=true는 TTL 창 안에서도 gh를 재호출(수동 새로고침, Codex P2)', async () => {
+    const nowRef = { t: 0 };
+    const { svc, calls } = makeService((args) => {
+      if (args[0] === 'pr' && args[1] === 'list') return { stdout: LIST_JSON };
+      return { stdout: '' };
+    }, nowRef);
+    await svc.listPrs('D:/r');
+    await svc.listPrs('D:/r'); // TTL 히트 — 재호출 없음.
+    expect(calls.filter((c) => c.args[1] === 'list').length).toBe(1);
+    await svc.listPrs('D:/r', true); // force — TTL 무시.
     expect(calls.filter((c) => c.args[1] === 'list').length).toBe(2);
   });
 

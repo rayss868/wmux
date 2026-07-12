@@ -25,9 +25,22 @@ const execFileAsync = promisify(execFile);
 
 const LIST_TTL_MS = 30_000;
 const GH_TIMEOUT_MS = 10_000;
-const LIST_LIMIT = 30;
+// 열린 PR 목록 상한 — 30은 활발한 repo에서 나머지를 조용히 누락시켰다(Codex P2).
+// 100은 현실적으로 "열린 PR 전부"에 해당하며, 정확히 100이면 UI가 100+로 표기.
+const LIST_LIMIT = 100;
 /** 캐시 상한 — repo 수 기준(목록)·PR 수 기준(상세). 현실 규모 훨씬 위. */
 const MAX_ENTRIES = 128;
+// gh JSON stdout 버퍼 상한 — 큰 리뷰 스레드가 execFile 기본 1MB를 넘겨
+// capBody 전에 터지던 것 방지(Codex P2). 개별 본문은 아래 캡으로 다시 조인다.
+const GH_MAX_BUFFER = 16 * 1024 * 1024;
+
+// 캐시 키 — 파일시스템 대소문자 정책 반영(Codex P3). POSIX(case-sensitive)는
+// /src/Foo와 /src/foo가 서로 다른 repo다 — 소문자화하면 캐시가 섞인다.
+function cacheKey(repoPath: string): string {
+  return process.platform === 'win32' || process.platform === 'darwin'
+    ? repoPath.toLowerCase()
+    : repoPath;
+}
 
 const GH_ENV: NodeJS.ProcessEnv = {
   ...process.env,
@@ -39,7 +52,7 @@ const GH_ENV: NodeJS.ProcessEnv = {
 type Exec = (
   cmd: string,
   args: string[],
-  opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean },
+  opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean; maxBuffer: number },
 ) => Promise<{ stdout: string }>;
 
 // ── gh JSON 페이로드 매핑(순수, 테스트용 export) ────────────────────────────
@@ -119,8 +132,24 @@ function capBody(raw: string): { body: string; truncated: boolean } {
   return { body: body.slice(0, PR_COMMENT_BODY_CAP), truncated: true };
 }
 
-/** comments + (본문 있는) reviews를 시간순 단일 스트림으로 정규화. */
-export function mapGhDetail(json: GhDetailJson, prUrl: string): PrComment[] {
+// 인라인(파일 라인) 리뷰 코멘트 — `gh pr view`의 comments/reviews가 누락하는
+// 리뷰 스레드 코멘트(Codex P2). `gh api .../pulls/N/comments` 원형.
+interface GhReviewComment {
+  user?: { login?: string };
+  body?: string;
+  created_at?: string;
+  html_url?: string;
+  path?: string;
+  line?: number | null;
+  original_line?: number | null;
+}
+
+/** comments + (본문 있는) reviews + 인라인 리뷰 코멘트를 시간순 단일 스트림으로. */
+export function mapGhDetail(
+  json: GhDetailJson,
+  prUrl: string,
+  reviewComments: GhReviewComment[] = [],
+): PrComment[] {
   const out: PrComment[] = [];
   for (const c of json.comments ?? []) {
     if (typeof c.body !== 'string') continue;
@@ -146,6 +175,21 @@ export function mapGhDetail(json: GhDetailJson, prUrl: string): PrComment[] {
       url: r.url ?? prUrl,
       kind: 'review',
       reviewState: (r.state ?? '').toUpperCase(),
+      truncated,
+    });
+  }
+  for (const rc of reviewComments) {
+    if (typeof rc.body !== 'string') continue;
+    // 파일:라인 앵커를 본문 앞에 각인 — 어느 코드에 달린 코멘트인지 문맥 보존.
+    const anchor = rc.path ? `${rc.path}${rc.line ?? rc.original_line ? `:${rc.line ?? rc.original_line}` : ''} — ` : '';
+    const { body, truncated } = capBody(`${anchor}${rc.body}`);
+    out.push({
+      author: rc.user?.login ?? '',
+      body,
+      createdAt: rc.created_at ?? '',
+      url: rc.html_url ?? prUrl,
+      kind: 'review',
+      reviewState: '',
       truncated,
     });
   }
@@ -178,6 +222,7 @@ export class GhPrService implements PrProvider {
       timeout: GH_TIMEOUT_MS,
       env: GH_ENV,
       windowsHide: true,
+      maxBuffer: GH_MAX_BUFFER,
     });
   }
 
@@ -204,13 +249,15 @@ export class GhPrService implements PrProvider {
     return { ok: true };
   }
 
-  async listPrs(repoPath: string): Promise<PrListResult> {
-    const key = repoPath.toLowerCase();
+  // force=true: 수동 새로고침 — TTL 캐시를 건너뛰고 즉시 gh를 호출한다(Codex P2).
+  //   방금 랜딩한 PR/체크를 새로고침 버튼이 관측 못 하던 문제.
+  async listPrs(repoPath: string, force = false): Promise<PrListResult> {
+    const key = cacheKey(repoPath);
     const entry = this.listCache.get(key);
     const now = this.now();
     if (entry) {
-      if (entry.pending) return entry.pending;
-      if (now - entry.fetchedAt < LIST_TTL_MS) return entry.value;
+      if (entry.pending) return entry.pending; // 진행 중 fetch는 항상 공유(중복 방지).
+      if (!force && now - entry.fetchedAt < LIST_TTL_MS) return entry.value;
     }
     const pending = this.fetchList(repoPath)
       .then((value) => {
@@ -256,7 +303,7 @@ export class GhPrService implements PrProvider {
   }
 
   async prDetail(repoPath: string, number: number, updatedAt: string): Promise<PrDetailResult> {
-    const key = `${repoPath.toLowerCase()}\0${number}`;
+    const key = `${cacheKey(repoPath)}\0${number}`;
     const cached = this.detailCache.get(key);
     // updatedAt 불변 → 코멘트 재fetch 생략(rate limit 상한의 핵심).
     if (cached && cached.updatedAt === updatedAt && cached.value.ok) return cached.value;
@@ -266,9 +313,22 @@ export class GhPrService implements PrProvider {
         repoPath,
       );
       const json = JSON.parse(stdout) as GhDetailJson & { url?: string };
+      // 인라인 리뷰 코멘트는 gh pr view가 누락 → gh api로 별도 조회(Codex P2).
+      // {owner}/{repo}는 gh가 cwd repo로 치환. 실패는 무시(핵심 코멘트는 위에서 확보).
+      let reviewComments: GhReviewComment[] = [];
+      try {
+        const rc = await this.gh(
+          ['api', '--paginate', `repos/{owner}/{repo}/pulls/${number}/comments?per_page=100`],
+          repoPath,
+        );
+        const parsed = JSON.parse(rc.stdout) as GhReviewComment[];
+        if (Array.isArray(parsed)) reviewComments = parsed;
+      } catch {
+        /* 인라인 코멘트 조회 실패 — 대화 코멘트만으로 강등 */
+      }
       const value: PrDetailResult = {
         ok: true,
-        detail: { number, comments: mapGhDetail(json, json.url ?? '') },
+        detail: { number, comments: mapGhDetail(json, json.url ?? '', reviewComments) },
       };
       this.detailCache.set(key, { updatedAt, value });
       this.evict(this.detailCache);

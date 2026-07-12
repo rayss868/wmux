@@ -689,6 +689,7 @@ export const ko = {
   'git.noRemote': '이 저장소에 origin remote가 없습니다.',
   'git.openInBrowser': '브라우저에서 열기',
   'git.viewFull': '브라우저에서 전체 코멘트 보기',
+  'git.commentsFailed': '코멘트를 불러오지 못했습니다',
   'git.justNow': '방금',
   'settings.gitTabVisible': 'Git 탭 표시',
   'settings.gitTabVisibleDesc':

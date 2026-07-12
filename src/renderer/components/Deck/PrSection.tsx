@@ -22,7 +22,7 @@ type ListState =
   | { kind: 'gated'; code: string; message: string };
 
 interface GithubBridge {
-  prList: (repoPath: string) => Promise<
+  prList: (repoPath: string, force?: boolean) => Promise<
     { ok: true; prs: PrSummary[] } | { ok: false; code: string; message: string }
   >;
   prDetail: (repoPath: string, number: number, updatedAt: string) => Promise<
@@ -69,55 +69,90 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
   const [expanded, setExpanded] = useState<number | null>(null);
   const [comments, setComments] = useState<PrComment[] | null>(null);
   const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsError, setCommentsError] = useState<string | null>(null);
   // 폴 재진입 가드 — 느린 gh 응답 중 인터벌 중첩 방지(DeckScheduler 관례).
   const inFlight = useRef(false);
+  // 현재 repoPath를 ref로 미러 — in-flight 응답이 늦게 와도 repo가 바뀌었으면
+  // 옛 repo의 결과로 새 repo 화면을 덮지 않는다(Codex P2).
+  const repoRef = useRef(repoPath);
+  repoRef.current = repoPath;
+  // 펼친 PR의 마지막 상세 fetch에 쓴 updatedAt — 목록 폴에서 값이 바뀌면
+  // 코멘트를 재조회한다(Codex P2).
+  const expandedUpdatedAt = useRef<string>('');
 
-  const load = useCallback(async () => {
-    if (!repoPath || inFlight.current) return;
+  const fetchComments = useCallback(async (repo: string, pr: PrSummary) => {
+    const bridge = getGithubBridge();
+    if (!bridge) return;
+    setCommentsLoading(true);
+    setCommentsError(null);
+    const res = await bridge.prDetail(repo, pr.number, pr.updatedAt);
+    // repo/expanded가 그새 바뀌었으면 폐기(stale 응답).
+    if (repoRef.current !== repo) return;
+    setCommentsLoading(false);
+    if (res.ok) {
+      expandedUpdatedAt.current = pr.updatedAt;
+      setComments(res.detail.comments);
+    } else {
+      // 실패를 빈 코멘트로 뭉개지 않는다 — 진짜 빈 토론과 구분(Codex P2).
+      setComments(null);
+      setCommentsError(res.message || 'failed to load comments');
+    }
+  }, []);
+
+  const load = useCallback(async (force = false) => {
+    const repo = repoPath;
+    if (!repo || inFlight.current) return;
     const bridge = getGithubBridge();
     if (!bridge) return;
     inFlight.current = true;
     try {
-      const res = await bridge.prList(repoPath);
-      if (res.ok) setState({ kind: 'ready', prs: res.prs });
-      else setState({ kind: 'gated', code: res.code, message: res.message });
+      const res = await bridge.prList(repo, force);
+      // repo가 그새 바뀌었으면 옛 결과로 새 화면을 덮지 않는다(Codex P2).
+      if (repoRef.current !== repo) return;
+      if (res.ok) {
+        setState({ kind: 'ready', prs: res.prs });
+        // 펼친 PR의 updatedAt이 바뀌었으면 그 코멘트를 재조회(Codex P2).
+        if (expanded !== null) {
+          const cur = res.prs.find((p) => p.number === expanded);
+          if (cur && cur.updatedAt !== expandedUpdatedAt.current) void fetchComments(repo, cur);
+        }
+      } else {
+        setState({ kind: 'gated', code: res.code, message: res.message });
+      }
     } finally {
       inFlight.current = false;
     }
-  }, [repoPath]);
+  }, [repoPath, expanded, fetchComments]);
 
   // 마운트/repo 변경 시 즉시 + 30s 성긴 폴(마운트=Git 탭 가시 상태).
   useEffect(() => {
     setState({ kind: 'loading' });
     setExpanded(null);
     setComments(null);
+    setCommentsError(null);
+    expandedUpdatedAt.current = '';
     if (!repoPath) return;
     void load();
     const id = window.setInterval(() => void load(), POLL_MS);
     return () => window.clearInterval(id);
-  }, [repoPath, load]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoPath]);
 
   const toggleExpand = useCallback(
     async (pr: PrSummary) => {
       if (expanded === pr.number) {
         setExpanded(null);
         setComments(null);
+        setCommentsError(null);
         return;
       }
       setExpanded(pr.number);
       setComments(null);
+      setCommentsError(null);
       if (!repoPath) return;
-      const bridge = getGithubBridge();
-      if (!bridge) return;
-      setCommentsLoading(true);
-      const res = await bridge.prDetail(repoPath, pr.number, pr.updatedAt);
-      setCommentsLoading(false);
-      // 응답이 늦게 온 다른 PR의 코멘트로 덮지 않도록 번호 확인은 생략해도
-      // 무해(마지막 클릭이 이긴다) — expanded 상태가 렌더 게이트라 표시 안 됨.
-      if (res.ok) setComments(res.detail.comments);
-      else setComments([]);
+      await fetchComments(repoPath, pr);
     },
-    [expanded, repoPath],
+    [expanded, repoPath, fetchComments],
   );
 
   if (!repoPath) return null;
@@ -135,13 +170,13 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
         </span>
         {state.kind === 'ready' && (
           <span className="text-[10.5px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-            ({state.prs.length})
+            ({state.prs.length >= 100 ? '100+' : state.prs.length})
           </span>
         )}
         <div className="flex-1" />
         <button
           type="button"
-          onClick={() => void load()}
+          onClick={() => void load(true)}
           title={t('git.refresh') || 'Refresh'}
           aria-label={t('git.refresh') || 'Refresh'}
           className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
@@ -226,18 +261,34 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
                     {t('git.loading') || 'Loading…'}
                   </div>
                 )}
-                {!commentsLoading && comments && comments.length === 0 && (
+                {/* 상세 실패는 빈 상태와 구분해 명시(Codex P2). */}
+                {!commentsLoading && commentsError && (
+                  <div className="text-[var(--accent-red,#f87171)] break-words">
+                    {t('git.commentsFailed') || 'Could not load comments'}: {commentsError}
+                  </div>
+                )}
+                {!commentsLoading && !commentsError && comments && comments.length === 0 && (
                   <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                     {t('git.noComments') || 'No comments.'}
                   </div>
                 )}
-                {!commentsLoading &&
+                {!commentsLoading && !commentsError &&
                   comments?.map((c, i) => (
-                    <div key={i} className="py-1 border-t border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
-                      <div className="text-[10px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+                    <div key={i} className="group/comment py-1 border-t border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
+                      <div className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                         <span className="font-semibold">@{c.author}</span>
                         {c.kind === 'review' && c.reviewState && ` · ${c.reviewState.toLowerCase().replaceAll('_', ' ')}`}
                         {c.createdAt && ` · ${relTime(c.createdAt, t)}`}
+                        <div className="flex-1" />
+                        {/* 모든 코멘트에 브라우저 딥링크(비-truncate 포함, Codex P3). */}
+                        <button
+                          type="button"
+                          onClick={() => window.open(c.url, '_blank')}
+                          title={t('git.openInBrowser') || 'Open in browser'}
+                          className="opacity-0 group-hover/comment:opacity-100 transition-opacity hover:text-[var(--text-main)]"
+                        >
+                          ↗
+                        </button>
                       </div>
                       {c.body && (
                         <div className="text-[var(--text-sub)] break-words" {...tokenAttrs('textSub', 'text')}>
