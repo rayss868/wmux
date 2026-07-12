@@ -199,6 +199,9 @@ export const IPC = {
   WORKTREE_LIST: 'worktree:list',
   WORKTREE_ADD: 'worktree:add',
   WORKTREE_REMOVE: 'worktree:remove',
+  // Git 탭 PR 섹션 — gh CLI 기반 PR 목록·코멘트(성긴 pull, 30s TTL)
+  GITHUB_PR_LIST: 'github:prList',
+  GITHUB_PR_DETAIL: 'github:prDetail',
   DIALOG_PICK_FILE: 'dialog:pick-file',
   // File system
   FS_READ_DIR: 'fs:read-dir',

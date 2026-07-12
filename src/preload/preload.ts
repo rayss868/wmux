@@ -405,6 +405,17 @@ const electronAPI = {
   },
   // J2 — diff 리뷰·hunk 채택. worktreePath는 태스크 워크트리, targetHeadOid는
   // 태스크가 분기한 시점의 타겟 HEAD(드리프트 게이트 재료).
+  // Deck Git 탭 PR 섹션 — gh CLI 기반 PR 목록·코멘트(렌더러 전용).
+  github: {
+    prList: (repoPath: string) =>
+      ipcRenderer.invoke(IPC.GITHUB_PR_LIST, repoPath) as Promise<
+        import('../main/ipc/handlers/github.handler').GithubPrListResult
+      >,
+    prDetail: (repoPath: string, number: number, updatedAt: string) =>
+      ipcRenderer.invoke(IPC.GITHUB_PR_DETAIL, repoPath, number, updatedAt) as Promise<
+        import('../main/ipc/handlers/github.handler').GithubPrDetailResult
+      >,
+  },
   // Deck Git 탭 — worktree list/add/remove(렌더러 전용, 파이프 미노출).
   worktree: {
     list: (repoPath: string) =>

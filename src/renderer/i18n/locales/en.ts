@@ -756,6 +756,17 @@ export const en = {
   'git.create': 'Create',
   'git.createFailed': 'Create failed',
   'git.newBranchPlaceholder': 'new branch name…',
+  // Git tab — Pull Requests section (gh CLI).
+  'git.pullRequests': 'Pull Requests',
+  'git.noPrs': 'No open pull requests.',
+  'git.noComments': 'No comments.',
+  'git.ghMissing': 'GitHub CLI (gh) is not installed — install it to see pull requests here.',
+  'git.ghUnauth': 'GitHub CLI is not authenticated — run `gh auth login`.',
+  'git.unsupportedHost': 'origin is not a GitHub host (GitLab support is planned).',
+  'git.noRemote': 'This repository has no origin remote.',
+  'git.openInBrowser': 'Open in browser',
+  'git.viewFull': 'View full comment in browser',
+  'git.justNow': 'now',
   'settings.gitTabVisible': 'Show Git tab',
   'settings.gitTabVisibleDesc':
     'Show the Git tab (worktrees) in the right dock. Informational surface — hide it for a minimal chrome.',

@@ -679,6 +679,17 @@ export const ko = {
   'git.create': '생성',
   'git.createFailed': '생성 실패',
   'git.newBranchPlaceholder': '새 브랜치 이름…',
+  // Git 탭 — Pull Requests 섹션 (gh CLI).
+  'git.pullRequests': 'Pull Requests',
+  'git.noPrs': '열린 PR이 없습니다.',
+  'git.noComments': '코멘트가 없습니다.',
+  'git.ghMissing': 'GitHub CLI(gh)가 설치되어 있지 않습니다 — 설치하면 PR이 여기 표시됩니다.',
+  'git.ghUnauth': 'GitHub CLI가 인증되지 않았습니다 — `gh auth login`을 실행하세요.',
+  'git.unsupportedHost': 'origin이 GitHub 호스트가 아닙니다 (GitLab 지원 예정).',
+  'git.noRemote': '이 저장소에 origin remote가 없습니다.',
+  'git.openInBrowser': '브라우저에서 열기',
+  'git.viewFull': '브라우저에서 전체 코멘트 보기',
+  'git.justNow': '방금',
   'settings.gitTabVisible': 'Git 탭 표시',
   'settings.gitTabVisibleDesc':
     '우측 도크에 Git 탭(워크트리)을 표시합니다. 정보성 표면 — 최소 크롬을 원하면 숨기세요.',
