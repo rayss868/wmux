@@ -19,7 +19,7 @@
 // the fan-out orchestration (lazy-create #commander, invite-before-post the
 // mentioned workspaces, then post the pinned mentions).
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
@@ -361,6 +361,13 @@ function CommanderBrainItem({
   t: (key: string) => string;
 }): React.ReactElement {
   const isUser = message.role === 'user';
+  // An event-woken turn's "user" side is machine-generated (the coalescer's
+  // [pane-events] flush prompt) — rendering it as a full bubble reads as a
+  // wall of text the human never typed. Collapse it to a compact wake badge
+  // with an expander for the raw evidence.
+  if (isUser && message.text.startsWith('[pane-events]')) {
+    return <CommanderWakeBadge message={message} t={t} />;
+  }
   // Chat convention (owner call): YOUR messages sit right-aligned in a lifted
   // bubble with no author label (right = you, always); the orchestrator's
   // prose stays left, chrome-free. Both carry a local HH:MM timestamp.
@@ -436,6 +443,63 @@ function CommanderBrainItem({
         >
           {message.errorText}
         </div>
+      )}
+    </div>
+  );
+}
+
+/** The compact rendition of an event-woken turn's machine-generated prompt:
+ *  one muted mono line ("woken by agent events · N") with an expander for the
+ *  raw [pane-events] block. Right-aligned like a user message (it occupies the
+ *  turn's user slot) but visually a system marker, not a human bubble. */
+function CommanderWakeBadge({
+  message,
+  t,
+}: {
+  message: DeckBrainMessage;
+  t: (key: string) => string;
+}): React.ReactElement {
+  const [expanded, setExpanded] = useState(false);
+  // One `seq=` line per coalesced event — the badge's count.
+  const count = (message.text.match(/^\s+seq=/gm) ?? []).length;
+  return (
+    <div data-commander-wake-badge className="flex flex-col items-end gap-0.5">
+      <div className="flex items-baseline gap-2">
+        <span
+          className="text-[11px] font-mono text-[var(--text-muted)]"
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          » {t('deck.wokenByEvents') || 'Woken by agent events'}
+          {count > 0 ? ` · ${count}` : ''}
+        </span>
+        <button
+          type="button"
+          data-commander-wake-toggle
+          onClick={() => setExpanded((v) => !v)}
+          className={`text-[10.5px] text-[var(--text-muted)] underline underline-offset-2 hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          {expanded
+            ? t('deck.wokenHide') || 'Hide'
+            : t('deck.wokenShow') || 'Details'}
+        </button>
+        {message.ts && (
+          <span
+            className="text-[9.5px] font-mono text-[var(--text-muted)]"
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {formatChatTime(message.ts)}
+          </span>
+        )}
+      </div>
+      {expanded && (
+        <pre
+          data-commander-wake-raw
+          className="max-w-[85%] overflow-x-auto rounded-[4px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.55)] text-[10.5px] font-mono leading-relaxed text-[var(--text-sub)] whitespace-pre-wrap break-words"
+          {...tokenAttrs('textSub', 'text')}
+        >
+          {message.text}
+        </pre>
       )}
     </div>
   );

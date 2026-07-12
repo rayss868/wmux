@@ -44,18 +44,33 @@ function fakeApi(initial: WorkspaceLoopState | null = null): DeckLoopApi & {
   stopped: string[];
   paused: string[];
   resumed: string[];
+  taskCalls: unknown[];
 } {
   const state = { loop: initial };
   const started: unknown[] = [];
   const stopped: string[] = [];
   const paused: string[] = [];
   const resumed: string[] = [];
+  const taskCalls: unknown[] = [];
   return {
     started,
     stopped,
     paused,
     resumed,
-    get: async () => ({ loop: state.loop }),
+    taskCalls,
+    get: async () => ({ loop: state.loop, wakeBudget: { remaining: 7, total: 25 } }),
+    setTask: async (args) => {
+      taskCalls.push(args);
+      if (state.loop) {
+        state.loop = {
+          ...state.loop,
+          tasks: state.loop.tasks.map((task) =>
+            task.id === args.taskId ? { ...task, passes: args.passes } : task,
+          ),
+        };
+      }
+      return { ok: true, ...(state.loop ? { loop: state.loop } : {}) };
+    },
     start: async (args) => {
       started.push(args);
       state.loop = loopState({
@@ -161,7 +176,7 @@ describe('DeckLoopPanel', () => {
     expect(container.querySelector('[data-deck-loop-error]')).not.toBeNull();
   });
 
-  it('running loop → chip shows passing count + live dot; card lists tasks read-only', async () => {
+  it('running loop → chip shows passing count + live dot; card shows tasks + wake budget', async () => {
     await mount(fakeApi(loopState()));
     const toggle = container.querySelector('[data-deck-loop-toggle]')!;
     expect(toggle.textContent).toContain('Loop 1/2');
@@ -170,9 +185,23 @@ describe('DeckLoopPanel', () => {
     const tasks = container.querySelector('[data-deck-loop-tasks]')!;
     expect(tasks.textContent).toContain('[x] tests pass');
     expect(tasks.textContent).toContain('[ ] lint clean');
-    // Read-only: no checkbox inputs — the human edits by stopping/restarting,
-    // the brain never writes passes (v1 posture).
-    expect(tasks.querySelectorAll('input').length).toBe(0);
+    // The live auto-wake budget readout.
+    expect(container.querySelector('[data-deck-loop-status]')!.textContent).toContain('wake 7/25');
+  });
+
+  it('the HUMAN ticks a checklist item — setTask called with the toggled value', async () => {
+    const api = fakeApi(loopState());
+    await mount(api);
+    await open();
+    const rows = container.querySelectorAll('[data-deck-loop-task]');
+    expect(rows.length).toBe(2);
+    // Tick the unpassed item…
+    await act(async () => { (rows[1] as HTMLButtonElement).click(); });
+    expect(api.taskCalls).toContainEqual({ workspaceId: 'ws-1', taskId: 't2', passes: true });
+    // …and un-tick the passed one.
+    const rows2 = container.querySelectorAll('[data-deck-loop-task]');
+    await act(async () => { (rows2[0] as HTMLButtonElement).click(); });
+    expect(api.taskCalls).toContainEqual({ workspaceId: 'ws-1', taskId: 't1', passes: false });
   });
 
   it('stop / pause / resume call the OFF-contract endpoints with the workspace', async () => {

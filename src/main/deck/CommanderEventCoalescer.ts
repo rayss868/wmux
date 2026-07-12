@@ -199,9 +199,15 @@ export class CommanderEventCoalescer {
     return this.states.get(workspaceId)?.phase ?? 'idle';
   }
   getWakeBudgetRemaining(workspaceId: string): number {
-    const st = this.states.get(workspaceId);
-    const budget = this.effectiveBudget(workspaceId);
-    return Math.max(0, budget - (st?.autoWakesUsed ?? 0));
+    return this.getWakeBudget(workspaceId).remaining;
+  }
+  /** The human-facing budget readout (loop status card): how many auto-wakes
+   *  remain out of the budget in force right now (loop iterations while a loop
+   *  runs, else the ambient default). */
+  getWakeBudget(workspaceId: string): { remaining: number; total: number } {
+    const total = this.effectiveBudget(workspaceId);
+    const used = this.states.get(workspaceId)?.autoWakesUsed ?? 0;
+    return { remaining: Math.max(0, total - used), total };
   }
   getWatermark(workspaceId: string): number {
     return this.states.get(workspaceId)?.watermark ?? 0;

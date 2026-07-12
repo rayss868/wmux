@@ -72,6 +72,12 @@ vi.mock('../../../deck/deckLoopStateStore', () => ({
     return l;
   }),
   setLoopScheduleId: vi.fn(async () => null),
+  setTaskPasses: vi.fn(async (ws: string, taskId: string, passes: boolean) => {
+    const l = loops.get(ws);
+    if (!l) return null;
+    l.tasks = l.tasks.map((task) => (task.id === taskId ? { ...task, passes } : task));
+    return l;
+  }),
 }));
 
 // Autonomy store: record every cap write.
@@ -282,8 +288,29 @@ describe('deck:loop:stop / pause / resume — the OFF contract', () => {
     });
   });
 
-  it('get returns the loop; stop/pause on a loopless workspace is a safe no-op', async () => {
-    expect(await invoke(IPC.DECK_LOOP_GET, { workspaceId: 'ws-1' })).toEqual({ loop: null });
+  it('the human ticks a done-when item via deck:loop:task (the only passes writer)', async () => {
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'o', taskTexts: ['a', 'b'] });
+    const res = await invoke(IPC.DECK_LOOP_TASK, { workspaceId: 'ws-1', taskId: 't0', passes: true });
+    expect(res.ok).toBe(true);
+    expect(loops.get('ws-1')!.tasks[0].passes).toBe(true);
+    // Missing taskId / workspace → safe reject.
+    expect((await invoke(IPC.DECK_LOOP_TASK, { workspaceId: 'ws-1' })).ok).toBe(false);
+    expect((await invoke(IPC.DECK_LOOP_TASK, { taskId: 't0', passes: true })).ok).toBe(false);
+  });
+
+  it('get returns the loop AND the live wake budget (ambient default without a loop)', async () => {
+    const bare = await invoke(IPC.DECK_LOOP_GET, { workspaceId: 'ws-1' });
+    expect(bare.loop).toBeNull();
+    // No loop → the coalescer's ambient budget (5/5, nothing consumed).
+    expect(bare.wakeBudget).toEqual({ remaining: 5, total: 5 });
+    // A running loop's iterations take over as the total.
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'o', iterations: 12 });
+    const withLoop = await invoke(IPC.DECK_LOOP_GET, { workspaceId: 'ws-1' });
+    expect(withLoop.wakeBudget).toEqual({ remaining: 12, total: 12 });
+  });
+
+  it('stop/pause on a loopless workspace is a safe no-op', async () => {
+    expect((await invoke(IPC.DECK_LOOP_GET, { workspaceId: 'ws-1' })).loop).toBeNull();
     expect((await invoke(IPC.DECK_LOOP_PAUSE, { workspaceId: 'ws-1' })).ok).toBe(false);
     const stop = await invoke(IPC.DECK_LOOP_STOP, { workspaceId: 'ws-1' });
     expect(stop.ok).toBe(true); // idempotent

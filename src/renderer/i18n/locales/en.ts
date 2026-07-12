@@ -806,6 +806,9 @@ export const en = {
   'deck.loopNoWorkspace': 'Open a workspace first — a loop belongs to a workspace.',
   'deck.loopNeedsObjective': 'Give the loop an objective.',
   'deck.loopStartFailed': 'Could not start the loop.',
+  'deck.wokenByEvents': 'Woken by agent events',
+  'deck.wokenShow': 'Details',
+  'deck.wokenHide': 'Hide',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.

@@ -134,6 +134,10 @@ export const IPC = {
   DECK_LOOP_STOP: 'deck:loop:stop',
   DECK_LOOP_PAUSE: 'deck:loop:pause',
   DECK_LOOP_RESUME: 'deck:loop:resume',
+  //   DECK_LOOP_TASK — the HUMAN ticks a done-when checklist item. The brain
+  //   never writes `passes` (v1 posture: no self-scored done); this is the
+  //   human's pen.
+  DECK_LOOP_TASK: 'deck:loop:task',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

@@ -335,6 +335,13 @@ const electronAPI = {
       get: (workspaceId: string) =>
         ipcRenderer.invoke(IPC.DECK_LOOP_GET, { workspaceId }) as Promise<{
           loop: import('../main/deck/deckLoopStateStore').WorkspaceLoopState | null;
+          wakeBudget: { remaining: number; total: number } | null;
+        }>,
+      // The human ticks a done-when item (the only writer of `passes`).
+      setTask: (args: { workspaceId: string; taskId: string; passes: boolean }) =>
+        ipcRenderer.invoke(IPC.DECK_LOOP_TASK, args) as Promise<{
+          ok: boolean;
+          loop?: import('../main/deck/deckLoopStateStore').WorkspaceLoopState;
         }>,
       start: (args: {
         workspaceId: string;

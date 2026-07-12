@@ -25,7 +25,17 @@ import { FOCUS_RING } from '../focusRing';
 import type { WorkspaceLoopState, LoopTier } from '../../../main/deck/deckLoopStateStore';
 
 export interface DeckLoopApi {
-  get: (workspaceId: string) => Promise<{ loop: WorkspaceLoopState | null }>;
+  get: (workspaceId: string) => Promise<{
+    loop: WorkspaceLoopState | null;
+    /** Live auto-wake budget (optional — older preloads may omit it). */
+    wakeBudget?: { remaining: number; total: number } | null;
+  }>;
+  /** The human ticks a done-when item — the only writer of `passes`. */
+  setTask: (args: {
+    workspaceId: string;
+    taskId: string;
+    passes: boolean;
+  }) => Promise<{ ok: boolean; loop?: WorkspaceLoopState }>;
   start: (args: {
     workspaceId: string;
     objective: string;
@@ -67,6 +77,7 @@ export function DeckLoopPanel({
     (window.electronAPI as unknown as { deck?: { loop?: DeckLoopApi } } | undefined)?.deck?.loop;
   const [open, setOpen] = useState(false);
   const [loop, setLoop] = useState<WorkspaceLoopState | null>(null);
+  const [wakeBudget, setWakeBudget] = useState<{ remaining: number; total: number } | null>(null);
   const [objective, setObjective] = useState('');
   const [doneWhen, setDoneWhen] = useState('');
   const [tier, setTier] = useState<LoopTier>('report');
@@ -79,6 +90,7 @@ export function DeckLoopPanel({
     try {
       const r = await resolvedApi.get(workspaceId);
       setLoop(r.loop);
+      setWakeBudget(r.wakeBudget ?? null);
     } catch {
       /* main gone — leave the stale view */
     }
@@ -178,20 +190,35 @@ export function DeckLoopPanel({
                 >
                   {loop.status}
                   {loop.tasks.length > 0 ? ` · ${passing}/${loop.tasks.length}` : ''}
+                  {wakeBudget ? ` · wake ${wakeBudget.remaining}/${wakeBudget.total}` : ''}
                 </span>
               </div>
+              {/* Done-when checklist — the HUMAN ticks items (the only writer
+                  of `passes`; the brain never self-scores). Ticking the last
+                  one flips the loop to done; un-ticking re-opens it. */}
               {loop.tasks.length > 0 && (
                 <div className="space-y-0.5" data-deck-loop-tasks>
                   {loop.tasks.map((task) => (
-                    <div
+                    <button
                       key={task.id}
-                      className={`text-[11.5px] font-mono leading-relaxed ${
+                      type="button"
+                      data-deck-loop-task
+                      data-task-id={task.id}
+                      role="checkbox"
+                      aria-checked={task.passes}
+                      onClick={() => {
+                        if (!workspaceId) return;
+                        void resolvedApi
+                          .setTask({ workspaceId, taskId: task.id, passes: !task.passes })
+                          .then(() => refresh());
+                      }}
+                      className={`block w-full text-left text-[11.5px] font-mono leading-relaxed hover:opacity-80 transition-opacity ${
                         task.passes ? 'text-[var(--text-muted)] line-through' : 'text-[var(--text-sub)]'
-                      }`}
+                      } ${FOCUS_RING}`}
                       {...(task.passes ? tokenAttrs('textMuted', 'text') : tokenAttrs('textSub', 'text'))}
                     >
                       [{task.passes ? 'x' : ' '}] {task.text}
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}

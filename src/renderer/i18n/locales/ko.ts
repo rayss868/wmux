@@ -729,6 +729,9 @@ export const ko = {
   'deck.loopNoWorkspace': '먼저 워크스페이스를 여세요 — 루프는 워크스페이스에 속합니다.',
   'deck.loopNeedsObjective': '루프의 목표를 입력하세요.',
   'deck.loopStartFailed': '루프를 시작하지 못했습니다.',
+  'deck.wokenByEvents': '에이전트 이벤트로 깨어남',
+  'deck.wokenShow': '자세히',
+  'deck.wokenHide': '접기',
   // operator-join (설계 §3) — 접힘 기본 발견 섹션 + join 확인 다이얼로그. 이 접힘이
   // 의도 게이트다: 펼치기 전에는 비공개 채널명이 화면에 존재하지 않는다.
   'channels.operatorSection': '모든 채널',

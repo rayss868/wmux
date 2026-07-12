@@ -44,6 +44,7 @@ import {
   startLoop,
   clearLoop,
   setLoopStatus,
+  setTaskPasses,
   LOOP_STATE_LIMITS,
   type WorkspaceLoopState,
   type LoopTier,
@@ -450,12 +451,41 @@ export function registerDeckHandler(
     wrapHandler(IPC.DECK_LOOP_GET, async (
       _event: Electron.IpcMainInvokeEvent,
       raw: unknown,
-    ): Promise<{ loop: WorkspaceLoopState | null }> => {
+    ): Promise<{
+      loop: WorkspaceLoopState | null;
+      /** The live auto-wake budget (loop iterations while running, else the
+       *  ambient default) — the status card's `wake r/t` readout. */
+      wakeBudget: { remaining: number; total: number } | null;
+    }> => {
       const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
         ? (raw as Record<string, unknown>)
         : {};
       const workspaceId = readWorkspaceId(req);
-      return { loop: workspaceId ? loadWorkspaceLoopState(workspaceId) : null };
+      if (!workspaceId) return { loop: null, wakeBudget: null };
+      return {
+        loop: loadWorkspaceLoopState(workspaceId),
+        wakeBudget: coalescer?.getWakeBudget(workspaceId) ?? null,
+      };
+    }),
+  );
+
+  // The HUMAN ticks a done-when item. Deliberately the only writer of `passes`
+  // (the brain has no tool for it — v1's no-self-scored-done posture).
+  ipcMain.removeHandler(IPC.DECK_LOOP_TASK);
+  ipcMain.handle(
+    IPC.DECK_LOOP_TASK,
+    wrapHandler(IPC.DECK_LOOP_TASK, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; loop?: WorkspaceLoopState }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      const taskId = typeof req.taskId === 'string' ? req.taskId : '';
+      if (!workspaceId || !taskId) return { ok: false };
+      const loop = await setTaskPasses(workspaceId, taskId, req.passes === true);
+      return loop ? { ok: true, loop } : { ok: false };
     }),
   );
 
@@ -632,5 +662,6 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_LOOP_STOP);
     ipcMain.removeHandler(IPC.DECK_LOOP_PAUSE);
     ipcMain.removeHandler(IPC.DECK_LOOP_RESUME);
+    ipcMain.removeHandler(IPC.DECK_LOOP_TASK);
   };
 }
