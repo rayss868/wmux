@@ -1,14 +1,16 @@
 // Git 탭 PR 섹션 — github:prList / github:prDetail main 핸들러.
 //
-// 렌더러 전용 IPC(파이프 미노출). 흐름: origin 호스트 감지 → github면 gh
-// 게이트(설치·인증) → GhPrService(30s TTL 캐시). 모든 실패는 code를 담아
-// fail-soft로 강등 — 렌더러가 게이트 안내문/빈 상태로 렌더한다.
+// 렌더러 전용 IPC(파이프 미노출). 흐름: origin hostname 감지 → github.com
+// 계열이면 gh(GhPrService), 그 외 모든 호스트는 glab(GlabPrService — self-
+// hosted GitLab 포함, 게이트가 그 호스트 인증을 검사). 모든 실패는 code를
+// 담아 fail-soft로 강등 — 렌더러가 게이트 안내문/빈 상태로 렌더한다.
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import { detectProviderHost } from '../../github/PrProvider';
-import type { PrSummary, PrDetail } from '../../github/PrProvider';
+import { detectRemoteHost, isGithubHost } from '../../github/PrProvider';
+import type { PrSummary, PrDetail, PrProvider } from '../../github/PrProvider';
 import { ghPrService } from '../../github/GhPrService';
+import { glabPrService } from '../../github/GlabPrService';
 
 export type GithubPrListResult =
   | { ok: true; prs: PrSummary[] }
@@ -22,14 +24,16 @@ export type GithubPrDetailResult =
   | { ok: true; detail: PrDetail }
   | { ok: false; code: 'error'; message: string };
 
+/** hostname → provider. github.com 계열은 gh, 그 외 전부 glab 경로. */
+function providerFor(host: string): PrProvider {
+  return isGithubHost(host) ? ghPrService : glabPrService;
+}
+
 async function prList(repoPath: string, force: boolean): Promise<GithubPrListResult> {
-  const host = await detectProviderHost(repoPath);
-  if (host === 'none') return { ok: false, code: 'no-remote', message: 'no origin remote' };
-  if (host !== 'github') {
-    // provider 추상화 v1 = GitHub만. GitLab(glab)은 후속 구현체.
-    return { ok: false, code: 'unsupported-host', message: 'origin is not a GitHub host' };
-  }
-  const gate = await ghPrService.gate(repoPath);
+  const host = await detectRemoteHost(repoPath);
+  if (!host) return { ok: false, code: 'no-remote', message: 'no origin remote' };
+  const provider = providerFor(host);
+  const gate = await provider.gate(repoPath, host);
   if (!gate.ok) {
     return {
       ok: false,
@@ -37,7 +41,7 @@ async function prList(repoPath: string, force: boolean): Promise<GithubPrListRes
       message: gate.message,
     };
   }
-  const res = await ghPrService.listPrs(repoPath, force);
+  const res = await provider.listPrs(repoPath, force);
   if (!res.ok) return { ok: false, code: 'error', message: res.error };
   return { ok: true, prs: res.prs };
 }
@@ -71,7 +75,10 @@ export function registerGithubHandlers(): () => void {
         if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
           return { ok: false, code: 'error', message: 'valid PR number required' };
         }
-        const res = await ghPrService.prDetail(
+        // 목록과 동일한 provider로 라우팅(호스트 재감지 — 상세는 저빈도라 무해).
+        const host = await detectRemoteHost(repoPath);
+        if (!host) return { ok: false, code: 'error', message: 'no origin remote' };
+        const res = await providerFor(host).prDetail(
           repoPath,
           number,
           typeof updatedAt === 'string' ? updatedAt : '',
