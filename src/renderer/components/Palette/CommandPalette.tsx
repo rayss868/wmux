@@ -307,6 +307,10 @@ export default function CommandPalette() {
             }
             const repoName = r.repoPath.split(/[/\\]/).filter(Boolean).pop() || r.repoPath;
             st.addWorkspaceDiffSurface(leaf.id, r.repoPath, `diff: ${repoName}`);
+          }).catch((err) => {
+            // IPC reject(핸들러 미등록·직렬화 실패 등)도 무음이 아니라 토스트로.
+            useStore.getState().pushToast({ level: 'warn', message: t('diff.noRepo') });
+            console.error('[wmux:palette] diff.resolveRepo failed:', err);
           });
           setVisible(false);
         },
