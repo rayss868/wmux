@@ -61,6 +61,7 @@ import {
   type RecoveryPane,
 } from './deckRecovery';
 import { buildQuickActions, type DeckQuickAction } from './deckQuickActions';
+import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
@@ -329,12 +330,15 @@ function CommanderBrainItem({
         {isUser ? t('channels.me') || 'Me' : t('deck.commander') || 'Orchestrator'}
       </span>
       {message.text && (
+        // Assistant prose renders as markdown (headings/lists/code from the
+        // model); the human's own message stays literal text — what they
+        // typed is what they see.
         <div
-          className="text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
+          className={`text-[13px] leading-relaxed text-[var(--text-main)] break-words ${isUser ? 'whitespace-pre-wrap' : ''}`}
           data-commander-brain-text
           {...tokenAttrs('textMain', 'text')}
         >
-          {message.text}
+          {isUser ? message.text : renderBrainMarkdown(message.text)}
         </div>
       )}
       {/* Tool calls — flat monospace LOG LINES in call order (design decision
