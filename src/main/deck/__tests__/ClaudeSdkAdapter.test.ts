@@ -3,6 +3,8 @@
 // is hit; electron + the SDK module are mocked at import time.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as path from 'path';
+import * as os from 'os';
 
 vi.mock('electron', () => ({
   app: {
@@ -23,6 +25,10 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 vi.mock('../commanderMemory', () => ({
   loadCommanderMemory: vi.fn((opts?: { workspaceId?: string }) => `MEM[${opts?.workspaceId ?? ''}]`),
   loadGlobalMemory: vi.fn(() => ''),
+  // Defensive: the Write sandbox falls back to this only when no memoryRoot is
+  // injected AND canUseTool fires. Tests that exercise canUseTool inject their
+  // own memoryRoot, so this is a safety net, not a live path.
+  getMemoryRootDir: vi.fn(() => '/fake/mem'),
 }));
 
 import {
@@ -137,14 +143,59 @@ describe('ClaudeSdkAdapter', () => {
     adapter.start({ systemPrompt: 'SYS' });
     await collect(adapter.send('go'));
     expect(calls[0].options.disallowedTools).toEqual(DISALLOWED_TOOLS);
-    for (const t of ['Agent', 'Task', 'Bash', 'Write', 'Edit']) {
+    for (const t of ['Agent', 'Task', 'Bash', 'Edit']) {
       expect(DISALLOWED_TOOLS).toContain(t);
     }
+    // M1b: Write is no longer hard-disallowed — it flows through the canUseTool
+    // sandbox instead, and must stay out of BOTH lists (allowedTools would
+    // bypass the sandbox; disallowedTools would remove it entirely).
+    expect(DISALLOWED_TOOLS).not.toContain('Write');
+    expect(DEFAULT_ALLOWED_TOOLS).not.toContain('Write');
     // The disallow list and the allow list must never overlap — a tool in both
     // would be ambiguous at the CLI layer.
     for (const t of DISALLOWED_TOOLS) {
       expect(DEFAULT_ALLOWED_TOOLS).not.toContain(t);
     }
+  });
+
+  it('installs a canUseTool sandbox that allows own-memory Write and denies the rest', async () => {
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    // Inject a hermetic memory root so the sandbox never touches ~/.wmux.
+    const memoryRoot = path.join(os.tmpdir(), 'wmux-m1b-adapter-test');
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => '',
+      workspaceId: 'ws-1',
+      memoryRoot,
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+
+    const canUseTool = calls[0].options.canUseTool as (
+      toolName: string,
+      input: Record<string, unknown>,
+    ) => Promise<{ behavior: string; message?: string }>;
+    expect(typeof canUseTool).toBe('function');
+
+    // Allowed: a `.md` write into this workspace's own partition.
+    const allowed = await canUseTool('Write', {
+      file_path: path.join(memoryRoot, 'ws-1', 'note.md'),
+    });
+    expect(allowed.behavior).toBe('allow');
+
+    // Denied: a write outside the memory sandbox entirely.
+    const deniedPath = await canUseTool('Write', {
+      file_path: path.join(os.tmpdir(), 'escape.md'),
+    });
+    expect(deniedPath.behavior).toBe('deny');
+
+    // Denied: any other tool that reaches the callback.
+    const deniedTool = await canUseTool('Bash', { command: 'rm -rf /' });
+    expect(deniedTool.behavior).toBe('deny');
   });
 
   it('grounds real-pane agent launches in the system prompt (no theater)', () => {

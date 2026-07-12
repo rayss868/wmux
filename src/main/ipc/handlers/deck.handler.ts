@@ -24,6 +24,7 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { BrainAdapter, BrainEvent } from '../../deck/BrainAdapter';
 import { ClaudeSdkAdapter, buildCommanderSystemPrompt } from '../../deck/ClaudeSdkAdapter';
+import { getMemoryRootDir } from '../../deck/commanderMemory';
 import {
   CommanderSessionManager,
   type CommanderSendResult,
@@ -112,7 +113,12 @@ export function registerDeckHandler(
       adapter: createAdapter({ workspaceId, ...(model ? { model } : {}) }),
       sink: (event) => emit(workspaceId, event),
       startOptions: {
-        systemPrompt: buildCommanderSystemPrompt(),
+        // Bake the brain's REAL memory-folder paths into the write policy (M1b)
+        // so it persists learnings to an absolute path, not a guessed one.
+        systemPrompt: buildCommanderSystemPrompt(undefined, {
+          memoryRoot: getMemoryRootDir(),
+          workspaceId,
+        }),
         ...(fleetContext ? { fleetContext } : {}),
         ...(persisted ? { resumeSessionId: persisted.sessionId } : {}),
       },

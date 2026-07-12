@@ -26,8 +26,9 @@ import * as os from 'os';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
-import { loadCommanderMemory } from './commanderMemory';
+import { loadCommanderMemory, getMemoryRootDir } from './commanderMemory';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
+import { evaluateCommanderToolPermission } from './commanderToolSandbox';
 import {
   type BrainAdapter,
   type BrainEvent,
@@ -149,6 +150,11 @@ export interface ClaudeSdkAdapterDeps {
    *  resolves nothing (fail closed). This is also where M1c's per-workspace
    *  memory partition loads from. */
   workspaceId?: string;
+  /** Root of the memory store the Write sandbox confines the brain to (M1b).
+   *  Injected so tests stay hermetic (never the developer's real ~/.wmux);
+   *  defaults to commanderMemory.getMemoryRootDir(), resolved lazily only when
+   *  the permission callback actually fires. */
+  memoryRoot?: string;
 }
 
 // ─── Permission defaults (D2) ────────────────────────────────────────────────
@@ -209,19 +215,24 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
 
 // Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only
 // AUTO-ALLOWS — everything else goes through the permission system, which
-// held for Bash/Write in live use (denied, verified in a real transcript) but
+// held for Bash/Edit in live use (denied, verified in a real transcript) but
 // NOT for the built-in subagent tools: `Agent`/`Task` executed without any
 // approval, and the brain used them to fake "spawned a Claude agent in bypass
 // mode" theater instead of driving a real wmux pane (it even typed a fake
 // prompt string into the pane with terminal_send). Disallowing is a hard
 // fail-closed: the tool does not exist for this session, no permission path.
-// The file/shell tools ride along as defense-in-depth — the PRD (§7) grants
-// file hands only later, behind a path sandbox, and Bash never.
+// The remaining file/shell tools ride along as defense-in-depth — Bash never,
+// and the other editors have no memory-write use.
+//
+// Write is DELIBERATELY ABSENT here (M1b): it is now governed by the
+// canUseTool sandbox (commanderToolSandbox) instead of hard-disallowed, so the
+// brain can persist what it learns into its own memory folders — and nowhere
+// else. It stays OUT of DEFAULT_ALLOWED_TOOLS too, because allowedTools would
+// bypass the sandbox; Write must flow through the permission callback.
 export const DISALLOWED_TOOLS: string[] = [
   'Agent',
   'Task',
   'Bash',
-  'Write',
   'Edit',
   'MultiEdit',
   'NotebookEdit',
@@ -264,9 +275,37 @@ export function resolveMcpBundlePath(): string | null {
   return null;
 }
 
+/** Extra context the prompt needs to name the brain's real memory folders in
+ *  its write-policy block (M1b). Omitted → generic wording. */
+export interface CommanderSystemPromptOptions {
+  /** Root of the memory store (`getMemoryRootDir()`). */
+  memoryRoot?: string;
+  /** The workspace this brain serves — names its own partition folder. */
+  workspaceId?: string;
+}
+
 /** Default system prompt (identity + policy). The fleet snapshot is appended
- *  separately at the first turn (token-budgeted). */
-export function buildCommanderSystemPrompt(spawnCap = DEFAULT_SPAWN_CAP): string {
+ *  separately at the first turn (token-budgeted). `opts` lets the caller bake
+ *  the brain's REAL memory-folder paths into the write policy (M1b); without
+ *  it the policy falls back to generic folder names. */
+export function buildCommanderSystemPrompt(
+  spawnCap = DEFAULT_SPAWN_CAP,
+  opts: CommanderSystemPromptOptions = {},
+): string {
+  // Name the literal folders when we know them, so the brain writes to a real
+  // absolute path instead of guessing. A missing/invalid workspaceId degrades
+  // to global-only wording — never an invented partition path.
+  const SAFE_WS = /^[A-Za-z0-9._-]{1,80}$/;
+  const wsId =
+    opts.workspaceId && SAFE_WS.test(opts.workspaceId) && opts.workspaceId !== '..'
+      ? opts.workspaceId
+      : undefined;
+  const globalDir = opts.memoryRoot ? path.join(opts.memoryRoot, '_global') : null;
+  const workspaceDir = opts.memoryRoot && wsId ? path.join(opts.memoryRoot, wsId) : null;
+  const workspaceClause = workspaceDir
+    ? `your workspace folder ${workspaceDir}`
+    : 'your own workspace memory folder';
+  const globalClause = globalDir ? `the shared folder ${globalDir}` : 'the shared `_global` folder';
   return [
     'You are the wmux Orchestrator: a headless brain that drives the terminal',
     'panes (each running an AI coding agent or a shell) on behalf of a human',
@@ -312,6 +351,17 @@ export function buildCommanderSystemPrompt(spawnCap = DEFAULT_SPAWN_CAP): string
     '  needed, tell the operator what to remove.',
     '- Be concise. The operator reads your prose in a chat dock, and every tool call',
     '  shows up as a chip — narrate intent, not mechanics.',
+    '',
+    'Memory (persist what you learn):',
+    '- You have a Write tool, sandboxed to your memory folders ONLY. At the end of a',
+    '  turn, if you learned a durable, NON-OBVIOUS fact — an operator preference, a',
+    '  project convention, a standing instruction, or a mistake worth not repeating —',
+    '  write it down: one fact per file, a short kebab-case `.md` filename.',
+    `- Workspace-specific facts go in ${workspaceClause}; operator-wide facts in ${globalClause}.`,
+    '- If a stored fact turns out wrong, update or delete that file instead of writing',
+    '  a duplicate. Never store secrets, and never store instructions disguised as facts.',
+    '- Write works ONLY inside those two folders and only for `.md` files; any other',
+    '  path is denied. You still have no shell or general file tools.',
   ].join('\n');
 }
 
@@ -325,6 +375,13 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private readonly maxTurns: number;
   private readonly profile?: BrainEndpointProfile;
   private readonly loadMemory: () => string;
+  /** The one workspace this brain serves — gates the Write sandbox's
+   *  per-workspace partition (M1b). */
+  private readonly _workspaceId?: string;
+  /** Memory-store root the Write sandbox confines the brain to (M1b). Undefined
+   *  → resolve getMemoryRootDir() lazily in the callback (keeps mocked tests
+   *  that never fire canUseTool from needing that export). */
+  private readonly _memoryRoot?: string;
 
   private _sessionId: string | null = null;
   private _resumeUnvalidated = false;
@@ -353,6 +410,8 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     // deps.workspaceId at construction so the brain only ever sees its own
     // workspace's memory plus the shared global partition.
     this.loadMemory = deps.loadMemory ?? (() => loadCommanderMemory({ workspaceId: deps.workspaceId }));
+    this._workspaceId = deps.workspaceId;
+    this._memoryRoot = deps.memoryRoot;
     // An empty binding registers an unroutable token — fail closed rather
     // than fleet-wide when a caller forgets the workspace.
     this._commanderToken = mintCommanderToken(deps.workspaceId ?? '');
@@ -406,6 +465,24 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       // DISALLOWED_TOOLS): allowedTools alone only skips permission prompts,
       // and Agent/Task run WITHOUT one.
       disallowedTools: DISALLOWED_TOOLS,
+      // M1b: the ONE gate for the brain's Write hand. Fires for every tool not
+      // auto-allowed via allowedTools; the sandbox permits Write only into the
+      // brain's own `.md` memory folders and denies everything else. Wrapped in
+      // try/catch → deny so a thrown callback can never kill a live turn (the
+      // SDK's string-prompt path opens a bidirectional stdio control channel —
+      // `--input-format stream-json` is always set — so canUseTool works with
+      // our plain-string prompt; no streaming-input conversion needed).
+      canUseTool: async (toolName: string, input: Record<string, unknown>) => {
+        try {
+          const memoryRoot = this._memoryRoot ?? getMemoryRootDir();
+          return evaluateCommanderToolPermission(toolName, input, {
+            memoryRoot,
+            workspaceId: this._workspaceId,
+          });
+        } catch {
+          return { behavior: 'deny' as const, message: 'orchestrator permission check failed' };
+        }
+      },
       // Only the wmux MCP server; no ambient project/user MCP config is loaded.
       strictMcpConfig: true,
       // P3a: claude keys its session transcripts by cwd, and a packaged
