@@ -499,6 +499,10 @@ export interface SessionData {
   /** Orchestrator (deck brain) model override — '' / absent = the
    *  subscription's default model. A claude model alias or full id. */
   deckBrainModel?: string;
+  /** Whether the deck shows the Channels tab (human channel UI). Default
+   *  false — the orchestrator is the single interface; the tab is an
+   *  opt-in inspection surface (Settings). */
+  channelsTabVisible?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting

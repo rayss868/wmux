@@ -538,6 +538,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.defaultShell) state.defaultShell = data.defaultShell;
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;
+      // Fail closed to hidden: only an explicit boolean shows the (frozen)
+      // human channel UI.
+      if (typeof data.channelsTabVisible === 'boolean') {
+        state.channelsTabVisible = data.channelsTabVisible;
+      }
       if (data.splitInheritsCwd != null) state.splitInheritsCwd = data.splitInheritsCwd;
       if (data.imeResidueGuardEnabled != null) state.imeResidueGuardEnabled = data.imeResidueGuardEnabled;
       // Fail closed: only an explicit boolean enables retention. A corrupted /

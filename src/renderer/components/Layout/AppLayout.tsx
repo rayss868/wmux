@@ -217,6 +217,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalFontFamily: state.terminalFontFamily,
     defaultShell: state.defaultShell,
     deckBrainModel: state.deckBrainModel || undefined,
+    channelsTabVisible: state.channelsTabVisible,
     splitInheritsCwd: state.splitInheritsCwd,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
     hiddenPaneRetentionEnabled: state.hiddenPaneRetentionEnabled,

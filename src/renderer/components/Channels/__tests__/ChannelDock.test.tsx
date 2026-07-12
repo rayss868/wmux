@@ -30,11 +30,14 @@ describe('channel dock — wiring regression guard', () => {
   it('ChannelDock is a Command Deck: tab bar + Commander tab (default) over the channels tab', () => {
     // Phase 1 P1a — the dock gained a [Commander] [Channels] tab bar; Commander
     // is the default and the classic list/conversation moved under the channels
-    // tab (conditional render, code otherwise unchanged).
+    // tab (conditional render, code otherwise unchanged). The channels view is
+    // ALSO gated on channelsTabVisible (human channel UI frozen — the tab is a
+    // Settings opt-in), so a stale persisted activeDeckTab can never render it.
     expect(dock).toMatch(/<DeckTabs\b/);
     expect(dock).toMatch(/<CommanderView\s*\/>/);
     expect(dock).toContain('activeDeckTab');
-    expect(dock).toMatch(/activeDeckTab === 'commander'/);
+    expect(dock).toMatch(/activeDeckTab === 'channels' && channelsTabVisible/);
+    expect(dock).toMatch(/showChannels=\{channelsTabVisible\}/);
   });
 
   it('ChannelView is dock content, NOT a fixed covering overlay', () => {
