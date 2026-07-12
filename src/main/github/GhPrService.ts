@@ -226,7 +226,8 @@ export class GhPrService implements PrProvider {
     });
   }
 
-  async gate(repoPath: string): Promise<PrGate> {
+  // host 인자는 미사용 — gh는 github.com 인증이 곧 게이트(PrProvider 계약 참조).
+  async gate(repoPath: string, _host?: string): Promise<PrGate> {
     if (this.ghAvailable === false) {
       return { ok: false, reason: 'cli-missing', message: 'GitHub CLI (gh) is not installed' };
     }

@@ -2,7 +2,7 @@
 // PrStatusCache 테스트 스타일). + PrProvider의 remote 호스트 분류.
 import { describe, it, expect, vi } from 'vitest';
 import { GhPrService, mapGhListItem, mapGhDetail } from '../GhPrService';
-import { classifyRemoteUrl } from '../PrProvider';
+import { parseRemoteHost, isGithubHost } from '../PrProvider';
 import { PR_COMMENT_BODY_CAP } from '../../../shared/prSurface';
 
 type ExecCall = { cmd: string; args: string[] };
@@ -189,15 +189,22 @@ describe('GhPrService — 목록 TTL·상세 updatedAt 캐시', () => {
   });
 });
 
-describe('classifyRemoteUrl — provider 호스트 감지', () => {
+describe('parseRemoteHost / isGithubHost — provider 라우팅 재료', () => {
   it.each([
-    ['https://github.com/o/r.git', 'github'],
-    ['git@github.com:o/r.git', 'github'],
-    ['ssh://git@github.com/o/r', 'github'],
-    ['https://gitlab.com/o/r.git', 'unknown'],
-    ['git@gitlab.example.com:o/r.git', 'unknown'],
-    ['', 'none'],
+    ['https://github.com/o/r.git', 'github.com'],
+    ['git@github.com:o/r.git', 'github.com'],
+    ['ssh://git@github.com/o/r', 'github.com'],
+    ['https://gitlab.com/o/r.git', 'gitlab.com'],
+    ['git@gitlab.example.com:o/r.git', 'gitlab.example.com'],
+    ['https://oauth2@gitlab.company.io/team/repo.git', 'gitlab.company.io'],
+    ['', null],
   ])('%s → %s', (url, expected) => {
-    expect(classifyRemoteUrl(url)).toBe(expected);
+    expect(parseRemoteHost(url)).toBe(expected);
+  });
+
+  it('github.com 계열만 gh 경로', () => {
+    expect(isGithubHost('github.com')).toBe(true);
+    expect(isGithubHost('gitlab.com')).toBe(false);
+    expect(isGithubHost('gitlab.company.io')).toBe(false);
   });
 });

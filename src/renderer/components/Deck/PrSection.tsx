@@ -196,17 +196,16 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
       )}
 
       {state.kind === 'gated' && (
-        // gh 미설치/미인증/비GitHub — fail-closed 안내(조용한 빈 섹션 금지).
+        // CLI 미설치/미인증/무remote — fail-closed 안내(조용한 빈 섹션 금지).
+        // cli-missing/unauthenticated 문구는 provider(gh/glab)별로 다르므로
+        // 핸들러가 내려준 message를 우선한다(self-hosted면 호스트명 포함).
         <div className="px-3 py-3 text-[11px] text-[var(--text-muted)] break-words" {...tokenAttrs('textMuted', 'text')}>
-          {state.code === 'cli-missing'
-            ? t('git.ghMissing') || 'GitHub CLI (gh) is not installed.'
-            : state.code === 'unauthenticated'
-              ? t('git.ghUnauth') || 'GitHub CLI is not authenticated — run `gh auth login`.'
-              : state.code === 'unsupported-host'
-                ? t('git.unsupportedHost') || 'origin is not a GitHub host (GitLab support is planned).'
-                : state.code === 'no-remote'
-                  ? t('git.noRemote') || 'This repository has no origin remote.'
-                  : state.message}
+          {state.code === 'no-remote'
+            ? t('git.noRemote') || 'This repository has no origin remote.'
+            : state.message ||
+              (state.code === 'cli-missing'
+                ? t('git.ghMissing') || 'CLI is not installed.'
+                : t('git.ghUnauth') || 'CLI is not authenticated.')}
         </div>
       )}
 
