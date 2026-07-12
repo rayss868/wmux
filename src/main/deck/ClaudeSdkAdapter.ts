@@ -206,6 +206,26 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   WMUX('send_message'),
 ];
 
+// Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only
+// AUTO-ALLOWS — everything else goes through the permission system, which
+// held for Bash/Write in live use (denied, verified in a real transcript) but
+// NOT for the built-in subagent tools: `Agent`/`Task` executed without any
+// approval, and the brain used them to fake "spawned a Claude agent in bypass
+// mode" theater instead of driving a real wmux pane (it even typed a fake
+// prompt string into the pane with terminal_send). Disallowing is a hard
+// fail-closed: the tool does not exist for this session, no permission path.
+// The file/shell tools ride along as defense-in-depth — the PRD (§7) grants
+// file hands only later, behind a path sandbox, and Bash never.
+export const DISALLOWED_TOOLS: string[] = [
+  'Agent',
+  'Task',
+  'Bash',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+];
+
 /** Spawn ceiling the system prompt instructs the brain to respect (D2 = 8).
  *  Phase 2 states it as an instruction; a HARD cap (counting pane_split calls
  *  and revoking the tool) is a deferred follow-up — noted in the impl plan. */
@@ -275,9 +295,17 @@ export function buildCommanderSystemPrompt(spawnCap = DEFAULT_SPAWN_CAP): string
     '- To see the agents, call pane_list / workspace_list. To inspect a pane, use',
     '  terminal_read. To act, use pane_split (spawn), terminal_send (instruct), and',
     '  the channel_* / a2a_* tools (coordinate).',
+    '- LAUNCHING AN AGENT means running its real CLI in a real pane: pane_split to',
+    '  get a terminal, then terminal_send the actual command (e.g. `claude`, or',
+    '  `claude --dangerously-skip-permissions` for bypass mode) with submit, then',
+    '  terminal_read to confirm it started. You have NO built-in subagents — the',
+    '  Agent/Task tools are disabled. Never type a fake prompt or banner into a',
+    '  pane to make it LOOK like an agent is running: an agent either really runs',
+    '  in a pane or you say plainly that it does not.',
     '- Prefer delegating work to worker panes over doing it yourself. Split work into',
     '  parallel panes when it genuinely parallelizes; keep the human informed with a',
-    '  short summary at the end of each turn.',
+    '  short summary at the end of each turn. You have no shell or file tools of',
+    '  your own — anything that needs one runs in a worker pane via terminal_send.',
     `- Do NOT spawn more than ${spawnCap} panes in a session unless the operator asks.`,
     '- You cannot close panes or tear down workspaces in this version; if cleanup is',
     '  needed, tell the operator what to remove.',
@@ -370,6 +398,10 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       env: this.buildEnv(),
       maxTurns: this.maxTurns,
       allowedTools: this.allowedTools,
+      // Hard-remove the built-in subagent/file/shell tools (see
+      // DISALLOWED_TOOLS): allowedTools alone only skips permission prompts,
+      // and Agent/Task run WITHOUT one.
+      disallowedTools: DISALLOWED_TOOLS,
       // Only the wmux MCP server; no ambient project/user MCP config is loaded.
       strictMcpConfig: true,
       // P3a: claude keys its session transcripts by cwd, and a packaged
