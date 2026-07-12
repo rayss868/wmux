@@ -21,6 +21,7 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import type { Pane, PaneLeaf } from '../../../shared/types';
 import type { WorktreeEntry } from '../../../shared/worktreeParse';
+import { PrSection } from './PrSection';
 
 // 활성 워크스페이스의 활성 pane → 활성 surface cwd (팔레트 Show Git Diff와 동일 규칙).
 // 셀렉터로도 재사용(store 상태에서 원시 문자열로 수렴 — 리렌더 최소화).
@@ -182,7 +183,9 @@ export function GitTab(): React.ReactElement {
 
   return (
     <div data-git-tab className="flex flex-col flex-1 min-h-0 text-[12px]">
-      {/* 섹션 헤더 — 36px 크롬 행. */}
+      {/* Pull Requests 섹션 — gh 기반(미설치/비GitHub은 안내문으로 강등). */}
+      <PrSection repoPath={repoPath} />
+      {/* 워크트리 섹션 헤더 — 36px 크롬 행. */}
       <div
         className="flex items-center gap-2 h-9 px-3 shrink-0 border-b border-[var(--bg-surface)]"
         style={{ borderColor: 'var(--border-soft)' }}

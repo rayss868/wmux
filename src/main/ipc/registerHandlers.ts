@@ -22,6 +22,7 @@ import { registerFsHandlers } from './handlers/fs.handler';
 import { registerToolbarHandlers } from './handlers/toolbar.handler';
 import { registerDiffHandlers } from './handlers/diff.handler';
 import { registerWorktreeHandlers } from './handlers/worktree.handler';
+import { registerGithubHandlers } from './handlers/github.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerLanLinkHandlers } from './handlers/lanlink.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
@@ -157,6 +158,8 @@ export function registerAllHandlers(
   const cleanupDiff = registerDiffHandlers();
   // Deck Git 탭 — worktree list/add/remove. git 전용(데몬 무관) — 항상 등록.
   const cleanupWorktree = registerWorktreeHandlers();
+  // Deck Git 탭 PR 섹션 — gh CLI 기반(미설치/미인증은 fail-closed 안내).
+  const cleanupGithub = registerGithubHandlers();
   const cleanupMcp = options.mcpRegistrar
     ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
     : null;
@@ -314,6 +317,7 @@ export function registerAllHandlers(
     cleanupToolbar();
     cleanupDiff();
     cleanupWorktree();
+    cleanupGithub();
     if (cleanupMcp) cleanupMcp();
     if (cleanupLanLink) cleanupLanLink();
     // Mirror the register-side removeHandler so a teardown leaves no stale
