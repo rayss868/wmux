@@ -66,19 +66,25 @@ export default function DeckFleet({
 }) {
   const t = useT();
   const workspaces = useStore((s) => s.workspaces);
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
   const surfaceActivity = useStore((s) => s.surfaceActivity);
   const paneLabel = useStore((s) => s.paneLabel);
 
   const panes = useMemo(() => {
     const all = selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel });
-    // Roster = live terminal panes only (browser/editor/diff surfaces and
-    // not-yet-spawned panes are not agents).
+    // Roster = live terminal panes of the ACTIVE workspace only (M1.5: the
+    // deck is this workspace's orchestrator, so its roster is this
+    // workspace's agents — the fleet-wide view lives in the titlebar vitals).
+    // Browser/editor/diff surfaces and not-yet-spawned panes are not agents.
     return sortFleetPanes(
-      all.filter((p) => p.ptyId !== '' && p.surfaceType === 'terminal'),
+      all.filter(
+        (p) =>
+          p.ptyId !== '' && p.surfaceType === 'terminal' && p.workspaceId === activeWorkspaceId,
+      ),
       'attention',
     );
-  }, [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel]);
+  }, [workspaces, activeWorkspaceId, surfaceAgentStatus, surfaceActivity, paneLabel]);
 
   if (panes.length === 0) return null;
 

@@ -142,8 +142,11 @@ export function CommanderViewContent({
   return (
     <div
       data-commander-view
-      className="flex flex-col flex-1 min-h-0 bg-[var(--bg-base)]"
-      {...tokenAttrs('bgBase', 'bg')}
+      // Mantle, not base: the deck is chrome (one panel family with the
+      // sidebar and the dock shell around it — DESIGN.md layout contract);
+      // painting base here made the thread read as a detached page.
+      className="flex flex-col flex-1 min-h-0 bg-[var(--bg-mantle)]"
+      {...tokenAttrs('bgMantle', 'bg')}
     >
       {/* P2① — Fleet roster pinned above the thread (does not scroll with it). */}
       {fleetSlot}
