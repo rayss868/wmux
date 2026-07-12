@@ -25,7 +25,14 @@ import {
 } from '../../../shared/worktreeParse';
 
 export type WorktreeListResult =
-  | { ok: true; repoPath: string; worktrees: WorktreeEntry[] }
+  | {
+      ok: true;
+      /** 호출 컨텍스트의 worktree toplevel(현재 워크트리 — GUI의 "현재" dot 기준). */
+      repoPath: string;
+      /** 본(main) 워크트리 경로 — porcelain 첫 블록(git 계약: main이 항상 먼저). */
+      mainPath: string;
+      worktrees: WorktreeEntry[];
+    }
   | { ok: false; error: string };
 
 export type WorktreeMutateResult =
@@ -60,7 +67,11 @@ async function listWorktrees(repoPath: string): Promise<WorktreeListResult> {
   if (!top) return { ok: false, error: 'not a git repository' };
   const r = await git(['worktree', 'list', '--porcelain'], top);
   if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };
-  return { ok: true, repoPath: top, worktrees: parseWorktreePorcelain(r.stdout) };
+  const worktrees = parseWorktreePorcelain(r.stdout);
+  // dogfood가 잡은 실버그: top은 "호출한 워크트리"의 toplevel이지 본 repo가
+  // 아니다(linked worktree에서 열면 자기 자신). 본 워크트리는 porcelain 첫
+  // 블록이 계약이므로 그걸로 mainPath를 분리해 내려준다.
+  return { ok: true, repoPath: top, mainPath: worktrees[0]?.path ?? top, worktrees };
 }
 
 async function addWorktree(repoPath: string, branch: string): Promise<WorktreeMutateResult> {
@@ -105,7 +116,11 @@ async function removeWorktree(repoPath: string, worktreePath: string): Promise<W
   const norm = (p: string) => resolve(p).replace(/[/\\]+$/, '').toLowerCase();
   const target = entries.find((e) => norm(e.path) === norm(worktreePath));
   if (!target) return { ok: false, error: 'not a listed worktree of this repository' };
-  if (norm(target.path) === norm(top)) return { ok: false, error: 'cannot remove the main worktree' };
+  // 본 워크트리 = porcelain 첫 블록(top이 아니라 — top은 호출 컨텍스트의
+  // 워크트리일 수 있다). 현재 서 있는 워크트리 제거는 git 자신이 cwd 사유로
+  // 거부하므로 별도 가드 불요.
+  const mainPath = entries[0]?.path ?? top;
+  if (norm(target.path) === norm(mainPath)) return { ok: false, error: 'cannot remove the main worktree' };
   return withRepoLock(top.toLowerCase(), async () => {
     // --force 없음: dirty/잠김 워크트리는 git이 거부하며 그 사유를 그대로 표면화.
     const r = await git(['worktree', 'remove', target.path], top);

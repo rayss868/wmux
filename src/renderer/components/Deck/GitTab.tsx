@@ -45,7 +45,8 @@ function pathLeaf(p: string): string {
 
 interface WorktreeBridge {
   list: (repoPath: string) => Promise<
-    { ok: true; repoPath: string; worktrees: WorktreeEntry[] } | { ok: false; error: string }
+    | { ok: true; repoPath: string; mainPath: string; worktrees: WorktreeEntry[] }
+    | { ok: false; error: string }
   >;
   add: (repoPath: string, branch: string) => Promise<
     { ok: true; worktreePath: string } | { ok: false; error: string }
@@ -69,6 +70,9 @@ export function GitTab(): React.ReactElement {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const pushToast = useStore((s) => s.pushToast);
   const [repoPath, setRepoPath] = useState<string | null>(null);
+  // 본(main) 워크트리 경로 — "main" 배지·Remove 숨김 기준. 현재 워크트리
+  // (dot 기준)와 별개다: linked worktree에서 열면 둘이 다르다(dogfood 실측).
+  const [mainPath, setMainPath] = useState<string>('');
   const [currentWorktree, setCurrentWorktree] = useState<string>('');
   const [worktrees, setWorktrees] = useState<WorktreeEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,6 +105,7 @@ export function GitTab(): React.ReactElement {
       setWorktrees([]);
     } else {
       setRepoPath(res.repoPath);
+      setMainPath(res.mainPath);
       setWorktrees(res.worktrees);
     }
     setLoading(false);
@@ -156,7 +161,7 @@ export function GitTab(): React.ReactElement {
   }, []);
 
   const norm = (p: string) => p.replace(/[/\\]+$/, '').replace(/\\/g, '/').toLowerCase();
-  const isMain = (wt: WorktreeEntry) => repoPath !== null && norm(wt.path) === norm(repoPath);
+  const isMain = (wt: WorktreeEntry) => mainPath !== '' && norm(wt.path) === norm(mainPath);
   const isCurrent = (wt: WorktreeEntry) => currentWorktree !== '' && norm(wt.path) === norm(currentWorktree);
 
   return (

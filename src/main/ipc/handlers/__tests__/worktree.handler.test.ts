@@ -106,6 +106,24 @@ describe('worktree.handler — list/add/remove 왕복', () => {
     expect(main.error).toContain('main worktree');
   });
 
+  it('list — linked worktree 컨텍스트에서도 mainPath는 본 repo(dogfood 회귀)', async () => {
+    const add = captured.get(IPC.WORKTREE_ADD)!;
+    const list = captured.get(IPC.WORKTREE_LIST)!;
+    const a = (await add({}, scn.repo, 'feat/ctx')) as MutRes;
+    expect(a.ok).toBe(true);
+    // 링크드 워크트리 "안에서" 목록을 열면: repoPath=자기 자신, mainPath=본 repo.
+    const r = (await list({}, a.worktreePath!)) as ListRes & { mainPath?: string };
+    expect(r.ok).toBe(true);
+    const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+    expect(norm(r.repoPath!)).toBe(norm(a.worktreePath!));
+    expect(norm(r.mainPath!)).toBe(norm(scn.repo));
+    // 본 워크트리 remove는 어느 컨텍스트에서도 거부.
+    const remove = captured.get(IPC.WORKTREE_REMOVE)!;
+    const m = (await remove({}, a.worktreePath!, scn.repo)) as MutRes;
+    expect(m.ok).toBe(false);
+    expect(m.error).toContain('main worktree');
+  });
+
   it('list — 비-git 경로는 fail-soft', async () => {
     const list = captured.get(IPC.WORKTREE_LIST)!;
     const plain = join(scn.base, 'plain');
