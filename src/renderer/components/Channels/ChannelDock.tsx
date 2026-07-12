@@ -30,6 +30,7 @@ import { ChannelsPanel, sumUnread } from './ChannelsPanel';
 import { ChannelView } from './ChannelView';
 import { DeckTabs } from '../Deck/DeckTabs';
 import { CommanderView } from '../Deck/CommanderView';
+import { GitTab } from '../Deck/GitTab';
 import { OrchestratorModelChip } from '../Deck/OrchestratorModelChip';
 import { FOCUS_RING } from '../focusRing';
 
@@ -51,9 +52,12 @@ export default function ChannelDock(): React.ReactElement {
   // snaps activeDeckTab back to commander when the tab is turned off, but a
   // stale persisted 'channels' can never render either — the guard below.
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
+  const gitTabVisible = useStore((s) => s.gitTabVisible);
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const t = useT();
   const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
+  // 채널과 동일 가드: 토글 OFF 상태의 stale 'git' 탭은 렌더 불가(커맨더 폴백).
+  const showGitView = activeDeckTab === 'git' && gitTabVisible;
 
   // Workspace sidebar is on `sidebarPosition`; the dock is on the opposite
   // edge. When the sidebar is on the LEFT (default), the dock is on the RIGHT,
@@ -69,15 +73,16 @@ export default function ChannelDock(): React.ReactElement {
       {...tokenAttrs('bgSurface', 'border')}
     >
       <DeckTabs
-        active={showChannelsView ? 'channels' : 'commander'}
+        active={showChannelsView ? 'channels' : showGitView ? 'git' : 'commander'}
         onSelect={setActiveDeckTab}
         channelsUnread={sumUnread(channelUnread)}
         showChannels={channelsTabVisible}
+        showGit={gitTabVisible}
         rightSlot={
           <>
             {/* Orchestrator model — visible + switchable next to its name,
                 only on the Commander tab (it's the brain's setting). */}
-            {!showChannelsView && <OrchestratorModelChip />}
+            {!showChannelsView && !showGitView && <OrchestratorModelChip />}
             {/* Collapse the whole dock (terminals reclaim the width); reopen
                 from the StatusBar dock toggle. Arrow points toward the edge the
                 dock sits on. */}
@@ -99,7 +104,10 @@ export default function ChannelDock(): React.ReactElement {
         t={t}
       />
 
-      {!showChannelsView ? (
+      {showGitView ? (
+        // Git tab — the workspace's git surface (worktrees; PRs next PR).
+        <GitTab />
+      ) : !showChannelsView ? (
         // Commander tab — the LLM-less command composer + fan-out thread.
         <CommanderView />
       ) : (

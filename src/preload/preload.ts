@@ -405,6 +405,21 @@ const electronAPI = {
   },
   // J2 — diff 리뷰·hunk 채택. worktreePath는 태스크 워크트리, targetHeadOid는
   // 태스크가 분기한 시점의 타겟 HEAD(드리프트 게이트 재료).
+  // Deck Git 탭 — worktree list/add/remove(렌더러 전용, 파이프 미노출).
+  worktree: {
+    list: (repoPath: string) =>
+      ipcRenderer.invoke(IPC.WORKTREE_LIST, repoPath) as Promise<
+        import('../main/ipc/handlers/worktree.handler').WorktreeListResult
+      >,
+    add: (repoPath: string, branch: string) =>
+      ipcRenderer.invoke(IPC.WORKTREE_ADD, repoPath, branch) as Promise<
+        import('../main/ipc/handlers/worktree.handler').WorktreeMutateResult
+      >,
+    remove: (repoPath: string, worktreePath: string) =>
+      ipcRenderer.invoke(IPC.WORKTREE_REMOVE, repoPath, worktreePath) as Promise<
+        import('../main/ipc/handlers/worktree.handler').WorktreeMutateResult
+      >,
+  },
   diff: {
     // 워크스페이스 diff — 임의 cwd를 자기 worktree toplevel로 정규화(비-git이면 ok:false).
     resolveRepo: (cwd: string) =>

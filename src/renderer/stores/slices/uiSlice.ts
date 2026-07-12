@@ -141,6 +141,12 @@ export interface UISlice {
   channelsTabVisible: boolean;
   setChannelsTabVisible: (visible: boolean) => void;
 
+  // Whether the deck shows the Git tab (worktrees; PRs/comments in a later
+  // PR). Default ON — an informational surface, not an agent capability, so
+  // fail-closed gating isn't warranted; hideable for minimal-chrome setups.
+  gitTabVisible: boolean;
+  setGitTabVisible: (visible: boolean) => void;
+
   // Issue #174: split panes inherit the splitting pane's cwd (default on).
   splitInheritsCwd: boolean;
   setSplitInheritsCwd: (enabled: boolean) => void;
@@ -763,6 +769,16 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     // Hiding the tab while it is the active one must not leave the deck on an
     // unreachable surface — snap back to the orchestrator.
     if (!visible && state.activeDeckTab === 'channels') {
+      state.activeDeckTab = 'commander';
+    }
+  }),
+
+  gitTabVisible: true,
+
+  setGitTabVisible: (visible) => set((state) => {
+    state.gitTabVisible = visible;
+    // Same unreachable-surface guard as channels: snap back to the orchestrator.
+    if (!visible && state.activeDeckTab === 'git') {
       state.activeDeckTab = 'commander';
     }
   }),
