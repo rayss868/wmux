@@ -736,6 +736,7 @@ export const en = {
   'deck.tabsAriaLabel': 'Command deck tabs',
   'deck.tabCommander': 'Orchestrator',
   'deck.tabChannels': 'Channels',
+  'deck.collapseDock': 'Collapse dock',
   'deck.commanderPlaceholder': 'Tell the orchestrator, or @mention panes…',
   'deck.commanderEmpty':
     'Ask the orchestrator to run your agents, or @mention agent panes to command them directly.',

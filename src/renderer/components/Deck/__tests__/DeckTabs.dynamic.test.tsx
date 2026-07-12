@@ -20,6 +20,7 @@ function mount(props: {
   onSelect?: (t: DeckTab) => void;
   channelsUnread?: number;
   showChannels?: boolean;
+  rightSlot?: React.ReactNode;
 }): void {
   act(() => {
     root.render(
@@ -28,6 +29,7 @@ function mount(props: {
         onSelect: props.onSelect ?? vi.fn(),
         channelsUnread: props.channelsUnread,
         ...(props.showChannels !== undefined ? { showChannels: props.showChannels } : {}),
+        ...(props.rightSlot !== undefined ? { rightSlot: props.rightSlot } : {}),
         t: (k: string) => k,
       }),
     );
@@ -90,5 +92,20 @@ describe('DeckTabs', () => {
     expect(container.querySelector('[data-deck-tab="commander"]')).not.toBeNull();
     expect(container.querySelector('[data-deck-tab="channels"]')).toBeNull();
     expect(container.querySelector('[data-deck-tab-unread]')).toBeNull();
+  });
+
+  it('renders rightSlot header controls after the tabs', () => {
+    mount({
+      active: 'commander',
+      rightSlot: createElement('button', { 'data-test-chip': 'true' }, 'chip'),
+    });
+    const controls = container.querySelector('[data-deck-header-controls]');
+    expect(controls).not.toBeNull();
+    expect(controls?.querySelector('[data-test-chip]')).not.toBeNull();
+  });
+
+  it('renders no header-controls container when rightSlot is omitted', () => {
+    mount({ active: 'commander' });
+    expect(container.querySelector('[data-deck-header-controls]')).toBeNull();
   });
 });
