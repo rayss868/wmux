@@ -17,6 +17,9 @@ export interface SurfaceSlice {
   /** J2 — diff 리뷰 서피스 추가. taskId만 영속(diff 내용은 파생 데이터).
    * 같은 taskId가 이미 열려 있으면 그 탭으로 전환. editor/browser처럼 ptyId 없음. */
   addDiffSurface: (paneId: string, taskId: string, title?: string, workspaceId?: string, ownerWorkspaceId?: string) => void;
+  /** 워크스페이스 diff 서피스 — repoPath(worktree toplevel)만 영속(diff 내용은 파생).
+   * 같은 repoPath가 이미 열려 있으면 그 탭으로 전환. diff/editor처럼 ptyId 없음. */
+  addWorkspaceDiffSurface: (paneId: string, repoPath: string, title?: string, workspaceId?: string) => void;
   /** Close a surface tab. `workspaceId` lets RPC/CLI callers target a
    * non-active workspace (defaults to the active one — existing callers are
    * unchanged). */
@@ -170,6 +173,33 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       diffTaskId: taskId,
       // F1: task.mission.* RPC가 owner 스코프라 owner(부모) ws id를 실어둔다.
       ...(ownerWorkspaceId ? { diffOwnerWorkspaceId: ownerWorkspaceId } : {}),
+    };
+    pane.surfaces.push(surface);
+    pane.activeSurfaceId = surface.id;
+  }),
+
+  addWorkspaceDiffSurface: (paneId, repoPath, title, workspaceId) => set((state: StoreState) => {
+    const targetWsId = workspaceId || state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
+    if (!ws) return;
+    const pane = findLeafPane(ws.rootPane, paneId);
+    if (!pane) return;
+    // 같은 repo diff가 이미 열려 있으면 그 탭으로 전환(addDiffSurface와 동형).
+    const existing = pane.surfaces.find(
+      (s) => s.surfaceType === 'diff' && s.diffRepoPath === repoPath,
+    );
+    if (existing) {
+      pane.activeSurfaceId = existing.id;
+      return;
+    }
+    const surface: Surface = {
+      id: generateId('surface'),
+      ptyId: '',
+      title: title || 'Diff',
+      shell: '',
+      cwd: '',
+      surfaceType: 'diff',
+      diffRepoPath: repoPath,
     };
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;

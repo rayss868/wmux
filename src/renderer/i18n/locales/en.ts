@@ -118,6 +118,7 @@ export const en = {
   'palette.cmd.openBrowser': 'Open Browser',
   'palette.cmd.openFleetView': 'Open Fleet View',
   'palette.cmd.openWorktaskCleanup': 'Open Task Cleanup List',
+  'palette.cmd.showGitDiff': 'Show Git Diff',
   // J3 — task cleanup list (WorktaskCleanupView)
   'worktask.cleanup.title': 'Task Cleanup List',
   'worktask.cleanup.rescan': 'Rescan',
@@ -831,6 +832,8 @@ export const en = {
   // J4 — diff comment fired to the mission channel. {count} = number of task
   // agents @-mentioned (0 when every agent has left the channel).
   'diff.commentFired': 'Comment posted to the mission channel — pinged {count} agent(s)',
+  // Workspace git diff — palette entry rejected: the pane's cwd is not a git repo.
+  'diff.noRepo': 'Not a git repository — open a pane inside a repo first',
 } as const;
 
 export type TranslationKey = keyof typeof en;

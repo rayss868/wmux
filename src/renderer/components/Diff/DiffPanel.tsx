@@ -3,7 +3,7 @@
 // §6.J 문면 준수: "읽기·코멘트·체크아웃 3동작만 — 풀 IDE diff 에디터 금지."
 // 파일 트리(numstat) + unified diff(+/- 색만) + hunk 체크박스 + 채택 버튼 +
 // 실패 hunk 표시 + "적용됨"/"채택불가" 뱃지 + 코멘트 버튼.
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type {
   DiffFile,
   DiffReadResult,
@@ -16,8 +16,19 @@ import { HUMAN_WORKSPACE_ID, CHANNEL_MENTIONS_MAX } from '../../../shared/channe
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 
+/**
+ * diff 대상 유니온 — 기존 태스크 워크트리(J2, hunk 채택·코멘트·PR 포함)와
+ * 워크스페이스 repo(읽기 전용: git diff HEAD + untracked)를 한 컴포넌트가
+ * 렌더한다. fork 대신 유니온: diffParse 렌더·캡·truncated 로직의 이중화를 막는다.
+ * 워크스페이스 모드는 task 결합부(미션채널 코멘트·채택·PR·close)를 전부 가드로
+ * 끈다 — §6.J "읽기·코멘트·체크아웃 3동작" 계약 내의 순수 열람 표면.
+ */
+export type DiffPanelSource =
+  | { kind: 'task'; taskId: string }
+  | { kind: 'workspace'; repoPath: string };
+
 interface DiffPanelProps {
-  taskId: string;
+  source: DiffPanelSource;
   isActive: boolean;
   surfaceId: string;
   /** 렌더러 신원 앵커(채널 포스트용). */
@@ -282,7 +293,26 @@ function HunkBody({ bodyLines }: { bodyLines: readonly string[] }) {
   );
 }
 
-export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspaceId }: DiffPanelProps) {
+// 크롬 emoji 금지(DESIGN.md) — 코멘트 액션은 monochrome 말풍선 glyph.
+function IconComment() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M2 2.5h10a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 2.5V10.5H2a1 1 0 01-1-1v-6a1 1 0 011-1z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspaceId }: DiffPanelProps) {
+  // source는 렌더마다 새 객체일 수 있으므로(호출부 인라인 구성) 원시값으로 분해해
+  // load 콜백의 dep로 쓴다 — 객체 identity를 dep에 넣으면 매 렌더 refetch 루프.
+  const isTask = source.kind === 'task';
+  const taskId = source.kind === 'task' ? source.taskId : '';
+  const repoPath = source.kind === 'workspace' ? source.repoPath : '';
   const [meta, setMeta] = useState<TaskMeta | null>(null);
   const [data, setData] = useState<DiffReadResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -305,22 +335,31 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
     setError(null);
     setApplyMsg(null);
     setFailedProbes(new Set());
-    const m = await resolveTaskMeta(taskId, verifiedWorkspaceId);
-    if (!m) {
-      setError('태스크를 찾을 수 없음 — worktree 소실 또는 손상');
-      setLoading(false);
-      return;
+    let readPath: string;
+    if (isTask) {
+      const m = await resolveTaskMeta(taskId, verifiedWorkspaceId);
+      if (!m) {
+        setError('태스크를 찾을 수 없음 — worktree 소실 또는 손상');
+        setLoading(false);
+        return;
+      }
+      setMeta(m);
+      // F10: 코멘트 역조회(실패는 빈 목록 — diff 렌더는 막지 않음).
+      setComments(await loadDiffComments(m.missionChannelId, taskId, verifiedWorkspaceId));
+      readPath = m.worktreePath;
+    } else {
+      // 워크스페이스 모드 — 태스크 역참조·코멘트 없음. repoPath는 diff:resolveRepo가
+      // 정규화한 worktree toplevel이므로 그대로 읽는다(diff:read가 일반 repo에서
+      // merge-base HEAD HEAD = HEAD → `git diff HEAD` + untracked 합성으로 동작).
+      readPath = repoPath;
     }
-    setMeta(m);
-    // F10: 코멘트 역조회(실패는 빈 목록 — diff 렌더는 막지 않음).
-    setComments(await loadDiffComments(m.missionChannelId, taskId, verifiedWorkspaceId));
     const bridge = getDiffBridge();
     if (!bridge) {
       setError('diff 브릿지 미가용');
       setLoading(false);
       return;
     }
-    const res = await bridge.read(m.worktreePath);
+    const res = await bridge.read(readPath);
     if (!res.ok) {
       setError(res.error);
       setData(null);
@@ -329,11 +368,19 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
       if (res.files.length > 0) setSelectedFile(res.files[0].path);
     }
     setLoading(false);
-  }, [taskId, verifiedWorkspaceId]);
+  }, [isTask, taskId, repoPath, verifiedWorkspaceId]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 워크스페이스 diff는 파생 데이터 — 탭 재활성화(비활성→활성 전이) 때 재읽기.
+  // 태스크 모드는 기존 수동 Reload 계약 유지(채택 selection이 refetch로 날아가면 안 됨).
+  const wasActiveRef = useRef(isActive);
+  useEffect(() => {
+    if (!isTask && isActive && !wasActiveRef.current) void load();
+    wasActiveRef.current = isActive;
+  }, [isActive, isTask, load]);
 
   const filesByPath = useMemo(() => {
     const map = new Map<string, DiffFile>();
@@ -563,6 +610,10 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
       <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--bg-surface)] border-b border-[var(--bg-mantle)] shrink-0 text-xs">
         <span className="text-[var(--text-main)] font-semibold">Diff</span>
         {meta && <span className="text-[var(--text-muted)] text-[10px]">{meta.branch}</span>}
+        {/* 워크스페이스 모드 — 브랜치는 스냅샷에서(태스크 meta 없음). */}
+        {!isTask && data && (
+          <span className="text-[var(--text-muted)] text-[10px]">{data.snapshot.targetBranch}</span>
+        )}
         <div className="flex-1" />
         <button
           className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
@@ -570,14 +621,17 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
         >
           Reload
         </button>
-        <button
-          className="px-2 py-0.5 rounded text-[10px] bg-[var(--accent-blue,#3b82f6)] text-white disabled:opacity-40"
-          onClick={() => void handleAdopt()}
-          disabled={applying || selectedCount === 0}
-          title="선택한 hunk를 타겟 워킹트리에 채택"
-        >
-          {applying ? '채택 중...' : `채택 (${selectedCount})`}
-        </button>
+        {/* 채택은 태스크 모드 전용 — 워크스페이스 모드는 repo 자신 대상이라 무의미(읽기 전용). */}
+        {isTask && (
+          <button
+            className="px-2 py-0.5 rounded text-[10px] bg-[var(--accent-blue,#3b82f6)] text-white disabled:opacity-40"
+            onClick={() => void handleAdopt()}
+            disabled={applying || selectedCount === 0}
+            title="선택한 hunk를 타겟 워킹트리에 채택"
+          >
+            {applying ? '채택 중...' : `채택 (${selectedCount})`}
+          </button>
+        )}
         {/* J3 §2·§1 — 1클릭 PR·close. F11: closed 태스크에선 숨긴다(worktree 제거됨). */}
         {meta && meta.status !== 'closed' && (
           <>
@@ -619,7 +673,12 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
             {error}
           </div>
         )}
-        {!loading && !error && data && (
+        {!loading && !error && data && data.files.length === 0 && (
+          <div className="flex items-center justify-center w-full text-[var(--text-muted)] text-sm">
+            변경사항 없음 — 워킹트리가 clean합니다
+          </div>
+        )}
+        {!loading && !error && data && data.files.length > 0 && (
           <>
             {/* 파일 트리(numstat) */}
             <div className="w-56 shrink-0 overflow-y-auto border-r border-[var(--bg-mantle)] text-[11px]">
@@ -667,7 +726,7 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
                   return (
                     <div key={idx} className="mb-2 border border-[var(--bg-mantle)] rounded overflow-hidden">
                       <div className="flex items-center gap-2 px-2 py-1 bg-[var(--bg-surface)] text-[10px]">
-                        {activeFile.hunkSelectable && (
+                        {isTask && activeFile.hunkSelectable && (
                           <input
                             type="checkbox"
                             checked={checked}
@@ -686,7 +745,7 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
                             onClick={() => void handleComment(activeFile.path, hunk.header)}
                             title="이 hunk에 코멘트"
                           >
-                            💬
+                            <IconComment />
                           </button>
                         )}
                         {meta?.channelArchived && (

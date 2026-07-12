@@ -73,6 +73,7 @@ export const ko = {
   'palette.cmd.openBrowser': '브라우저 열기',
   'palette.cmd.openFleetView': 'Fleet View 열기',
   'palette.cmd.openWorktaskCleanup': '태스크 정리 목록 열기',
+  'palette.cmd.showGitDiff': 'Git Diff 보기',
   // J3 — 태스크 정리 목록(WorktaskCleanupView)
   'worktask.cleanup.title': '태스크 정리 목록',
   'worktask.cleanup.rescan': '다시 스캔',
@@ -752,4 +753,6 @@ export const ko = {
   // J4 — diff 코멘트를 미션 채널에 발사. {count} = @멘션된 태스크 에이전트 수
   // (에이전트가 전원 채널을 떠났으면 0).
   'diff.commentFired': '코멘트를 미션 채널에 발사했습니다 — {count}개 에이전트 호출',
+  // 워크스페이스 git diff — 팔레트 진입 거부: 활성 pane cwd가 git repo가 아님.
+  'diff.noRepo': 'git 저장소가 아닙니다 — repo 안의 pane에서 실행하세요',
 } as const;

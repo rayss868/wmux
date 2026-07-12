@@ -475,3 +475,133 @@ describe('diff:read — F8 targetHeadOid 형식 가드', () => {
     expect(res.code).toBe('bad-oid');
   });
 });
+
+// ── 워크스페이스 diff 모드 — 일반 repo를 targetHeadOid 미지정으로 읽기 ─────────
+// resolveTargetRepo→repo 자신, merge-base HEAD HEAD=HEAD → `git diff HEAD`
+// (staged+unstaged) + untracked 합성. 백엔드 무변경으로 성립하는 계약을 고정한다.
+describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', () => {
+  let base: string;
+  let repo: string;
+
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    base = mkdtempSync(join(tmpdir(), 'wmux-diffws-'));
+    repo = join(base, 'repo');
+    mkdirSync(repo);
+    g(repo, ['init', '-q', '-b', 'main']);
+    g(repo, ['config', 'user.email', 't@t']);
+    g(repo, ['config', 'user.name', 't']);
+    g(repo, ['config', 'core.autocrlf', 'false']);
+    writeFileSync(join(repo, 'a.txt'), 'a1\na2\na3\n');
+    // rename 테스트용 — rename 감지(유사도 50%+)가 성립할 만큼 라인 수를 확보.
+    writeFileSync(join(repo, 'keep.txt'), 'k1\nk2\nk3\nk4\nk5\nk6\nk7\nk8\nk9\nk10\n');
+    g(repo, ['add', '-A']);
+    g(repo, ['commit', '-q', '-m', 'base']);
+  });
+  afterEach(() => rmSync(base, { recursive: true, force: true }));
+
+  it('staged+unstaged+untracked를 모두 반환, 스냅샷은 repo 자신', async () => {
+    // staged 변경 + unstaged 변경 + untracked 신규.
+    writeFileSync(join(repo, 'a.txt'), 'a1\nSTAGED\na3\n');
+    g(repo, ['add', 'a.txt']);
+    writeFileSync(join(repo, 'a.txt'), 'a1\nSTAGED\nUNSTAGED\n');
+    writeFileSync(join(repo, 'new.txt'), 'n1\n');
+
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, repo, '')) as {
+      ok: boolean;
+      files: Array<{ path: string; kind: string }>;
+      snapshot: { targetRepoPath: string; targetBranch: string; targetHeadOid: string };
+    };
+    expect(res.ok).toBe(true);
+    const paths = res.files.map((f) => f.path).sort();
+    expect(paths).toEqual(['a.txt', 'new.txt']);
+    expect(res.snapshot.targetBranch).toBe('main');
+    expect(res.snapshot.targetHeadOid).toBe(g(repo, ['rev-parse', 'HEAD']).trim());
+    // a.txt diff는 staged+unstaged 합산(HEAD 대조)이어야 한다.
+    const a = res.files.find((f) => f.path === 'a.txt')!;
+    expect(JSON.stringify(a)).toContain('STAGED');
+    expect(JSON.stringify(a)).toContain('UNSTAGED');
+  });
+
+  it('clean 워킹트리 — 빈 파일 목록으로 성공', async () => {
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, repo, '')) as { ok: boolean; files: unknown[] };
+    expect(res.ok).toBe(true);
+    expect(res.files).toEqual([]);
+  });
+
+  it('rename+수정 — 표시 경로가 newpath 기준, kind=rename', async () => {
+    // 순수 rename(100% 유사)은 +++ 라인이 없어 path가 '(unknown)'로 강등되는 게
+    // 기존 파서 계약 — 여기선 내용 수정을 동반한 현실적 rename을 고정한다.
+    g(repo, ['mv', 'keep.txt', 'renamed.txt']);
+    writeFileSync(join(repo, 'renamed.txt'), 'k1\nEDITED\nk3\nk4\nk5\nk6\nk7\nk8\nk9\nk10\n');
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, repo, '')) as {
+      ok: boolean;
+      files: Array<{ path: string; kind: string }>;
+    };
+    expect(res.ok).toBe(true);
+    const renamed = res.files.find((f) => f.path === 'renamed.txt');
+    expect(renamed).toBeDefined();
+    expect(renamed!.kind).toBe('rename');
+  });
+});
+
+// ── diff:resolveRepo — 팔레트 진입점의 cwd → worktree toplevel 정규화 ─────────
+describe('diff:resolveRepo — cwd 정규화', () => {
+  let base: string;
+  let repo: string;
+
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    base = mkdtempSync(join(tmpdir(), 'wmux-diffrr-'));
+    repo = join(base, 'repo');
+    mkdirSync(repo);
+    g(repo, ['init', '-q', '-b', 'main']);
+    g(repo, ['config', 'user.email', 't@t']);
+    g(repo, ['config', 'user.name', 't']);
+    mkdirSync(join(repo, 'sub'));
+    writeFileSync(join(repo, 'sub', 'f.txt'), 'x\n');
+    g(repo, ['add', '-A']);
+    g(repo, ['commit', '-q', '-m', 'base']);
+  });
+  afterEach(() => rmSync(base, { recursive: true, force: true }));
+
+  it('서브디렉토리 cwd → repo toplevel 반환', async () => {
+    const resolve = captured.get(IPC.DIFF_RESOLVE_REPO)!;
+    const res = (await resolve({}, join(repo, 'sub'))) as { ok: boolean; repoPath?: string };
+    expect(res.ok).toBe(true);
+    // git은 슬래시 구분자 절대경로를 반환 — 경로 정규화 후 비교.
+    expect(res.repoPath!.replaceAll('\\', '/').toLowerCase()).toBe(
+      repo.replaceAll('\\', '/').toLowerCase(),
+    );
+  });
+
+  it('linked worktree cwd → 그 worktree의 toplevel(본 repo 아님)', async () => {
+    const wt = join(base, 'wt');
+    g(repo, ['worktree', 'add', '-q', '-b', 'ws/x', wt, 'HEAD']);
+    const resolve = captured.get(IPC.DIFF_RESOLVE_REPO)!;
+    const res = (await resolve({}, join(wt, 'sub'))) as { ok: boolean; repoPath?: string };
+    expect(res.ok).toBe(true);
+    expect(res.repoPath!.replaceAll('\\', '/').toLowerCase()).toBe(
+      wt.replaceAll('\\', '/').toLowerCase(),
+    );
+  });
+
+  it('비-git cwd → ok:false', async () => {
+    const outside = join(base, 'plain');
+    mkdirSync(outside);
+    const resolve = captured.get(IPC.DIFF_RESOLVE_REPO)!;
+    const res = (await resolve({}, outside)) as { ok: boolean };
+    expect(res.ok).toBe(false);
+  });
+
+  it('빈 인자 → ok:false', async () => {
+    const resolve = captured.get(IPC.DIFF_RESOLVE_REPO)!;
+    const res = (await resolve({}, '')) as { ok: boolean };
+    expect(res.ok).toBe(false);
+  });
+});

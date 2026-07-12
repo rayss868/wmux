@@ -458,6 +458,28 @@ export function registerDiffHandlers(): () => void {
     ),
   );
 
+  // 워크스페이스 diff 진입점 — cwd(서브디렉토리 가능)를 자기 worktree toplevel로
+  // 정규화한다. diff:read의 worktreePath 계약(untracked 합성이 repo-root 상대경로를
+  // join)이 toplevel을 전제하므로, 렌더러는 이 결과를 diffRepoPath로 영속한다.
+  // linked worktree cwd면 그 worktree의 toplevel을 반환한다(본 repo 아님 —
+  // 이후 diff:read의 resolveTargetRepo가 본 repo 대조를 알아서 수행).
+  ipcMain.removeHandler(IPC.DIFF_RESOLVE_REPO);
+  ipcMain.handle(
+    IPC.DIFF_RESOLVE_REPO,
+    wrapHandler(
+      IPC.DIFF_RESOLVE_REPO,
+      async (
+        _event: Electron.IpcMainInvokeEvent,
+        cwd: unknown,
+      ): Promise<{ ok: true; repoPath: string } | { ok: false }> => {
+        if (typeof cwd !== 'string' || !cwd) return { ok: false };
+        const r = await git(['rev-parse', '--show-toplevel'], cwd);
+        const top = r.code === 0 ? r.stdout.trim() : '';
+        return top ? { ok: true, repoPath: top } : { ok: false };
+      },
+    ),
+  );
+
   ipcMain.removeHandler(IPC.DIFF_APPLY_HUNKS);
   ipcMain.handle(
     IPC.DIFF_APPLY_HUNKS,
@@ -482,6 +504,7 @@ export function registerDiffHandlers(): () => void {
 
   return () => {
     ipcMain.removeHandler(IPC.DIFF_READ);
+    ipcMain.removeHandler(IPC.DIFF_RESOLVE_REPO);
     ipcMain.removeHandler(IPC.DIFF_APPLY_HUNKS);
   };
 }

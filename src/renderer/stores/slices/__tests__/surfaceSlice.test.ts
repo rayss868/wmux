@@ -99,6 +99,48 @@ describe('surfaceSlice.addDiffSurface — J2 4번째 서피스', () => {
   });
 });
 
+describe('surfaceSlice.addWorkspaceDiffSurface — 워크스페이스 diff 서피스', () => {
+  it('ptyId="" + surfaceType="diff" + diffRepoPath 영속(diffTaskId 없음)', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addWorkspaceDiffSurface(paneId, 'D:\\proj\\repo', 'diff: repo');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(pane.surfaces).toHaveLength(1);
+    const s = pane.surfaces[0];
+    expect(s.surfaceType).toBe('diff');
+    // PTY 없음 — 복원 시 자가생성 경로에 걸리지 않음(diffTaskId 서피스와 동일 불변식).
+    expect(s.ptyId).toBe('');
+    expect(s.diffRepoPath).toBe('D:\\proj\\repo');
+    expect(s.diffTaskId).toBeUndefined();
+    expect(s.title).toBe('diff: repo');
+    expect(pane.activeSurfaceId).toBe(s.id);
+  });
+
+  it('같은 repoPath 재요청 시 새 탭 대신 기존 탭 전환', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addWorkspaceDiffSurface(paneId, 'D:\\a');
+    slice.addWorkspaceDiffSurface(paneId, 'D:\\b');
+    slice.addWorkspaceDiffSurface(paneId, 'D:\\a'); // 중복.
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(pane.surfaces).toHaveLength(2);
+    const first = pane.surfaces.find((s) => s.diffRepoPath === 'D:\\a')!;
+    expect(pane.activeSurfaceId).toBe(first.id);
+  });
+
+  it('태스크 diff(diffTaskId)와 워크스페이스 diff(diffRepoPath)는 서로 dedup되지 않음', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addDiffSurface(paneId, 'wtask-1');
+    slice.addWorkspaceDiffSurface(paneId, 'D:\\repo');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(pane.surfaces).toHaveLength(2);
+  });
+});
+
 describe('surfaceSlice.updateSurfaceCwd', () => {
   it('updates the cwd of the surface bound to a ptyId', () => {
     const { state, slice } = createHarness();
