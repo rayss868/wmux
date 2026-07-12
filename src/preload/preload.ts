@@ -346,6 +346,8 @@ const electronAPI = {
       start: (args: {
         workspaceId: string;
         objective: string;
+        /** Per-iteration procedure (the HOW; may reference pane skills "/qa"). */
+        steps?: string[];
         taskTexts?: string[];
         tier?: 'report' | 'continue';
         intervalMinutes?: number;
@@ -364,6 +366,11 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_LOOP_PAUSE, { workspaceId }) as Promise<{ ok: boolean }>,
       resume: (workspaceId: string) =>
         ipcRenderer.invoke(IPC.DECK_LOOP_RESUME, { workspaceId }) as Promise<{ ok: boolean }>,
+      // 스킬 픽커 재료 — pane 에이전트의 스킬/커맨드 카탈로그(읽기 전용 스캔).
+      skills: (cwd: string) =>
+        ipcRenderer.invoke(IPC.DECK_LOOP_SKILLS, cwd) as Promise<{
+          skills: import('../main/deck/skillCatalogScan').SkillCatalogEntry[];
+        }>,
     },
     // Normalized BrainEvent push, enveloped with the workspace whose
     // orchestrator produced it (see BrainAdapter.BrainEvent).

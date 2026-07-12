@@ -111,6 +111,8 @@ export interface CommanderViewContentProps {
   /** M1.5: the workspace this deck view is bound to — new schedules are
    *  created against its orchestrator. */
   activeWorkspaceId?: string;
+  /** 활성 pane의 라이브 cwd — 루프 설정 모달의 스킬 카탈로그 스캔 기준. */
+  activePaneCwd?: string;
   /** P2① mission control — the Fleet roster slot, pinned above the thread.
    *  Injected as a node so this surface stays presentational/store-free. */
   fleetSlot?: React.ReactNode;
@@ -135,6 +137,7 @@ export function CommanderViewContent({
   quickActions = [],
   onQuickAction,
   activeWorkspaceId,
+  activePaneCwd,
   fleetSlot,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
@@ -322,7 +325,7 @@ export function CommanderViewContent({
           <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
           {/* The one-click loop chip + panel (loop engineering v1) — same
               self-contained pattern; the loop binds to THIS workspace. */}
-          <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} />
+          <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
         </div>
       )}
 
@@ -704,6 +707,23 @@ export function CommanderView(): React.ReactElement {
   // conversation. Background workspaces' turns keep streaming into their own
   // threads via useDeckStream's envelope routing.
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId) || '';
+  // 활성 pane의 라이브 cwd(OSC 7 추적 surface.cwd) — 루프 모달의 스킬 카탈로그
+  // 스캔 기준. 트리 워크는 셀렉터 안에서 원시 문자열로 수렴시켜 리렌더 최소화.
+  const activePaneCwd = useStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    if (!ws) return '';
+    const findLeaf = (pane: import('../../../shared/types').Pane): import('../../../shared/types').PaneLeaf | null => {
+      if (pane.type === 'leaf') return pane.id === ws.activePaneId ? pane : null;
+      for (const child of pane.children) {
+        const found = findLeaf(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const leaf = findLeaf(ws.rootPane);
+    const surface = leaf?.surfaces.find((sf) => sf.id === leaf.activeSurfaceId);
+    return surface?.cwd || ws.profile?.startupCwd || '';
+  });
   const brainThread =
     useStore((s) => (activeWorkspaceId ? s.brainThreads[activeWorkspaceId] : undefined)) ??
     EMPTY_DECK_BRAIN_THREAD;
@@ -1037,6 +1057,7 @@ export function CommanderView(): React.ReactElement {
       quickActions={quickActions}
       onQuickAction={handleQuickAction}
       activeWorkspaceId={activeWorkspaceId}
+      activePaneCwd={activePaneCwd}
       fleetSlot={<DeckFleet onJumpToPane={onJumpToPane} />}
       t={t}
     />

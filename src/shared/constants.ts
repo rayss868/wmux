@@ -138,6 +138,10 @@ export const IPC = {
   //   never writes `passes` (v1 posture: no self-scored done); this is the
   //   human's pen.
   DECK_LOOP_TASK: 'deck:loop:task',
+  //   DECK_LOOP_SKILLS — 루프 설정 모달의 스킬 픽커 재료: pane 에이전트가 쓸
+  //   수 있는 스킬/커맨드 카탈로그를 디스크(.claude/skills|commands)에서 스캔.
+  //   읽기 전용, 렌더러 전용.
+  DECK_LOOP_SKILLS: 'deck:loop:skills',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

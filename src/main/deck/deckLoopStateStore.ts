@@ -57,6 +57,15 @@ export type LoopTier = 'report' | 'continue';
 export interface WorkspaceLoopState {
   /** One-line goal the orchestrator is looping toward. */
   objective: string;
+  /**
+   * Optional per-iteration procedure — what the brain should do EACH wake, in
+   * order (e.g. "/qa 실행" → "실패 수정" → "/review"). Distinct from `tasks`
+   * (the done-contract): steps are the HOW of one iteration, tasks are the
+   * WHEN-TO-STOP. Free text; a step may reference a pane agent's skill
+   * ("/qa") — running it means typing that command into a real pane, per the
+   * grounding rules. Empty ⇒ the brain chooses its own approach (v1 behavior).
+   */
+  steps: string[];
   /** The done-contract: all `passes:true` ⇒ the loop succeeded. */
   tasks: LoopTask[];
   /** Append-only, capped breadcrumb of what happened across iterations. */
@@ -83,6 +92,8 @@ export const LOOP_STATE_LIMITS = {
   MAX_OBJECTIVE_CHARS: 1000,
   MAX_TASKS: 50,
   MAX_TASK_TEXT: 500,
+  MAX_STEPS: 20,
+  MAX_STEP_TEXT: 300,
   MAX_PROGRESS_ENTRIES: 100,
   MAX_NOTE_CHARS: 500,
   /** Iteration budget bounds (Ralph max-iterations semantics). */
@@ -102,6 +113,17 @@ export function getDeckLoopStatePath(dir: string = getWmuxDir()): string {
   return path.join(dir, 'deck-loop-state.json');
 }
 
+/** steps 정규화 — 문자열만, trim, 빈 줄 제거, 개수·길이 캡. */
+function sanitizeSteps(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((s): s is string => typeof s === 'string')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .slice(0, LOOP_STATE_LIMITS.MAX_STEPS)
+    .map((s) => s.slice(0, LOOP_STATE_LIMITS.MAX_STEP_TEXT));
+}
+
 function sanitizeTask(raw: unknown): LoopTask | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
@@ -119,6 +141,7 @@ function sanitizeState(raw: unknown): WorkspaceLoopState | null {
   const o = raw as Record<string, unknown>;
   const objective = typeof o.objective === 'string' ? o.objective.trim() : '';
   if (!objective) return null; // a loop with no objective is not a loop
+  const steps = sanitizeSteps(o.steps);
   const tasks = Array.isArray(o.tasks)
     ? o.tasks.map(sanitizeTask).filter((t): t is LoopTask => t !== null).slice(0, LOOP_STATE_LIMITS.MAX_TASKS)
     : [];
@@ -143,6 +166,7 @@ function sanitizeState(raw: unknown): WorkspaceLoopState | null {
     typeof o.scheduleId === 'string' && o.scheduleId.length > 0 ? o.scheduleId : undefined;
   return {
     objective: objective.slice(0, LOOP_STATE_LIMITS.MAX_OBJECTIVE_CHARS),
+    steps,
     tasks,
     progressLog,
     status,
@@ -210,6 +234,7 @@ export async function startLoop(
   workspaceId: string,
   args: {
     objective: string;
+    steps?: string[];
     taskTexts?: string[];
     tier?: LoopTier;
     scheduleId?: string;
@@ -228,6 +253,7 @@ export async function startLoop(
     workspaceId,
     () => ({
       objective: objective.slice(0, LOOP_STATE_LIMITS.MAX_OBJECTIVE_CHARS),
+      steps: sanitizeSteps(args.steps),
       tasks,
       progressLog: [],
       status: 'running',
@@ -353,6 +379,17 @@ export function renderLoopStateBlock(state: WorkspaceLoopState): string {
       ? `done-when (${doneCount}/${state.tasks.length} passing):\n${taskLines.join('\n')}`
       : 'done-when: (no checklist — run toward the objective until the human stops the loop)',
   ];
+  // 반복 절차(HOW): 사람이 정한 iteration당 순서. 스킬 참조("/qa")는 실제
+  // pane에 그 커맨드를 타이핑하는 것을 뜻한다(그라운딩 규칙과 동일).
+  if (state.steps.length > 0) {
+    parts.splice(
+      1,
+      0,
+      `steps (follow in order each iteration; "/name" means typing that command into the pane agent):\n${state.steps
+        .map((s, i) => `  ${i + 1}. ${s}`)
+        .join('\n')}`,
+    );
+  }
   if (recent.length > 0) parts.push(`recent progress:\n${recent.join('\n')}`);
   return parts.join('\n');
 }
