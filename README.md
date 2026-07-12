@@ -37,6 +37,7 @@ winget install openwong2kim.wmux
 |   |   |
 |---|---|
 | 🧵 **One prompt → N agents → merge the best** | Fan out a prompt into up to 8 tasks, each in an **isolated git worktree** with its own agent pane and a private mission channel. Review each task's diff side by side, **adopt hunks all-or-nothing**, then close it or open a **PR in one click** — leftovers land in a cleanup list, never as mystery folders. |
+| 🌿 **Git & GitHub live in the dock** | A **Git tab** shows the worktrees of the repo behind your active pane — create, open as a workspace, or remove — plus its **pull requests and comments** (GitHub via `gh`, GitLab via `glab`, including self-hosted). A read-only **workspace diff** is one palette command away, and from any hunk you can **ask the orchestrator** with the code attached. No alt-tabbing to the browser to see if review feedback landed. |
 | 🪟 **Many agents, one window** | Split panes + workspaces. Claude on the left, Codex on the right, Gemini running tests below — simultaneously. |
 | 🤝 **Agents coordinate, not just coexist** | Agent-to-agent messaging + task delegation, plus **channels** — Slack-style rooms several agents read, post, and get @-mentioned into. An **execute approval gate** stops any agent running code in your workspace without your OK. This is the multi-agent moat. |
 | 🌐 **Agents drive a *real* browser** | Built-in Chrome over CDP. Say *"search Google for this"* and your agent actually clicks, types, and screenshots. Works with React inputs and CJK text. |
@@ -45,16 +46,50 @@ winget install openwong2kim.wmux
 | 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
 | 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — browser + terminal tools register automatically. |
 
-<div align="center">
-<img width="760" alt="Resume pill after a reboot — restore the exact agent conversation" src="docs/resume.png" />
-<br><sub>After a quit, crash, or <b>reboot</b>, a recovered pane offers a one-click <b>Resume</b> — straight back to the exact agent conversation.</sub>
-</div>
+---
+
+## 📸 See it in action
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img alt="Git tab — pull requests and worktrees in the dock, workspace diff open" src="docs/git-tab.png" />
+<br><sub><b>Git in the dock.</b> Pull requests, worktrees, and a live diff for the repo behind your active pane — create a worktree, open it as a workspace, or one-click a PR.</sub>
+</td>
+<td width="50%" valign="top">
+<img alt="Read-only workspace diff opened from the command palette" src="docs/workspace-diff.png" />
+<br><sub><b>Workspace diff.</b> "Show Git Diff" opens every staged, unstaged, and untracked change against HEAD — read-only, no IDE creep. Non-git panes get a polite toast.</sub>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img alt="Ask the orchestrator about a hunk — code context attached in the chat" src="docs/diff-ask.png" />
+<br><sub><b>Ask about a hunk.</b> From any diff hunk, ask the orchestrator with the repo, file, and code fenced into the message — question and evidence together.</sub>
+</td>
+<td width="50%" valign="top">
+<img alt="Loop setup modal with a skill picker autocompleting from .claude skills" src="docs/loop-modal.png" />
+<br><sub><b>One-click loops.</b> Give the orchestrator an objective and per-iteration <b>steps</b> — type <code>/</code> to pick from your <code>.claude</code> skills — and it keeps working toward it across restarts.</sub>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img alt="Agents coordinating in a channel" src="docs/channels.png" />
+<br><sub><b>Channels.</b> Slack-style rooms your agents read, post, and get @-mentioned into — durable, server-verified sender, survives reboot.</sub>
+</td>
+<td width="50%" valign="top">
+<img alt="Resume pill after a reboot — restore the exact agent conversation" src="docs/resume.png" />
+<br><sub><b>Survives reboot.</b> After a quit, crash, or full OS reboot, a recovered pane offers a one-click <b>Resume</b> — straight back to the exact agent conversation.</sub>
+</td>
+</tr>
+</table>
 
 ---
 
 ## ✨ Highlights
 
 - 🧵 **Task fan-out & harvest** — one prompt → N worktree-isolated tasks (idempotent, per-task compensation) · side-by-side diff with **hunk adoption** (all-or-nothing `git apply`) · close / one-click PR / cleanup list · mission channels record every decision
+- 🌿 **Git surface** — a **Git tab** in the dock: worktrees (create / open-as-workspace / remove, no force-delete) + **pull requests & comments** for the active repo (GitHub via `gh`, GitLab via `glab`, self-hosted included) · read-only **workspace diff** from the palette · **ask the orchestrator about a hunk** with the code attached
+- 🔁 **One-click loops** — put the orchestrator on an objective with optional per-iteration **steps** (a `/`-picker autocompletes your `.claude` skills), a done-when checklist, and a cadence; it keeps working across restarts, event-woken by your agents, and stopping fails closed to report-only
 - 🤝 **A2A multi-agent** — agents message + delegate tasks by pane, gated by a per-pane execute approval, with a pollable task inbox + symmetric reply
 - 💬 **Channels** — Slack-style rooms agents read, post, and get @-mentioned into · server-verified sender · durable per-agent inbox · `wmux channel` CLI · operators can self-join private agent rooms (audited)
 - 🤖 **Agent supervision** — declare a pane in `wmux.json` (trust-gated) and the daemon keeps it alive: restart policy, backoff, reboot survival
@@ -66,11 +101,6 @@ winget install openwong2kim.wmux
 - 🎨 Catppuccin Mocha · Monochrome · Sandstone &nbsp;·&nbsp; 🌏 **23 locales scaffolded** — English & 한국어 complete, 日本語 / 中文 in progress — **[translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue)**
 
 > 💡 **Tip:** point Claude Code at the MCP tools (`browser_open`, `terminal_read`, `pane_list`, `a2a_task_send`, `channel_post`) or script the `wmux` CLI (`wmux send` / `read-screen` / `list-panes` / `wmux channel post`) to orchestrate panes programmatically.
-
-<div align="center">
-<img width="330" alt="Agents coordinating in a channel" src="docs/channels.png" />
-<br><sub>Agents coordinate in a <b>channel</b> — a durable, @-mentionable room they read and post into.</sub>
-</div>
 
 ---
 
