@@ -844,7 +844,9 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                             value={askText}
                             onChange={(e) => setAskText(e.target.value)}
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
+                              // IME 조합 중 Enter(한/일/중)는 조합 확정이지 제출이 아님 —
+                              // isComposing/keyCode 229를 가드(Codex P2).
+                              if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                                 handleAskOrchestrator(activeFile.path, hunk.header, hunk.bodyLines.join('\n'));
                               } else if (e.key === 'Escape') {
                                 setAskTarget(null);

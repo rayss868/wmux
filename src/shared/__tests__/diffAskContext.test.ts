@@ -38,4 +38,19 @@ describe('buildDiffAskContext', () => {
     expect(out).toContain('file: src/a.ts');
     expect(out).toContain('이 변경 안전해?');
   });
+
+  it('hunk 안에 ``` 라인이 있어도 펜스가 조기 종료되지 않는다(Codex P2)', () => {
+    const out = buildDiffAskContext({ ...base, hunkBody: ' before\n+```\n after' });
+    // 본문의 ``` 보다 긴 펜스(````)로 감싸야 한다.
+    expect(out).toContain('````diff\n before\n+```\n after\n````');
+  });
+
+  it('본문 생략 후에도 초과하면(질문 자체가 큼) 최종 바이트 캡으로 절단(Codex P3)', () => {
+    const out = buildDiffAskContext({
+      ...base,
+      hunkBody: 'x'.repeat(100),
+      question: 'q'.repeat(DIFF_ASK_CONTEXT_CAP + 5000),
+    });
+    expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(DIFF_ASK_CONTEXT_CAP);
+  });
 });

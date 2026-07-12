@@ -24,6 +24,27 @@ export interface DiffAskInput {
   readonly question: string;
 }
 
+const byteLen = (s: string): number => new TextEncoder().encode(s).length;
+
+// UTF-8 바이트 캡으로 안전 절단 — 멀티바이트 문자를 쪼개지 않는다.
+function truncateBytes(s: string, cap: number): string {
+  if (byteLen(s) <= cap) return s;
+  let out = s;
+  // 문자 단위로 줄여가며 바이트 캡 이하로(표시/프롬프트용이라 정밀 최적화 불요).
+  while (out.length > 0 && byteLen(out) > cap) {
+    out = out.slice(0, Math.max(0, Math.floor(out.length * 0.95)) || out.length - 1);
+  }
+  return out;
+}
+
+// hunk 본문을 감쌀 펜스 길이 — 본문 안의 최장 백틱 런보다 1 길게(CommonMark
+// 규칙). 그래야 본문에 ``` 라인이 있어도 fence가 조기 종료되지 않는다(Codex P2).
+function fenceFor(body: string): string {
+  let longest = 0;
+  for (const m of body.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
+  return '`'.repeat(Math.max(3, longest + 1));
+}
+
 export function buildDiffAskContext(input: DiffAskInput): string {
   const { repoLabel, branch, file, hunkHeader, hunkBody, question } = input;
   const head = [
@@ -36,10 +57,12 @@ export function buildDiffAskContext(input: DiffAskInput): string {
     .filter((l): l is string => l !== null)
     .join('\n');
 
-  const fenced = hunkBody ? `\n\`\`\`diff\n${hunkBody}\n\`\`\`` : '';
+  const fence = fenceFor(hunkBody);
+  const fenced = hunkBody ? `\n${fence}diff\n${hunkBody}\n${fence}` : '';
   const full = `${head}${fenced}\n\n${question}`;
-  // 렌더러에서도 쓰이므로 Buffer 대신 TextEncoder(양쪽 전역)로 바이트 계산.
-  if (new TextEncoder().encode(full).length <= DIFF_ASK_CONTEXT_CAP) return full;
+  if (byteLen(full) <= DIFF_ASK_CONTEXT_CAP) return full;
   // 캡 초과 — hunk 본문 생략(경로+헤더는 유지, 오케가 pane/파일에서 직접 읽게).
-  return `${head}\n(hunk body omitted — over ${DIFF_ASK_CONTEXT_CAP / 1024}KB; read the file directly)\n\n${question}`;
+  // 그래도 초과하면(경로/질문 자체가 큼) 최종적으로 바이트 캡으로 절단(Codex P3).
+  const fallback = `${head}\n(hunk body omitted — over ${DIFF_ASK_CONTEXT_CAP / 1024}KB; read the file directly)\n\n${question}`;
+  return truncateBytes(fallback, DIFF_ASK_CONTEXT_CAP);
 }
