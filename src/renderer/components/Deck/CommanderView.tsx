@@ -960,6 +960,17 @@ export function CommanderView(): React.ReactElement {
     [activeWorkspaceId, workspaces, surfaceAgent, paneLabel, channels, recoveryPanes, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
   );
 
+  // diff→오케스트레이터 질문 릴레이(deckSlice.pendingBrainPrompt) — DiffPanel이
+  // 질문을 실어 두고 이 탭으로 전환하면 여기서 집어 정상 send 경로(fleet
+  // context·optimistic 버블 포함)로 발사한다. 소비 즉시 클리어(1회성).
+  const pendingBrainPrompt = useStore((s) => s.pendingBrainPrompt);
+  const setPendingBrainPrompt = useStore((s) => s.setPendingBrainPrompt);
+  useEffect(() => {
+    if (!pendingBrainPrompt) return;
+    setPendingBrainPrompt(null);
+    void handleBrainSend(pendingBrainPrompt);
+  }, [pendingBrainPrompt, setPendingBrainPrompt, handleBrainSend]);
+
   // P3b: the greeting card's one-click recovery — send the canned prompt to
   // the brain, and retire the card only once the send was ACCEPTED (a busy
   // race / disposed session / missing bridge must not eat the one-click

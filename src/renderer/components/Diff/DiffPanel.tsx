@@ -15,6 +15,7 @@ import type { ChannelMention } from '../../../shared/channels';
 import { HUMAN_WORKSPACE_ID, CHANNEL_MENTIONS_MAX } from '../../../shared/channels';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { buildDiffAskContext } from '../../../shared/diffAskContext';
 
 /**
  * diff 대상 유니온 — 기존 태스크 워크트리(J2, hunk 채택·코멘트·PR 포함)와
@@ -544,6 +545,36 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     }
   }, [lifecycleBusy, taskId, verifiedWorkspaceId, pushToast]);
 
+  // diff→오케스트레이터 질문: hunk 컨텍스트 블록 + 질문을 단일 메시지로
+  // 조립해 pendingBrainPrompt 릴레이에 싣고 Orchestrator 탭으로 전환한다
+  // (CommanderView가 정상 send 경로로 발사 — 턴을 바로 관전하게 된다).
+  // 입력은 인라인 폼: window.prompt는 Electron 렌더러에서 미지원(dogfood 실측
+  // — 호출이 throw라 질문이 조용히 무산됐다).
+  const [askTarget, setAskTarget] = useState<string | null>(null); // `${path}#${idx}`
+  const [askText, setAskText] = useState('');
+  const handleAskOrchestrator = useCallback(
+    (file: string, hunkHeader: string, hunkBody: string) => {
+      const question = askText.trim();
+      if (!question) return;
+      setAskTarget(null);
+      setAskText('');
+      const st = useStore.getState();
+      const prompt = buildDiffAskContext({
+        repoLabel: isTask ? meta?.worktreePath || taskId : repoPath,
+        branch: meta?.branch || data?.snapshot.targetBranch || '',
+        file,
+        hunkHeader,
+        hunkBody,
+        question,
+      });
+      st.setPendingBrainPrompt(prompt);
+      // 덱이 접혀 있거나 다른 탭이면 열고 전환 — 발사된 턴이 바로 보여야 한다.
+      st.setChannelDockVisible(true);
+      st.setActiveDeckTab('commander');
+    },
+    [askText, isTask, meta, taskId, repoPath, data],
+  );
+
   // J3 §2 — 1클릭 PR(확인 1회 포함). gh 4중 게이트·멱등 재진입은 main이 수행.
   const handleCreatePr = useCallback(async () => {
     if (lifecycleBusy) return;
@@ -774,6 +805,18 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                           <span className="text-[9px] text-[var(--accent-red,#f87171)]">채택불가</span>
                         )}
                         <div className="flex-1" />
+                        {/* diff→오케스트레이터 질문 — 양 모드 공통(hunk 컨텍스트 동봉). */}
+                        <button
+                          className="text-[9px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
+                          onClick={() => {
+                            setAskText('');
+                            setAskTarget((prev) => (prev === key ? null : key));
+                          }}
+                          title={t('diff.askOrchestrator') || 'Ask the orchestrator about this hunk'}
+                          data-diff-ask
+                        >
+                          {t('diff.ask') || 'Ask'}
+                        </button>
                         {!meta?.channelArchived && meta?.missionChannelId && (
                           <button
                             className="text-[9px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
@@ -789,6 +832,40 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                           </span>
                         )}
                       </div>
+                      {/* 인라인 질문 폼 — Enter 발사, Esc 닫기. */}
+                      {askTarget === key && (
+                        <div
+                          className="flex items-center gap-1.5 px-2 py-1 bg-[var(--bg-base)] border-t border-[var(--bg-mantle)]"
+                          data-diff-ask-form
+                        >
+                          <input
+                            type="text"
+                            autoFocus
+                            value={askText}
+                            onChange={(e) => setAskText(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                handleAskOrchestrator(activeFile.path, hunk.header, hunk.bodyLines.join('\n'));
+                              } else if (e.key === 'Escape') {
+                                setAskTarget(null);
+                                setAskText('');
+                              }
+                            }}
+                            placeholder={t('diff.askPrompt') || 'Ask the orchestrator — hunk context attaches automatically'}
+                            spellCheck={false}
+                            className="flex-1 min-w-0 bg-transparent text-[11px] text-[var(--text-main)] placeholder-[var(--text-muted)] outline-none px-1"
+                          />
+                          <button
+                            className="px-1.5 py-0.5 rounded text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)] disabled:opacity-40"
+                            disabled={!askText.trim()}
+                            onClick={() =>
+                              handleAskOrchestrator(activeFile.path, hunk.header, hunk.bodyLines.join('\n'))
+                            }
+                          >
+                            {t('diff.ask') || 'Ask'}
+                          </button>
+                        </div>
+                      )}
                       <div className="px-2 py-1">
                         <HunkBody bodyLines={hunk.bodyLines} />
                       </div>

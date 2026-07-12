@@ -868,6 +868,10 @@ export const en = {
   'diff.commentFired': 'Comment posted to the mission channel — pinged {count} agent(s)',
   // Workspace git diff — palette entry rejected: the pane's cwd is not a git repo.
   'diff.noRepo': 'Not a git repository — open a pane inside a repo first',
+  // diff → orchestrator question (context block + question as one message).
+  'diff.ask': 'Ask',
+  'diff.askOrchestrator': 'Ask the orchestrator about this hunk',
+  'diff.askPrompt': 'Ask the orchestrator (the hunk context is attached automatically):',
 } as const;
 
 export type TranslationKey = keyof typeof en;

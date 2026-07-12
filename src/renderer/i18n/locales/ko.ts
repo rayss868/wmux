@@ -789,4 +789,8 @@ export const ko = {
   'diff.commentFired': '코멘트를 미션 채널에 발사했습니다 — {count}개 에이전트 호출',
   // 워크스페이스 git diff — 팔레트 진입 거부: 활성 pane cwd가 git repo가 아님.
   'diff.noRepo': 'git 저장소가 아닙니다 — repo 안의 pane에서 실행하세요',
+  // diff → 오케스트레이터 질문 (컨텍스트 블록 + 질문 단일 메시지).
+  'diff.ask': '질문',
+  'diff.askOrchestrator': '이 hunk에 대해 오케스트레이터에게 질문',
+  'diff.askPrompt': '오케스트레이터에게 질문 (hunk 컨텍스트는 자동 첨부됩니다):',
 } as const;

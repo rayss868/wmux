@@ -73,6 +73,13 @@ export interface DeckSlice {
    *  resume hints, which self-clear as agents come back. */
   recoveryCardDismissed: boolean;
   dismissRecoveryCard: () => void;
+
+  /** diff→오케스트레이터 질문 릴레이. DiffPanel(다른 표면)이 질문을 실어 두고
+   *  Orchestrator 탭으로 전환하면, CommanderView가 마운트/변경 시 집어
+   *  handleBrainSend로 발사한다 — fleet context·optimistic 버블·모델 오버라이드
+   *  조립을 한 곳(CommanderView)에 유지하기 위한 우회로. transient(비영속). */
+  pendingBrainPrompt: string | null;
+  setPendingBrainPrompt: (prompt: string | null) => void;
 }
 
 function threadOf(state: StoreState, workspaceId: string): DeckBrainThread {
@@ -110,6 +117,13 @@ export const createDeckSlice: StateCreator<
     }),
 
   brainThreads: {},
+
+  pendingBrainPrompt: null,
+
+  setPendingBrainPrompt: (prompt) =>
+    set((state: StoreState) => {
+      state.pendingBrainPrompt = prompt;
+    }),
 
   startDeckBrainTurn: (workspaceId, text) =>
     set((state: StoreState) => {
