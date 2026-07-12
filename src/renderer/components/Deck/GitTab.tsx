@@ -177,6 +177,26 @@ export function GitTab(): React.ReactElement {
     fresh.setWorkspaceProfile(fresh.activeWorkspaceId, { startupCwd: wt.path });
   }, []);
 
+  // diff 서피스 열기 — 워크트리 path는 이미 toplevel이라 resolveRepo 불요,
+  // 팔레트 "Show Git Diff"와 동일 결과(같은 repoPath면 기존 탭 전환 dedup 포함).
+  // 활성 워크스페이스의 활성 leaf pane에 탭을 얹는다.
+  const handleDiff = useCallback((targetPath: string) => {
+    const st = useStore.getState();
+    const ws = st.workspaces.find((w) => w.id === st.activeWorkspaceId);
+    if (!ws) return;
+    const findLeaf = (pane: Pane): PaneLeaf | null => {
+      if (pane.type === 'leaf') return pane.id === ws.activePaneId ? pane : null;
+      for (const child of pane.children) {
+        const found = findLeaf(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const leaf = findLeaf(ws.rootPane);
+    if (!leaf) return;
+    st.addWorkspaceDiffSurface(leaf.id, targetPath, `diff: ${pathLeaf(targetPath)}`);
+  }, []);
+
   const norm = (p: string) => p.replace(/[/\\]+$/, '').replace(/\\/g, '/').toLowerCase();
   const isMain = (wt: WorktreeEntry) => mainPath !== '' && norm(wt.path) === norm(mainPath);
   const isCurrent = (wt: WorktreeEntry) => currentWorktree !== '' && norm(wt.path) === norm(currentWorktree);
@@ -204,6 +224,19 @@ export function GitTab(): React.ReactElement {
           </span>
         )}
         <div className="flex-1" />
+        {/* 현재 repo(활성 pane의 워크트리) diff — 팔레트 커맨드의 버튼 진입점. */}
+        {repoPath && (
+          <button
+            type="button"
+            onClick={() => handleDiff(currentWorktree || repoPath)}
+            title={t('git.diffDesc') || 'Open the diff view for this repo'}
+            data-git-diff-current
+            className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] ${FOCUS_RING}`}
+            {...tokenAttrs('textSub', 'text')}
+          >
+            {t('git.diff') || 'Diff'}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => void load()}
@@ -267,6 +300,16 @@ export function GitTab(): React.ReactElement {
                     {wt.prunable !== null && ` · ${t('git.prunable') || 'prunable'}`}
                   </span>
                 </div>
+                {/* 이 워크트리의 diff 서피스 열기(경로=toplevel 그대로). */}
+                <button
+                  type="button"
+                  onClick={() => handleDiff(wt.path)}
+                  className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity ${FOCUS_RING}`}
+                  title={t('git.diffDesc') || 'Open the diff view for this worktree'}
+                  {...tokenAttrs('textMuted', 'text')}
+                >
+                  {t('git.diff') || 'Diff'}
+                </button>
                 <button
                   type="button"
                   onClick={() => handleOpen(wt)}

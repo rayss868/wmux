@@ -691,6 +691,8 @@ export const ko = {
   'git.viewFull': '브라우저에서 전체 코멘트 보기',
   'git.commentsFailed': '코멘트를 불러오지 못했습니다',
   'git.justNow': '방금',
+  'git.diff': 'Diff',
+  'git.diffDesc': '이 워크트리의 diff 뷰 열기',
   'settings.gitTabVisible': 'Git 탭 표시',
   'settings.gitTabVisibleDesc':
     '우측 도크에 Git 탭(워크트리)을 표시합니다. 정보성 표면 — 최소 크롬을 원하면 숨기세요.',
