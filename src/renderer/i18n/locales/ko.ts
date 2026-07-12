@@ -659,6 +659,7 @@ export const ko = {
   'deck.tabsAriaLabel': '커맨드 데크 탭',
   'deck.tabCommander': '오케스트레이터',
   'deck.tabChannels': '채널',
+  'deck.collapseDock': '도크 접기',
   'deck.commanderPlaceholder': '오케스트레이터에 지시하거나 @로 pane을 멘션…',
   'deck.commanderEmpty':
     '오케스트레이터에게 에이전트 운영을 맡기거나, @로 에이전트 pane을 멘션해 직접 지시하세요.',

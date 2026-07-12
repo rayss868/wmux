@@ -30,6 +30,8 @@ import { ChannelsPanel, sumUnread } from './ChannelsPanel';
 import { ChannelView } from './ChannelView';
 import { DeckTabs } from '../Deck/DeckTabs';
 import { CommanderView } from '../Deck/CommanderView';
+import { OrchestratorModelChip } from '../Deck/OrchestratorModelChip';
+import { FOCUS_RING } from '../focusRing';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
 //
@@ -49,6 +51,7 @@ export default function ChannelDock(): React.ReactElement {
   // snaps activeDeckTab back to commander when the tab is turned off, but a
   // stale persisted 'channels' can never render either — the guard below.
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
+  const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const t = useT();
   const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
 
@@ -70,6 +73,29 @@ export default function ChannelDock(): React.ReactElement {
         onSelect={setActiveDeckTab}
         channelsUnread={sumUnread(channelUnread)}
         showChannels={channelsTabVisible}
+        rightSlot={
+          <>
+            {/* Orchestrator model — visible + switchable next to its name,
+                only on the Commander tab (it's the brain's setting). */}
+            {!showChannelsView && <OrchestratorModelChip />}
+            {/* Collapse the whole dock (terminals reclaim the width); reopen
+                from the StatusBar dock toggle. Arrow points toward the edge the
+                dock sits on. */}
+            <button
+              type="button"
+              onClick={() => setChannelDockVisible(false)}
+              title={t('deck.collapseDock') || 'Collapse dock'}
+              aria-label={t('deck.collapseDock') || 'Collapse dock'}
+              data-deck-collapse
+              className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
+              {...tokenAttrs('textMuted', 'text')}
+            >
+              <span aria-hidden="true" className="text-[13px] leading-none">
+                {dockOnRight ? '»' : '«'}
+              </span>
+            </button>
+          </>
+        }
         t={t}
       />
 

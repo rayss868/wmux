@@ -20,6 +20,11 @@ export interface DeckTabsProps {
    *  it hidden the strip shows the single Orchestrator tab, doubling as the
    *  deck's header. */
   showChannels?: boolean;
+  /** Right-aligned header controls (model chip + collapse button). Rendered
+   *  after the tabs, pinned to the trailing edge — the deck's one header row,
+   *  so orchestrator settings live next to its name instead of buried in
+   *  Settings. Omit → the strip is tabs-only (unchanged). */
+  rightSlot?: React.ReactNode;
   /** Translator — defaults to identity so tests can omit it. */
   t?: (key: string) => string;
 }
@@ -34,6 +39,7 @@ export function DeckTabs({
   onSelect,
   channelsUnread = 0,
   showChannels = true,
+  rightSlot,
   t: tProp,
 }: DeckTabsProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -85,6 +91,11 @@ export function DeckTabs({
           </button>
         );
       })}
+      {rightSlot && (
+        <div data-deck-header-controls className="flex items-center ml-auto shrink-0 pr-1.5 gap-0.5">
+          {rightSlot}
+        </div>
+      )}
     </div>
   );
 }
