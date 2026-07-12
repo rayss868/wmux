@@ -50,6 +50,12 @@ export interface Surface {
   /** J2 — diff 서피스: 대상 태스크 id. diff 내용은 파생 데이터(열 때마다 재계산). */
   diffTaskId?: string;
   /**
+   * 워크스페이스 diff 서피스 — 대상 repo(worktree toplevel) 절대경로.
+   * diffTaskId와 상호배타: 이 필드가 있으면 태스크 역참조 없이 repo를 직접
+   * 대조한다(diff:resolveRepo가 정규화한 값만 담김). diff 내용은 파생 데이터.
+   */
+  diffRepoPath?: string;
+  /**
    * J3 F1 — diff 서피스의 태스크 owner(부모) 워크스페이스 id. diff 서피스는 자식
    * 태스크 워크스페이스에 붙지만 task.mission.* RPC는 owner 스코프라(daemon
    * listMissions·close authz), 그 조회·close·PR는 이 owner id를 verifiedWorkspaceId로

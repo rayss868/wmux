@@ -406,8 +406,14 @@ const electronAPI = {
   // J2 — diff 리뷰·hunk 채택. worktreePath는 태스크 워크트리, targetHeadOid는
   // 태스크가 분기한 시점의 타겟 HEAD(드리프트 게이트 재료).
   diff: {
-    read: (worktreePath: string, targetHeadOid?: string) =>
-      ipcRenderer.invoke(IPC.DIFF_READ, worktreePath, targetHeadOid ?? '') as Promise<
+    // 워크스페이스 diff — 임의 cwd를 자기 worktree toplevel로 정규화(비-git이면 ok:false).
+    resolveRepo: (cwd: string) =>
+      ipcRenderer.invoke(IPC.DIFF_RESOLVE_REPO, cwd) as Promise<
+        { ok: true; repoPath: string } | { ok: false }
+      >,
+    // mode='workspace'는 cwd repo/worktree 자신의 미커밋 변경만(본 repo 매핑 없음).
+    read: (worktreePath: string, targetHeadOid?: string, mode?: 'task' | 'workspace') =>
+      ipcRenderer.invoke(IPC.DIFF_READ, worktreePath, targetHeadOid ?? '', mode ?? 'task') as Promise<
         import('../shared/diffParse').DiffReadResult | import('../shared/diffParse').DiffReadError
       >,
     applyHunks: (

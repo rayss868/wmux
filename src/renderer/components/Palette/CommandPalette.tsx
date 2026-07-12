@@ -275,6 +275,46 @@ export default function CommandPalette() {
           setVisible(false);
         },
       },
+      {
+        // 워크스페이스 git diff — 활성 pane의 cwd를 diff:resolveRepo로 worktree
+        // toplevel로 정규화한 뒤 읽기 전용 diff 서피스를 연다. 비-git cwd는 토스트.
+        label: t('palette.cmd.showGitDiff'),
+        action: () => {
+          const state = useStore.getState();
+          const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+          if (!ws) { setVisible(false); return; }
+          const findLeaf = (pane: import('../../../shared/types').Pane): import('../../../shared/types').PaneLeaf | null => {
+            if (pane.type === 'leaf') return pane.id === ws.activePaneId ? pane : null;
+            for (const child of pane.children) {
+              const found = findLeaf(child);
+              if (found) return found;
+            }
+            return null;
+          };
+          const leaf = findLeaf(ws.rootPane);
+          if (!leaf) { setVisible(false); return; }
+          const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+          // cwd 우선순위: 활성 surface의 라이브 cwd(OSC 7) > 프로필 startupCwd > 전역.
+          const cwd =
+            activeSurface?.cwd ||
+            resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory }) ||
+            ''; // 빈 cwd는 resolveRepo가 ok:false로 거부 → noRepo 토스트.
+          void window.electronAPI.diff.resolveRepo(cwd).then((r) => {
+            const st = useStore.getState();
+            if (!r.ok) {
+              st.pushToast({ level: 'warn', message: t('diff.noRepo') });
+              return;
+            }
+            const repoName = r.repoPath.split(/[/\\]/).filter(Boolean).pop() || r.repoPath;
+            st.addWorkspaceDiffSurface(leaf.id, r.repoPath, `diff: ${repoName}`);
+          }).catch((err) => {
+            // IPC reject(핸들러 미등록·직렬화 실패 등)도 무음이 아니라 토스트로.
+            useStore.getState().pushToast({ level: 'warn', message: t('diff.noRepo') });
+            console.error('[wmux:palette] diff.resolveRepo failed:', err);
+          });
+          setVisible(false);
+        },
+      },
     ];
 
     commands.forEach((cmd, i) => {

@@ -191,6 +191,10 @@ export const IPC = {
   // J2 — diff 리뷰·hunk 채택
   DIFF_READ: 'diff:read',
   DIFF_APPLY_HUNKS: 'diff:applyHunks',
+  // 워크스페이스 diff 진입점 — 임의 cwd를 자기 worktree toplevel로 정규화.
+  // (서브디렉토리 cwd를 그대로 diff:read에 넘기면 untracked 합성의
+  //  join(worktreePath, rel)이 repo-root 상대경로와 어긋난다.)
+  DIFF_RESOLVE_REPO: 'diff:resolveRepo',
   DIALOG_PICK_FILE: 'dialog:pick-file',
   // File system
   FS_READ_DIR: 'fs:read-dir',
