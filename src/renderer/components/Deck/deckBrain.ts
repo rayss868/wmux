@@ -124,24 +124,46 @@ function lastAssistantIndex(messages: DeckBrainMessage[]): number {
 }
 
 /**
- * Build the one-shot fleet snapshot injected into the brain's first turn:
- * a compact, token-budgeted list of live agent panes (coordinate + agent) and
- * the channel catalog. Main re-caps this to ~2KB; we keep it terse here.
- * Pure + exported for unit testing.
+ * Build the one-shot workspace snapshot injected into the brain's first turn
+ * (M1.5 — one orchestrator per workspace): a compact, token-budgeted list of
+ * the OWN workspace's live agent panes (coordinate + agent), a one-line
+ * roster of the other workspaces (existence only — the brain must know its
+ * boundary and hand cross-workspace requests back to the operator), and the
+ * channel catalog (company-level, the comms bus). Main re-caps this to ~2KB;
+ * we keep it terse here. Pure + exported for unit testing.
  */
-export function buildFleetContextSummary(args: {
+export function buildWorkspaceContextSummary(args: {
   workspaces: Workspace[];
+  activeWorkspaceId: string;
   surfaceAgent: Record<string, { name: string; slug?: AgentSlug } | undefined>;
   paneLabel: Record<string, string>;
   channels: Record<string, Channel>;
   maxChars?: number;
 }): string {
-  const { workspaces, surfaceAgent, paneLabel, channels, maxChars = 2000 } = args;
-  const lines: string[] = ['Current wmux fleet:'];
+  const { workspaces, activeWorkspaceId, surfaceAgent, paneLabel, channels, maxChars = 2000 } = args;
+  const own = workspaces.find((w) => w.id === activeWorkspaceId);
+  const lines: string[] = [
+    own
+      ? `You are the orchestrator for workspace "${own.name}". Your agents live in this workspace only.`
+      : 'Your workspace:',
+  ];
   const paneLines: string[] = [];
-  for (const w of workspaces) {
-    const wsOrdinal = w.wsOrdinal ?? 0;
+  const countAgentPanes = (w: Workspace): number => {
+    let n = 0;
     for (const leaf of findLeafPanes(w.rootPane)) {
+      if (
+        leaf.surfaces.some(
+          (s) => s.surfaceType !== 'browser' && !!s.ptyId && !!surfaceAgent[s.ptyId]?.name,
+        )
+      ) {
+        n++;
+      }
+    }
+    return n;
+  };
+  if (own) {
+    const wsOrdinal = own.wsOrdinal ?? 0;
+    for (const leaf of findLeafPanes(own.rootPane)) {
       const agentSurfaces = leaf.surfaces.filter(
         (s) => s.surfaceType !== 'browser' && !!s.ptyId && !!surfaceAgent[s.ptyId]?.name,
       );
@@ -150,14 +172,29 @@ export function buildFleetContextSummary(args: {
       const autoName = computePaneAutoName(wsOrdinal, leaf.ordinal ?? 0, surfaceAgent[repr.ptyId]?.slug);
       const label = paneDisplayName(paneLabel[leaf.id], autoName);
       const agent = surfaceAgent[repr.ptyId]?.name ?? 'agent';
-      paneLines.push(`- ${autoName} [${agent}] in "${w.name}"${label !== autoName ? ` (${label})` : ''}`);
+      paneLines.push(`- ${autoName} [${agent}]${label !== autoName ? ` (${label})` : ''}`);
     }
   }
   if (paneLines.length > 0) {
     lines.push(`${paneLines.length} agent pane(s):`);
     lines.push(...paneLines);
   } else {
-    lines.push('No agent panes are running yet.');
+    lines.push('No agent panes are running here yet.');
+  }
+  // Existence-only roster: the brain knows the other workspaces are there
+  // (and can say "ask that workspace's orchestrator"), but gets no pane
+  // detail — it cannot target them anyway (token confinement).
+  const others = workspaces.filter((w) => w.id !== activeWorkspaceId);
+  if (others.length > 0) {
+    const roster = others
+      .map((w) => {
+        const n = countAgentPanes(w);
+        return `"${w.name}" (${n > 0 ? `${n} agent pane(s)` : 'idle'})`;
+      })
+      .join(', ');
+    lines.push(
+      `Other workspaces (outside your scope — the operator drives them from their own tabs): ${roster}`,
+    );
   }
   const channelNames = Object.values(channels)
     .filter((c) => c.status === 'active')

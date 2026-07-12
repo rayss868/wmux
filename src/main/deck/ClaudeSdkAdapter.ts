@@ -142,6 +142,12 @@ export interface ClaudeSdkAdapterDeps {
    *  so tests control it; defaults to loadGlobalMemory (read-only L0 files
    *  under <wmuxDir>/memory/_global). */
   loadMemory?: () => string;
+  /** The one workspace this orchestrator serves (M1.5). Bound into the
+   *  commander token so `deck.resolvePaneRoute` confines this brain's
+   *  explicit-pane targeting to its own workspace. Omitted/empty → the token
+   *  resolves nothing (fail closed). This is also where M1c's per-workspace
+   *  memory partition loads from. */
+  workspaceId?: string;
 }
 
 // ─── Permission defaults (D2) ────────────────────────────────────────────────
@@ -302,8 +308,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private _active: SdkQueryHandle | null = null;
   private _disposed = false;
   /** Per-spawn trust token (commanderTrust) — injected into the MCP env so
-   *  terminal routing can grant this brain fleet-wide pane targeting. */
-  private readonly _commanderToken = mintCommanderToken();
+   *  terminal routing can grant this brain pane targeting WITHIN its own
+   *  workspace (M1.5 confinement). */
+  private readonly _commanderToken: string;
 
   constructor(deps: ClaudeSdkAdapterDeps = {}) {
     this.queryFn = deps.queryFn ?? null;
@@ -314,6 +321,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     this.maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
     this.profile = deps.profile;
     this.loadMemory = deps.loadMemory ?? loadGlobalMemory;
+    // An empty binding registers an unroutable token — fail closed rather
+    // than fleet-wide when a caller forgets the workspace.
+    this._commanderToken = mintCommanderToken(deps.workspaceId ?? '');
   }
 
   get sessionId(): string | null {
@@ -390,10 +400,10 @@ export class ClaudeSdkAdapter implements BrainAdapter {
           command: process.execPath,
           args: [this.mcpBundlePath],
           // WMUX_COMMANDER_TOKEN marks this MCP as the commander's hands: the
-          // deck.resolvePaneRoute RPC accepts it and resolves any pane's true
-          // owning workspace, so terminal_send/read can target the WHOLE
-          // fleet. External callers without the token keep the #163
-          // fail-closed routing unchanged (codex P1).
+          // deck.resolvePaneRoute RPC accepts it and resolves a pane's true
+          // owning workspace — but ONLY within the workspace the token is
+          // bound to (M1.5 confinement). External callers without the token
+          // keep the #163 fail-closed routing unchanged (codex P1).
           env: {
             ELECTRON_RUN_AS_NODE: '1',
             WMUX_COMMANDER_TOKEN: this._commanderToken,

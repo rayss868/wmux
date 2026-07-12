@@ -287,46 +287,61 @@ const electronAPI = {
   // fanout. A brain stream is NOT channel semantics, so it rides a dedicated
   // push channel, never the channels plumbing.
   deck: {
-    // `model` is the orchestrator model override ('' / undefined = the
-    // subscription's default). Passed on every send; main swaps the brain
-    // adapter between turns when it changes (the conversation itself survives
-    // via the persisted session id).
-    send: (text: string, fleetContext?: string, model?: string) =>
-      ipcRenderer.invoke(IPC.DECK_SEND, { text, fleetContext, model }) as Promise<{
+    // M1.5: one orchestrator per workspace — every call names the workspace
+    // whose brain it addresses. `model` is the orchestrator model override
+    // ('' / undefined = the subscription's default). Passed on every send;
+    // main swaps that workspace's brain adapter between turns when it changes
+    // (the conversation itself survives via the persisted session id).
+    send: (args: { workspaceId: string; text: string; fleetContext?: string; model?: string }) =>
+      ipcRenderer.invoke(IPC.DECK_SEND, args) as Promise<{
         ok: boolean;
-        code?: 'busy' | 'disposed' | 'empty';
+        code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace';
       }>,
-    interrupt: () => ipcRenderer.invoke(IPC.DECK_INTERRUPT) as Promise<{ ok: true }>,
-    status: () =>
-      ipcRenderer.invoke(IPC.DECK_STATUS) as Promise<{
+    interrupt: (workspaceId: string) =>
+      ipcRenderer.invoke(IPC.DECK_INTERRUPT, { workspaceId }) as Promise<{ ok: true }>,
+    status: (workspaceId: string) =>
+      ipcRenderer.invoke(IPC.DECK_STATUS, { workspaceId }) as Promise<{
         status: 'idle' | 'busy' | 'disposed';
         sessionId: string | null;
       }>,
-    // P3d — persisted orchestrator schedules (fire as ordinary brain turns).
+    // P3d — persisted orchestrator schedules (fire as ordinary brain turns on
+    // their own workspace's orchestrator).
     schedules: {
       list: () =>
         ipcRenderer.invoke(IPC.DECK_SCHEDULES_LIST) as Promise<{
           schedules: import('../main/deck/deckScheduleStore').DeckSchedule[];
         }>,
-      create: (args: { prompt: string; nextRunAt: number; intervalMinutes?: number }) =>
+      create: (args: {
+        workspaceId: string;
+        prompt: string;
+        nextRunAt: number;
+        intervalMinutes?: number;
+      }) =>
         ipcRenderer.invoke(IPC.DECK_SCHEDULES_CREATE, args) as Promise<{
           ok: boolean;
           schedule?: import('../main/deck/deckScheduleStore').DeckSchedule;
           code?: string;
         }>,
-      update: (args: { id: string; enabled?: boolean }) =>
+      update: (args: { id: string; enabled?: boolean; workspaceId?: string }) =>
         ipcRenderer.invoke(IPC.DECK_SCHEDULES_UPDATE, args) as Promise<{ ok: boolean; code?: string }>,
       remove: (id: string) =>
         ipcRenderer.invoke(IPC.DECK_SCHEDULES_DELETE, { id }) as Promise<{ ok: boolean }>,
     },
-    // Normalized BrainEvent push (see BrainAdapter.BrainEvent).
+    // Normalized BrainEvent push, enveloped with the workspace whose
+    // orchestrator produced it (see BrainAdapter.BrainEvent).
     onStream: (
-      callback: (event: import('../main/deck/BrainAdapter').BrainEvent) => void,
+      callback: (envelope: {
+        workspaceId: string;
+        event: import('../main/deck/BrainAdapter').BrainEvent;
+      }) => void,
     ) => {
       const listener = (
         _e: Electron.IpcRendererEvent,
-        event: import('../main/deck/BrainAdapter').BrainEvent,
-      ) => callback(event);
+        envelope: {
+          workspaceId: string;
+          event: import('../main/deck/BrainAdapter').BrainEvent;
+        },
+      ) => callback(envelope);
       ipcRenderer.on(IPC.DECK_STREAM, listener);
       return () => { ipcRenderer.removeListener(IPC.DECK_STREAM, listener); };
     },

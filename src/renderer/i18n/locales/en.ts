@@ -767,6 +767,10 @@ export const en = {
   'deck.scheduleDelete': 'Delete',
   'deck.scheduleInvalid': 'Enter a prompt and a valid time.',
   'deck.scheduleLimit': 'Schedule limit reached.',
+  // M1.5 — per-workspace orchestrator: schedules belong to a workspace.
+  'deck.scheduleNoWorkspace': 'Open a workspace first — schedules belong to a workspace.',
+  'deck.scheduleNeedsWorkspace': 'needs workspace',
+  'deck.scheduleAdoptHere': 'Adopt here',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.

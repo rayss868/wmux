@@ -27,8 +27,10 @@ export type BrainEventSink = (event: BrainEvent) => void;
 export interface CommanderSendResult {
   /** Whether the turn was accepted and started streaming. */
   ok: boolean;
-  /** Present on rejection: `busy` (a turn is running) or `disposed`. */
-  code?: 'busy' | 'disposed' | 'empty';
+  /** Present on rejection: `busy` (a turn is running), `disposed`, `empty`,
+   *  or `invalid_workspace` (handler-level, M1.5 — the send carried no valid
+   *  workspaceId to route to an orchestrator). */
+  code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace';
 }
 
 export interface CommanderStatusSnapshot {

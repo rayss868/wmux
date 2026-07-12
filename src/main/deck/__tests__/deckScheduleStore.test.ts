@@ -26,6 +26,7 @@ afterEach(() => {
 
 const mk = (over: Partial<DeckSchedule> = {}): DeckSchedule => ({
   id: 'id-1',
+  workspaceId: 'ws-1',
   prompt: 'check the PRs',
   nextRunAt: 1_000,
   enabled: true,
@@ -35,11 +36,17 @@ const mk = (over: Partial<DeckSchedule> = {}): DeckSchedule => ({
 
 describe('deckScheduleStore', () => {
   it('round-trips schedules through the file', async () => {
-    const s = createSchedule({ prompt: 'hello', nextRunAt: 123, intervalMinutes: 60 })!;
+    const s = createSchedule({ workspaceId: 'ws-1', prompt: 'hello', nextRunAt: 123, intervalMinutes: 60 })!;
     await saveDeckSchedules([s], dir);
     const loaded = loadDeckSchedules(dir);
     expect(loaded).toHaveLength(1);
-    expect(loaded[0]).toMatchObject({ prompt: 'hello', nextRunAt: 123, intervalMinutes: 60, enabled: true });
+    expect(loaded[0]).toMatchObject({
+      workspaceId: 'ws-1',
+      prompt: 'hello',
+      nextRunAt: 123,
+      intervalMinutes: 60,
+      enabled: true,
+    });
   });
 
   it('missing / corrupt file loads as empty (never bricks the deck)', () => {
@@ -63,16 +70,30 @@ describe('deckScheduleStore', () => {
     expect(loaded[1].intervalMinutes).toBeUndefined();
   });
 
-  it('createSchedule rejects an empty prompt / invalid time', () => {
-    expect(createSchedule({ prompt: '  ', nextRunAt: 1 })).toBeNull();
-    expect(createSchedule({ prompt: 'x', nextRunAt: NaN })).toBeNull();
+  it('createSchedule rejects an empty prompt / invalid time / missing workspace', () => {
+    expect(createSchedule({ workspaceId: 'ws-1', prompt: '  ', nextRunAt: 1 })).toBeNull();
+    expect(createSchedule({ workspaceId: 'ws-1', prompt: 'x', nextRunAt: NaN })).toBeNull();
+    expect(createSchedule({ workspaceId: '', prompt: 'x', nextRunAt: 1 })).toBeNull();
   });
 
-  it('dueSchedules = enabled AND past due only', () => {
+  it('a pre-M1.5 entry (no workspaceId) is force-disabled on load', async () => {
+    await saveDeckSchedules(
+      [{ id: 'legacy', prompt: 'old fleet task', nextRunAt: 1, enabled: true, createdAt: 0 } as DeckSchedule],
+      dir,
+    );
+    const loaded = loadDeckSchedules(dir);
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].workspaceId).toBeUndefined();
+    expect(loaded[0].enabled).toBe(false);
+  });
+
+  it('dueSchedules = enabled AND workspace-scoped AND past due only', () => {
     const list = [
       mk({ id: 'due', nextRunAt: 500 }),
       mk({ id: 'future', nextRunAt: 2_000 }),
       mk({ id: 'off', nextRunAt: 500, enabled: false }),
+      // Belt over sanitize: an in-memory unowned-but-enabled row never fires.
+      { ...mk({ id: 'unowned', nextRunAt: 500 }), workspaceId: undefined },
     ];
     expect(dueSchedules(list, 1_000).map((s) => s.id)).toEqual(['due']);
   });

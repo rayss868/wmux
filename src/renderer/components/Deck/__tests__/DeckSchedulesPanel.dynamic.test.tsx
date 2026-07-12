@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 //
 // Render tests for the P3d schedules panel — fake api injected, no store/IPC.
+// M1.5: schedules are workspace-scoped — creation binds to the panel's
+// workspace, rows show a workspace chip, and pre-M1.5 rows (no workspaceId)
+// surface a "needs workspace" badge with an adopt-into-this-workspace action.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
@@ -23,6 +26,7 @@ afterEach(() => {
 
 const schedule = (over: Partial<DeckSchedule> = {}): DeckSchedule => ({
   id: 's-1',
+  workspaceId: 'ws-1',
   prompt: 'check the PRs',
   nextRunAt: Date.UTC(2026, 6, 12, 9, 0),
   enabled: true,
@@ -46,7 +50,12 @@ function fakeApi(schedules: DeckSchedule[] = []): DeckSchedulesApi & {
     list: async () => ({ schedules: state.schedules }),
     create: async (args) => {
       created.push(args);
-      const s = schedule({ id: `s-${created.length + 1}`, prompt: args.prompt, nextRunAt: args.nextRunAt });
+      const s = schedule({
+        id: `s-${created.length + 1}`,
+        workspaceId: args.workspaceId,
+        prompt: args.prompt,
+        nextRunAt: args.nextRunAt,
+      });
       state.schedules.push(s);
       return { ok: true, schedule: s };
     },
@@ -62,9 +71,16 @@ function fakeApi(schedules: DeckSchedule[] = []): DeckSchedulesApi & {
   };
 }
 
-async function mount(api: DeckSchedulesApi): Promise<void> {
+async function mount(api: DeckSchedulesApi, workspaceId = 'ws-1'): Promise<void> {
   await act(async () => {
-    root.render(createElement(DeckSchedulesPanel, { api }));
+    root.render(
+      createElement(DeckSchedulesPanel, {
+        api,
+        // '' models "no active workspace" — the prop is optional in prod.
+        ...(workspaceId ? { workspaceId } : {}),
+        workspaceName: (id: string) => (id === 'ws-1' ? 'Backend' : undefined),
+      }),
+    );
   });
 }
 
@@ -79,13 +95,15 @@ describe('DeckSchedulesPanel', () => {
     expect(container.querySelector('[data-deck-schedules-toggle]')).toBeNull();
   });
 
-  it('toggle opens the panel and lists schedules', async () => {
+  it('toggle opens the panel and lists schedules with their workspace chip', async () => {
     await mount(fakeApi([schedule()]));
     expect(container.querySelector('[data-deck-schedules-panel]')).toBeNull();
     await open();
     const rows = container.querySelectorAll('[data-deck-schedule-row]');
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain('check the PRs');
+    const chip = rows[0].querySelector('[data-deck-schedule-workspace]');
+    expect(chip?.textContent).toBe('Backend');
   });
 
   it('shows the empty state when there are no schedules', async () => {
@@ -94,7 +112,7 @@ describe('DeckSchedulesPanel', () => {
     expect(container.querySelector('[data-deck-schedules-empty]')).not.toBeNull();
   });
 
-  it('creates a schedule from the form', async () => {
+  it('creates a schedule bound to the panel workspace', async () => {
     const api = fakeApi();
     await mount(api);
     await open();
@@ -107,8 +125,27 @@ describe('DeckSchedulesPanel', () => {
     const create = container.querySelector('[data-deck-schedule-create]') as HTMLButtonElement;
     await act(async () => { create.click(); });
     expect(api.created).toHaveLength(1);
-    expect((api.created[0] as { prompt: string }).prompt).toBe('nightly check');
+    expect(api.created[0] as { workspaceId: string; prompt: string }).toMatchObject({
+      workspaceId: 'ws-1',
+      prompt: 'nightly check',
+    });
     expect(container.querySelectorAll('[data-deck-schedule-row]')).toHaveLength(1);
+  });
+
+  it('refuses to create without a workspace (inline error, no api call)', async () => {
+    const api = fakeApi();
+    await mount(api, '');
+    await open();
+    const promptInput = container.querySelector('[data-deck-schedule-prompt]') as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(promptInput, 'orphan');
+      promptInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const create = container.querySelector('[data-deck-schedule-create]') as HTMLButtonElement;
+    await act(async () => { create.click(); });
+    expect(api.created).toHaveLength(0);
+    expect(container.querySelector('[data-deck-schedule-error]')).not.toBeNull();
   });
 
   it('rejects an empty prompt with an inline error, no api call', async () => {
@@ -132,5 +169,21 @@ describe('DeckSchedulesPanel', () => {
     await act(async () => { del.click(); });
     expect(api.removed).toEqual(['s-1']);
     expect(container.querySelectorAll('[data-deck-schedule-row]')).toHaveLength(0);
+  });
+
+  it('a pre-M1.5 row shows the needs-workspace badge and adopts into this workspace', async () => {
+    const legacy = schedule({ id: 's-legacy', enabled: false });
+    delete (legacy as Partial<DeckSchedule>).workspaceId;
+    const api = fakeApi([legacy]);
+    await mount(api);
+    await open();
+    const row = container.querySelector('[data-deck-schedule-row]')!;
+    expect(row.querySelector('[data-deck-schedule-workspace]')).toBeNull();
+    expect(row.querySelector('[data-deck-schedule-needs-workspace]')).not.toBeNull();
+    // The enable button doubles as the adopt action: it re-scopes the row to
+    // the panel's workspace while enabling.
+    const adopt = row.querySelector('[data-deck-schedule-toggle-enabled]') as HTMLButtonElement;
+    await act(async () => { adopt.click(); });
+    expect(api.updated).toEqual([{ id: 's-legacy', enabled: true, workspaceId: 'ws-1' }]);
   });
 });
