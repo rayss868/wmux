@@ -24,6 +24,8 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
+import { formatChatTime } from './deckBrain';
+import DeckFleet from './DeckFleet';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { generateId } from '../../../shared/types';
 import type { ChannelMention, ChannelMessage } from '../../../shared/channels';
@@ -108,6 +110,9 @@ export interface CommanderViewContentProps {
   /** M1.5: the workspace this deck view is bound to — new schedules are
    *  created against its orchestrator. */
   activeWorkspaceId?: string;
+  /** P2① mission control — the Fleet roster slot, pinned above the thread.
+   *  Injected as a node so this surface stays presentational/store-free. */
+  fleetSlot?: React.ReactNode;
   t?: (key: string) => string;
 }
 
@@ -129,6 +134,7 @@ export function CommanderViewContent({
   quickActions = [],
   onQuickAction,
   activeWorkspaceId,
+  fleetSlot,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -139,6 +145,8 @@ export function CommanderViewContent({
       className="flex flex-col flex-1 min-h-0 bg-[var(--bg-base)]"
       {...tokenAttrs('bgBase', 'bg')}
     >
+      {/* P2① — Fleet roster pinned above the thread (does not scroll with it). */}
+      {fleetSlot}
       {/* Message list — the brain conversation (Phase 2) plus the Phase 1
           @-mention fan-out threads. */}
       <div
@@ -317,28 +325,61 @@ function CommanderBrainItem({
   t: (key: string) => string;
 }): React.ReactElement {
   const isUser = message.role === 'user';
+  // Chat convention (owner call): YOUR messages sit right-aligned in a lifted
+  // bubble with no author label (right = you, always); the orchestrator's
+  // prose stays left, chrome-free. Both carry a local HH:MM timestamp.
+  if (isUser) {
+    return (
+      <div
+        data-commander-brain-message
+        data-role="user"
+        className="flex flex-col items-end gap-0.5"
+      >
+        <div
+          className="max-w-[85%] rounded-lg rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
+          data-commander-brain-text
+          {...tokenAttrs('bgSurface', 'bg')}
+          {...tokenAttrs('textMain', 'text')}
+        >
+          {message.text}
+        </div>
+        {message.ts && (
+          <span className="text-[9.5px] font-mono text-[var(--text-muted)] pr-1" {...tokenAttrs('textMuted', 'text')}>
+            {formatChatTime(message.ts)}
+          </span>
+        )}
+      </div>
+    );
+  }
   return (
     <div
       data-commander-brain-message
       data-role={message.role}
       className="flex flex-col gap-1"
     >
-      <span
-        className={`text-[12px] font-bold ${isUser ? 'text-[var(--text-main)]' : 'text-[var(--accent-blue)]'}`}
-        {...(isUser ? tokenAttrs('textMain', 'text') : tokenAttrs('accent', 'text'))}
-      >
-        {isUser ? t('channels.me') || 'Me' : t('deck.commander') || 'Orchestrator'}
+      <span className="flex items-baseline gap-2">
+        <span
+          className="text-[12px] font-bold text-[var(--accent-blue)]"
+          {...tokenAttrs('accent', 'text')}
+        >
+          {t('deck.commander') || 'Orchestrator'}
+        </span>
+        {message.ts && (
+          <span className="text-[9.5px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+            {formatChatTime(message.ts)}
+          </span>
+        )}
       </span>
       {message.text && (
         // Assistant prose renders as markdown (headings/lists/code from the
-        // model); the human's own message stays literal text — what they
-        // typed is what they see.
+        // model); the human's own message (the branch above) stays literal —
+        // what they typed is what they see.
         <div
-          className={`text-[13px] leading-relaxed text-[var(--text-main)] break-words ${isUser ? 'whitespace-pre-wrap' : ''}`}
+          className="text-[13px] leading-relaxed text-[var(--text-main)] break-words"
           data-commander-brain-text
           {...tokenAttrs('textMain', 'text')}
         >
-          {isUser ? message.text : renderBrainMarkdown(message.text)}
+          {renderBrainMarkdown(message.text)}
         </div>
       )}
       {/* Tool calls — flat monospace LOG LINES in call order (design decision
@@ -435,31 +476,26 @@ function CommanderThreadItem({
   return (
     <div data-commander-thread className="flex flex-col gap-1.5">
       {dispatch && (
-        <div data-commander-dispatch className="flex flex-col gap-0.5">
-          <div className="flex items-baseline gap-2">
-            <span
-              className="text-[12px] font-bold text-[var(--text-main)]"
-              {...tokenAttrs('textMain', 'text')}
-            >
-              {t('channels.me') || 'Me'}
-            </span>
-            <span
-              className="text-[9px] font-mono text-[var(--text-muted)]"
-              {...tokenAttrs('textMuted', 'text')}
-            >
-              {new Date(dispatch.postedAt).toISOString().slice(11, 19)}
-            </span>
-          </div>
+        <div data-commander-dispatch className="flex flex-col items-end gap-0.5">
+          {/* Chat convention: your dispatch sits right-aligned in a bubble, no
+              author label (right = you). Local HH:MM below (was UTC slice). */}
           <div
-            className="text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
+            className="max-w-[85%] rounded-lg rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
             data-commander-dispatch-text
+            {...tokenAttrs('bgSurface', 'bg')}
             {...tokenAttrs('textMain', 'text')}
           >
             {renderMessageBody(dispatch.text, dispatch.mentions)}
           </div>
+          <span
+            className="text-[9.5px] font-mono text-[var(--text-muted)] pr-1"
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {formatChatTime(new Date(dispatch.postedAt).getTime())}
+          </span>
           {/* Target pane chips — the fan-out recipients, clickable to jump. */}
           {dispatch.mentions && dispatch.mentions.length > 0 && (
-            <div className="flex flex-wrap gap-1 pt-0.5" data-commander-targets>
+            <div className="flex flex-wrap gap-1 pt-0.5 justify-end" data-commander-targets>
               {dispatch.mentions.map((m) => (
                 <button
                   key={`${m.workspaceId}:${m.paneId ?? m.name}`}
@@ -524,10 +560,10 @@ function CommanderThreadItem({
                     </span>
                   )}
                   <span
-                    className="text-[9px] font-mono text-[var(--text-muted)]"
+                    className="text-[9.5px] font-mono text-[var(--text-muted)]"
                     {...tokenAttrs('textMuted', 'text')}
                   >
-                    {new Date(m.postedAt).toISOString().slice(11, 19)}
+                    {formatChatTime(new Date(m.postedAt).getTime())}
                   </span>
                 </div>
                 <div
@@ -876,6 +912,7 @@ export function CommanderView(): React.ReactElement {
       quickActions={quickActions}
       onQuickAction={handleQuickAction}
       activeWorkspaceId={activeWorkspaceId}
+      fleetSlot={<DeckFleet onJumpToPane={onJumpToPane} />}
       t={t}
     />
   );

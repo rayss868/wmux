@@ -58,7 +58,24 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
   /** X8 supervision mirror (per-ptyId). Optional so existing fixtures stay
    *  terse; the live FleetView always passes the real map. */
   supervisionByPtyId?: StoreState['supervisionByPtyId'];
+  /** Hook-driven 'running' inputs (orca-style). Both optional so existing
+   *  fixtures/tests get the pre-existing behavior (no hook-freshness); the live
+   *  store always provides them. `agentClockMs` is the read-time clock so a
+   *  stale stamp decays without a new event (bumped by useAgentActivityClock). */
+  surfaceActivityAt?: StoreState['surfaceActivityAt'];
+  agentClockMs?: StoreState['agentClockMs'];
 };
+
+/**
+ * How long after a pane's last PostToolUse hook it still counts as 'running'
+ * with no further signal. Generous on purpose (orca uses a 30-min safety net):
+ * a real Claude turn ends via the Stop hook → 'complete' (an attention status
+ * that outranks this), so this window only governs the "agent is thinking
+ * between tools / a hook-less agent is working" case. Long enough to survive a
+ * quiet reasoning gap or a multi-second tool, short enough that a crashed agent
+ * (no Stop) settles to idle promptly.
+ */
+export const HOOK_RUNNING_TTL_MS = 120_000;
 
 // Priority of each status for "which one wants the user most". Lower = more
 // urgent. Drives both the per-leaf attention scan (a background tab can be
@@ -103,9 +120,26 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
           attention = st;
         }
       }
+      // Resolution order (most → least authoritative):
+      //   1. a retained ATTENTION status on any surface (waiting/complete/…)
+      //   2. the active pane's workspace-level status, when it's a live non-idle
+      //      state (e.g. detector/byte 'running')
+      //   3. hook-driven 'running' — a PostToolUse fired within the TTL, so the
+      //      agent is working even if the terminal is quiet (fixes "thinking
+      //      mid-turn read as idle"; also lights BACKGROUND running panes, which
+      //      never reached workspace metadata). Uses the in-state clock so it
+      //      decays on its own. Absent inputs → skipped (legacy behavior).
+      //   4. idle.
+      const metaStatus = isActivePane ? wsMeta?.agentStatus : undefined;
+      const activityAt = ptyId ? state.surfaceActivityAt?.[ptyId] : undefined;
+      const hookRunning =
+        activityAt !== undefined &&
+        state.agentClockMs !== undefined &&
+        state.agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
       const status: AgentStatus =
         attention
-        ?? (isActivePane ? wsMeta?.agentStatus : undefined)
+        ?? (metaStatus && metaStatus !== 'idle' ? metaStatus : undefined)
+        ?? (hookRunning ? 'running' : undefined)
         ?? 'idle';
       result.push({
         workspaceId: ws.id,
@@ -217,4 +251,46 @@ export function countNeedsAttention(panes: FleetPane[]): number {
   return panes.filter(
     (p) => p.agentStatus === 'awaiting_input' || p.agentStatus === 'waiting',
   ).length;
+}
+
+// ─── Per-workspace status roll-up — the sidebar dot's source ─────────────────
+//
+// The sidebar workspace dot must reflect the WHOLE workspace, not just its
+// active pane. Reading `ws.metadata.agentStatus` directly (the old path) only
+// ever saw the active pane and never self-healed, so an agent awaiting input in
+// a background split, or a completed turn the user hasn't visited, left the dot
+// wrong. This rolls the same per-surface attention scan `selectFleetPanes`
+// already does (used by the deck Fleet roster + titlebar vitals) down to a
+// single most-urgent status per workspace, via the shared STATUS_RANK.
+//
+// Returns 'idle' for a workspace with no panes or all-idle panes, so the caller
+// renders the neutral dot exactly as before for quiet workspaces.
+export function selectWorkspaceAgentStatus(
+  state: FleetSelectorState,
+  workspaceId: string,
+): AgentStatus {
+  let best: AgentStatus = 'idle';
+  for (const pane of selectFleetPanes(state)) {
+    if (pane.workspaceId !== workspaceId) continue;
+    if (STATUS_RANK[pane.agentStatus] < STATUS_RANK[best]) best = pane.agentStatus;
+  }
+  return best;
+}
+
+/**
+ * All-workspaces variant — one `selectFleetPanes` pass rolled up to a
+ * `{ workspaceId → most-urgent status }` map. For loop renderers (MiniSidebar)
+ * that would otherwise call the single-workspace version O(N) times, each a
+ * fresh full scan. Workspaces with no non-idle pane are omitted; the caller
+ * defaults a missing entry to 'idle'.
+ */
+export function selectAllWorkspaceAgentStatus(
+  state: FleetSelectorState,
+): Record<string, AgentStatus> {
+  const out: Record<string, AgentStatus> = {};
+  for (const pane of selectFleetPanes(state)) {
+    const cur = out[pane.workspaceId] ?? 'idle';
+    if (STATUS_RANK[pane.agentStatus] < STATUS_RANK[cur]) out[pane.workspaceId] = pane.agentStatus;
+  }
+  return out;
 }

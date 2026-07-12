@@ -83,11 +83,12 @@ function threadOf(state: StoreState, workspaceId: string): DeckBrainThread {
 }
 
 function openTurn(thread: DeckBrainThread, text: string): void {
-  thread.messages.push({ id: generateId('dbu'), role: 'user', text });
+  thread.messages.push({ id: generateId('dbu'), role: 'user', text, ts: Date.now() });
   thread.messages.push({
     id: generateId('dba'),
     role: 'assistant',
     text: '',
+    ts: Date.now(),
     tools: [],
     status: 'streaming',
   });
