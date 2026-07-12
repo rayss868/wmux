@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Color-discipline pass across the shell: one amber, and it only ever means "here."** The status lights now speak one consistent language everywhere (sidebar, pane tabs, Fleet roster): amber = running, green = done, **red = needs you** (this last one was wrongly amber before), gray = idle — and a running agent is no longer the same green as a finished one. Amber stopped leaking onto things that aren't "live or focused": notification/unread counts, the git-branch glyph, the orchestrator's name label, fan-out and reply chips, and the reboot "resume" pill are all quiet now, with the accent appearing on hover instead. A couple of stray emoji in the chrome (the 🔔 on a workspace's last-notification line, the ⚙ settings button) became crisp monochrome icons, and popover corners were tightened to match the design system. The result is calmer: on a busy multi-agent screen, the few amber marks left are the ones that actually tell you where to look.
+
 ### Fixed
 
 - **The Orchestrator can no longer fake "your agent is running" — launching an agent now means a real CLI in a real pane.** Asked to start Claude in bypass mode, the orchestrator could previously spin up an internal side-conversation (a built-in subagent tool that slipped past the permission system), report the agent as running, and even type a fake ready-prompt into an empty terminal. Those built-in subagent tools are now hard-disabled for the orchestrator — along with its own shell and file tools, which the permission system was already blocking, now made structural — and it is explicitly instructed that launching an agent means typing the agent's actual command (e.g. `claude --dangerously-skip-permissions`) into a real pane and confirming it started. An agent either really runs in a pane, or the orchestrator says plainly that it doesn't.
