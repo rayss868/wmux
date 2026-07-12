@@ -8,7 +8,6 @@ import MiniSidebar from '../Sidebar/MiniSidebar';
 import PaneContainer from '../Pane/PaneContainer';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
-import StatusBar from '../StatusBar/StatusBar';
 import NotificationPanel from '../Notification/NotificationPanel';
 import CommandPalette from '../Palette/CommandPalette';
 import WorktaskCleanupView from '../WorkTask/WorktaskCleanupView';
@@ -31,6 +30,7 @@ import ChannelDock from '../Channels/ChannelDock';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useActivePaneFocus } from '../../hooks/useActivePaneFocus';
+import { useAgentActivityClock } from '../../hooks/useAgentActivityClock';
 import { useTerminalCopyShortcut } from '../../hooks/useTerminalCopyShortcut';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
@@ -62,6 +62,7 @@ import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode
 import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import AgentToolbar from '../AgentToolbar/AgentToolbar';
+import Titlebar from '../Titlebar/Titlebar';
 
 /**
  * Fix 0 — startup reconcile timeout.
@@ -316,6 +317,9 @@ export default function AppLayout() {
   // surface switches — without this the red active border moves but typing
   // stays in the previously focused pane (see useActivePaneFocus).
   useActivePaneFocus();
+  // Ticks agentClockMs while any agent is recently active so hook-driven
+  // 'running' decays to idle on its own (see useAgentActivityClock / fleet.ts).
+  useAgentActivityClock();
   // Focus-independent terminal Ctrl+C copy: when the channel dock / composer
   // owns DOM focus, xterm's own Ctrl+C handler never runs (it requires the
   // terminal textarea to be focused), so a selected-then-Ctrl+C goes silent.
@@ -1206,7 +1210,7 @@ export default function AppLayout() {
   return (
     <ErrorBoundary name="AppLayout">
     <div
-      className={`flex h-screen w-screen bg-[var(--bg-base)] overflow-hidden ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}
+      className="flex flex-col h-screen w-screen bg-[var(--bg-base)] overflow-hidden"
       style={{
         ...(prefixMode ? {
           boxShadow: 'inset 0 0 0 2px var(--accent-red)',
@@ -1217,12 +1221,21 @@ export default function AppLayout() {
         }),
       }}
     >
+      {/* Bridge redesign — custom 36px titlebar spans the FULL window width,
+          above the sidebar|main|dock row. The BrowserWindow is frameless
+          (titleBarStyle:'hidden'), so this bar owns window dragging. */}
+      <ErrorBoundary name="Titlebar">
+        <Titlebar />
+      </ErrorBoundary>
+      <div className={`flex flex-1 min-h-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
       <ErrorBoundary name="Sidebar">
         {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
       </ErrorBoundary>
       <ErrorBoundary name="Main">
       <div className="flex-1 min-w-0 flex flex-col">
-        <StatusBar />
+        {/* P1.5 — the status strip moved into the Titlebar (owner feedback:
+            the empty titlebar center + a second status row doubled the top
+            chrome). This column now starts directly with the pane area. */}
         {/* Render workspaces: single view or multiview grid (Ctrl+click selected).
             Grid renders only when the active workspace is a member of the saved
             multiview group, so clicking outside the group shows that workspace's
@@ -1477,6 +1490,7 @@ export default function AppLayout() {
       )}
       <FloatingPane />
       <ToastContainer />
+      </div>
     </div>
     </ErrorBoundary>
   );
