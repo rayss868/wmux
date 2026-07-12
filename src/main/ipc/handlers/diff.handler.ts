@@ -5,14 +5,13 @@
 // diff:applyHunks: 스냅샷 드리프트 게이트 → dirty 거부 → per-hunk 프로브 →
 //   선택 hunk 단일 패치 all-or-nothing apply(§3). 타겟 repo 단위 뮤텍스.
 import { ipcMain } from 'electron';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { readFile, lstat } from 'node:fs/promises';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, isAbsolute, normalize, dirname } from 'node:path';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { git } from '../../git/git';
 import {
   parseUnifiedDiff,
   reassemblePatch,
@@ -29,30 +28,8 @@ import {
   type HunkProbe,
 } from '../../../shared/diffParse';
 
-const execFileAsync = promisify(execFile);
-
-// git 실행 헬퍼. cwd 고정, 타임아웃·버퍼 캡. throw 대신 stdout/stderr/code 반환.
-async function git(
-  args: string[],
-  cwd: string,
-): Promise<{ stdout: string; stderr: string; code: number }> {
-  try {
-    const { stdout, stderr } = await execFileAsync('git', args, {
-      cwd,
-      timeout: 30000,
-      windowsHide: true,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    return { stdout, stderr, code: 0 };
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string; code?: number };
-    return {
-      stdout: err.stdout ?? '',
-      stderr: err.stderr ?? String(e),
-      code: typeof err.code === 'number' ? err.code : 1,
-    };
-  }
-}
+// git 실행 헬퍼는 main/git/git.ts로 승격 추출됨(동작 무변경) — worktree
+// 핸들러와 공유. throw 대신 stdout/stderr/code 반환 계약은 그대로다.
 
 // 타겟 repo 단위 직렬 큐(§3 R15 — J1 per-repo 뮤텍스 패턴 재사용).
 // key = 타겟 repo 경로. J1 TaskWorktreeManager.withRepoLock과 동형이나

@@ -509,6 +509,9 @@ export interface SessionData {
    *  false — the orchestrator is the single interface; the tab is an
    *  opt-in inspection surface (Settings). */
   channelsTabVisible?: boolean;
+  /** Whether the deck shows the Git tab (worktrees / PRs). Default true —
+   *  informational surface; hideable for minimal-chrome setups. */
+  gitTabVisible?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting

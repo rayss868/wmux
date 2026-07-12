@@ -20,6 +20,9 @@ export interface DeckTabsProps {
    *  it hidden the strip shows the single Orchestrator tab, doubling as the
    *  deck's header. */
   showChannels?: boolean;
+  /** Whether the Git tab renders. Default true (store default is also true —
+   *  informational surface; hideable in Settings). */
+  showGit?: boolean;
   /** Right-aligned header controls (model chip + collapse button). Rendered
    *  after the tabs, pinned to the trailing edge — the deck's one header row,
    *  so orchestrator settings live next to its name instead of buried in
@@ -31,6 +34,7 @@ export interface DeckTabsProps {
 
 const TABS: { id: DeckTab; labelKey: string; fallback: string }[] = [
   { id: 'commander', labelKey: 'deck.tabCommander', fallback: 'Orchestrator' },
+  { id: 'git', labelKey: 'deck.tabGit', fallback: 'Git' },
   { id: 'channels', labelKey: 'deck.tabChannels', fallback: 'Channels' },
 ];
 
@@ -39,11 +43,14 @@ export function DeckTabs({
   onSelect,
   channelsUnread = 0,
   showChannels = true,
+  showGit = true,
   rightSlot,
   t: tProp,
 }: DeckTabsProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
-  const tabs = showChannels ? TABS : TABS.filter((tab) => tab.id !== 'channels');
+  const tabs = TABS.filter(
+    (tab) => (tab.id !== 'channels' || showChannels) && (tab.id !== 'git' || showGit),
+  );
   return (
     <div
       data-deck-tabs

@@ -28,8 +28,9 @@ import {
 import { generateId } from '../../../shared/types';
 
 /** Which dock tab is showing. `commander` is the default (the LLM-less
- *  command composer); `channels` is the classic channel list + conversation. */
-export type DeckTab = 'commander' | 'channels';
+ *  command composer); `channels` is the classic channel list + conversation;
+ *  `git` is the workspace's git surface (worktrees now; PRs/comments next). */
+export type DeckTab = 'commander' | 'channels' | 'git';
 
 /** One workspace orchestrator's turn state. Distinct from the Phase 1 fan-out
  *  threads (which live in the `#commander` channel): the brain stream is an
