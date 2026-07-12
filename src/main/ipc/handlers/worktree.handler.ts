@@ -62,6 +62,22 @@ async function resolveToplevel(cwd: string): Promise<string | null> {
   return top || null;
 }
 
+// 경로 정규화 — 파일시스템 대소문자 정책 반영(Codex P2). Windows/macOS는
+// case-insensitive라 lowercase, POSIX(case-sensitive)는 원형 유지: 그래야
+// `/repo/Foo`와 `/repo/foo`가 서로 다른 워크트리로 올바로 구분된다.
+function normPath(p: string): string {
+  const trimmed = resolve(p).replace(/[/\\]+$/, '');
+  return process.platform === 'win32' || process.platform === 'darwin' ? trimmed.toLowerCase() : trimmed;
+}
+
+// 본 워크트리(main) = `git worktree list --porcelain` 첫 블록(git 계약).
+// cwd가 linked worktree여도 여기서 본 repo를 얻는다.
+async function resolveMainWorktree(top: string): Promise<string> {
+  const r = await git(['worktree', 'list', '--porcelain'], top);
+  if (r.code !== 0) return top;
+  return parseWorktreePorcelain(r.stdout)[0]?.path ?? top;
+}
+
 async function listWorktrees(repoPath: string): Promise<WorktreeListResult> {
   const top = await resolveToplevel(repoPath);
   if (!top) return { ok: false, error: 'not a git repository' };
@@ -83,24 +99,35 @@ async function addWorktree(repoPath: string, branch: string): Promise<WorktreeMu
   }
   const top = await resolveToplevel(repoPath);
   if (!top) return { ok: false, error: 'not a git repository' };
-  return withRepoLock(top.toLowerCase(), async () => {
-    // 관례 위치: <repo부모>/<repo이름>-worktrees/<branch-dir>. 오너의 실사용
+  // 경로 도출 기준 = 본(main) 워크트리(Codex P2). linked worktree에서 열면
+  // top이 그 worktree 자신이라 `<linked>-worktrees`가 되던 버그를 막는다.
+  const mainWt = await resolveMainWorktree(top);
+  return withRepoLock(normPath(mainWt), async () => {
+    // 관례 위치: <main부모>/<main이름>-worktrees/<branch-dir>. 오너의 실사용
     // 관례(D:\wmux-worktrees\*)와 동형 — repo 안이 아니라 형제 디렉토리라
     // 워크트리가 자기 repo의 untracked 노이즈가 되지 않는다.
-    const parent = join(dirname(top), `${basename(top)}-worktrees`);
+    const parent = join(dirname(mainWt), `${basename(mainWt)}-worktrees`);
     const wtPath = resolve(parent, branchToDirName(safeBranch));
     if (existsSync(wtPath)) {
       return { ok: false, error: `path already exists: ${wtPath}` };
     }
     if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
-    // 기존 브랜치면 체크아웃, 없으면 -b로 생성. rev-parse --verify로 분기.
-    const exists = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${safeBranch}`], top);
-    const args =
-      exists.code === 0
-        ? ['worktree', 'add', wtPath, safeBranch]
-        : ['worktree', 'add', wtPath, '-b', safeBranch];
-    const r = await git(args, top);
-    if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };
+    // 브랜치 해석 3분기(Codex P2 — remote-only 브랜치 보존):
+    //  ① 로컬 브랜치 존재 → 체크아웃.
+    //  ② 아니면 --guess-remote 시도 → origin/<branch>가 있으면 그걸 추적하는
+    //     로컬 브랜치를 만든다(강제 -b가 remote를 무시하고 새 브랜치를 만드는
+    //     것 방지). remote 매칭이 없으면 실패.
+    //  ③ ②가 실패하면 -b로 HEAD에서 새 브랜치 생성.
+    const local = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${safeBranch}`], mainWt);
+    if (local.code === 0) {
+      const r = await git(['worktree', 'add', wtPath, safeBranch], mainWt);
+      if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };
+      return { ok: true, worktreePath: wtPath };
+    }
+    const guess = await git(['worktree', 'add', '--guess-remote', wtPath, safeBranch], mainWt);
+    if (guess.code === 0) return { ok: true, worktreePath: wtPath };
+    const created = await git(['worktree', 'add', '-b', safeBranch, wtPath], mainWt);
+    if (created.code !== 0) return { ok: false, error: created.stderr.slice(0, 300) };
     return { ok: true, worktreePath: wtPath };
   });
 }
@@ -113,15 +140,20 @@ async function removeWorktree(repoPath: string, worktreePath: string): Promise<W
   const listed = await git(['worktree', 'list', '--porcelain'], top);
   if (listed.code !== 0) return { ok: false, error: listed.stderr.slice(0, 300) };
   const entries = parseWorktreePorcelain(listed.stdout);
-  const norm = (p: string) => resolve(p).replace(/[/\\]+$/, '').toLowerCase();
-  const target = entries.find((e) => norm(e.path) === norm(worktreePath));
+  const target = entries.find((e) => normPath(e.path) === normPath(worktreePath));
   if (!target) return { ok: false, error: 'not a listed worktree of this repository' };
-  // 본 워크트리 = porcelain 첫 블록(top이 아니라 — top은 호출 컨텍스트의
-  // 워크트리일 수 있다). 현재 서 있는 워크트리 제거는 git 자신이 cwd 사유로
-  // 거부하므로 별도 가드 불요.
+  // 본 워크트리(porcelain 첫 블록) 제거 거부.
   const mainPath = entries[0]?.path ?? top;
-  if (norm(target.path) === norm(mainPath)) return { ok: false, error: 'cannot remove the main worktree' };
-  return withRepoLock(top.toLowerCase(), async () => {
+  if (normPath(target.path) === normPath(mainPath)) {
+    return { ok: false, error: 'cannot remove the main worktree' };
+  }
+  // 활성(호출 컨텍스트) 워크트리 제거 거부(Codex P2): git은 clean 워크트리를
+  // 그 자신의 cwd에서도 제거해준다 — 사용자가 지금 서 있는 워크트리를 지워
+  // pane cwd가 사라지는 상황을 막는다. top = 활성 pane의 toplevel.
+  if (normPath(target.path) === normPath(top)) {
+    return { ok: false, error: 'cannot remove the worktree you are currently in' };
+  }
+  return withRepoLock(normPath(top), async () => {
     // --force 없음: dirty/잠김 워크트리는 git이 거부하며 그 사유를 그대로 표면화.
     const r = await git(['worktree', 'remove', target.path], top);
     if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };

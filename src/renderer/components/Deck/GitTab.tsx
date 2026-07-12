@@ -15,6 +15,7 @@
 // most ONE amber point — the dot marking the worktree the active pane is in.
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../stores';
+import type { StoreState } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
@@ -22,8 +23,8 @@ import type { Pane, PaneLeaf } from '../../../shared/types';
 import type { WorktreeEntry } from '../../../shared/worktreeParse';
 
 // 활성 워크스페이스의 활성 pane → 활성 surface cwd (팔레트 Show Git Diff와 동일 규칙).
-function activePaneCwd(): string {
-  const state = useStore.getState();
+// 셀렉터로도 재사용(store 상태에서 원시 문자열로 수렴 — 리렌더 최소화).
+function selectActivePaneCwd(state: StoreState): string {
   const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
   if (!ws) return '';
   const findLeaf = (pane: Pane): PaneLeaf | null => {
@@ -68,6 +69,9 @@ function getBridges(): { worktree: WorktreeBridge | null; resolveRepo: ((cwd: st
 export function GitTab(): React.ReactElement {
   const t = useT();
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // 활성 pane cwd를 reactive 구독 — 같은 워크스페이스에서 다른 repo pane으로
+  // 포커스가 옮겨가도 재조회되도록 load의 dep으로 쓴다(Codex P2).
+  const activeCwd = useStore(selectActivePaneCwd);
   const pushToast = useStore((s) => s.pushToast);
   const [repoPath, setRepoPath] = useState<string | null>(null);
   // 본(main) 워크트리 경로 — "main" 배지·Remove 숨김 기준. 현재 워크트리
@@ -89,7 +93,7 @@ export function GitTab(): React.ReactElement {
       setLoading(false);
       return;
     }
-    const cwd = activePaneCwd();
+    const cwd = activeCwd;
     const resolved = cwd ? await resolveRepo(cwd) : ({ ok: false } as const);
     if (!resolved.ok) {
       setRepoPath(null);
@@ -109,9 +113,10 @@ export function GitTab(): React.ReactElement {
       setWorktrees(res.worktrees);
     }
     setLoading(false);
-  }, []);
+  }, [activeCwd]);
 
-  // 탭 마운트 시 + 활성 워크스페이스 전환 시 재조회(pull-only).
+  // 탭 마운트 시 + 활성 워크스페이스/pane cwd 변경 시 재조회(pull-only).
+  // load가 activeCwd에 의존하므로 pane 포커스 전환도 여기서 재조회된다.
   useEffect(() => {
     void load();
   }, [load, activeWorkspaceId]);
@@ -122,14 +127,20 @@ export function GitTab(): React.ReactElement {
     const { worktree } = getBridges();
     if (!worktree) return;
     setBusy(true);
-    const res = await worktree.add(repoPath, branch);
-    setBusy(false);
-    if (!res.ok) {
-      pushToast({ level: 'warn', message: `${t('git.createFailed')}: ${res.error}` });
-      return;
+    // try/finally: IPC가 {ok:false} 대신 reject해도 busy가 풀리도록(Codex P2).
+    try {
+      const res = await worktree.add(repoPath, branch);
+      if (!res.ok) {
+        pushToast({ level: 'warn', message: `${t('git.createFailed')}: ${res.error}` });
+        return;
+      }
+      setNewBranch('');
+      void load();
+    } catch (e) {
+      pushToast({ level: 'warn', message: `${t('git.createFailed')}: ${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      setBusy(false);
     }
-    setNewBranch('');
-    void load();
   }, [newBranch, repoPath, busy, pushToast, t, load]);
 
   const handleRemove = useCallback(
@@ -139,14 +150,19 @@ export function GitTab(): React.ReactElement {
       const { worktree } = getBridges();
       if (!worktree) return;
       setBusy(true);
-      const res = await worktree.remove(repoPath, wt.path);
-      setBusy(false);
-      if (!res.ok) {
-        // dirty 워크트리 등 — git의 거부 사유를 그대로 표면화(--force 미제공).
-        pushToast({ level: 'warn', message: `${t('git.removeFailed')}: ${res.error}` });
-        return;
+      try {
+        const res = await worktree.remove(repoPath, wt.path);
+        if (!res.ok) {
+          // dirty 워크트리 등 — git의 거부 사유를 그대로 표면화(--force 미제공).
+          pushToast({ level: 'warn', message: `${t('git.removeFailed')}: ${res.error}` });
+          return;
+        }
+        void load();
+      } catch (e) {
+        pushToast({ level: 'warn', message: `${t('git.removeFailed')}: ${e instanceof Error ? e.message : String(e)}` });
+      } finally {
+        setBusy(false);
       }
-      void load();
     },
     [repoPath, busy, pushToast, t, load],
   );

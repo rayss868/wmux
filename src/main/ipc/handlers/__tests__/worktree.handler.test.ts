@@ -1,7 +1,7 @@
 // worktree:list / add / remove 핸들러 테스트 — 실제 임시 git repo로 왕복 검증.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename, dirname } from 'node:path';
 
@@ -24,7 +24,9 @@ function g(cwd: string, args: string[]): string {
 }
 
 function makeRepo(): { base: string; repo: string; cleanup: () => void } {
-  const base = mkdtempSync(join(tmpdir(), 'wmux-wth-'));
+  // realpathSync.native로 8.3 단축폼(CI Windows RUNNER~1)을 롱폼으로 정규화 —
+  // 핸들러가 git canonical 경로 기준으로 파생·비교하므로 fixture도 맞춰야 한다.
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-wth-')));
   const repo = join(base, 'repo');
   mkdirSync(repo);
   g(repo, ['init', '-q', '-b', 'main']);
@@ -122,6 +124,44 @@ describe('worktree.handler — list/add/remove 왕복', () => {
     const m = (await remove({}, a.worktreePath!, scn.repo)) as MutRes;
     expect(m.ok).toBe(false);
     expect(m.error).toContain('main worktree');
+  });
+
+  it('remove — 활성(호출 컨텍스트) 워크트리는 clean이어도 거부(Codex P2)', async () => {
+    const add = captured.get(IPC.WORKTREE_ADD)!;
+    const remove = captured.get(IPC.WORKTREE_REMOVE)!;
+    const a = (await add({}, scn.repo, 'feat/active')) as MutRes;
+    // 그 워크트리 "안에서"(repoPath=자기 자신) 자기 자신을 지우려 하면 거부.
+    const r = (await remove({}, a.worktreePath!, a.worktreePath!)) as MutRes;
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('currently in');
+    expect(existsSync(a.worktreePath!)).toBe(true);
+  });
+
+  it('add — linked worktree 컨텍스트에서도 경로는 본 repo 기준으로 도출(Codex P2)', async () => {
+    const add = captured.get(IPC.WORKTREE_ADD)!;
+    const a = (await add({}, scn.repo, 'feat/first')) as MutRes;
+    // 첫 워크트리 "안에서" 두 번째 생성 — 경로는 <linked>-worktrees가 아니라
+    // 본 repo의 형제 <repo>-worktrees여야 한다.
+    const b = (await add({}, a.worktreePath!, 'feat/second')) as MutRes;
+    expect(b.ok).toBe(true);
+    expect(dirname(b.worktreePath!)).toBe(join(dirname(scn.repo), `${basename(scn.repo)}-worktrees`));
+  });
+
+  it('add — remote-only 브랜치는 origin 추적 로컬 브랜치로 체크아웃(Codex P2)', async () => {
+    // origin remote를 흉내내는 bare repo + feat/remote 브랜치.
+    const remoteBare = join(scn.base, 'remote.git');
+    g(scn.base, ['clone', '-q', '--bare', scn.repo, remoteBare]);
+    g(scn.repo, ['remote', 'add', 'origin', remoteBare]);
+    g(scn.repo, ['branch', 'feat/remote']);
+    g(scn.repo, ['push', '-q', 'origin', 'feat/remote']);
+    g(scn.repo, ['branch', '-D', 'feat/remote']); // 로컬에서 제거 → remote-only.
+    g(scn.repo, ['fetch', '-q', 'origin']);
+    const add = captured.get(IPC.WORKTREE_ADD)!;
+    const a = (await add({}, scn.repo, 'feat/remote')) as MutRes;
+    expect(a.ok).toBe(true);
+    // 새 로컬 브랜치가 origin/feat/remote를 upstream으로 추적해야 한다.
+    const upstream = g(a.worktreePath!, ['rev-parse', '--abbrev-ref', 'feat/remote@{upstream}']).trim();
+    expect(upstream).toBe('origin/feat/remote');
   });
 
   it('list — 비-git 경로는 fail-soft', async () => {
