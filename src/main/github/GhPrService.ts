@@ -110,7 +110,10 @@ interface GhDetailJson {
   }>;
 }
 
-function capBody(body: string): { body: string; truncated: boolean } {
+function capBody(raw: string): { body: string; truncated: boolean } {
+  // HTML 주석 스트립 — 봇 리뷰어(CodeRabbit 등)가 본문 앞뒤에 다는 마커가
+  // 렌더러(마크다운)에 raw로 노출되는 걸 dogfood가 잡았다. 표시용 정규화.
+  const body = raw.replace(/<!--[\s\S]*?-->/g, '').trim();
   if (Buffer.byteLength(body, 'utf8') <= PR_COMMENT_BODY_CAP) return { body, truncated: false };
   // 문자 단위 절단(UTF-8 바이트 캡 근사) — 표시용이라 정밀 바이트 절단 불요.
   return { body: body.slice(0, PR_COMMENT_BODY_CAP), truncated: true };

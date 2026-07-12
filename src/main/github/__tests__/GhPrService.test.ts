@@ -86,6 +86,22 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
     expect(out[2].body.length).toBe(PR_COMMENT_BODY_CAP);
     expect(out[3]).toMatchObject({ kind: 'review', reviewState: 'CHANGES_REQUESTED', body: '' });
   });
+
+  it('HTML 주석(봇 마커)은 본문에서 스트립된다', () => {
+    const out = mapGhDetail(
+      {
+        comments: [
+          {
+            author: { login: 'coderabbitai' },
+            body: '<!-- auto-generated -->\n실제 내용\n<!-- entry_end -->',
+            createdAt: 't',
+          },
+        ],
+      },
+      'u',
+    );
+    expect(out[0].body).toBe('실제 내용');
+  });
 });
 
 describe('GhPrService — 게이트', () => {
