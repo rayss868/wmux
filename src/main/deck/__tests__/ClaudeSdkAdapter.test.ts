@@ -19,6 +19,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 import {
   ClaudeSdkAdapter,
   DEFAULT_ALLOWED_TOOLS,
+  DISALLOWED_TOOLS,
+  buildCommanderSystemPrompt,
   type SdkQueryHandle,
 } from '../ClaudeSdkAdapter';
 import type { RawSdkMessage } from '../BrainAdapter';
@@ -106,6 +108,41 @@ describe('ClaudeSdkAdapter', () => {
     expect(DEFAULT_ALLOWED_TOOLS).toContain('mcp__wmux__pane_split');
     expect(DEFAULT_ALLOWED_TOOLS).not.toContain('mcp__wmux__pane_close');
     expect(DEFAULT_ALLOWED_TOOLS).not.toContain('mcp__wmux__surface_close');
+  });
+
+  it('hard-disallows the built-in subagent/file/shell tools on every spawn', async () => {
+    // Live-transcript finding: allowedTools only skips permission prompts, and
+    // the built-in Agent/Task tools execute WITHOUT one — the brain used them
+    // to fake "spawned an agent" instead of driving a real pane. They must be
+    // removed at the tool level, not left to the permission system.
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => '',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+    expect(calls[0].options.disallowedTools).toEqual(DISALLOWED_TOOLS);
+    for (const t of ['Agent', 'Task', 'Bash', 'Write', 'Edit']) {
+      expect(DISALLOWED_TOOLS).toContain(t);
+    }
+    // The disallow list and the allow list must never overlap — a tool in both
+    // would be ambiguous at the CLI layer.
+    for (const t of DISALLOWED_TOOLS) {
+      expect(DEFAULT_ALLOWED_TOOLS).not.toContain(t);
+    }
+  });
+
+  it('grounds real-pane agent launches in the system prompt (no theater)', () => {
+    const prompt = buildCommanderSystemPrompt();
+    expect(prompt).toContain('LAUNCHING AN AGENT');
+    expect(prompt).toContain('--dangerously-skip-permissions');
+    expect(prompt).toContain('Agent/Task tools are disabled');
+    expect(prompt).toContain('Never type a fake prompt');
   });
 
   it('GLM profile injects the compatible base-url / auth-token', async () => {
