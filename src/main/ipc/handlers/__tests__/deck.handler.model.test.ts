@@ -1,7 +1,7 @@
-// Unit tests for the orchestrator model override in the deck IPC handler:
-// the model rides along on deck:send, the manager's adapter is created with
-// it, a change swaps the brain BETWEEN turns only, and the value is sanitized
-// before it can reach the SDK subprocess command line.
+// Unit tests for the deck IPC handler: the orchestrator model override (rides
+// on deck:send, adapter created with it, swap between turns only, sanitized)
+// and the M1.5 per-workspace manager map (one brain per workspace, parallel
+// turns, workspace-enveloped streams, per-workspace token binding).
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -27,12 +27,16 @@ import { registerDeckHandler } from '../deck.handler';
 import { IPC } from '../../../../shared/constants';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../../deck/BrainAdapter';
 
-/** Fake adapter: replies with one turn-end per send; records its model. */
+/** Fake adapter: replies with one turn-end per send; records its model +
+ *  workspace binding. */
 class FakeAdapter implements BrainAdapter {
   sessionId: string | null = null;
   started: BrainStartOptions | null = null;
   disposed = false;
-  constructor(public readonly model: string | undefined) {}
+  constructor(
+    public readonly model: string | undefined,
+    public readonly workspaceId: string,
+  ) {}
   start(opts: BrainStartOptions): void {
     this.started = opts;
   }
@@ -48,23 +52,41 @@ class FakeAdapter implements BrainAdapter {
 
 let adapters: FakeAdapter[];
 let cleanup: (() => void) | null = null;
+let emitted: { workspaceId: string; event: BrainEvent }[];
 
-function register(): void {
-  cleanup = registerDeckHandler(() => null, {
-    createAdapter: (opts?: { model?: string }) => {
-      const a = new FakeAdapter(opts?.model);
-      adapters.push(a);
-      return a;
+const fakeWindow = {
+  isDestroyed: () => false,
+  webContents: {
+    send: (_channel: string, envelope: { workspaceId: string; event: BrainEvent }) => {
+      emitted.push(envelope);
     },
+  },
+} as unknown as import('electron').BrowserWindow;
+
+function register(
+  createAdapter?: (opts: { model?: string; workspaceId: string }) => BrainAdapter,
+): void {
+  cleanup = registerDeckHandler(() => fakeWindow, {
+    createAdapter:
+      createAdapter ??
+      ((opts) => {
+        const a = new FakeAdapter(opts.model, opts.workspaceId);
+        adapters.push(a);
+        return a;
+      }),
   });
 }
 
 const send = (payload: Record<string, unknown>) =>
-  captured.get(IPC.DECK_SEND)!({}, payload) as Promise<{ ok: boolean; code?: string }>;
+  captured.get(IPC.DECK_SEND)!({}, { workspaceId: 'ws-1', ...payload }) as Promise<{
+    ok: boolean;
+    code?: string;
+  }>;
 
 beforeEach(() => {
   captured.clear();
   adapters = [];
+  emitted = [];
   cleanup?.();
   register();
 });
@@ -111,12 +133,13 @@ describe('deck:send — orchestrator model override', () => {
     captured.clear();
     cleanup?.();
     adapters = [];
-    cleanup = registerDeckHandler(() => null, {
-      createAdapter: (opts?: { model?: string }) => {
-        const a = adapters.length === 0 ? new SlowAdapter(opts?.model) : new FakeAdapter(opts?.model);
-        adapters.push(a);
-        return a;
-      },
+    register((opts) => {
+      const a =
+        adapters.length === 0
+          ? new SlowAdapter(opts.model, opts.workspaceId)
+          : new FakeAdapter(opts.model, opts.workspaceId);
+      adapters.push(a);
+      return a;
     });
 
     const first = send({ text: 'long turn', model: 'opus' });
@@ -134,5 +157,78 @@ describe('deck:send — orchestrator model override', () => {
     await send({ text: 'hi', model: 'opus; rm -rf /' });
     expect(adapters).toHaveLength(1);
     expect(adapters[0].model).toBeUndefined();
+  });
+});
+
+describe('deck:send — per-workspace orchestrators (M1.5)', () => {
+  it('rejects a send with no / malformed workspaceId', async () => {
+    const raw = captured.get(IPC.DECK_SEND)!;
+    expect(await raw({}, { text: 'hi' })).toEqual({ ok: false, code: 'invalid_workspace' });
+    expect(await raw({}, { text: 'hi', workspaceId: 'bad id!' })).toEqual({
+      ok: false,
+      code: 'invalid_workspace',
+    });
+    expect(adapters).toHaveLength(0);
+  });
+
+  it('one adapter per workspace, each bound to ITS workspaceId', async () => {
+    await send({ text: 'a', workspaceId: 'ws-1' });
+    await send({ text: 'b', workspaceId: 'ws-2' });
+    await send({ text: 'a2', workspaceId: 'ws-1' });
+    expect(adapters).toHaveLength(2);
+    expect(adapters.map((a) => a.workspaceId).sort()).toEqual(['ws-1', 'ws-2']);
+  });
+
+  it('a busy workspace does not block another workspace (parallel turns)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    class SlowAdapter extends FakeAdapter {
+      async *send(): AsyncIterable<BrainEvent> {
+        await gate;
+        yield { type: 'turn-end', sessionId: 'sess-slow' } as BrainEvent;
+      }
+    }
+    captured.clear();
+    cleanup?.();
+    adapters = [];
+    register((opts) => {
+      const a =
+        opts.workspaceId === 'ws-slow'
+          ? new SlowAdapter(opts.model, opts.workspaceId)
+          : new FakeAdapter(opts.model, opts.workspaceId);
+      adapters.push(a);
+      return a;
+    });
+
+    const slow = send({ text: 'long', workspaceId: 'ws-slow' });
+    // While ws-slow streams, ws-2 sends immediately — no busy reject.
+    const fast = await send({ text: 'quick', workspaceId: 'ws-2' });
+    expect(fast).toEqual({ ok: true });
+    // The SAME workspace racing itself still gets the busy reject.
+    const sameWs = await send({ text: 'racing', workspaceId: 'ws-slow' });
+    expect(sameWs).toEqual({ ok: false, code: 'busy' });
+    release();
+    await expect(slow).resolves.toEqual({ ok: true });
+  });
+
+  it('envelopes every stream event with its workspaceId', async () => {
+    await send({ text: 'a', workspaceId: 'ws-1' });
+    await send({ text: 'b', workspaceId: 'ws-2' });
+    expect(emitted.length).toBeGreaterThanOrEqual(2);
+    expect(emitted.every((e) => e.workspaceId === 'ws-1' || e.workspaceId === 'ws-2')).toBe(true);
+    expect(emitted.some((e) => e.workspaceId === 'ws-1')).toBe(true);
+    expect(emitted.some((e) => e.workspaceId === 'ws-2')).toBe(true);
+  });
+
+  it('model swap in one workspace leaves the other workspace’s brain alone', async () => {
+    await send({ text: 'a', workspaceId: 'ws-1', model: 'opus' });
+    await send({ text: 'b', workspaceId: 'ws-2', model: 'opus' });
+    await send({ text: 'switch', workspaceId: 'ws-1', model: 'sonnet' });
+    const ws1 = adapters.filter((a) => a.workspaceId === 'ws-1');
+    const ws2 = adapters.filter((a) => a.workspaceId === 'ws-2');
+    expect(ws1).toHaveLength(2);
+    expect(ws1[0].disposed).toBe(true);
+    expect(ws2).toHaveLength(1);
+    expect(ws2[0].disposed).toBe(false);
   });
 });

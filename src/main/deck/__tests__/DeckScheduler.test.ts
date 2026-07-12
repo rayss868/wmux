@@ -23,18 +23,21 @@ afterEach(() => {
 });
 
 const seed = async (over: Partial<DeckSchedule> = {}): Promise<DeckSchedule> => {
-  const s = { ...createSchedule({ prompt: 'run the checks', nextRunAt: 1_000 })!, ...over };
+  const s = {
+    ...createSchedule({ workspaceId: 'ws-1', prompt: 'run the checks', nextRunAt: 1_000 })!,
+    ...over,
+  };
   await saveDeckSchedules([s], dir);
   return s;
 };
 
 describe('DeckScheduler', () => {
-  it('fires a due schedule with the [Scheduled task] prompt and consumes a one-shot', async () => {
+  it('fires a due schedule on ITS workspace with the [Scheduled task] prompt and consumes a one-shot', async () => {
     await seed();
     const runTurn = vi.fn(async () => ({ ok: true }));
     const sched = new DeckScheduler({ runTurn, now: () => 2_000, dir });
     await sched.tick();
-    expect(runTurn).toHaveBeenCalledWith('[Scheduled task] run the checks');
+    expect(runTurn).toHaveBeenCalledWith('[Scheduled task] run the checks', 'ws-1');
     const after = loadDeckSchedules(dir);
     expect(after[0].enabled).toBe(false);
     expect(after[0].lastResult).toBe('ok');
@@ -100,7 +103,23 @@ describe('DeckScheduler', () => {
   });
 
   it('scheduledPrompt prefixes the stored prompt', () => {
-    const s = createSchedule({ prompt: 'p', nextRunAt: 1 })!;
+    const s = createSchedule({ workspaceId: 'ws-1', prompt: 'p', nextRunAt: 1 })!;
     expect(scheduledPrompt(s)).toBe('[Scheduled task] p');
+  });
+
+  it('a busy workspace does not starve another workspace\'s due schedule (M1.5)', async () => {
+    const a = createSchedule({ workspaceId: 'ws-a', prompt: 'a', nextRunAt: 100 })!;
+    const b = createSchedule({ workspaceId: 'ws-b', prompt: 'b', nextRunAt: 200 })!;
+    await saveDeckSchedules([a, b], dir);
+    const runTurn = vi.fn(async (_prompt: string, workspaceId: string) =>
+      workspaceId === 'ws-a' ? { ok: false, code: 'busy' } : { ok: true },
+    );
+    await new DeckScheduler({ runTurn, now: () => 2_000, dir }).tick();
+    // Both fired this tick — ws-a stayed due (busy), ws-b consumed.
+    expect(runTurn).toHaveBeenCalledTimes(2);
+    const after = loadDeckSchedules(dir);
+    expect(after.find((s) => s.workspaceId === 'ws-a')?.lastResult).toBe('busy');
+    expect(after.find((s) => s.workspaceId === 'ws-a')?.enabled).toBe(true);
+    expect(after.find((s) => s.workspaceId === 'ws-b')?.lastResult).toBe('ok');
   });
 });

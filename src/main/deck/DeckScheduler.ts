@@ -32,9 +32,10 @@ export function scheduledPrompt(s: DeckSchedule): string {
 }
 
 export interface DeckSchedulerDeps {
-  /** Fire one orchestrator turn. Resolves with the accept/reject verdict —
-   *  the same shape CommanderSessionManager.send returns. */
-  runTurn: (prompt: string) => Promise<{ ok: boolean; code?: string }>;
+  /** Fire one orchestrator turn on the given workspace's orchestrator (M1.5 —
+   *  every schedule is workspace-scoped). Resolves with the accept/reject
+   *  verdict — the same shape CommanderSessionManager.send returns. */
+  runTurn: (prompt: string, workspaceId: string) => Promise<{ ok: boolean; code?: string }>;
   now?: () => number;
   setIntervalFn?: typeof setInterval;
   clearIntervalFn?: typeof clearInterval;
@@ -78,7 +79,8 @@ export class DeckScheduler {
       for (const s of due) {
         let result: 'ok' | 'busy' | 'error';
         try {
-          const r = await this.deps.runTurn(scheduledPrompt(s));
+          // dueSchedules guarantees workspaceId is present.
+          const r = await this.deps.runTurn(scheduledPrompt(s), s.workspaceId ?? '');
           result = r.ok ? 'ok' : r.code === 'busy' ? 'busy' : 'error';
         } catch {
           result = 'error';
@@ -90,9 +92,9 @@ export class DeckScheduler {
         if (idx === -1) continue; // deleted mid-turn — nothing to advance
         fresh[idx] = advanceAfterRun(fresh[idx], result, (this.deps.now ?? Date.now)());
         await saveDeckSchedules(fresh, this.deps.dir);
-        // A busy manager will reject every remaining due schedule this tick
-        // too — stop early and let the next tick retry the rest.
-        if (result === 'busy') break;
+        // busy is PER-WORKSPACE now (M1.5): a busy orchestrator in one
+        // workspace must not starve another workspace's due schedules, so
+        // keep iterating — the busy one stays due and retries next tick.
       }
     } finally {
       this.ticking = false;

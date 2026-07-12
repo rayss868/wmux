@@ -17,11 +17,18 @@ import type { DeckSchedule } from '../../../main/deck/deckScheduleStore';
 export interface DeckSchedulesApi {
   list: () => Promise<{ schedules: DeckSchedule[] }>;
   create: (args: {
+    workspaceId: string;
     prompt: string;
     nextRunAt: number;
     intervalMinutes?: number;
   }) => Promise<{ ok: boolean; schedule?: DeckSchedule; code?: string }>;
-  update: (args: { id: string; enabled?: boolean }) => Promise<{ ok: boolean; code?: string }>;
+  update: (args: {
+    id: string;
+    enabled?: boolean;
+    /** Re-scope: assignable ONCE to a pre-M1.5 schedule that has no
+     *  workspace; owned schedules never migrate. */
+    workspaceId?: string;
+  }) => Promise<{ ok: boolean; code?: string }>;
   remove: (id: string) => Promise<{ ok: boolean }>;
 }
 
@@ -48,9 +55,15 @@ function formatNextRun(ms: number): string {
 
 export function DeckSchedulesPanel({
   api,
+  workspaceId,
+  workspaceName,
   t: tProp,
 }: {
   api?: DeckSchedulesApi;
+  /** M1.5: the workspace new schedules bind to (the deck's active one). */
+  workspaceId?: string;
+  /** Resolve a workspaceId to its display name for the row chips. */
+  workspaceName?: (id: string) => string | undefined;
   t?: (key: string) => string;
 }): React.ReactElement | null {
   const t = tProp ?? (() => '');
@@ -85,12 +98,17 @@ export function DeckSchedulesPanel({
 
   const handleCreate = async (): Promise<void> => {
     setError(null);
+    if (!workspaceId) {
+      setError(t('deck.scheduleNoWorkspace') || 'Open a workspace first — schedules belong to a workspace.');
+      return;
+    }
     const nextRunAt = new Date(when).getTime();
     if (!prompt.trim() || !Number.isFinite(nextRunAt)) {
       setError(t('deck.scheduleInvalid') || 'Enter a prompt and a valid time.');
       return;
     }
     const res = await resolvedApi.create({
+      workspaceId,
       prompt,
       nextRunAt,
       ...(repeat > 0 ? { intervalMinutes: repeat } : {}),
@@ -159,6 +177,27 @@ export function DeckSchedulesPanel({
                   >
                     {s.prompt}
                   </span>
+                  {/* Workspace chip (M1.5): which orchestrator fires this
+                      schedule. A pre-M1.5 row has none — it is force-disabled
+                      until re-scoped below. */}
+                  {s.workspaceId ? (
+                    <span
+                      data-deck-schedule-workspace
+                      className="text-[10.5px] px-1.5 py-0.5 rounded shrink-0 text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.8)] max-w-[110px] truncate"
+                      title={workspaceName?.(s.workspaceId) ?? s.workspaceId}
+                      {...tokenAttrs('textSub', 'text')}
+                    >
+                      {workspaceName?.(s.workspaceId) ?? s.workspaceId}
+                    </span>
+                  ) : (
+                    <span
+                      data-deck-schedule-needs-workspace
+                      className="text-[10.5px] px-1.5 py-0.5 rounded shrink-0 text-[var(--accent-yellow)]"
+                      {...tokenAttrs('warning', 'text')}
+                    >
+                      {t('deck.scheduleNeedsWorkspace') || 'needs workspace'}
+                    </span>
+                  )}
                   <span className="text-[11px] font-mono text-[var(--text-sub)] shrink-0" {...tokenAttrs('textSub', 'text')}>
                     {formatNextRun(s.nextRunAt)}
                     {s.intervalMinutes ? ` · ${
@@ -172,12 +211,22 @@ export function DeckSchedulesPanel({
                     type="button"
                     data-deck-schedule-toggle-enabled
                     onClick={() => {
-                      void resolvedApi.update({ id: s.id, enabled: !s.enabled }).then(() => refresh());
+                      // Re-enabling a pre-M1.5 row adopts it into the ACTIVE
+                      // workspace (the operator is looking at that deck) —
+                      // main rejects enabling with no workspace otherwise.
+                      const adopt = !s.enabled && !s.workspaceId && workspaceId ? { workspaceId } : {};
+                      void resolvedApi
+                        .update({ id: s.id, enabled: !s.enabled, ...adopt })
+                        .then(() => refresh());
                     }}
                     className={`px-1.5 py-0.5 rounded-md text-[11.5px] text-[var(--text-sub)] hover:opacity-80 ${FOCUS_RING}`}
                     {...tokenAttrs('textSub', 'text')}
                   >
-                    {s.enabled ? t('deck.schedulePause') || 'Pause' : t('deck.scheduleResume') || 'Resume'}
+                    {s.enabled
+                      ? t('deck.schedulePause') || 'Pause'
+                      : !s.workspaceId
+                        ? t('deck.scheduleAdoptHere') || 'Adopt here'
+                        : t('deck.scheduleResume') || 'Resume'}
                   </button>
                   <button
                     type="button"

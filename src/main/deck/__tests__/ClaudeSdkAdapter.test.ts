@@ -70,6 +70,8 @@ describe('ClaudeSdkAdapter', () => {
         return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-B' }]);
       },
       mcpBundlePath: '/fake/mcp.js',
+      // Hermetic: never read the developer's real ~/.wmux memory store here.
+      loadMemory: () => '',
     });
     adapter.start({ systemPrompt: 'SYS', fleetContext: 'FLEET' });
 
@@ -291,5 +293,94 @@ describe('ClaudeSdkAdapter', () => {
     expect(onInterrupt).toHaveBeenCalled();
     released();
     await turn;
+  });
+
+  // ─── M1a: durable memory injection (read-only L0) ─────────────────────────
+
+  it('injects memory before the fleet context on the first turn only', async () => {
+    const calls: Array<{ prompt: string }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { prompt: string });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-M' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => 'MEMORY-BLOCK',
+    });
+    adapter.start({ systemPrompt: 'SYS', fleetContext: 'FLEET' });
+
+    await collect(adapter.send('first'));
+    expect(calls[0].prompt).toContain('MEMORY-BLOCK');
+    expect(calls[0].prompt.indexOf('MEMORY-BLOCK')).toBeLessThan(calls[0].prompt.indexOf('FLEET'));
+    expect(calls[0].prompt).toContain('first');
+
+    await collect(adapter.send('second'));
+    expect(calls[1].prompt).not.toContain('MEMORY-BLOCK');
+    expect(calls[1].prompt).not.toContain('FLEET');
+  });
+
+  it('injects memory even when there is no fleet context', async () => {
+    const calls: Array<{ prompt: string }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { prompt: string });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-M2' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => 'MEMORY-ONLY',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+    expect(calls[0].prompt).toContain('MEMORY-ONLY');
+    expect(calls[0].prompt).toContain('go');
+  });
+
+  it('a throwing memory loader never breaks the turn', async () => {
+    const calls: Array<{ prompt: string }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { prompt: string });
+        return fakeHandle([
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } },
+          { type: 'result', subtype: 'success', session_id: 'sess-M3' },
+        ]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => {
+        throw new Error('corrupt memory store');
+      },
+    });
+    adapter.start({ systemPrompt: 'SYS', fleetContext: 'FLEET' });
+    const events = await collect(adapter.send('resilient'));
+    expect(events.map((e) => e.type)).toEqual(['text-delta', 'turn-end']);
+    expect(calls[0].prompt).toContain('FLEET'); // fleet context still injected
+    expect(calls[0].prompt).toContain('resilient');
+  });
+
+  it('does not double-inject memory on a resume-fallback retry', async () => {
+    // First attempt runs against a dead disk-seeded session id and errors
+    // before any event; the retry must re-send the SAME composed prompt.
+    const calls: Array<{ prompt: string; options: Record<string, unknown> }> = [];
+    let attempt = 0;
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { prompt: string; options: Record<string, unknown> });
+        attempt += 1;
+        if (attempt === 1) {
+          return fakeHandle([
+            { type: 'result', subtype: 'error_during_execution', session_id: 'dead-id' },
+          ]);
+        }
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-M4' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => 'MEMORY-BLOCK',
+    });
+    adapter.start({ systemPrompt: 'SYS', fleetContext: 'FLEET', resumeSessionId: 'dead-id' });
+    await collect(adapter.send('retry me'));
+    expect(calls.length).toBe(2);
+    // Same composed prompt on both attempts — one MEMORY-BLOCK each, not two.
+    expect(calls[0].prompt).toBe(calls[1].prompt);
+    expect(calls[1].prompt.match(/MEMORY-BLOCK/g)?.length).toBe(1);
   });
 });

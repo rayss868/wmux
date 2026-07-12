@@ -4,10 +4,13 @@ import { useStore } from '../stores';
 // ─── Command Deck Phase 2 — Commander brain stream bridge ────────────────────
 //
 // The SINGLE owner of the `deck.onStream` subscription. Mounted ONCE in
-// AppLayout, always-on (NOT gated on the dock being visible): a brain turn keeps
-// running in main even when the human switches away from the Commander tab, and
-// its normalized events must still land in deckSlice so the transcript is
-// complete when they switch back.
+// AppLayout, always-on (NOT gated on the dock being visible): a brain turn
+// keeps running in main even when the human switches away from the Commander
+// tab — or to ANOTHER WORKSPACE (M1.5: one orchestrator per workspace) — and
+// its normalized events must still land in the right workspace's thread in
+// deckSlice so the transcript is complete when they switch back. Events
+// arrive enveloped with the workspaceId of the orchestrator that produced
+// them; the envelope, not the active workspace, decides the target thread.
 //
 // The action is read via useStore.getState() so the effect deps stay [] — the
 // subscription is established exactly once per renderer lifetime. Mirrors
@@ -16,8 +19,9 @@ export function useDeckStream(): void {
   useEffect(() => {
     const api = window.electronAPI.deck;
     if (!api) return; // older preload bundles may not expose this channel
-    const off = api.onStream((event) => {
-      useStore.getState().applyDeckBrainEvent(event);
+    const off = api.onStream(({ workspaceId, event }) => {
+      if (!workspaceId) return; // malformed envelope — never guess a thread
+      useStore.getState().applyDeckBrainEvent(workspaceId, event);
     });
     return off;
   }, []);

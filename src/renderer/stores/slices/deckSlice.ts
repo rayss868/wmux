@@ -1,4 +1,4 @@
-// ─── Command Deck renderer state (Command Deck Phase 1) ──────────────────────
+// ─── Command Deck renderer state (Command Deck Phase 1, per-ws M1.5) ─────────
 //
 // The right-side dock is being re-framed from a pure "channel viewer" into a
 // Command Deck: a tabbed surface whose DEFAULT tab (`commander`) is an
@@ -6,15 +6,17 @@
 // their replies land in one thread — and whose second tab (`channels`) holds
 // the existing channel list + conversation exactly as before.
 //
-// This slice owns ONLY the deck's chrome state (which tab is active). The
-// Commander thread itself is NOT new state: it is the `#commander` channel's
-// message list, read straight from `channelsSlice.channelMessages`. Phase 2
-// (the orchestrator chat) reuses this same tab + composer skeleton, so keeping
-// the tab state here (and the thread data in the channels slice) means the
-// chat UI has zero throwaway state.
+// This slice owns the deck's chrome state (which tab is active) and the
+// Commander BRAIN threads. M1.5: one orchestrator per workspace → the brain
+// conversation is a wsId-keyed map of independent threads, each with its own
+// busy state. The deck shows the ACTIVE workspace's thread; a turn streaming
+// in a background workspace keeps landing in ITS thread (events arrive
+// enveloped with their workspaceId), so switching back shows the complete
+// transcript — and the active workspace's composer is never blocked by
+// another workspace's turn (the parallelism that motivated M1.5).
 //
 // Pattern mirrors the other thin UI slices (uiSlice's dock/panel toggles):
-// a single enum field + its setter, no async, no bridge.
+// enum fields + setters, no async, no bridge.
 
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
@@ -29,10 +31,20 @@ import { generateId } from '../../../shared/types';
  *  command composer); `channels` is the classic channel list + conversation. */
 export type DeckTab = 'commander' | 'channels';
 
-/** The Commander BRAIN turn state (Phase 2). Distinct from the Phase 1 fan-out
+/** One workspace orchestrator's turn state. Distinct from the Phase 1 fan-out
  *  threads (which live in the `#commander` channel): the brain stream is an
  *  orchestrator turn, not channel semantics, so it is deck-owned state. */
 export type DeckBrainStatus = 'idle' | 'busy';
+
+export interface DeckBrainThread {
+  messages: DeckBrainMessage[];
+  /** `busy` while a brain turn streams in THIS workspace; the composer
+   *  disables to enforce the per-workspace one-turn-at-a-time contract the
+   *  session manager also guards. */
+  status: DeckBrainStatus;
+}
+
+export const EMPTY_DECK_BRAIN_THREAD: DeckBrainThread = { messages: [], status: 'idle' };
 
 export interface DeckSlice {
   /** Active dock tab. Defaults to `commander` — the deck opens on the command
@@ -41,27 +53,46 @@ export interface DeckSlice {
   activeDeckTab: DeckTab;
   setActiveDeckTab: (tab: DeckTab) => void;
 
-  /** The Commander brain conversation (this-session only — resume is P3). */
-  brainMessages: DeckBrainMessage[];
-  /** `busy` while a brain turn streams; the composer disables to enforce the
-   *  one-turn-at-a-time contract the session manager also guards. */
-  brainStatus: DeckBrainStatus;
+  /** Per-workspace orchestrator conversations (this-session only — the
+   *  transcript itself resumes SDK-side via the persisted session id). */
+  brainThreads: Record<string, DeckBrainThread>;
 
-  /** Open a new brain turn: push the human message + a streaming assistant
-   *  placeholder, and mark the deck busy. */
-  startDeckBrainTurn: (text: string) => void;
-  /** Apply one normalized brain stream event to the open turn. `turn-end` /
-   *  `error` flip the deck back to idle. */
-  applyDeckBrainEvent: (event: BrainEvent) => void;
-  /** Mark the open turn failed (used when deck.send is REJECTED before any
-   *  stream event — e.g. a busy race). */
-  failDeckBrainTurn: (message: string) => void;
+  /** Open a new brain turn on one workspace's thread: push the human message
+   *  + a streaming assistant placeholder, and mark that workspace busy. */
+  startDeckBrainTurn: (workspaceId: string, text: string) => void;
+  /** Apply one normalized brain stream event to the given workspace's open
+   *  turn. `turn-end` / `error` flip that workspace back to idle. */
+  applyDeckBrainEvent: (workspaceId: string, event: BrainEvent) => void;
+  /** Mark the given workspace's open turn failed (used when deck.send is
+   *  REJECTED before any stream event — e.g. a busy race). */
+  failDeckBrainTurn: (workspaceId: string, message: string) => void;
 
   /** P3b: the reboot-recovery greeting card was dismissed (or its recovery was
    *  launched) this session. Transient — a fresh launch re-evaluates from the
    *  resume hints, which self-clear as agents come back. */
   recoveryCardDismissed: boolean;
   dismissRecoveryCard: () => void;
+}
+
+function threadOf(state: StoreState, workspaceId: string): DeckBrainThread {
+  const existing = state.brainThreads[workspaceId];
+  if (existing) return existing;
+  const fresh: DeckBrainThread = { messages: [], status: 'idle' };
+  state.brainThreads[workspaceId] = fresh;
+  return fresh;
+}
+
+function openTurn(thread: DeckBrainThread, text: string): void {
+  thread.messages.push({ id: generateId('dbu'), role: 'user', text, ts: Date.now() });
+  thread.messages.push({
+    id: generateId('dba'),
+    role: 'assistant',
+    text: '',
+    ts: Date.now(),
+    tools: [],
+    status: 'streaming',
+  });
+  thread.status = 'busy';
 }
 
 export const createDeckSlice: StateCreator<
@@ -77,51 +108,35 @@ export const createDeckSlice: StateCreator<
       state.activeDeckTab = tab;
     }),
 
-  brainMessages: [],
-  brainStatus: 'idle',
+  brainThreads: {},
 
-  startDeckBrainTurn: (text) =>
+  startDeckBrainTurn: (workspaceId, text) =>
     set((state: StoreState) => {
-      state.brainMessages.push({ id: generateId('dbu'), role: 'user', text, ts: Date.now() });
-      state.brainMessages.push({
-        id: generateId('dba'),
-        role: 'assistant',
-        text: '',
-        ts: Date.now(),
-        tools: [],
-        status: 'streaming',
-      });
-      state.brainStatus = 'busy';
+      openTurn(threadOf(state, workspaceId), text);
     }),
 
-  applyDeckBrainEvent: (event) =>
+  applyDeckBrainEvent: (workspaceId, event) =>
     set((state: StoreState) => {
+      const thread = threadOf(state, workspaceId);
       // A main-originated turn (P3d scheduled run) announces itself with
       // `turn-start` — open the turn exactly like startDeckBrainTurn so the
-      // scheduled run renders as visibly as a typed one.
+      // scheduled run renders as visibly as a typed one (in ITS workspace's
+      // thread, which may be a background one).
       if (event.type === 'turn-start') {
-        state.brainMessages.push({ id: generateId('dbu'), role: 'user', text: event.prompt, ts: Date.now() });
-        state.brainMessages.push({
-          id: generateId('dba'),
-          role: 'assistant',
-          text: '',
-          ts: Date.now(),
-          tools: [],
-          status: 'streaming',
-        });
-        state.brainStatus = 'busy';
+        openTurn(thread, event.prompt);
         return;
       }
-      state.brainMessages = applyBrainEvent(state.brainMessages, event);
+      thread.messages = applyBrainEvent(thread.messages, event);
       if (event.type === 'turn-end' || event.type === 'error') {
-        state.brainStatus = 'idle';
+        thread.status = 'idle';
       }
     }),
 
-  failDeckBrainTurn: (message) =>
+  failDeckBrainTurn: (workspaceId, message) =>
     set((state: StoreState) => {
-      state.brainMessages = applyBrainEvent(state.brainMessages, { type: 'error', message });
-      state.brainStatus = 'idle';
+      const thread = threadOf(state, workspaceId);
+      thread.messages = applyBrainEvent(thread.messages, { type: 'error', message });
+      thread.status = 'idle';
     }),
 
   recoveryCardDismissed: false,

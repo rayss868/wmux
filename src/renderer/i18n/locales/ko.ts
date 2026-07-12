@@ -698,6 +698,10 @@ export const ko = {
   'deck.scheduleDelete': '삭제',
   'deck.scheduleInvalid': '지시 내용과 유효한 시간을 입력하세요.',
   'deck.scheduleLimit': '예약 개수 한도에 도달했습니다.',
+  // M1.5 — 워크스페이스별 오케스트레이터: 예약은 워크스페이스에 귀속된다.
+  'deck.scheduleNoWorkspace': '먼저 워크스페이스를 여세요 — 예약은 워크스페이스에 속합니다.',
+  'deck.scheduleNeedsWorkspace': '워크스페이스 지정 필요',
+  'deck.scheduleAdoptHere': '이 워크스페이스로',
   // operator-join (설계 §3) — 접힘 기본 발견 섹션 + join 확인 다이얼로그. 이 접힘이
   // 의도 게이트다: 펼치기 전에는 비공개 채널명이 화면에 존재하지 않는다.
   'channels.operatorSection': '모든 채널',

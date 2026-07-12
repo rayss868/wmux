@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyBrainEvent,
-  buildFleetContextSummary,
+  buildWorkspaceContextSummary,
   shortToolName,
   type DeckBrainMessage,
 } from '../deckBrain';
@@ -77,46 +77,76 @@ describe('shortToolName', () => {
   });
 });
 
-describe('buildFleetContextSummary', () => {
+describe('buildWorkspaceContextSummary', () => {
   const CLAUDE = { name: 'Claude Code', slug: 'claude' as const };
 
-  function workspace(): { ws: Workspace; ptyA: string } {
-    const ptyA = 'ptyA';
-    const leafA = createLeafPane(createSurface(ptyA, 'pwsh', ''), 1);
-    const root: Pane = leafA;
+  function workspace(
+    id = 'ws-1',
+    name = 'Backend',
+    ptyId = 'ptyA',
+    wsOrdinal = 1,
+  ): { ws: Workspace; pty: string } {
+    const leaf = createLeafPane(createSurface(ptyId, 'pwsh', ''), 1);
+    const root: Pane = leaf;
     const ws: Workspace = {
-      id: 'ws-1', name: 'Backend', wsOrdinal: 1, nextPaneOrdinal: 2, rootPane: root, activePaneId: leafA.id,
+      id, name, wsOrdinal, nextPaneOrdinal: 2, rootPane: root, activePaneId: leaf.id,
     };
-    return { ws, ptyA };
+    return { ws, pty: ptyId };
   }
 
-  it('lists live agent panes and active channels', () => {
-    const { ws, ptyA } = workspace();
+  it('details OWN panes, names the workspace, and lists active channels', () => {
+    const { ws, pty } = workspace();
     const channels: Record<string, Channel> = {
       c1: { id: 'c1', name: 'commander', status: 'active' } as Channel,
       c2: { id: 'c2', name: 'old', status: 'archived' } as Channel,
     };
-    const summary = buildFleetContextSummary({
+    const summary = buildWorkspaceContextSummary({
       workspaces: [ws],
-      surfaceAgent: { [ptyA]: CLAUDE },
+      activeWorkspaceId: 'ws-1',
+      surfaceAgent: { [pty]: CLAUDE },
       paneLabel: {},
       channels,
     });
+    expect(summary).toContain('orchestrator for workspace "Backend"');
     expect(summary).toContain('w1-1(claude)');
-    expect(summary).toContain('Backend');
     expect(summary).toContain('#commander');
     expect(summary).not.toContain('#old'); // archived excluded
+    expect(summary).not.toContain('Other workspaces'); // there are none
   });
 
-  it('reports no panes when the fleet has none, and honors the char cap', () => {
-    const summary = buildFleetContextSummary({
-      workspaces: [], surfaceAgent: {}, paneLabel: {}, channels: {},
+  it('rosters OTHER workspaces as existence-only lines (no pane detail)', () => {
+    const a = workspace('ws-1', 'Backend', 'ptyA', 1);
+    const b = workspace('ws-2', 'Frontend', 'ptyB', 2);
+    const c = workspace('ws-3', 'Idle Land', 'ptyC', 3);
+    const summary = buildWorkspaceContextSummary({
+      workspaces: [a.ws, b.ws, c.ws],
+      activeWorkspaceId: 'ws-1',
+      surfaceAgent: { [a.pty]: CLAUDE, [b.pty]: CLAUDE }, // ws-3 has no agent
+      paneLabel: {},
+      channels: {},
+    });
+    expect(summary).toContain('Other workspaces');
+    expect(summary).toContain('"Frontend" (1 agent pane(s))');
+    expect(summary).toContain('"Idle Land" (idle)');
+    // No pane coordinates from the other workspaces leak into the summary.
+    expect(summary).not.toContain('w2-1');
+    expect(summary).not.toContain('w3-1');
+  });
+
+  it('reports no panes when the workspace has none, and honors the char cap', () => {
+    const summary = buildWorkspaceContextSummary({
+      workspaces: [], activeWorkspaceId: 'ws-x', surfaceAgent: {}, paneLabel: {}, channels: {},
     });
     expect(summary).toContain('No agent panes');
 
-    const { ws, ptyA } = workspace();
-    const capped = buildFleetContextSummary({
-      workspaces: [ws], surfaceAgent: { [ptyA]: CLAUDE }, paneLabel: {}, channels: {}, maxChars: 20,
+    const { ws, pty } = workspace();
+    const capped = buildWorkspaceContextSummary({
+      workspaces: [ws],
+      activeWorkspaceId: 'ws-1',
+      surfaceAgent: { [pty]: CLAUDE },
+      paneLabel: {},
+      channels: {},
+      maxChars: 20,
     });
     expect(capped.length).toBeLessThanOrEqual(20 + '\n…(truncated)'.length);
     expect(capped.endsWith('…(truncated)')).toBe(true);

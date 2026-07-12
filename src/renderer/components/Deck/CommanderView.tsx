@@ -51,10 +51,11 @@ import {
   type CommanderThread,
 } from './commanderThread';
 import {
-  buildFleetContextSummary,
+  buildWorkspaceContextSummary,
   type DeckBrainMessage,
   type DeckToolChip,
 } from './deckBrain';
+import { EMPTY_DECK_BRAIN_THREAD } from '../../stores/slices/deckSlice';
 import {
   buildRecoveryPanes,
   buildRecoveryPrompt,
@@ -62,6 +63,7 @@ import {
   type RecoveryPane,
 } from './deckRecovery';
 import { buildQuickActions, type DeckQuickAction } from './deckQuickActions';
+import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
@@ -105,6 +107,9 @@ export interface CommanderViewContentProps {
   quickActions?: DeckQuickAction[];
   /** Fire a quick action (sends its canned prompt to the brain). */
   onQuickAction?: (action: DeckQuickAction) => void;
+  /** M1.5: the workspace this deck view is bound to — new schedules are
+   *  created against its orchestrator. */
+  activeWorkspaceId?: string;
   /** P2① mission control — the Fleet roster slot, pinned above the thread.
    *  Injected as a node so this surface stays presentational/store-free. */
   fleetSlot?: React.ReactNode;
@@ -128,6 +133,7 @@ export function CommanderViewContent({
   onDismissRecovery,
   quickActions = [],
   onQuickAction,
+  activeWorkspaceId,
   fleetSlot,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
@@ -278,8 +284,9 @@ export function CommanderViewContent({
           ))}
           {/* Schedules chip + inline panel (self-contained IPC container —
               renders nothing when the preload doesn't expose the API, so pure
-              jsdom tests of this view are unaffected). */}
-          <DeckSchedulesPanel t={t} />
+              jsdom tests of this view are unaffected). New schedules bind to
+              THIS workspace's orchestrator (M1.5). */}
+          <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
         </div>
       )}
 
@@ -364,12 +371,15 @@ function CommanderBrainItem({
         )}
       </span>
       {message.text && (
+        // Assistant prose renders as markdown (headings/lists/code from the
+        // model); the human's own message (the branch above) stays literal —
+        // what they typed is what they see.
         <div
-          className="text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
+          className="text-[13px] leading-relaxed text-[var(--text-main)] break-words"
           data-commander-brain-text
           {...tokenAttrs('textMain', 'text')}
         >
-          {message.text}
+          {renderBrainMarkdown(message.text)}
         </div>
       )}
       {/* Tool calls — flat monospace LOG LINES in call order (design decision
@@ -589,9 +599,14 @@ export function CommanderView(): React.ReactElement {
   const setActivePane = useStore((s) => s.setActivePane);
   const pushToast = useStore((s) => s.pushToast);
   const company = useStore((s) => s.company);
-  // Commander brain (Phase 2).
-  const brainMessages = useStore((s) => s.brainMessages);
-  const brainStatus = useStore((s) => s.brainStatus);
+  // Commander brain (Phase 2, per-workspace M1.5): the deck shows the ACTIVE
+  // workspace's orchestrator thread — switching workspace tabs switches the
+  // conversation. Background workspaces' turns keep streaming into their own
+  // threads via useDeckStream's envelope routing.
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId) || '';
+  const brainThread =
+    useStore((s) => (activeWorkspaceId ? s.brainThreads[activeWorkspaceId] : undefined)) ??
+    EMPTY_DECK_BRAIN_THREAD;
   const startDeckBrainTurn = useStore((s) => s.startDeckBrainTurn);
   const failDeckBrainTurn = useStore((s) => s.failDeckBrainTurn);
   // Reboot recovery (P3b) — the resume hints the daemon surfaces only for
@@ -602,16 +617,19 @@ export function CommanderView(): React.ReactElement {
   const recoveryCardDismissed = useStore((s) => s.recoveryCardDismissed);
   const dismissRecoveryCard = useStore((s) => s.dismissRecoveryCard);
 
+  // M1.5: recovery is per-workspace — this deck's card lists only the ACTIVE
+  // workspace's recoverable panes (its orchestrator cannot target the others;
+  // each workspace recovers from its own tab).
   const recoveryPanes = useMemo(
     () =>
       buildRecoveryPanes({
         resumeHintByPtyId,
         resumeBindingByPtyId,
         ptyReadyByPtyId,
-        workspaces,
+        workspaces: workspaces.filter((w) => w.id === activeWorkspaceId),
         paneLabel,
       }),
-    [resumeHintByPtyId, resumeBindingByPtyId, ptyReadyByPtyId, workspaces, paneLabel],
+    [resumeHintByPtyId, resumeBindingByPtyId, ptyReadyByPtyId, workspaces, activeWorkspaceId, paneLabel],
   );
 
   const commanderChannel = useMemo(() => findCommanderChannel(channels), [channels]);
@@ -781,34 +799,42 @@ export function CommanderView(): React.ReactElement {
   const handleBrainSend = useCallback(
     async (text: string): Promise<{ ok: boolean; errorCode?: string; errorMessage?: string }> => {
       const api = window.electronAPI?.deck;
-      if (!api) {
+      if (!api || !activeWorkspaceId) {
         pushToast({ level: 'error', message: t('deck.commanderUnavailable') || 'The orchestrator is unavailable' });
         return { ok: false, errorCode: 'UNAVAILABLE' };
       }
-      startDeckBrainTurn(text);
-      // One-shot fleet snapshot for the system prompt (main injects it on the
-      // first turn only and re-caps to 2048 chars). Recovery facts (P3b) ride
-      // along so a typed "recover the fleet" works without the card — placed
-      // FIRST and with the summary's budget shrunk to fit, because main's cap
-      // truncates the TAIL: appended recovery lines would be exactly what a
-      // large fleet cuts off (codex P2).
+      startDeckBrainTurn(activeWorkspaceId, text);
+      // One-shot workspace snapshot for the system prompt (main injects it on
+      // the first turn only and re-caps to 2048 chars). Recovery facts (P3b)
+      // ride along so a typed "recover my agents" works without the card —
+      // placed FIRST and with the summary's budget shrunk to fit, because
+      // main's cap truncates the TAIL: appended recovery lines would be
+      // exactly what a large workspace cuts off (codex P2).
       const recoveryLines = buildRecoveryContextLines(recoveryPanes);
-      const fleetSummary = buildFleetContextSummary({
+      const wsSummary = buildWorkspaceContextSummary({
         workspaces,
+        activeWorkspaceId,
         surfaceAgent,
         paneLabel,
         channels,
         ...(recoveryLines ? { maxChars: Math.max(400, 2000 - recoveryLines.length) } : {}),
       });
-      const fleetContext = recoveryLines ? `${recoveryLines}\n\n${fleetSummary}` : fleetSummary;
+      const fleetContext = recoveryLines ? `${recoveryLines}\n\n${wsSummary}` : wsSummary;
       try {
         // The orchestrator model override rides along on every send; main swaps
-        // the brain between turns when it changes (Settings → Claude tab).
-        const res = await api.send(text, fleetContext, useStore.getState().deckBrainModel || undefined);
+        // this workspace's brain between turns when it changes (Settings →
+        // Claude tab).
+        const res = await api.send({
+          workspaceId: activeWorkspaceId,
+          text,
+          fleetContext,
+          ...(useStore.getState().deckBrainModel ? { model: useStore.getState().deckBrainModel } : {}),
+        });
         if (!res.ok) {
           // Rejected before any stream event (busy race / disposed): close the
           // open turn with an error so the placeholder doesn't spin forever.
           failDeckBrainTurn(
+            activeWorkspaceId,
             res.code === 'busy'
               ? t('deck.commanderBusy') || 'A command is already running.'
               : t('deck.commanderFailed') || 'The command could not run.',
@@ -817,11 +843,11 @@ export function CommanderView(): React.ReactElement {
         }
         return { ok: true };
       } catch (err) {
-        failDeckBrainTurn(err instanceof Error ? err.message : String(err));
+        failDeckBrainTurn(activeWorkspaceId, err instanceof Error ? err.message : String(err));
         return { ok: false, errorMessage: err instanceof Error ? err.message : String(err) };
       }
     },
-    [workspaces, surfaceAgent, paneLabel, channels, recoveryPanes, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
+    [activeWorkspaceId, workspaces, surfaceAgent, paneLabel, channels, recoveryPanes, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
   );
 
   // P3b: the greeting card's one-click recovery — send the canned prompt to
@@ -863,16 +889,17 @@ export function CommanderView(): React.ReactElement {
   );
 
   const onInterrupt = useCallback(() => {
-    window.electronAPI?.deck?.interrupt().catch(() => {
+    if (!activeWorkspaceId) return;
+    window.electronAPI?.deck?.interrupt(activeWorkspaceId).catch(() => {
       /* best-effort — the turn may already be over */
     });
-  }, []);
+  }, [activeWorkspaceId]);
 
   return (
     <CommanderViewContent
       threads={threads}
-      brainMessages={brainMessages}
-      brainBusy={brainStatus === 'busy'}
+      brainMessages={brainThread.messages}
+      brainBusy={brainThread.status === 'busy'}
       onInterrupt={onInterrupt}
       mentionCandidates={mentionCandidates}
       onSubmit={handleSubmit}
@@ -884,6 +911,7 @@ export function CommanderView(): React.ReactElement {
       onDismissRecovery={dismissRecoveryCard}
       quickActions={quickActions}
       onQuickAction={handleQuickAction}
+      activeWorkspaceId={activeWorkspaceId}
       fleetSlot={<DeckFleet onJumpToPane={onJumpToPane} />}
       t={t}
     />

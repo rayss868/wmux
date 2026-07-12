@@ -22,6 +22,11 @@ import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWri
 
 export interface DeckSchedule {
   id: string;
+  /** The workspace whose orchestrator fires this schedule (M1.5 — one
+   *  orchestrator per workspace, so an unowned turn cannot exist). Absent on
+   *  pre-M1.5 entries: those are force-disabled on load and never fire until
+   *  the operator re-scopes them to a workspace in the panel. */
+  workspaceId?: string;
   /** What to tell the orchestrator when the schedule fires. */
   prompt: string;
   /** Next fire time (ms epoch). */
@@ -51,11 +56,16 @@ function sanitize(raw: unknown): DeckSchedule | null {
   if (typeof o.id !== 'string' || !o.id) return null;
   if (typeof o.prompt !== 'string' || !o.prompt.trim()) return null;
   if (typeof o.nextRunAt !== 'number' || !Number.isFinite(o.nextRunAt)) return null;
+  const workspaceId =
+    typeof o.workspaceId === 'string' && o.workspaceId.length > 0 ? o.workspaceId : undefined;
   const s: DeckSchedule = {
     id: o.id,
+    ...(workspaceId ? { workspaceId } : {}),
     prompt: o.prompt.slice(0, MAX_PROMPT_CHARS),
     nextRunAt: o.nextRunAt,
-    enabled: o.enabled === true,
+    // A schedule with no workspace has no orchestrator to run on (pre-M1.5
+    // entry) — force-disabled until the operator re-scopes it.
+    enabled: o.enabled === true && !!workspaceId,
     createdAt: typeof o.createdAt === 'number' ? o.createdAt : 0,
   };
   if (typeof o.intervalMinutes === 'number' && o.intervalMinutes > 0) {
@@ -85,18 +95,22 @@ export async function saveDeckSchedules(schedules: DeckSchedule[], dir?: string)
   await atomicWriteJSON(getDeckSchedulesPath(dir), schedules);
 }
 
-/** Validated create — returns null on a bad request (empty prompt, past-only
- *  one-shot is allowed: it fires on the next tick). Caller persists. */
+/** Validated create — returns null on a bad request (empty prompt, missing
+ *  workspace; a past-only one-shot is allowed: it fires on the next tick).
+ *  Caller persists. */
 export function createSchedule(args: {
+  workspaceId: string;
   prompt: string;
   nextRunAt: number;
   intervalMinutes?: number;
 }): DeckSchedule | null {
   const prompt = args.prompt.trim();
   if (!prompt) return null;
+  if (!args.workspaceId) return null;
   if (!Number.isFinite(args.nextRunAt)) return null;
   const s: DeckSchedule = {
     id: randomUUID(),
+    workspaceId: args.workspaceId,
     prompt: prompt.slice(0, MAX_PROMPT_CHARS),
     nextRunAt: args.nextRunAt,
     enabled: true,
@@ -110,9 +124,10 @@ export function createSchedule(args: {
 
 export const DECK_SCHEDULE_LIMITS = { MAX_SCHEDULES, MAX_PROMPT_CHARS } as const;
 
-/** Due = enabled and past its fire time. */
+/** Due = enabled, workspace-scoped, and past its fire time. The workspace
+ *  check is a belt over sanitize's force-disable: an unowned turn never fires. */
 export function dueSchedules(schedules: DeckSchedule[], now: number): DeckSchedule[] {
-  return schedules.filter((s) => s.enabled && s.nextRunAt <= now);
+  return schedules.filter((s) => s.enabled && !!s.workspaceId && s.nextRunAt <= now);
 }
 
 /**

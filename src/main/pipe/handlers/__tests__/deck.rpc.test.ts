@@ -1,7 +1,8 @@
-// Unit tests for deck.resolvePaneRoute (P3b, codex P1) — the commander
-// brain's fleet-wide route resolution. Token-gated: only a live commander
+// Unit tests for deck.resolvePaneRoute (P3b codex P1, M1.5 confinement) —
+// the commander brain's route resolution. Token-gated: only a live commander
 // token (minted by main for the brain subprocess) may resolve a pane's
-// owning workspace; everything else fails closed.
+// owning workspace, and ONLY for panes inside the token's own workspace;
+// everything else fails closed.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
@@ -29,8 +30,8 @@ describe('deck.resolvePaneRoute', () => {
     __resetCommanderTrustForTesting();
   });
 
-  it('resolves the owning workspace for a live commander token', async () => {
-    const token = mintCommanderToken();
+  it('resolves a pane owned by the token workspace', async () => {
+    const token = mintCommanderToken('ws-owner');
     sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-owner' });
 
     const res = await setup().dispatch({
@@ -48,8 +49,32 @@ describe('deck.resolvePaneRoute', () => {
     );
   });
 
+  it("fails closed on a pane owned by ANOTHER workspace (M1.5 confinement)", async () => {
+    const token = mintCommanderToken('ws-mine');
+    sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-other' });
+
+    const res = await setup().dispatch({
+      id: '1',
+      method: 'deck.resolvePaneRoute',
+      params: { token, ptyId: 'pty-9' },
+    });
+
+    expect(res.ok).toBe(false);
+  });
+
+  it('fails closed for a token minted with an empty workspace binding', async () => {
+    const token = mintCommanderToken('');
+    const res = await setup().dispatch({
+      id: '1',
+      method: 'deck.resolvePaneRoute',
+      params: { token, ptyId: 'pty-9' },
+    });
+    expect(res.ok).toBe(false);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
   it('rejects a missing/unknown token BEFORE consulting the renderer', async () => {
-    mintCommanderToken(); // a live token exists, but the caller presents another
+    mintCommanderToken('ws-1'); // a live token exists, but the caller presents another
     const router = setup();
 
     for (const params of [
@@ -68,7 +93,7 @@ describe('deck.resolvePaneRoute', () => {
   });
 
   it('fails closed on a missing ptyId and on an unowned pane', async () => {
-    const token = mintCommanderToken();
+    const token = mintCommanderToken('ws-1');
     const router = setup();
 
     const noPty = await router.dispatch({

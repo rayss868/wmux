@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useStore } from '../../index';
-import { createDeckSlice } from '../deckSlice';
+import { createDeckSlice, EMPTY_DECK_BRAIN_THREAD } from '../deckSlice';
+
+const WS_A = 'ws-a';
+const WS_B = 'ws-b';
+
+const threadOf = (ws: string) => useStore.getState().brainThreads[ws] ?? EMPTY_DECK_BRAIN_THREAD;
 
 describe('deckSlice', () => {
   it('defaults to the Commander tab', () => {
@@ -13,6 +18,7 @@ describe('deckSlice', () => {
       undefined as never,
     );
     expect(slice.activeDeckTab).toBe('commander');
+    expect(slice.brainThreads).toEqual({});
   });
 
   describe('transitions', () => {
@@ -28,60 +34,84 @@ describe('deckSlice', () => {
     });
   });
 
-  describe('commander brain (Phase 2)', () => {
+  describe('per-workspace commander brain (Phase 2, M1.5)', () => {
     beforeEach(() => {
-      useStore.setState({ brainMessages: [], brainStatus: 'idle' });
+      useStore.setState({ brainThreads: {} });
     });
 
-    it('starts a turn: pushes human + streaming assistant, marks busy', () => {
-      useStore.getState().startDeckBrainTurn('spawn a worker');
-      const s = useStore.getState();
-      expect(s.brainStatus).toBe('busy');
-      expect(s.brainMessages).toHaveLength(2);
-      expect(s.brainMessages[0]).toMatchObject({ role: 'user', text: 'spawn a worker' });
-      expect(s.brainMessages[1]).toMatchObject({ role: 'assistant', status: 'streaming' });
+    it('starts a turn: pushes human + streaming assistant, marks THAT workspace busy', () => {
+      useStore.getState().startDeckBrainTurn(WS_A, 'spawn a worker');
+      const a = threadOf(WS_A);
+      expect(a.status).toBe('busy');
+      expect(a.messages).toHaveLength(2);
+      expect(a.messages[0]).toMatchObject({ role: 'user', text: 'spawn a worker' });
+      expect(a.messages[1]).toMatchObject({ role: 'assistant', status: 'streaming' });
+      // The OTHER workspace is untouched and not busy — the M1.5 parallelism.
+      expect(threadOf(WS_B).status).toBe('idle');
+      expect(threadOf(WS_B).messages).toHaveLength(0);
     });
 
-    it('turn-start (P3d scheduled run) opens a turn exactly like a typed send', () => {
+    it('routes events by workspace: a background turn never leaks into another thread', () => {
       const st = useStore.getState();
-      st.applyDeckBrainEvent({ type: 'turn-start', prompt: '[Scheduled task] check PRs' });
-      let s = useStore.getState();
-      expect(s.brainStatus).toBe('busy');
-      expect(s.brainMessages[0]).toMatchObject({ role: 'user', text: '[Scheduled task] check PRs' });
-      expect(s.brainMessages[1]).toMatchObject({ role: 'assistant', status: 'streaming' });
+      st.startDeckBrainTurn(WS_A, 'long job');
+      st.startDeckBrainTurn(WS_B, 'quick job');
+      // Interleaved streams — each event lands in ITS workspace's thread.
+      st.applyDeckBrainEvent(WS_A, { type: 'text-delta', text: 'A-progress' });
+      st.applyDeckBrainEvent(WS_B, { type: 'text-delta', text: 'B-progress' });
+      st.applyDeckBrainEvent(WS_B, { type: 'turn-end', sessionId: 'sess-b' });
+      st.applyDeckBrainEvent(WS_A, { type: 'text-delta', text: ' more' });
+
+      const a = threadOf(WS_A);
+      const b = threadOf(WS_B);
+      expect(a.messages[1].text).toBe('A-progress more');
+      expect(a.status).toBe('busy'); // A still streams…
+      expect(b.messages[1]).toMatchObject({ text: 'B-progress', status: 'done' });
+      expect(b.status).toBe('idle'); // …while B already finished.
+    });
+
+    it('turn-start (P3d scheduled run) opens a turn in its OWN workspace thread', () => {
+      const st = useStore.getState();
+      st.applyDeckBrainEvent(WS_B, { type: 'turn-start', prompt: '[Scheduled task] check PRs' });
+      let b = threadOf(WS_B);
+      expect(b.status).toBe('busy');
+      expect(b.messages[0]).toMatchObject({ role: 'user', text: '[Scheduled task] check PRs' });
+      expect(b.messages[1]).toMatchObject({ role: 'assistant', status: 'streaming' });
+      expect(threadOf(WS_A).messages).toHaveLength(0);
       // The scheduled turn's stream lands in that open turn.
-      st.applyDeckBrainEvent({ type: 'text-delta', text: 'on it' });
-      st.applyDeckBrainEvent({ type: 'turn-end', sessionId: 'sess-s' });
-      s = useStore.getState();
-      expect(s.brainStatus).toBe('idle');
-      expect(s.brainMessages[1]).toMatchObject({ text: 'on it', status: 'done' });
+      st.applyDeckBrainEvent(WS_B, { type: 'text-delta', text: 'on it' });
+      st.applyDeckBrainEvent(WS_B, { type: 'turn-end', sessionId: 'sess-s' });
+      b = threadOf(WS_B);
+      expect(b.status).toBe('idle');
+      expect(b.messages[1]).toMatchObject({ text: 'on it', status: 'done' });
     });
 
     it('streams events into the open turn and returns to idle on turn-end', () => {
       const st = useStore.getState();
-      st.startDeckBrainTurn('go');
-      st.applyDeckBrainEvent({ type: 'text-delta', text: 'working' });
-      st.applyDeckBrainEvent({ type: 'tool-start', name: 'mcp__wmux__pane_list', inputSummary: '' });
-      st.applyDeckBrainEvent({ type: 'tool-end', name: 'mcp__wmux__pane_list', ok: true });
-      expect(useStore.getState().brainStatus).toBe('busy');
-      st.applyDeckBrainEvent({ type: 'turn-end', sessionId: 'sess-1' });
+      st.startDeckBrainTurn(WS_A, 'go');
+      st.applyDeckBrainEvent(WS_A, { type: 'text-delta', text: 'working' });
+      st.applyDeckBrainEvent(WS_A, { type: 'tool-start', name: 'mcp__wmux__pane_list', inputSummary: '' });
+      st.applyDeckBrainEvent(WS_A, { type: 'tool-end', name: 'mcp__wmux__pane_list', ok: true });
+      expect(threadOf(WS_A).status).toBe('busy');
+      st.applyDeckBrainEvent(WS_A, { type: 'turn-end', sessionId: 'sess-1' });
 
-      const s = useStore.getState();
-      expect(s.brainStatus).toBe('idle');
-      const assistant = s.brainMessages[1];
+      const a = threadOf(WS_A);
+      expect(a.status).toBe('idle');
+      const assistant = a.messages[1];
       expect(assistant.text).toBe('working');
       expect(assistant.tools?.[0]).toMatchObject({ name: 'pane_list', ok: true });
       expect(assistant.status).toBe('done');
     });
 
-    it('failDeckBrainTurn closes the open turn with an error and idles', () => {
+    it('failDeckBrainTurn closes the open turn with an error and idles that workspace only', () => {
       const st = useStore.getState();
-      st.startDeckBrainTurn('go');
-      st.failDeckBrainTurn('busy');
-      const s = useStore.getState();
-      expect(s.brainStatus).toBe('idle');
-      expect(s.brainMessages[1].status).toBe('error');
-      expect(s.brainMessages[1].errorText).toBe('busy');
+      st.startDeckBrainTurn(WS_A, 'go');
+      st.startDeckBrainTurn(WS_B, 'also go');
+      st.failDeckBrainTurn(WS_A, 'busy');
+      const a = threadOf(WS_A);
+      expect(a.status).toBe('idle');
+      expect(a.messages[1].status).toBe('error');
+      expect(a.messages[1].errorText).toBe('busy');
+      expect(threadOf(WS_B).status).toBe('busy');
     });
   });
 });
