@@ -411,8 +411,9 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.DIFF_RESOLVE_REPO, cwd) as Promise<
         { ok: true; repoPath: string } | { ok: false }
       >,
-    read: (worktreePath: string, targetHeadOid?: string) =>
-      ipcRenderer.invoke(IPC.DIFF_READ, worktreePath, targetHeadOid ?? '') as Promise<
+    // mode='workspace'는 cwd repo/worktree 자신의 미커밋 변경만(본 repo 매핑 없음).
+    read: (worktreePath: string, targetHeadOid?: string, mode?: 'task' | 'workspace') =>
+      ipcRenderer.invoke(IPC.DIFF_READ, worktreePath, targetHeadOid ?? '', mode ?? 'task') as Promise<
         import('../shared/diffParse').DiffReadResult | import('../shared/diffParse').DiffReadError
       >,
     applyHunks: (

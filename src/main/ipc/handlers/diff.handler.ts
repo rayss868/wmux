@@ -160,12 +160,33 @@ function parseNumstat(raw: string): DiffNumstat[] {
   return out;
 }
 
+// git의 잘 알려진 empty tree 오브젝트 — 첫 커밋 전(HEAD 없음) repo의 diff base.
+const EMPTY_TREE_OID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
 // diff:read 구현.
+//
+// mode:
+//  - 'task'(기본): J2 태스크 산출물 diff. worktree를 본 repo로 매핑
+//    (resolveTargetRepo)한 뒤 merge-base 대조 — 태스크 브랜치의 산출물을
+//    본 repo 기준으로 채택하기 위한 의미.
+//  - 'workspace': 워크스페이스 diff. cwd repo/worktree 자신의 미커밋 변경만
+//    (`git diff HEAD` + untracked). 본 repo로 매핑하지 않는다 — 그러면 linked
+//    worktree의 브랜치 커밋 전체가 diff로 새어 나온다(Codex P2). 첫 커밋 전
+//    repo는 HEAD가 없으므로 empty-tree 대비로 전 파일을 added로 보여준다.
 async function readDiff(
   worktreePath: string,
   targetHeadOid: string,
+  mode: 'task' | 'workspace' = 'task',
 ): Promise<DiffReadResult | DiffReadError> {
-  const targetRepoPath = await resolveTargetRepo(worktreePath);
+  // workspace 모드: 대상 repo = 자기 자신(cwd toplevel). resolveTargetRepo로
+  // 본 repo 매핑을 하지 않는다.
+  const targetRepoPath =
+    mode === 'workspace'
+      ? await (async () => {
+          const r = await git(['rev-parse', '--show-toplevel'], worktreePath);
+          return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+        })()
+      : await resolveTargetRepo(worktreePath);
   if (!targetRepoPath) {
     return { ok: false, error: '타겟 repo를 찾을 수 없음(worktree 손상?)', code: 'no-repo' };
   }
@@ -177,16 +198,22 @@ async function readDiff(
     return { ok: false, error: 'targetHeadOid 형식 오류(SHA hex 7~40자 아님)', code: 'bad-oid' };
   }
 
-  // targetHeadOid 미지정 시 타겟 repo의 현 HEAD를 사용(렌더러가 미리 알 필요 없음).
-  let headOid = targetHeadOid;
-  if (!headOid) {
+  let mergeBase: string;
+  if (mode === 'workspace') {
+    // 미커밋만: base = 자기 HEAD. 첫 커밋 전이면 empty-tree(전 파일 added).
     const h = await git(['rev-parse', 'HEAD'], targetRepoPath);
-    headOid = h.code === 0 ? h.stdout.trim() : '';
+    mergeBase = h.code === 0 && h.stdout.trim() ? h.stdout.trim() : EMPTY_TREE_OID;
+  } else {
+    // targetHeadOid 미지정 시 타겟 repo의 현 HEAD를 사용(렌더러가 미리 알 필요 없음).
+    let headOid = targetHeadOid;
+    if (!headOid) {
+      const h = await git(['rev-parse', 'HEAD'], targetRepoPath);
+      headOid = h.code === 0 ? h.stdout.trim() : '';
+    }
+    // mergeBase = merge-base HEAD {targetHeadOid} — 단일 출처(§2 G8).
+    const mb = await git(['merge-base', 'HEAD', headOid], worktreePath);
+    mergeBase = mb.code === 0 && mb.stdout.trim() ? mb.stdout.trim() : headOid;
   }
-
-  // mergeBase = merge-base HEAD {targetHeadOid} — 단일 출처(§2 G8).
-  const mb = await git(['merge-base', 'HEAD', headOid], worktreePath);
-  const mergeBase = mb.code === 0 && mb.stdout.trim() ? mb.stdout.trim() : headOid;
 
   // 1-arg 워킹트리 대조(미커밋 포함). untracked 제외 — 별도 합성.
   const diffRes = await git(['diff', mergeBase], worktreePath);
@@ -447,13 +474,15 @@ export function registerDiffHandlers(): () => void {
         _event: Electron.IpcMainInvokeEvent,
         worktreePath: unknown,
         targetHeadOid: unknown,
+        mode: unknown,
       ): Promise<DiffReadResult | DiffReadError> => {
         if (typeof worktreePath !== 'string' || !worktreePath) {
           return { ok: false, error: 'worktreePath 필요', code: 'bad-args' };
         }
         // targetHeadOid는 선택 — 미지정 시 타겟 repo HEAD로 도출.
         const head = typeof targetHeadOid === 'string' ? targetHeadOid : '';
-        return readDiff(worktreePath, head);
+        // mode 미지정/오값은 'task'(기존 계약). 'workspace'만 명시 분기.
+        return readDiff(worktreePath, head, mode === 'workspace' ? 'workspace' : 'task');
       },
     ),
   );

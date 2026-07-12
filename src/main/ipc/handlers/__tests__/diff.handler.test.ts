@@ -5,7 +5,7 @@
 // dirty 거부·per-hunk 프로브·경로 검증·all-or-nothing apply.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -486,7 +486,7 @@ describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', 
   beforeEach(() => {
     captured.clear();
     registerDiffHandlers();
-    base = mkdtempSync(join(tmpdir(), 'wmux-diffws-'));
+    base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-diffws-')));
     repo = join(base, 'repo');
     mkdirSync(repo);
     g(repo, ['init', '-q', '-b', 'main']);
@@ -509,7 +509,7 @@ describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', 
     writeFileSync(join(repo, 'new.txt'), 'n1\n');
 
     const read = captured.get(IPC.DIFF_READ)!;
-    const res = (await read({}, repo, '')) as {
+    const res = (await read({}, repo, '', 'workspace')) as {
       ok: boolean;
       files: Array<{ path: string; kind: string }>;
       snapshot: { targetRepoPath: string; targetBranch: string; targetHeadOid: string };
@@ -527,9 +527,48 @@ describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', 
 
   it('clean 워킹트리 — 빈 파일 목록으로 성공', async () => {
     const read = captured.get(IPC.DIFF_READ)!;
-    const res = (await read({}, repo, '')) as { ok: boolean; files: unknown[] };
+    const res = (await read({}, repo, '', 'workspace')) as { ok: boolean; files: unknown[] };
     expect(res.ok).toBe(true);
     expect(res.files).toEqual([]);
+  });
+
+  it('linked worktree(workspace 모드) — 브랜치 커밋 제외, 미커밋만(Codex P2 회귀)', async () => {
+    // repo에 커밋 1개 더 → main HEAD 이동. worktree는 별 브랜치에서 자체 커밋 1개.
+    const wt = join(base, 'wt');
+    g(repo, ['worktree', 'add', '-q', '-b', 'feat/x', wt, 'HEAD']);
+    // 워크트리 브랜치에 committed 변경(이건 diff에 나오면 안 됨).
+    writeFileSync(join(wt, 'committed.txt'), 'branch-only\n');
+    g(wt, ['add', '-A']);
+    g(wt, ['commit', '-q', '-m', 'branch commit']);
+    // 워크트리에 미커밋 변경(이것만 나와야 함).
+    writeFileSync(join(wt, 'a.txt'), 'a1\nUNCOMMITTED\na3\n');
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, wt, '', 'workspace')) as {
+      ok: boolean;
+      files: Array<{ path: string }>;
+    };
+    expect(res.ok).toBe(true);
+    const paths = res.files.map((f) => f.path).sort();
+    // committed.txt(브랜치 커밋)는 없어야 하고 a.txt(미커밋)만 있어야 한다.
+    expect(paths).toEqual(['a.txt']);
+    expect(paths).not.toContain('committed.txt');
+  });
+
+  it('첫 커밋 전 repo(workspace 모드) — empty-tree 대비로 staged 파일을 added로', async () => {
+    const fresh = join(base, 'fresh');
+    mkdirSync(fresh);
+    g(fresh, ['init', '-q', '-b', 'main']);
+    g(fresh, ['config', 'user.email', 't@t']);
+    g(fresh, ['config', 'user.name', 't']);
+    writeFileSync(join(fresh, 'first.txt'), 'hello\n');
+    g(fresh, ['add', '-A']); // staged, 커밋은 아직 없음(HEAD 없음).
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, fresh, '', 'workspace')) as {
+      ok: boolean;
+      files: Array<{ path: string; kind: string }>;
+    };
+    expect(res.ok).toBe(true);
+    expect(res.files.map((f) => f.path)).toContain('first.txt');
   });
 
   it('rename+수정 — 표시 경로가 newpath 기준, kind=rename', async () => {
@@ -538,7 +577,7 @@ describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', 
     g(repo, ['mv', 'keep.txt', 'renamed.txt']);
     writeFileSync(join(repo, 'renamed.txt'), 'k1\nEDITED\nk3\nk4\nk5\nk6\nk7\nk8\nk9\nk10\n');
     const read = captured.get(IPC.DIFF_READ)!;
-    const res = (await read({}, repo, '')) as {
+    const res = (await read({}, repo, '', 'workspace')) as {
       ok: boolean;
       files: Array<{ path: string; kind: string }>;
     };
@@ -557,7 +596,9 @@ describe('diff:resolveRepo — cwd 정규화', () => {
   beforeEach(() => {
     captured.clear();
     registerDiffHandlers();
-    base = mkdtempSync(join(tmpdir(), 'wmux-diffrr-'));
+    // realpathSync.native로 8.3 단축폼(CI Windows의 RUNNER~1)을 롱폼으로 정규화 —
+    // git rev-parse가 반환하는 canonical 경로와 문자열 비교가 어긋나지 않게.
+    base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-diffrr-')));
     repo = join(base, 'repo');
     mkdirSync(repo);
     g(repo, ['init', '-q', '-b', 'main']);

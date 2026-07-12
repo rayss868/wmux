@@ -126,7 +126,11 @@ export function resolveDiffMentionTargets(
 
 // diff.read/applyHunks 브릿지(preload 노출).
 interface DiffBridge {
-  read: (worktreePath: string, targetHeadOid?: string) => Promise<DiffReadResult | { ok: false; error: string }>;
+  read: (
+    worktreePath: string,
+    targetHeadOid?: string,
+    mode?: 'task' | 'workspace',
+  ) => Promise<DiffReadResult | { ok: false; error: string }>;
   applyHunks: (req: DiffApplyRequest, worktreePath: string) => Promise<DiffApplyResult>;
 }
 
@@ -349,8 +353,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       readPath = m.worktreePath;
     } else {
       // 워크스페이스 모드 — 태스크 역참조·코멘트 없음. repoPath는 diff:resolveRepo가
-      // 정규화한 worktree toplevel이므로 그대로 읽는다(diff:read가 일반 repo에서
-      // merge-base HEAD HEAD = HEAD → `git diff HEAD` + untracked 합성으로 동작).
+      // 정규화한 worktree toplevel이다.
       readPath = repoPath;
     }
     const bridge = getDiffBridge();
@@ -359,7 +362,9 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       setLoading(false);
       return;
     }
-    const res = await bridge.read(readPath);
+    // workspace 모드는 명시 전달 — 자기 HEAD 대비 미커밋만(본 repo 매핑 없음).
+    // linked worktree에서 브랜치 커밋이 diff로 새는 것을 막는다(Codex P2).
+    const res = await bridge.read(readPath, undefined, isTask ? 'task' : 'workspace');
     if (!res.ok) {
       setError(res.error);
       setData(null);
@@ -579,6 +584,23 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
 
   const activeFile = selectedFile ? filesByPath.get(selectedFile) : null;
 
+  // 파일 트리에 보일 경로 목록 — 파싱된 files + numstat에만 있는 경로(untracked
+  // 바이너리·대형·symlink 등 표시 전용). files가 비어도 이런 변경이 있으면
+  // "clean"이 아니며 트리에 표시돼야 한다(Codex P2 — hidden change 오판 방지).
+  const displayPaths = useMemo(() => {
+    if (!data) return [] as string[];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const f of data.files) {
+      if (!seen.has(f.path)) { seen.add(f.path); out.push(f.path); }
+    }
+    for (const n of data.numstat) {
+      if (!seen.has(n.path)) { seen.add(n.path); out.push(n.path); }
+    }
+    return out;
+  }, [data]);
+  const hasAnyChange = displayPaths.length > 0;
+
   // F10 — 활성 파일의 코멘트를 hunkHeader별로 그룹핑. 현재 diff의 hunk 헤더와
   // 일치하는 코멘트는 해당 hunk 아래, 불일치분(라인 드리프트로 헤더가 바뀐 것)은
   // 파일 하단 "위치 이동됨" 그룹으로 강등. (v1 앵커 정밀도 = hunkHeader 단위 — §4.)
@@ -673,38 +695,44 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
             {error}
           </div>
         )}
-        {!loading && !error && data && data.files.length === 0 && (
+        {!loading && !error && data && !hasAnyChange && (
           <div className="flex items-center justify-center w-full text-[var(--text-muted)] text-sm">
             변경사항 없음 — 워킹트리가 clean합니다
           </div>
         )}
-        {!loading && !error && data && data.files.length > 0 && (
+        {!loading && !error && data && hasAnyChange && (
           <>
-            {/* 파일 트리(numstat) */}
+            {/* 파일 트리(numstat) — files + numstat-only(표시 전용) 경로 union. */}
             <div className="w-56 shrink-0 overflow-y-auto border-r border-[var(--bg-mantle)] text-[11px]">
-              {data.files.map((f) => {
-                const num = data.numstat.find((n) => n.path === f.path);
-                const isTrunc = data.truncated.includes(f.path);
+              {displayPaths.map((path) => {
+                const f = filesByPath.get(path);
+                const num = data.numstat.find((n) => n.path === path);
+                const isTrunc = data.truncated.includes(path);
+                const isUnsupported = (data.unsupported ?? []).includes(path);
+                // numstat에만 있는 경로(파싱된 file 없음) = 바이너리·대형·symlink 등
+                // 표시 전용. 클릭해도 hunk가 없어 "표시 전용" 안내가 뜬다.
                 return (
                   <button
-                    key={f.path}
+                    key={path}
                     className={`w-full text-left px-2 py-1 truncate hover:bg-[var(--bg-mantle)] ${
-                      selectedFile === f.path ? 'bg-[var(--bg-mantle)] text-[var(--text-main)]' : 'text-[var(--text-sub)]'
+                      selectedFile === path ? 'bg-[var(--bg-mantle)] text-[var(--text-main)]' : 'text-[var(--text-sub)]'
                     }`}
-                    onClick={() => setSelectedFile(f.path)}
-                    title={f.path}
+                    onClick={() => setSelectedFile(path)}
+                    title={path}
                   >
-                    <span className="truncate">{f.path}</span>
+                    <span className="truncate">{path}</span>
                     {num && (
                       <span className="ml-1 text-[10px]">
                         <span className="text-[var(--accent-green,#4ade80)]">+{num.additions ?? '?'}</span>{' '}
                         <span className="text-[var(--accent-red,#f87171)]">-{num.deletions ?? '?'}</span>
                       </span>
                     )}
-                    {!f.hunkSelectable && (
+                    {f && !f.hunkSelectable && (
                       <span className="ml-1 text-[9px] text-[var(--text-muted)]">[{f.kind}·채택불가]</span>
                     )}
-                    {isTrunc && <span className="ml-1 text-[9px] text-[var(--text-muted)]">[표시전용]</span>}
+                    {(isTrunc || isUnsupported || !f) && (
+                      <span className="ml-1 text-[9px] text-[var(--text-muted)]">[표시전용]</span>
+                    )}
                   </button>
                 );
               })}
@@ -712,7 +740,14 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
 
             {/* unified diff 뷰 + hunk 체크박스 */}
             <div className="flex-1 overflow-auto p-2">
-              {!activeFile && <div className="text-[var(--text-muted)] text-sm">파일을 선택하세요</div>}
+              {!activeFile && selectedFile && (
+                <div className="text-[var(--text-muted)] text-xs">
+                  표시 전용 — 바이너리·대형·비정규 변경(diff 미표시)
+                </div>
+              )}
+              {!activeFile && !selectedFile && (
+                <div className="text-[var(--text-muted)] text-sm">파일을 선택하세요</div>
+              )}
               {activeFile && activeFile.hunks.length === 0 && (
                 <div className="text-[var(--text-muted)] text-xs">
                   {activeFile.kind} — 표시 전용(hunk 없음 또는 채택 불가)
