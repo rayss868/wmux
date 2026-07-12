@@ -123,6 +123,17 @@ export const IPC = {
   DECK_SCHEDULES_CREATE: 'deck:schedules:create',
   DECK_SCHEDULES_UPDATE: 'deck:schedules:update',
   DECK_SCHEDULES_DELETE: 'deck:schedules:delete',
+  //   DECK_LOOP_*      (invoke) renderer → main: the one-click loop (loop
+  //                    engineering v1). START writes loop-state + autonomy caps
+  //                    + optional cadence schedule in ONE action; STOP/PAUSE are
+  //                    the fail-closed OFF contract (caps → DEFAULT, cadence
+  //                    schedule deleted/disabled). Same renderer-only trust
+  //                    boundary as DECK_SEND.
+  DECK_LOOP_GET: 'deck:loop:get',
+  DECK_LOOP_START: 'deck:loop:start',
+  DECK_LOOP_STOP: 'deck:loop:stop',
+  DECK_LOOP_PAUSE: 'deck:loop:pause',
+  DECK_LOOP_RESUME: 'deck:loop:resume',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

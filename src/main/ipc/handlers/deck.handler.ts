@@ -32,6 +32,23 @@ import {
 } from '../../deck/CommanderSessionManager';
 import { loadCommanderSession, saveCommanderSession } from '../../deck/commanderSessionStore';
 import { DeckScheduler } from '../../deck/DeckScheduler';
+import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
+import {
+  loadWorkspaceAutonomy,
+  setWorkspaceAutonomy,
+  DEFAULT_AUTONOMY,
+} from '../../deck/deckAutonomyStore';
+import {
+  loadWorkspaceLoopState,
+  renderLoopStateBlock,
+  startLoop,
+  clearLoop,
+  setLoopStatus,
+  LOOP_STATE_LIMITS,
+  type WorkspaceLoopState,
+  type LoopTier,
+} from '../../deck/deckLoopStateStore';
+import { eventBus } from '../../events/EventBus';
 import {
   loadDeckSchedules,
   saveDeckSchedules,
@@ -79,6 +96,16 @@ export function registerDeckHandler(
     model: string;
   }
   const managers = new Map<string, ManagedCommander>();
+
+  // Event-push coalescer. Declared here, constructed below once
+  // runTurnForWorkspace exists — the manager's onIdle closure references it
+  // lazily (only invoked at runtime, long after construction), so the cyclic
+  // dependency (manager → coalescer → runTurn → ensureManager → manager) is
+  // resolved by late binding. (prefer-const can't see the forward references in
+  // the onIdle / DECK_SEND closures above the assignment — this genuinely must
+  // be a `let`.)
+  // eslint-disable-next-line prefer-const
+  let coalescer: CommanderEventCoalescer | undefined;
 
   const emit = (workspaceId: string, event: BrainEvent): void => {
     const win = getWindow();
@@ -129,6 +156,10 @@ export function registerDeckHandler(
           console.warn('[deck] failed to persist commander session id:', err);
         });
       },
+      // Event-push: when this workspace's turn ends, wake the coalescer (on a
+      // later tick — the manager defers) so any events buffered during the turn
+      // flush into the next one.
+      onIdle: () => coalescer?.notifyIdle(workspaceId),
     });
     managers.set(workspaceId, { manager, model });
     return manager;
@@ -137,6 +168,21 @@ export function registerDeckHandler(
   const readWorkspaceId = (req: Record<string, unknown>): string | null => {
     const raw = typeof req.workspaceId === 'string' ? req.workspaceId : '';
     return WORKSPACE_ID_RE.test(raw) ? raw : null;
+  };
+
+  // Loop engineering v1: when a workspace has a loop configured, EVERY brain
+  // turn (human DECK_SEND, scheduled, event-woken — the latter two both route
+  // through runTurnForWorkspace) carries the loop-state block so the brain
+  // always knows its objective + checklist + recent progress. Prepending here
+  // (main, per-send) rather than composePrompt is deliberate: composePrompt
+  // injects on the FIRST turn only (ClaudeSdkAdapter `_contextInjected` guard),
+  // which would go stale immediately. READ-ONLY context — the brain has no tool
+  // to write `passes` and `done` does not suppress wakes in v1 (owner decision:
+  // the human stops the loop).
+  const withLoopContext = (workspaceId: string, text: string): string => {
+    const loop = loadWorkspaceLoopState(workspaceId);
+    if (!loop) return text;
+    return `${renderLoopStateBlock(loop)}\n\n${text}`;
   };
 
   ipcMain.removeHandler(IPC.DECK_SEND);
@@ -162,9 +208,22 @@ export function registerDeckHandler(
       const rawModel = typeof req.model === 'string' ? req.model.trim() : '';
       const model = /^[A-Za-z0-9._-]{1,64}$/.test(rawModel) ? rawModel : '';
       const mgr = ensureManager(workspaceId, fleetContext, model);
+      // Human input resets this workspace's auto-wake budget and subsumes any
+      // buffered push events (the human's own turn re-observes live state) —
+      // but ONLY when the send will actually be accepted. A busy reject (e.g.
+      // racing an in-flight auto-wake turn) must not consume buffered events:
+      // that stop may be the very completion the loop is waiting on, and
+      // subsuming it on a turn that never ran would silently stall the loop
+      // (dogfood finding, 2026-07-12). Status check + send are one synchronous
+      // sequence, so nothing can interleave (same basis as runTurnForWorkspace).
+      if (mgr.getStatus().status === 'idle') {
+        coalescer?.notifyHumanSend(workspaceId);
+      }
       // Awaits the full turn (events stream over DECK_STREAM meanwhile); the
-      // resolved value is only the accept/reject verdict.
-      return mgr.send(text);
+      // resolved value is only the accept/reject verdict. The loop block (when
+      // a loop exists) rides in front of the typed text — invisible to the
+      // renderer's optimistic user bubble, visible to the brain.
+      return mgr.send(withLoopContext(workspaceId, text));
     }),
   );
 
@@ -200,30 +259,69 @@ export function registerDeckHandler(
     }),
   );
 
+  // Fire ONE main-originated brain turn on a workspace's orchestrator. Shared
+  // by the P3d scheduler AND the event-push coalescer — both need the identical
+  // "announce-then-send, skip-if-busy" sequence. A main-originated turn has no
+  // renderer-side optimistic message, so the stream would hit a thread with no
+  // open turn and be dropped: announce `turn-start` first — but ONLY when the
+  // manager will actually accept it (a busy reject must not open a phantom
+  // stuck-streaming bubble). The status check and send are one synchronous
+  // sequence, so nothing can interleave between them.
+  const runTurnForWorkspace = (
+    prompt: string,
+    workspaceId: string,
+  ): Promise<{ ok: boolean; code?: string }> => {
+    if (!WORKSPACE_ID_RE.test(workspaceId)) {
+      return Promise.resolve({ ok: false, code: 'invalid_workspace' as const });
+    }
+    const mgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
+    if (mgr.getStatus().status !== 'idle') {
+      return Promise.resolve({ ok: false, code: 'busy' as const });
+    }
+    // turn-start announces the ORIGINAL prompt (what the human should see as
+    // the turn's cause); the loop block is prepended only on the wire to the
+    // brain, mirroring the DECK_SEND path.
+    emit(workspaceId, { type: 'turn-start', prompt });
+    return mgr.send(withLoopContext(workspaceId, prompt));
+  };
+
+  // ── Event-push: EventBus → coalescer → orchestrator wake-turn ─────────────
+  // The main-process EventBus already carries agent.stop / agent.awaiting_input
+  // (hook + detector sourced). Subscribe, coalesce per workspace, and wake the
+  // owning orchestrator so it observes fleet lifecycle changes WITHOUT polling.
+  coalescer = new CommanderEventCoalescer({
+    runTurn: (workspaceId, prompt) => runTurnForWorkspace(prompt, workspaceId),
+    isBusy: (workspaceId) =>
+      managers.get(workspaceId)?.manager.getStatus().status === 'busy',
+    // Fail-closed autonomy caps (summarize on, dangerous caps off by default).
+    getAutonomy: (workspaceId) => loadWorkspaceAutonomy(workspaceId),
+    // Loop hint: a RUNNING loop's iteration budget replaces the ambient
+    // wake budget and flips the wake prompt to loop-runner framing.
+    getLoop: (workspaceId) => {
+      const loop = loadWorkspaceLoopState(workspaceId);
+      return loop ? { running: loop.status === 'running', iterations: loop.iterations } : null;
+    },
+  });
+  const offBus = eventBus.subscribe((ev) => {
+    if (ev.type !== 'agent.lifecycle') return;
+    if (ev.kind !== 'agent.stop' && ev.kind !== 'agent.awaiting_input') return;
+    coalescer?.push({
+      workspaceId: ev.workspaceId,
+      ptyId: ev.ptyId,
+      kind: ev.kind,
+      source: ev.source,
+      agent: ev.agent,
+      seq: ev.seq,
+      ts: ev.ts,
+    });
+  });
+
   // ── P3d: orchestrator schedules ─────────────────────────────────────────
   // The tick loop fires due schedules as ordinary brain turns on their OWN
   // workspace's orchestrator (streamed over DECK_STREAM like any typed
   // command). A scheduled turn reuses that workspace's live manager — and its
   // model — or lazily creates one exactly like deck:send.
-  const scheduler = new DeckScheduler({
-    runTurn: (prompt, workspaceId) => {
-      if (!WORKSPACE_ID_RE.test(workspaceId)) {
-        return Promise.resolve({ ok: false, code: 'invalid_workspace' as const });
-      }
-      const mgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
-      // A main-originated turn has no renderer-side optimistic message, so the
-      // stream would hit a thread with no open turn and be dropped. Announce
-      // the turn first — but only when the manager will actually accept it
-      // (a busy reject must not open a phantom stuck-streaming bubble). The
-      // status check and send are one synchronous sequence, so nothing can
-      // interleave between them.
-      if (mgr.getStatus().status !== 'idle') {
-        return Promise.resolve({ ok: false, code: 'busy' as const });
-      }
-      emit(workspaceId, { type: 'turn-start', prompt });
-      return mgr.send(prompt);
-    },
-  });
+  const scheduler = new DeckScheduler({ runTurn: runTurnForWorkspace });
   scheduler.start();
 
   ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
@@ -313,6 +411,200 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── Loop engineering v1: the one-click loop ────────────────────────────
+  // START is the one click: loop-state + autonomy caps + optional cadence
+  // schedule written in a single action. STOP/PAUSE are the OFF contract —
+  // caps drop to DEFAULT (fail-closed) and the cadence schedule is deleted/
+  // disabled, so a stopped loop never leaves the brain with Continue authority
+  // and no objective, nor a pending schedule that fires later. v1 tiers cap at
+  // 'continue'; approval-press is NOT reachable from this surface.
+  const applyTierCaps = async (workspaceId: string, tier: LoopTier): Promise<void> => {
+    await setWorkspaceAutonomy(workspaceId, {
+      summarize: true,
+      continueInstruction: tier === 'continue',
+      approvalPress: false,
+    });
+  };
+  const dropCaps = async (workspaceId: string): Promise<void> => {
+    await setWorkspaceAutonomy(workspaceId, { ...DEFAULT_AUTONOMY });
+  };
+  const setLoopScheduleEnabled = async (
+    scheduleId: string | undefined,
+    enabled: boolean,
+  ): Promise<void> => {
+    if (!scheduleId) return;
+    const schedules = loadDeckSchedules();
+    const idx = schedules.findIndex((s) => s.id === scheduleId);
+    if (idx === -1) return;
+    schedules[idx] = { ...schedules[idx], enabled };
+    await saveDeckSchedules(schedules);
+  };
+
+  /** Cadence bounds: floor 5 min (no tight loops), ceiling 7 days. */
+  const LOOP_INTERVAL_MIN = 5;
+  const LOOP_INTERVAL_MAX = 7 * 24 * 60;
+
+  ipcMain.removeHandler(IPC.DECK_LOOP_GET);
+  ipcMain.handle(
+    IPC.DECK_LOOP_GET,
+    wrapHandler(IPC.DECK_LOOP_GET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ loop: WorkspaceLoopState | null }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      return { loop: workspaceId ? loadWorkspaceLoopState(workspaceId) : null };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_LOOP_START);
+  ipcMain.handle(
+    IPC.DECK_LOOP_START,
+    wrapHandler(IPC.DECK_LOOP_START, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; loop?: WorkspaceLoopState; code?: string }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      const objective = typeof req.objective === 'string' ? req.objective.trim() : '';
+      if (!objective) return { ok: false, code: 'invalid' };
+      // v1 hard cap: only 'report' | 'continue' exist on this surface.
+      const tier: LoopTier = req.tier === 'continue' ? 'continue' : 'report';
+      const taskTexts = Array.isArray(req.taskTexts)
+        ? req.taskTexts.filter((t): t is string => typeof t === 'string')
+        : [];
+      // Optional cadence: a HUMAN-authored repeating schedule created at click
+      // time (this is NOT P4 brain self-scheduling). Out-of-range is a reject,
+      // never a silent clamp.
+      let intervalMinutes: number | undefined;
+      if (req.intervalMinutes !== undefined) {
+        const n = typeof req.intervalMinutes === 'number' ? req.intervalMinutes : NaN;
+        if (!Number.isFinite(n) || n < LOOP_INTERVAL_MIN || n > LOOP_INTERVAL_MAX) {
+          return { ok: false, code: 'invalid_interval' };
+        }
+        intervalMinutes = Math.floor(n);
+      }
+      // Iteration budget (Ralph max-iterations): out-of-range is a reject,
+      // never a silent clamp; omitted → the store default.
+      let iterations: number | undefined;
+      if (req.iterations !== undefined) {
+        const n = typeof req.iterations === 'number' ? req.iterations : NaN;
+        if (
+          !Number.isFinite(n) ||
+          n < LOOP_STATE_LIMITS.MIN_ITERATIONS ||
+          n > LOOP_STATE_LIMITS.MAX_ITERATIONS
+        ) {
+          return { ok: false, code: 'invalid_iterations' };
+        }
+        iterations = Math.floor(n);
+      }
+      // Replacing an existing loop: clean up its cadence schedule first so two
+      // loops never leave two schedules behind.
+      const prior = loadWorkspaceLoopState(workspaceId);
+      if (prior?.scheduleId) {
+        await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== prior.scheduleId));
+      }
+      let scheduleId: string | undefined;
+      if (intervalMinutes) {
+        const schedules = loadDeckSchedules();
+        if (schedules.length >= DECK_SCHEDULE_LIMITS.MAX_SCHEDULES) {
+          return { ok: false, code: 'schedule_limit' };
+        }
+        const schedule = createSchedule({
+          workspaceId,
+          prompt:
+            'Loop check-in: assess fleet progress toward the loop objective above and report. ' +
+            'If your autonomy caps allow, nudge stalled panes onward.',
+          nextRunAt: Date.now() + intervalMinutes * 60_000,
+          intervalMinutes,
+        });
+        if (schedule) {
+          await saveDeckSchedules([...schedules, schedule]);
+          scheduleId = schedule.id;
+        }
+      }
+      const loop = await startLoop(workspaceId, {
+        objective,
+        taskTexts,
+        tier,
+        ...(iterations !== undefined ? { iterations } : {}),
+        ...(scheduleId ? { scheduleId } : {}),
+      });
+      if (!loop) return { ok: false, code: 'invalid' };
+      await applyTierCaps(workspaceId, tier);
+      return { ok: true, loop };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_LOOP_STOP);
+  ipcMain.handle(
+    IPC.DECK_LOOP_STOP,
+    wrapHandler(IPC.DECK_LOOP_STOP, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false };
+      const loop = loadWorkspaceLoopState(workspaceId);
+      if (loop?.scheduleId) {
+        await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== loop.scheduleId));
+      }
+      await clearLoop(workspaceId);
+      await dropCaps(workspaceId);
+      return { ok: true };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_LOOP_PAUSE);
+  ipcMain.handle(
+    IPC.DECK_LOOP_PAUSE,
+    wrapHandler(IPC.DECK_LOOP_PAUSE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false };
+      const loop = loadWorkspaceLoopState(workspaceId);
+      if (!loop) return { ok: false };
+      await setLoopStatus(workspaceId, 'paused');
+      await setLoopScheduleEnabled(loop.scheduleId, false);
+      await dropCaps(workspaceId);
+      return { ok: true };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_LOOP_RESUME);
+  ipcMain.handle(
+    IPC.DECK_LOOP_RESUME,
+    wrapHandler(IPC.DECK_LOOP_RESUME, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false };
+      const loop = loadWorkspaceLoopState(workspaceId);
+      if (!loop) return { ok: false };
+      await setLoopStatus(workspaceId, 'running');
+      await setLoopScheduleEnabled(loop.scheduleId, true);
+      await applyTierCaps(workspaceId, loop.tier);
+      return { ok: true };
+    }),
+  );
+
   const disposeAll = (): void => {
     for (const { manager } of managers.values()) manager.dispose();
     managers.clear();
@@ -324,6 +616,8 @@ export function registerDeckHandler(
 
   return () => {
     app.removeListener('before-quit', disposeAll);
+    offBus();
+    coalescer?.dispose();
     scheduler.stop();
     disposeAll();
     ipcMain.removeHandler(IPC.DECK_SEND);
@@ -333,5 +627,10 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_CREATE);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_UPDATE);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_DELETE);
+    ipcMain.removeHandler(IPC.DECK_LOOP_GET);
+    ipcMain.removeHandler(IPC.DECK_LOOP_START);
+    ipcMain.removeHandler(IPC.DECK_LOOP_STOP);
+    ipcMain.removeHandler(IPC.DECK_LOOP_PAUSE);
+    ipcMain.removeHandler(IPC.DECK_LOOP_RESUME);
   };
 }

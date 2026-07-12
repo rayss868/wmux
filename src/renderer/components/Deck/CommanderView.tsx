@@ -65,6 +65,7 @@ import {
 import { buildQuickActions, type DeckQuickAction } from './deckQuickActions';
 import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
+import { DeckLoopPanel } from './DeckLoopPanel';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 
@@ -319,6 +320,9 @@ export function CommanderViewContent({
               jsdom tests of this view are unaffected). New schedules bind to
               THIS workspace's orchestrator (M1.5). */}
           <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
+          {/* The one-click loop chip + panel (loop engineering v1) — same
+              self-contained pattern; the loop binds to THIS workspace. */}
+          <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} />
         </div>
       )}
 

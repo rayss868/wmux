@@ -50,6 +50,15 @@ export interface CommanderSessionManagerDeps {
    *  last one observed (P3a persistence hook). Failures inside the callback are
    *  swallowed — persistence must never break a live turn. */
   onSessionId?: (sessionId: string) => void;
+  /** Fired AFTER a turn flips busy→idle, on a LATER TICK (never synchronously
+   *  from the unwinding `finally`) — the event-push coalescer's flush trigger.
+   *  Deferring is load-bearing: a synchronous callback could re-enter `send()`
+   *  on the same stack while the prior turn is still unwinding. Not fired when
+   *  the turn ended because the manager was disposed. Failures are swallowed. */
+  onIdle?: () => void;
+  /** Schedules the onIdle callback onto a later tick. Injected so tests drive it
+   *  with fake timers; defaults to `setTimeout(fn, 0)`. */
+  deferIdle?: (fn: () => void) => void;
 }
 
 export class CommanderSessionManager {
@@ -57,6 +66,8 @@ export class CommanderSessionManager {
   private readonly sink: BrainEventSink;
   private readonly startOptions: BrainStartOptions;
   private readonly onSessionId?: (sessionId: string) => void;
+  private readonly onIdle?: () => void;
+  private readonly deferIdle: (fn: () => void) => void;
   private _status: CommanderStatus = 'idle';
   private _started = false;
   private _lastReportedSessionId: string | null = null;
@@ -66,6 +77,12 @@ export class CommanderSessionManager {
     this.sink = deps.sink;
     this.startOptions = deps.startOptions ?? {};
     this.onSessionId = deps.onSessionId;
+    this.onIdle = deps.onIdle;
+    this.deferIdle = deps.deferIdle ?? ((fn) => {
+      const t = setTimeout(fn, 0);
+      // Main-process timer must never keep Electron alive.
+      (t as { unref?: () => void }).unref?.();
+    });
     // The seed counts as already-reported: resuming the same id unchanged
     // should not trigger a redundant persist.
     this._lastReportedSessionId = deps.startOptions?.resumeSessionId ?? null;
@@ -127,7 +144,23 @@ export class CommanderSessionManager {
       return { ok: true };
     } finally {
       // Never clobber a `disposed` flip that happened during the turn.
-      if (this._status === 'busy') this._status = 'idle';
+      if (this._status === 'busy') {
+        this._status = 'idle';
+        // Wake the coalescer on a LATER tick — never synchronously here, or the
+        // callback could re-enter send() while this turn is still unwinding.
+        if (this.onIdle) {
+          const cb = this.onIdle;
+          this.deferIdle(() => {
+            // A dispose() between the flip and this tick must cancel the wake.
+            if (this._status === 'disposed') return;
+            try {
+              cb();
+            } catch {
+              /* the coalescer flush is best-effort — never surface here */
+            }
+          });
+        }
+      }
     }
   }
 
