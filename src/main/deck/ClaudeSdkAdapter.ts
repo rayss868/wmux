@@ -26,7 +26,7 @@ import * as os from 'os';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
-import { loadGlobalMemory } from './commanderMemory';
+import { loadCommanderMemory } from './commanderMemory';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import {
   type BrainAdapter,
@@ -137,10 +137,11 @@ export interface ClaudeSdkAdapterDeps {
   maxTurns?: number;
   /** Non-default backend (GLM/Z.ai). Omit for Claude subscription. */
   profile?: BrainEndpointProfile;
-  /** Durable-memory loader (M1a) — returns the formatted block injected into
-   *  the first turn alongside the fleet context, or '' for nothing. Injected
-   *  so tests control it; defaults to loadGlobalMemory (read-only L0 files
-   *  under <wmuxDir>/memory/_global). */
+  /** Durable-memory loader (M1a/M1c) — returns the formatted block injected
+   *  into the first turn alongside the fleet context, or '' for nothing.
+   *  Injected so tests control it; defaults to loadCommanderMemory, which
+   *  layers this workspace's partition (memory/<workspaceId>/) on top of the
+   *  shared global memory (memory/_global/) — see deps.workspaceId. */
   loadMemory?: () => string;
   /** The one workspace this orchestrator serves (M1.5). Bound into the
    *  commander token so `deck.resolvePaneRoute` confines this brain's
@@ -348,7 +349,10 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     this.model = deps.model;
     this.maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
     this.profile = deps.profile;
-    this.loadMemory = deps.loadMemory ?? loadGlobalMemory;
+    // Default loader layers both partitions for THIS workspace (M1c). Bound to
+    // deps.workspaceId at construction so the brain only ever sees its own
+    // workspace's memory plus the shared global partition.
+    this.loadMemory = deps.loadMemory ?? (() => loadCommanderMemory({ workspaceId: deps.workspaceId }));
     // An empty binding registers an unroutable token — fail closed rather
     // than fleet-wide when a caller forgets the workspace.
     this._commanderToken = mintCommanderToken(deps.workspaceId ?? '');

@@ -16,6 +16,15 @@ vi.mock('electron', () => ({
 // import must resolve — stub it.
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 
+// Mock the memory module so the DEFAULT (omitted-loadMemory) path never reads
+// the developer's real ~/.wmux store — the file's hermeticity rule. The spy
+// echoes its workspaceId so tests can assert the wiring; every test that cares
+// about memory content still injects its own loadMemory.
+vi.mock('../commanderMemory', () => ({
+  loadCommanderMemory: vi.fn((opts?: { workspaceId?: string }) => `MEM[${opts?.workspaceId ?? ''}]`),
+  loadGlobalMemory: vi.fn(() => ''),
+}));
+
 import {
   ClaudeSdkAdapter,
   DEFAULT_ALLOWED_TOOLS,
@@ -23,6 +32,7 @@ import {
   buildCommanderSystemPrompt,
   type SdkQueryHandle,
 } from '../ClaudeSdkAdapter';
+import { loadCommanderMemory } from '../commanderMemory';
 import type { RawSdkMessage } from '../BrainAdapter';
 import type { BrainEvent } from '../BrainAdapter';
 
@@ -392,6 +402,26 @@ describe('ClaudeSdkAdapter', () => {
     expect(events.map((e) => e.type)).toEqual(['text-delta', 'turn-end']);
     expect(calls[0].prompt).toContain('FLEET'); // fleet context still injected
     expect(calls[0].prompt).toContain('resilient');
+  });
+
+  it('default memory loader is workspace-aware (M1c)', async () => {
+    // No loadMemory injected → exercises the DEFAULT loader, which must layer
+    // THIS workspace's partition via loadCommanderMemory({ workspaceId }).
+    vi.mocked(loadCommanderMemory).mockClear();
+    const calls: Array<{ prompt: string }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { prompt: string });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-ws' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      workspaceId: 'ws-x',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+    expect(loadCommanderMemory).toHaveBeenCalledWith({ workspaceId: 'ws-x' });
+    // And its output actually reaches the composed first-turn prompt.
+    expect(calls[0].prompt).toContain('MEM[ws-x]');
   });
 
   it('does not double-inject memory on a resume-fallback retry', async () => {
