@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.21.0] — 2026-07-13
+
 ### Added
 
 - **The loop setup grew into a real editor — in a dialog that actually fits, with steps that can pick from your agent's skills.** "Start a loop" now opens a proper setup dialog instead of a cramped inline form (whose Start button could overflow right off the dock at narrow widths — that's fixed by design now). The dialog adds a third axis to a loop: alongside the objective (why) and the done-when checklist (when to stop), you can now write **steps** — the procedure the orchestrator should follow on each iteration. Type `/` in a step and it autocompletes from your project's and your user-level Claude skills and commands (`.claude/skills`, `.claude/commands`), with project entries shadowing user ones — running a skill step means the orchestrator types that command into the pane, same as you would. Steps ride into every loop turn as numbered, trusted context, and loops saved before this release keep working unchanged. The dock keeps only the compact status card once a loop runs.
