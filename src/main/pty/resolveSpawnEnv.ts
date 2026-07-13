@@ -14,6 +14,13 @@ import type { EnvPolicy } from '../../shared/spawnKind';
  *          strip. 에이전트/자동화 pane. 기존 동작과 동일(하위호환).
  *        'passthrough'               → buildInteractiveShellEnv: 내부만 strip,
  *          자격증명 투과. 사용자가 직접 연 셸 (타 터미널 동형).
+ *   1.5 accountEnv (multi-account) — overlay the workspace's bound-account env
+ *      (CLAUDE_CONFIG_DIR / CODEX_HOME), resolved in MAIN from the workspace
+ *      binding, AFTER the denylist and BEFORE the profile. Applied before the
+ *      profile deliberately so a MANUAL profile CLAUDE_CONFIG_DIR always WINS
+ *      over an account binding (the existing contributor workflow must keep
+ *      working; UI warns on conflict). Empty when the workspace binds no
+ *      account for this vendor. Same skip-WMUX_* discipline as the profile.
  *   2. applyProfileEnv(...)       — overlay the workspace profile AFTER the
  *      denylist, so a configured profile key is applied verbatim and not
  *      re-stripped; reserved WMUX_* keys are skipped. NOTE: this is the spawn
@@ -39,6 +46,7 @@ export function resolveSpawnEnv(
   identity: Record<string, string>,
   fallbackLocale?: string,
   policy: EnvPolicy = 'gated',
+  accountEnv?: Record<string, string>,
 ): Record<string, string> {
   const env = policy === 'passthrough'
     ? buildInteractiveShellEnv(baseEnv)
@@ -66,6 +74,10 @@ export function resolveSpawnEnv(
   for (const key of Object.keys(env)) {
     if (key.toUpperCase().startsWith('WMUX_')) delete env[key];
   }
+  // 1.5: account overlay BEFORE the profile so a manual profile CLAUDE_CONFIG_DIR
+  // wins. applyProfileEnv's skip-WMUX_* + string-only discipline is exactly what
+  // we want for the account env too, so it is reused as the apply mechanism.
+  applyProfileEnv(env, accountEnv);
   applyProfileEnv(env, profileEnv);
   for (const [k, v] of Object.entries(identity)) {
     if (typeof v === 'string') env[k] = v;

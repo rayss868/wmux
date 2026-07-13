@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { BrowserWindow } from 'electron';
+import { getAccountStore } from '../account/accountStore';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import type { CompletionEvidence } from '../../shared/types';
 
@@ -67,10 +68,20 @@ export class ClaudeWorker {
       '--permission-mode', 'bypassPermissions',
     ];
 
+    // Multi-account (M0): this background claude spawn bypasses the PTY path, so
+    // it must honor the receiving workspace's claude account binding too — else
+    // it silently runs on the default account (Codex 3-way review P1). Missing
+    // bound dir → default-credential fallback + warn.
+    const accountEnv = getAccountStore().resolveAccountEnv(receiverWorkspaceId, 'claude', (acc) =>
+      console.warn(
+        `[account] a2a worker ws ${receiverWorkspaceId}: bound account "${acc.name}" configDir missing ` +
+        `(${acc.configDir}) — falling back to the default credential.`,
+      ),
+    );
     const proc = spawn('claude', args, {
       cwd: cwd || undefined,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: { ...process.env, ...accountEnv },
     });
 
     const session: WorkerSession = {

@@ -29,6 +29,60 @@ describe('resolveSpawnEnv', () => {
     expect(env.CLAUDE_CONFIG_DIR).toBe('C:/a');
   });
 
+  it('applies accountEnv (CLAUDE_CONFIG_DIR) as a layer between baseline and profile', () => {
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin' },
+      undefined,
+      {},
+      undefined,
+      'gated',
+      { CLAUDE_CONFIG_DIR: 'C:/accounts/work' },
+    );
+    expect(env.CLAUDE_CONFIG_DIR).toBe('C:/accounts/work');
+  });
+
+  it('lets a MANUAL profile CLAUDE_CONFIG_DIR win over the account binding', () => {
+    // The existing contributor workflow (manual profile env) must keep working:
+    // profile overlay is applied AFTER accountEnv, so it wins on conflict.
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin' },
+      { CLAUDE_CONFIG_DIR: 'C:/manual/override' },
+      {},
+      undefined,
+      'gated',
+      { CLAUDE_CONFIG_DIR: 'C:/accounts/work' },
+    );
+    expect(env.CLAUDE_CONFIG_DIR).toBe('C:/manual/override');
+  });
+
+  it('3-layer precedence: baseline < accountEnv < profile', () => {
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin', CODEX_HOME: 'C:/inherited' },
+      { A_ONLY_PROFILE: 'p' },
+      {},
+      undefined,
+      'passthrough',
+      { CODEX_HOME: 'C:/accounts/codex', A_ONLY_ACCOUNT: 'a' },
+    );
+    // accountEnv overrides inherited baseline; profile-only + account-only both survive.
+    expect(env.CODEX_HOME).toBe('C:/accounts/codex');
+    expect(env.A_ONLY_ACCOUNT).toBe('a');
+    expect(env.A_ONLY_PROFILE).toBe('p');
+  });
+
+  it('accountEnv cannot spoof reserved WMUX_* identity', () => {
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin' },
+      undefined,
+      { WMUX_WORKSPACE_ID: 'real-ws' },
+      undefined,
+      'gated',
+      { WMUX_WORKSPACE_ID: 'spoof', CLAUDE_CONFIG_DIR: 'C:/a' },
+    );
+    expect(env.WMUX_WORKSPACE_ID).toBe('real-ws');
+    expect(env.CLAUDE_CONFIG_DIR).toBe('C:/a');
+  });
+
   it('forces identity last so a profile cannot spoof it', () => {
     const env = resolveSpawnEnv(
       { PATH: '/usr/bin' },

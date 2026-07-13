@@ -11,6 +11,7 @@ import { DAEMON_RESYNC_RPC_TIMEOUT_MS } from '../../../shared/timeouts';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
 import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
+import { getAccountStore } from '../../account/accountStore';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
@@ -370,7 +371,19 @@ export function registerPTYHandlers(
         hasExec: execCommand !== undefined,
         hasSupervision: supervisionPolicy !== undefined,
       });
-      const resolvedEnv = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale(), envPolicy);
+      // Multi-account (M0): resolve the workspace's bound-account env in MAIN
+      // and layer it between baseline and profile. A manual profile
+      // CLAUDE_CONFIG_DIR still wins (see resolveSpawnEnv). A bound dir that was
+      // deleted on disk falls back to the default credential + a one-line warn.
+      const accountEnv = options?.workspaceId
+        ? getAccountStore().resolveWorkspaceAccountEnv(options.workspaceId, (acc) =>
+            console.warn(
+              `[account] pane ${sessionId}: bound account "${acc.name}" (${acc.vendor}) configDir missing on disk ` +
+              `(${acc.configDir}) — falling back to the default credential.`,
+            ),
+          )
+        : undefined;
+      const resolvedEnv = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale(), envPolicy, accountEnv);
       // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄.
       if (envPolicy === 'gated') {
         const withheld = withheldCredentialNames(globalThis.process.env);
