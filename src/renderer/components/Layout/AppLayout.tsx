@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, memo } from 'react';
 import type { AgentSlug } from '../../../shared/events';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { useStore } from '../../stores';
@@ -252,6 +252,42 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     agentToolbarNewCommand: state.newConversationCommand,
   };
 }
+
+// One mounted workspace's pane subtree (all workspaces stay mounted; inactive
+// ones are display:none so their terminals keep their scrollback/PTY state).
+//
+// PERF (2026-07-13, measured): AppLayout subscribes to the whole `workspaces`
+// array, so ANY pane's metadata update (title / cwd / agentStatus / byte
+// 'running' — frequent during terminal activity) produces a new `workspaces`
+// array and re-renders AppLayout. Without this memo boundary the .map re-ran
+// every workspace's PaneContainer subtree on every such update — a single
+// title change re-rendered ~104 fibers PER workspace, so cost scaled linearly
+// with workspace count (5 workspaces = 5× the churn, felt as lag + slow
+// switching). immer keeps an UNCHANGED workspace referentially stable, so
+// React.memo here lets the N-1 untouched workspaces bail: a metadata update
+// to workspace X now re-renders only X's slot, not all of them. `isActive`
+// (a bool) flips for exactly two slots on a switch, so switching re-renders
+// just the outgoing + incoming workspace.
+export const WorkspaceSlot = memo(function WorkspaceSlot({
+  workspace,
+  isActive,
+}: {
+  workspace: Workspace;
+  isActive: boolean;
+}) {
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        display: isActive ? 'flex' : 'none',
+        flexDirection: 'column',
+      }}
+    >
+      <PaneContainer pane={workspace.rootPane} workspace={workspace} isWorkspaceVisible={isActive} />
+    </div>
+  );
+});
 
 export default function AppLayout() {
   // Global guard: blocks webview pointer capture during panel separator drag
@@ -1335,17 +1371,7 @@ export default function AppLayout() {
         ) : (
           <div className="flex-1 min-h-0 relative">
             {workspaces.map((ws) => (
-              <div
-                key={ws.id}
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  display: ws.id === activeWorkspaceId ? 'flex' : 'none',
-                  flexDirection: 'column',
-                }}
-              >
-                <PaneContainer pane={ws.rootPane} workspace={ws} isWorkspaceVisible={ws.id === activeWorkspaceId} />
-              </div>
+              <WorkspaceSlot key={ws.id} workspace={ws} isActive={ws.id === activeWorkspaceId} />
             ))}
           </div>
         )}

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Big responsiveness fix with several workspaces open: switching and typing are smooth again.** With more than one workspace open, any small status update on one terminal (its title, working directory, or "running" indicator changing) re-rendered *every* open workspace's terminal view, not just the one that changed. Since those updates fire constantly while a terminal is active, the cost piled up in direct proportion to how many workspaces you had open, so five workspaces felt roughly five times heavier than one, and even switching between them dragged. Now an update only re-renders the workspace it actually affects. Measured on a live app: a single title change went from re-rendering all workspaces' panes to re-rendering just one.
+
 ### Changed
 
 - **Agents no longer run a helper process on every single tool call.** The Claude integration used to fire a small background process after each tool use, only to keep the "running" dot lit in the fleet view — on a tool-heavy turn that added up to seconds of overhead per turn and a lot of process churn. The running dots now come from the daemon watching each pane's output directly (which it already did), so background agents still show as working with zero per-tool overhead. One tradeoff: the fleet card's one-line "what tool just ran" label goes away for Claude (the daemon can't see the tool name), falling back to the terminal's last line instead. Existing installs pick this up when the plugin/hooks are next updated.

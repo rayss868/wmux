@@ -165,3 +165,43 @@ describe('removeWorkspace — A8: fail tasks delegated to a closed workspace', (
     expect(store.getState().a2aTasks[toA].status.state).toBe('submitted'); // to A, untouched
   });
 });
+
+// PERF INVARIANT (2026-07-13): the WorkspaceSlot React.memo in AppLayout only
+// skips re-rendering an unchanged workspace if updateWorkspaceMetadata keeps
+// the OTHER workspaces referentially identical (immer structural sharing). If a
+// refactor rebuilds the workspaces array or clones every entry, the memo
+// silently stops working and the "5 workspaces = laggy" bug returns. Lock it.
+describe('updateWorkspaceMetadata — referential stability (WorkspaceSlot memo dep)', () => {
+  it('replaces ONLY the changed workspace object; siblings keep their reference', () => {
+    const a = createWorkspace('A');
+    const b = createWorkspace('B');
+    const c = createWorkspace('C');
+    const store = createTestStore([a, b, c], a.id);
+
+    const before = store.getState().workspaces;
+    const [beforeA, beforeB, beforeC] = before;
+
+    store.getState().updateWorkspaceMetadata(b.id, { agentName: 'changed' });
+
+    const after = store.getState().workspaces;
+    expect(after).not.toBe(before);             // the array itself is new (triggers AppLayout)
+    expect(after[1]).not.toBe(beforeB);         // the CHANGED workspace is a new object
+    expect(after[1].metadata?.agentName).toBe('changed');
+    // The UNCHANGED siblings keep their exact reference → memo bails on them.
+    expect(after[0]).toBe(beforeA);
+    expect(after[2]).toBe(beforeC);
+    // And their pane trees are untouched references too (PaneContainer prop).
+    expect(after[0].rootPane).toBe(beforeA.rootPane);
+    expect(after[2].rootPane).toBe(beforeC.rootPane);
+  });
+
+  it('keeps the changed workspace pane tree stable when only metadata changes', () => {
+    const a = createWorkspace('A');
+    const store = createTestStore([a], a.id);
+    const beforeRoot = store.getState().workspaces[0].rootPane;
+    store.getState().updateWorkspaceMetadata(a.id, { agentName: 'x' });
+    // metadata change must NOT churn the rootPane reference (it's a separate
+    // prop; churning it would re-render the terminal subtree needlessly).
+    expect(store.getState().workspaces[0].rootPane).toBe(beforeRoot);
+  });
+});
