@@ -543,6 +543,13 @@ export function useNotificationListener() {
         // metadata update (no agentStatus) is a no-op here.
         if (typeof rest.agentStatus === 'string') {
           state.setSurfaceAgentStatus(ptyId, rest.agentStatus as AgentStatus);
+          // Byte-based per-PTY 'running' (daemon ActivityMonitor) is otherwise
+          // DROPPED by setSurfaceAgentStatus (attention-only). Stamp the running
+          // freshness clock so a BACKGROUND pane's dot lights from bytes — this
+          // replaced the per-tool-call PostToolUse hook as the running source.
+          if (rest.agentStatus === 'running') {
+            state.markSurfaceRunning(ptyId);
+          }
         }
         // Part A: stamp per-surface agent IDENTITY (name + status) keyed by
         // ptyId so a2a_discover / surface_list / pane_list can label each pane

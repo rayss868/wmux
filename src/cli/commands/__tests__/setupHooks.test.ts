@@ -47,7 +47,7 @@ describe('installHooks', () => {
     expect(outcome.ok).toBe(true);
     expect(outcome.error).toBeNull();
     expect(outcome.events.sort()).toEqual(
-      ['PostToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+      ['SessionStart', 'Stop', 'SubagentStop'],
     );
     expect(fs.existsSync(bridgeDest)).toBe(true);
     expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
@@ -55,7 +55,7 @@ describe('installHooks', () => {
     const s = readSettings();
     const hooks = s.hooks as Record<string, unknown[]>;
     expect(Object.keys(hooks).sort()).toEqual(
-      ['PostToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+      ['SessionStart', 'Stop', 'SubagentStop'],
     );
     // Each entry references the stable dest path, NOT the source/install dir.
     const stop = hooks.Stop[0] as { hooks: { command: string }[] };
@@ -116,7 +116,7 @@ describe('installHooks', () => {
     installHooks(paths());
 
     const hooks = readSettings().hooks as Record<string, unknown[]>;
-    for (const event of ['Stop', 'SubagentStop', 'SessionStart', 'PostToolUse']) {
+    for (const event of ['Stop', 'SubagentStop', 'SessionStart']) {
       const wmuxGroups = (hooks[event] as { hooks: { command: string }[] }[]).filter((g) =>
         g.hooks.some((h) => h.command.includes('wmux-bridge.mjs')),
       );
@@ -172,7 +172,7 @@ describe('removeHooks', () => {
 
     const outcome = removeHooks(paths());
     expect(outcome.ok).toBe(true);
-    expect(outcome.removed).toBe(4);
+    expect(outcome.removed).toBe(3);
 
     const s = readSettings();
     expect(s.model).toBe('opus');
@@ -234,7 +234,7 @@ describe('statusHooks', () => {
     const s = statusHooks(paths());
     expect(s.settingsExists).toBe(true);
     expect(s.installedEvents.sort()).toEqual(
-      ['PostToolUse', 'SessionStart', 'Stop', 'SubagentStop'],
+      ['SessionStart', 'Stop', 'SubagentStop'],
     );
     expect(s.bridgeExists).toBe(true);
     expect(s.bridgeStale).toBe(false);

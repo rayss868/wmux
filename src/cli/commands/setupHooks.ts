@@ -41,8 +41,11 @@ GLOBAL FLAGS
   --json       Output raw JSON (useful for scripting).
 `.trimStart();
 
-/** The 4 Claude Code hook events wmux subscribes to (mirrors hooks.json). */
-const HOOK_EVENTS = ['Stop', 'SubagentStop', 'SessionStart', 'PostToolUse'] as const;
+/** The Claude Code hook events wmux subscribes to (mirrors hooks.json).
+ *  PostToolUse was removed 2026-07-13: it fired a ~110ms node bridge on EVERY
+ *  tool call only to feed the fleet "running" dot, which the daemon's
+ *  byte-based ActivityMonitor now drives for free (see markSurfaceRunning). */
+const HOOK_EVENTS = ['Stop', 'SubagentStop', 'SessionStart'] as const;
 type HookEvent = (typeof HOOK_EVENTS)[number];
 
 /** Substring that identifies a wmux-owned hook command in settings.json. */
