@@ -32,7 +32,47 @@ import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 
+// ─── Agent mode (per-workspace, owner design 2026-07-13) ─────────────────────
+//
+// The user-facing control. One of four levels; the three raw caps below are
+// DERIVED from it (modeToCaps) and the coalescer reads `mode` for its wake
+// policy. This is the single knob; caps are the mechanism.
+//
+//   off          no wake; the handler ALSO tears down running loops + disables
+//                cadence schedules (kill switch). Human can still type.
+//   manual       no ambient wake (stop/awaiting events consumed silently). A
+//                loop the user explicitly started still wakes (override).
+//   assist       value-filtered wake: ambient wakes ONLY on awaiting_input
+//                (a pane blocked on input) — plain agent.stop is dropped, which
+//                is the summary-spam we are killing. A running loop wakes on
+//                everything (override) and its turns may drive panes.
+//   orchestrate  wake on every lifecycle event; may drive + press approvals.
+//
+//   wake policy:  off/manual → 'none'   assist → 'value-filtered'   orch → 'all'
+//   (a RUNNING loop overrides to 'all' in every mode except off, mirroring the
+//    global auto-wake switch's loop carve-out.)
+export type AgentMode = 'off' | 'manual' | 'assist' | 'orchestrate';
+
+export type WakePolicy = 'none' | 'value-filtered' | 'all';
+
+/** The wake policy a mode implies (before the running-loop override). */
+export function modeToWakePolicy(mode: AgentMode): WakePolicy {
+  switch (mode) {
+    case 'orchestrate':
+      return 'all';
+    case 'assist':
+      return 'value-filtered';
+    case 'manual':
+    case 'off':
+      return 'none';
+  }
+}
+
 export interface WorkspaceAutonomy {
+  /** The user-facing mode this workspace is in. Source of truth; the three
+   *  caps below are derived from it on write (a loop may transiently override
+   *  the caps, never the mode). */
+  mode: AgentMode;
   /** Open a turn that reports fleet state and stops. Default on. */
   summarize: boolean;
   /** Brain may send a follow-up instruction into a pane. Default off. */
@@ -41,11 +81,45 @@ export interface WorkspaceAutonomy {
   approvalPress: boolean;
 }
 
-/** Fail-closed default: report state, touch nothing. */
+const ALL_MODES: readonly AgentMode[] = ['off', 'manual', 'assist', 'orchestrate'];
+
+/** Derive the three raw caps from a mode. The dangerous caps (approvalPress)
+ *  stay OFF except in `orchestrate`, so a fresh/corrupt workspace never gains
+ *  auto-approval. `continueInstruction` is on for assist/orchestrate but only
+ *  bites under a running loop (ambient assist drops plain stops via the value
+ *  filter), so an ambient assist workspace is a notifier, not a driver. */
+export function modeToCaps(mode: AgentMode): Omit<WorkspaceAutonomy, 'mode'> {
+  switch (mode) {
+    case 'orchestrate':
+      return { summarize: true, continueInstruction: true, approvalPress: true };
+    case 'assist':
+      return { summarize: true, continueInstruction: true, approvalPress: false };
+    case 'manual':
+    case 'off':
+      return { summarize: false, continueInstruction: false, approvalPress: false };
+  }
+}
+
+/** Back-derive a mode from raw caps — used ONLY for legacy files written before
+ *  the `mode` field existed (after that the mode is always stored). Maps by the
+ *  dangerous caps: approval → orchestrate; continue → assist; else → the product
+ *  default (the pre-mode "report only" default becomes assist + value filter,
+ *  which is exactly the summary-spam fix applied to existing users). */
+export function deriveMode(caps: Omit<WorkspaceAutonomy, 'mode'>): AgentMode {
+  if (caps.approvalPress) return 'orchestrate';
+  if (caps.continueInstruction) return 'assist';
+  return DEFAULT_MODE;
+}
+
+/** Product default for a workspace with no entry (owner decision 2026-07-13). */
+export const DEFAULT_MODE: AgentMode = 'assist';
+
+/** Product default entry. NOTE: the only truly dangerous cap (approvalPress)
+ *  stays false here, so this doubles as the fail-closed fallback on a torn
+ *  file — a fresh/corrupt workspace can notify but never auto-approve. */
 export const DEFAULT_AUTONOMY: Readonly<WorkspaceAutonomy> = {
-  summarize: true,
-  continueInstruction: false,
-  approvalPress: false,
+  mode: DEFAULT_MODE,
+  ...modeToCaps(DEFAULT_MODE),
 };
 
 /** Same workspace-id shape the deck handler validates before keying maps. */
@@ -55,17 +129,24 @@ export function getDeckAutonomyPath(dir: string = getWmuxDir()): string {
   return path.join(dir, 'deck-autonomy.json');
 }
 
-/** Coerce one raw entry to a WorkspaceAutonomy, defaulting every field
- *  fail-closed. A non-boolean `summarize` still defaults ON (harmless); the two
- *  dangerous caps default OFF unless the stored value is EXACTLY `true`. */
+/** Coerce one raw entry to a WorkspaceAutonomy. The caps are read as stored (a
+ *  loop may have transiently overridden them). The mode is used as stored when
+ *  it is a known value; a legacy entry with no `mode` field back-derives one
+ *  from its caps (deriveMode) so old files keep working. */
 function sanitizeEntry(raw: unknown): WorkspaceAutonomy {
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_AUTONOMY };
   const o = raw as Record<string, unknown>;
-  return {
+  const caps = {
+    // summarize's legacy default was ON; keep that unless EXACTLY false.
     summarize: o.summarize === false ? false : true,
     continueInstruction: o.continueInstruction === true,
     approvalPress: o.approvalPress === true,
   };
+  const mode: AgentMode =
+    typeof o.mode === 'string' && (ALL_MODES as readonly string[]).includes(o.mode)
+      ? (o.mode as AgentMode)
+      : deriveMode(caps);
+  return { mode, ...caps };
 }
 
 type AutonomyFile = Record<string, WorkspaceAutonomy>;
@@ -118,6 +199,9 @@ export async function setWorkspaceAutonomy(
   const all = loadAll(dir);
   const current = all[workspaceId] ?? { ...DEFAULT_AUTONOMY };
   const next: WorkspaceAutonomy = {
+    // The mode is preserved unless explicitly patched — the loop cap-override
+    // path patches ONLY caps and must never silently change the stored mode.
+    mode: patch.mode ?? current.mode,
     summarize: typeof patch.summarize === 'boolean' ? patch.summarize : current.summarize,
     continueInstruction:
       typeof patch.continueInstruction === 'boolean'
@@ -129,4 +213,28 @@ export async function setWorkspaceAutonomy(
   all[workspaceId] = next;
   await atomicWriteJSON(getDeckAutonomyPath(dir), all);
   return next;
+}
+
+/** Set a workspace's MODE and write the mode-derived caps together (the atomic
+ *  "one knob" operation). Returns the resolved entry. A bad workspaceId or an
+ *  unknown mode is a no-op returning DEFAULT (never writes a bad key/mode).
+ *  The `off` teardown (stop loops / disable schedules) lives in the handler —
+ *  this store only owns the mode+caps write. */
+export async function setWorkspaceMode(
+  workspaceId: string,
+  mode: AgentMode,
+  dir?: string,
+): Promise<WorkspaceAutonomy> {
+  if (!WORKSPACE_ID_RE.test(workspaceId)) return { ...DEFAULT_AUTONOMY };
+  if (!(ALL_MODES as readonly string[]).includes(mode)) return { ...DEFAULT_AUTONOMY };
+  const all = loadAll(dir);
+  const next: WorkspaceAutonomy = { mode, ...modeToCaps(mode) };
+  all[workspaceId] = next;
+  await atomicWriteJSON(getDeckAutonomyPath(dir), all);
+  return next;
+}
+
+/** Resolve just the mode (fail-closed to the product default). */
+export function loadWorkspaceMode(workspaceId: string, dir?: string): AgentMode {
+  return loadWorkspaceAutonomy(workspaceId, dir).mode;
 }

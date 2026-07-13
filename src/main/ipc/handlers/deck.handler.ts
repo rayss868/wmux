@@ -36,7 +36,10 @@ import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
 import {
   loadWorkspaceAutonomy,
   setWorkspaceAutonomy,
-  DEFAULT_AUTONOMY,
+  setWorkspaceMode,
+  loadWorkspaceMode,
+  modeToCaps,
+  type AgentMode,
 } from '../../deck/deckAutonomyStore';
 import { loadAutoWakeEnabled, setAutoWakeEnabled } from '../../deck/deckAutoWakeStore';
 import {
@@ -431,8 +434,23 @@ export function registerDeckHandler(
       approvalPress: false,
     });
   };
+  // Loop-stop restores caps to the workspace's CURRENT MODE, not the global
+  // DEFAULT — otherwise stopping a loop in an `orchestrate` workspace would
+  // silently downgrade it to the default mode's caps. The mode is the source
+  // of truth; the loop only ever transiently overrode the caps.
   const dropCaps = async (workspaceId: string): Promise<void> => {
-    await setWorkspaceAutonomy(workspaceId, { ...DEFAULT_AUTONOMY });
+    const mode = loadWorkspaceMode(workspaceId);
+    await setWorkspaceAutonomy(workspaceId, modeToCaps(mode));
+  };
+  // The `off` mode kill-switch teardown: stop any running loop and delete its
+  // cadence schedule so nothing autonomous survives. Same posture as loop-stop
+  // (which also drops caps — here the mode write owns the caps). Idempotent.
+  const tearDownAutomation = async (workspaceId: string): Promise<void> => {
+    const loop = loadWorkspaceLoopState(workspaceId);
+    if (loop?.scheduleId) {
+      await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== loop.scheduleId));
+    }
+    if (loop) await clearLoop(workspaceId);
   };
   const setLoopScheduleEnabled = async (
     scheduleId: string | undefined,
@@ -682,6 +700,49 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── Per-workspace agent mode (off/manual/assist/orchestrate) ──────────────
+  const VALID_MODES: ReadonlySet<string> = new Set(['off', 'manual', 'assist', 'orchestrate']);
+
+  ipcMain.removeHandler(IPC.DECK_MODE_GET);
+  ipcMain.handle(
+    IPC.DECK_MODE_GET,
+    wrapHandler(IPC.DECK_MODE_GET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ mode: AgentMode | null }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { mode: null };
+      return { mode: loadWorkspaceMode(workspaceId) };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_MODE_SET);
+  ipcMain.handle(
+    IPC.DECK_MODE_SET,
+    wrapHandler(IPC.DECK_MODE_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; mode?: AgentMode; code?: string }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      const mode = req.mode;
+      if (typeof mode !== 'string' || !VALID_MODES.has(mode)) {
+        return { ok: false, code: 'invalid_mode' };
+      }
+      // `off` is the kill switch: tear down running automation BEFORE writing
+      // the mode+caps, so a stopped loop can't race a final wake in between.
+      if (mode === 'off') await tearDownAutomation(workspaceId);
+      const next = await setWorkspaceMode(workspaceId, mode as AgentMode);
+      return { ok: true, mode: next.mode };
+    }),
+  );
+
   const disposeAll = (): void => {
     for (const { manager } of managers.values()) manager.dispose();
     managers.clear();
@@ -713,5 +774,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_LOOP_SKILLS);
     ipcMain.removeHandler(IPC.DECK_AUTOWAKE_GET);
     ipcMain.removeHandler(IPC.DECK_AUTOWAKE_SET);
+    ipcMain.removeHandler(IPC.DECK_MODE_GET);
+    ipcMain.removeHandler(IPC.DECK_MODE_SET);
   };
 }

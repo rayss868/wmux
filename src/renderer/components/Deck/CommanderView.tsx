@@ -66,6 +66,7 @@ import { buildQuickActions, type DeckQuickAction } from './deckQuickActions';
 import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { DeckLoopPanel } from './DeckLoopPanel';
+import { AgentModeChipContainer } from './AgentModeChip';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 
@@ -326,6 +327,9 @@ export function CommanderViewContent({
           {/* The one-click loop chip + panel (loop engineering v1) — same
               self-contained pattern; the loop binds to THIS workspace. */}
           <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
+          {/* Per-workspace agent mode (off/manual/assist/orchestrate) — the
+              single autonomy knob, always-visible current mode. */}
+          <AgentModeChipContainer t={t} workspaceId={activeWorkspaceId} />
         </div>
       )}
 

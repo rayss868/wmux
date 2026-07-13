@@ -1,7 +1,8 @@
 // Unit tests for the per-workspace autonomy store: fail-closed resolution,
-// round-trip persistence, sanitize-on-load (the file is hand-editable), and the
-// merge-write path. The security-load-bearing property: ANY doubt resolves to
-// DEFAULT (summarize on, the two dangerous caps off).
+// round-trip persistence, sanitize-on-load (the file is hand-editable), the
+// merge-write path, AND the agent-mode layer (mode ⇄ caps, legacy derivation).
+// Security-load-bearing property: the DANGEROUS cap (approvalPress) is never
+// on unless a workspace is explicitly `orchestrate`.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -9,10 +10,17 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   DEFAULT_AUTONOMY,
+  DEFAULT_MODE,
+  modeToCaps,
+  modeToWakePolicy,
+  deriveMode,
   loadWorkspaceAutonomy,
+  loadWorkspaceMode,
   loadDeckAutonomy,
   setWorkspaceAutonomy,
+  setWorkspaceMode,
   getDeckAutonomyPath,
+  type AgentMode,
 } from '../deckAutonomyStore';
 
 let dir: string;
@@ -24,28 +32,69 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe('deckAutonomyStore', () => {
-  it('unknown workspace resolves to DEFAULT (summarize on, dangerous off)', () => {
-    expect(loadWorkspaceAutonomy('ws-1', dir)).toEqual({ ...DEFAULT_AUTONOMY });
+describe('deckAutonomyStore — mode ⇄ caps', () => {
+  it('modeToCaps: only orchestrate turns on the dangerous approvalPress cap', () => {
+    expect(modeToCaps('off')).toEqual({ summarize: false, continueInstruction: false, approvalPress: false });
+    expect(modeToCaps('manual')).toEqual({ summarize: false, continueInstruction: false, approvalPress: false });
+    expect(modeToCaps('assist')).toEqual({ summarize: true, continueInstruction: true, approvalPress: false });
+    expect(modeToCaps('orchestrate')).toEqual({ summarize: true, continueInstruction: true, approvalPress: true });
+  });
+
+  it('modeToWakePolicy maps each mode', () => {
+    expect(modeToWakePolicy('off')).toBe('none');
+    expect(modeToWakePolicy('manual')).toBe('none');
+    expect(modeToWakePolicy('assist')).toBe('value-filtered');
+    expect(modeToWakePolicy('orchestrate')).toBe('all');
+  });
+
+  it('deriveMode back-maps legacy caps by the dangerous caps', () => {
+    expect(deriveMode({ summarize: true, continueInstruction: false, approvalPress: true })).toBe('orchestrate');
+    expect(deriveMode({ summarize: true, continueInstruction: true, approvalPress: false })).toBe('assist');
+    // all-off legacy (the pre-mode "report only" default) → the product default.
+    expect(deriveMode({ summarize: true, continueInstruction: false, approvalPress: false })).toBe(DEFAULT_MODE);
+  });
+
+  it('DEFAULT is the product default mode (assist), dangerous cap off', () => {
+    expect(DEFAULT_MODE).toBe('assist');
     expect(DEFAULT_AUTONOMY).toEqual({
+      mode: 'assist',
       summarize: true,
-      continueInstruction: false,
+      continueInstruction: true,
       approvalPress: false,
     });
   });
+});
 
-  it('round-trips a merged update through the file', async () => {
-    const next = await setWorkspaceAutonomy('ws-1', { continueInstruction: true }, dir);
-    expect(next).toEqual({ summarize: true, continueInstruction: true, approvalPress: false });
-    expect(loadWorkspaceAutonomy('ws-1', dir)).toEqual(next);
-    // A second workspace is untouched (per-ws map).
-    expect(loadWorkspaceAutonomy('ws-2', dir)).toEqual({ ...DEFAULT_AUTONOMY });
+describe('deckAutonomyStore', () => {
+  it('unknown workspace resolves to DEFAULT', () => {
+    expect(loadWorkspaceAutonomy('ws-1', dir)).toEqual({ ...DEFAULT_AUTONOMY });
+    expect(loadWorkspaceMode('ws-1', dir)).toBe('assist');
   });
 
-  it('merge preserves prior caps and only overwrites the patched field', async () => {
-    await setWorkspaceAutonomy('ws-1', { approvalPress: true, continueInstruction: true }, dir);
-    const next = await setWorkspaceAutonomy('ws-1', { approvalPress: false }, dir);
-    expect(next).toEqual({ summarize: true, continueInstruction: true, approvalPress: false });
+  it('setWorkspaceMode round-trips mode + derived caps', async () => {
+    const next = await setWorkspaceMode('ws-1', 'orchestrate', dir);
+    expect(next).toEqual({ mode: 'orchestrate', summarize: true, continueInstruction: true, approvalPress: true });
+    expect(loadWorkspaceAutonomy('ws-1', dir)).toEqual(next);
+    expect(loadWorkspaceMode('ws-1', dir)).toBe('orchestrate');
+  });
+
+  it('setWorkspaceMode off writes the all-off caps', async () => {
+    const next = await setWorkspaceMode('ws-1', 'off', dir);
+    expect(next).toEqual({ mode: 'off', summarize: false, continueInstruction: false, approvalPress: false });
+  });
+
+  it('an unknown mode string is a no-op returning DEFAULT (never writes)', async () => {
+    const r = await setWorkspaceMode('ws-1', 'bogus' as AgentMode, dir);
+    expect(r).toEqual({ ...DEFAULT_AUTONOMY });
+    expect(loadDeckAutonomy(dir)).toEqual({});
+  });
+
+  it('setWorkspaceAutonomy (cap-only patch) PRESERVES the stored mode', async () => {
+    await setWorkspaceMode('ws-1', 'orchestrate', dir);
+    // The loop cap-override path patches ONLY caps — the mode must survive.
+    const next = await setWorkspaceAutonomy('ws-1', { continueInstruction: false }, dir);
+    expect(next.mode).toBe('orchestrate');
+    expect(next.continueInstruction).toBe(false);
   });
 
   it('missing / corrupt file fails closed to DEFAULT (never throws)', () => {
@@ -55,35 +104,43 @@ describe('deckAutonomyStore', () => {
     expect(loadDeckAutonomy(dir)).toEqual({});
   });
 
-  it('sanitizes hand-edited entries: dangerous caps only true when EXACTLY true', () => {
+  it('legacy entries with NO mode field back-derive one from caps', () => {
     fs.writeFileSync(
       getDeckAutonomyPath(dir),
       JSON.stringify({
-        'ws-1': { summarize: false, continueInstruction: 'yes', approvalPress: 1 },
-        'ws-2': { approvalPress: true },
-        'bad key!': { approvalPress: true },
+        'ws-legacy-orch': { summarize: true, continueInstruction: true, approvalPress: true },
+        'ws-legacy-assist': { summarize: true, continueInstruction: true, approvalPress: false },
+        'ws-legacy-default': { summarize: true, continueInstruction: false, approvalPress: false },
       }),
       'utf8',
     );
-    // ws-1: summarize explicitly false; the two dangerous caps were non-boolean
-    // truthy → coerced OFF (fail-closed).
-    expect(loadWorkspaceAutonomy('ws-1', dir)).toEqual({
-      summarize: false,
-      continueInstruction: false,
-      approvalPress: false,
-    });
-    // ws-2: an explicit true is honored.
-    expect(loadWorkspaceAutonomy('ws-2', dir)).toEqual({
-      summarize: true,
-      continueInstruction: false,
-      approvalPress: true,
-    });
-    // Bad workspace key dropped entirely → DEFAULT.
-    expect(loadWorkspaceAutonomy('bad key!', dir)).toEqual({ ...DEFAULT_AUTONOMY });
+    expect(loadWorkspaceMode('ws-legacy-orch', dir)).toBe('orchestrate');
+    expect(loadWorkspaceMode('ws-legacy-assist', dir)).toBe('assist');
+    // pre-mode "report only" default → the new product default (spam fix applied).
+    expect(loadWorkspaceMode('ws-legacy-default', dir)).toBe('assist');
+  });
+
+  it('a stored valid mode field is used as-is', () => {
+    fs.writeFileSync(
+      getDeckAutonomyPath(dir),
+      JSON.stringify({ 'ws-1': { mode: 'manual', summarize: false, continueInstruction: false, approvalPress: false } }),
+      'utf8',
+    );
+    expect(loadWorkspaceMode('ws-1', dir)).toBe('manual');
+  });
+
+  it('an invalid stored mode string falls back to deriveMode(caps)', () => {
+    fs.writeFileSync(
+      getDeckAutonomyPath(dir),
+      JSON.stringify({ 'ws-1': { mode: 'bogus', summarize: true, continueInstruction: false, approvalPress: true } }),
+      'utf8',
+    );
+    // caps have approval on → derives orchestrate.
+    expect(loadWorkspaceMode('ws-1', dir)).toBe('orchestrate');
   });
 
   it('a bad workspaceId never writes a key and returns DEFAULT', async () => {
-    const r = await setWorkspaceAutonomy('bad key!', { approvalPress: true }, dir);
+    const r = await setWorkspaceMode('bad key!', 'orchestrate', dir);
     expect(r).toEqual({ ...DEFAULT_AUTONOMY });
     expect(loadDeckAutonomy(dir)).toEqual({});
   });
