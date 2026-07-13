@@ -120,7 +120,8 @@ describe('AccountStore.resolveAccountEnv (spawn hot path)', () => {
     const c = await store.addAccount({ name: 'c', vendor: 'claude', configDir: cfg });
     await store.setBinding('ws-1', 'claude', c.id);
     const env = store.resolveAccountEnv('ws-1', 'claude');
-    expect(env).toEqual({ CLAUDE_CONFIG_DIR: store.getAccount(c.id)!.configDir });
+    const stored = store.getAccount(c.id);
+    expect(env).toEqual({ CLAUDE_CONFIG_DIR: stored?.configDir });
   });
 
   it('uses CODEX_HOME for codex accounts', async () => {

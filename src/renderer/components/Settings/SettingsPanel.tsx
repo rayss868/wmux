@@ -26,6 +26,7 @@ import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
+import { AccountsSection } from './AccountsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
 import { Icon, IconX, IconCheck, IconChevron, IconExternalLink } from '../icons';
@@ -4174,7 +4175,7 @@ export default function SettingsPanel() {
             {activeTab === 'appearance'         && <TabAppearance />}
             {activeTab === 'notifications'      && <TabNotifications />}
             {activeTab === 'shortcuts'          && <TabShortcuts />}
-            {activeTab === 'claude-integration' && <><ClaudeIntegrationSection /><OrchestratorSection /></>}
+            {activeTab === 'claude-integration' && <><ClaudeIntegrationSection /><AccountsSection /><OrchestratorSection /></>}
             {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
             {activeTab === 'first-run-setup'    && <TabFirstRunSetup />}
             {activeTab === 'about'              && <TabAbout />}

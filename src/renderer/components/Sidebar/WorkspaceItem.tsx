@@ -11,6 +11,7 @@ import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces } from '../../utils/paneTraversal';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
+import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 
 interface WorkspaceItemProps {
   /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
@@ -550,6 +551,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           >
             {t('workspace.duplicate')}
           </button>
+
+          {/* Multi-account (M1): per-vendor account bind submenu. Hides itself
+              when no accounts are registered. Bind-only (new terminals). */}
+          <WorkspaceAccountMenu workspaceId={workspaceId} flipLeft={menuPos.x > window.innerWidth * 0.6} />
 
           {/* Working directories — hover to reveal each terminal's cwd. Flips to
               the left when the menu is opened near the right screen edge. */}
