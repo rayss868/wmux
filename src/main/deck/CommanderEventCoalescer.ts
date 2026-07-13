@@ -33,8 +33,8 @@
 // persistence across reload, and the per-turn action fan-out cap (bounds
 // actions WITHIN a wake; the budget bounds wake FREQUENCY).
 
-import type { WorkspaceAutonomy } from './deckAutonomyStore';
-import { DEFAULT_AUTONOMY } from './deckAutonomyStore';
+import type { WorkspaceAutonomy, WakePolicy } from './deckAutonomyStore';
+import { DEFAULT_AUTONOMY, modeToWakePolicy } from './deckAutonomyStore';
 
 /** The two lifecycle kinds we wake on (decision 7 — subagent_stop /
  *  notification excluded). */
@@ -321,6 +321,20 @@ export class CommanderEventCoalescer {
     }
   }
 
+  /** Swallow a set of buffered events without a turn: advance the watermark
+   *  past them and prune, so re-enabling wakes never replays a stale backlog.
+   *  Used by every suppression path (global switch off, mode wake policy). */
+  private consume(st: WsState, events: readonly BufferedEvent[]): void {
+    if (events.length === 0) {
+      st.phase = 'idle';
+      return;
+    }
+    const maxSeq = events[events.length - 1].seq;
+    if (maxSeq > st.watermark) st.watermark = maxSeq;
+    this.pruneBuffer(st, maxSeq);
+    st.phase = 'idle';
+  }
+
   private attemptFlush(workspaceId: string, st: WsState): void {
     if (this.disposed) return;
     this.clearDebounce(st);
@@ -335,12 +349,32 @@ export class CommanderEventCoalescer {
     // overrides the switch — the loop is an explicit opt-in that depends on
     // these wakes and is already bounded by its own iteration budget.
     const loopHint = this.safeGetLoop(workspaceId);
-    if (!this.safeAutoWakeEnabled() && loopHint?.running !== true) {
-      const maxSeq = events[events.length - 1].seq;
-      if (maxSeq > st.watermark) st.watermark = maxSeq;
-      this.pruneBuffer(st, maxSeq);
-      st.phase = 'idle';
+    const loopRunning = loopHint?.running === true;
+    if (!this.safeAutoWakeEnabled() && !loopRunning) {
+      this.consume(st, events);
       return;
+    }
+    // Per-workspace mode wake policy. A RUNNING loop overrides to 'all' (the
+    // same carve-out as the global switch: an explicit opt-in must keep
+    // iterating). 'none' (manual/off) consumes everything silently; for
+    // 'value-filtered' (assist) we drop plain agent.stop — the summary-spam —
+    // and only proceed if a pane is actually blocked on input.
+    const autonomy = this.safeAutonomy(workspaceId);
+    const policy: WakePolicy = loopRunning ? 'all' : modeToWakePolicy(autonomy.mode);
+    if (policy === 'none') {
+      this.consume(st, events);
+      return;
+    }
+    let flushEvents = events;
+    if (policy === 'value-filtered') {
+      const worthy = events.filter((e) => e.kind === 'agent.awaiting_input');
+      if (worthy.length === 0) {
+        // Only plain stops buffered — consume them, no turn. THIS is the fix
+        // for "the agent summarizes every unit of work".
+        this.consume(st, events);
+        return;
+      }
+      flushEvents = worthy;
     }
     if (this.deps.isBusy(workspaceId)) {
       // A racer (scheduler / human) grabbed the turn — hold; its onIdle retries.
@@ -356,14 +390,16 @@ export class CommanderEventCoalescer {
     }
 
     // Snapshot the flush set. Do NOT advance the watermark or clear the buffer
-    // until the send is ACCEPTED — a busy reject must not lose events.
+    // until the send is ACCEPTED — a busy reject must not lose events. The
+    // watermark advances past ALL buffered events (including value-filtered-out
+    // stops), so a dropped stop is consumed, not re-surfaced; only the worthy
+    // events go into the prompt.
     const snapshotMaxSeq = events[events.length - 1].seq;
-    const autonomy = this.safeAutonomy(workspaceId);
     const prompt = buildEventPrompt(
-      events,
+      flushEvents,
       autonomy,
       { remaining: budget - st.autoWakesUsed, total: budget },
-      { loopRunning: loopHint?.running === true },
+      { loopRunning: loopRunning },
     );
     st.phase = 'send-pending';
 

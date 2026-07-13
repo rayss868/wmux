@@ -293,6 +293,17 @@ export const en = {
   'settings.orchestratorModelDesc':
     'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',
   'settings.orchestratorModelDefault': 'Default (subscription model)',
+  // Per-workspace agent mode — the single autonomy knob (off/manual/assist/
+  // orchestrate). Shown as a chip in the agent panel.
+  'deck.mode.label': 'Mode',
+  'deck.mode.off': 'Off',
+  'deck.mode.offDesc': 'No autonomy. Stops any running loop and schedule. You can still type.',
+  'deck.mode.manual': 'Manual',
+  'deck.mode.manualDesc': 'Replies only when you type. Never wakes itself on agent events.',
+  'deck.mode.assist': 'Assist',
+  'deck.mode.assistDesc': 'Wakes only when a pane needs input, or to drive a running loop. No summary spam.',
+  'deck.mode.orchestrate': 'Orchestrate',
+  'deck.mode.orchestrateDesc': 'Wakes on every agent event; may drive panes and press approvals.',
   // Global event-push kill switch: OFF stops the unrequested wake-turns
   // (each one is a real token-spending SDK turn); a running loop still wakes.
   'settings.autoWake': 'Auto-wake on pane events',

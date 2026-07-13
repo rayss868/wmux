@@ -381,6 +381,20 @@ const electronAPI = {
       set: (enabled: boolean) =>
         ipcRenderer.invoke(IPC.DECK_AUTOWAKE_SET, { enabled }) as Promise<{ enabled: boolean }>,
     },
+    // Per-workspace agent mode — off/manual/assist/orchestrate. The single
+    // autonomy knob; 'off' also tears down running loops + schedules.
+    mode: {
+      get: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_MODE_GET, { workspaceId }) as Promise<{
+          mode: import('../main/deck/deckAutonomyStore').AgentMode | null;
+        }>,
+      set: (workspaceId: string, mode: import('../main/deck/deckAutonomyStore').AgentMode) =>
+        ipcRenderer.invoke(IPC.DECK_MODE_SET, { workspaceId, mode }) as Promise<{
+          ok: boolean;
+          mode?: import('../main/deck/deckAutonomyStore').AgentMode;
+          code?: string;
+        }>,
+    },
     // Normalized BrainEvent push, enveloped with the workspace whose
     // orchestrator produced it (see BrainAdapter.BrainEvent).
     onStream: (

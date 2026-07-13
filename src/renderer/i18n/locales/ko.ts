@@ -237,6 +237,17 @@ export const ko = {
   'settings.orchestratorModelDesc':
     '커맨드 데크 agent가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',
   'settings.orchestratorModelDefault': '기본 (구독 기본 모델)',
+  // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/manual/assist/orchestrate).
+  // agent 패널에 칩으로 표시.
+  'deck.mode.label': '모드',
+  'deck.mode.off': 'Off',
+  'deck.mode.offDesc': '자율 동작 없음. 실행 중인 루프·예약도 정지. 직접 타이핑은 여전히 가능.',
+  'deck.mode.manual': 'Manual',
+  'deck.mode.manualDesc': '직접 물을 때만 대답. agent 이벤트로 스스로 깨어나지 않음.',
+  'deck.mode.assist': 'Assist',
+  'deck.mode.assistDesc': 'pane이 입력을 기다릴 때, 또는 실행 중인 루프를 진행할 때만 깨어남. 요약 스팸 없음.',
+  'deck.mode.orchestrate': 'Orchestrate',
+  'deck.mode.orchestrateDesc': '모든 agent 이벤트에 깨어남. pane 조작·승인 押下까지 가능.',
   // 이벤트 자동 깨우기 킬스위치: 끄면 요청하지 않은 자동 요약 턴(토큰 소비)이
   // 멈춘다. 실행 중인 루프는 계속 깨운다.
   'settings.autoWake': 'pane 이벤트 자동 깨우기',

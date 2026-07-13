@@ -80,20 +80,32 @@ vi.mock('../../../deck/deckLoopStateStore', () => ({
   }),
 }));
 
-// Autonomy store: record every cap write.
+// Autonomy store: record every cap write. Pure functions (modeToCaps /
+// modeToWakePolicy / deriveMode) use the REAL implementation via importOriginal
+// — only the IO reads/writes are stubbed. The workspace's resting mode is
+// 'assist' (the product default), so loop-stop restores to assist caps.
 const capWrites: { ws: string; patch: Record<string, unknown> }[] = [];
-vi.mock('../../../deck/deckAutonomyStore', () => ({
-  DEFAULT_AUTONOMY: { summarize: true, continueInstruction: false, approvalPress: false },
-  loadWorkspaceAutonomy: vi.fn(() => ({
-    summarize: true,
-    continueInstruction: false,
-    approvalPress: false,
-  })),
-  setWorkspaceAutonomy: vi.fn(async (ws: string, patch: Record<string, unknown>) => {
-    capWrites.push({ ws, patch });
-    return patch;
-  }),
-}));
+vi.mock('../../../deck/deckAutonomyStore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../deck/deckAutonomyStore')>();
+  return {
+    ...actual,
+    loadWorkspaceAutonomy: vi.fn(() => ({
+      mode: 'assist' as const,
+      summarize: true,
+      continueInstruction: true,
+      approvalPress: false,
+    })),
+    loadWorkspaceMode: vi.fn(() => 'assist' as const),
+    setWorkspaceAutonomy: vi.fn(async (ws: string, patch: Record<string, unknown>) => {
+      capWrites.push({ ws, patch });
+      return patch;
+    }),
+    setWorkspaceMode: vi.fn(async (ws: string, mode: string) => {
+      capWrites.push({ ws, patch: { mode } });
+      return { mode, ...actual.modeToCaps(mode as import('../../../deck/deckAutonomyStore').AgentMode) };
+    }),
+  };
+});
 
 // Schedule store: in-memory array; scheduler stays inert (nothing due).
 interface FakeSchedule {
@@ -257,8 +269,10 @@ describe('deck:loop:stop / pause / resume — the OFF contract', () => {
     expect(res.ok).toBe(true);
     expect(loops.has('ws-1')).toBe(false);
     expect(schedules).toHaveLength(0); // pending cadence never fires post-stop
+    // Loop-stop restores caps to the workspace's MODE (assist), not a hardcoded
+    // fail-closed floor — the mode is the resting autonomy the user chose.
     expect(capWrites).toEqual([
-      { ws: 'ws-1', patch: { summarize: true, continueInstruction: false, approvalPress: false } },
+      { ws: 'ws-1', patch: { summarize: true, continueInstruction: true, approvalPress: false } },
     ]);
   });
 
@@ -274,9 +288,11 @@ describe('deck:loop:stop / pause / resume — the OFF contract', () => {
     await invoke(IPC.DECK_LOOP_PAUSE, { workspaceId: 'ws-1' });
     expect(loops.get('ws-1')!.status).toBe('paused');
     expect(schedules[0].enabled).toBe(false);
+    // pause restores to mode (assist) caps — the loop-state 'paused' + removed
+    // override is what stops the driving, not a cap floor.
     expect(capWrites.pop()).toEqual({
       ws: 'ws-1',
-      patch: { summarize: true, continueInstruction: false, approvalPress: false },
+      patch: { summarize: true, continueInstruction: true, approvalPress: false },
     });
 
     await invoke(IPC.DECK_LOOP_RESUME, { workspaceId: 'ws-1' });
@@ -345,11 +361,14 @@ describe('deck:send × auto-wake race — the loop-stall guard (dogfood finding 
     await Promise.resolve(); // let it enter busy
 
     // A worker pane stops while the brain is busy — the coalescer buffers it.
+    // awaiting_input (not a plain stop) so the default assist mode's value
+    // filter wakes on it — this test exercises the busy-reject plumbing, not
+    // the wake filter.
     eventBus.emit({
       type: 'agent.lifecycle',
       workspaceId: 'ws-1',
       ptyId: 'p1',
-      kind: 'agent.stop',
+      kind: 'agent.awaiting_input',
       source: 'hook',
       agent: 'claude',
       decision: 'emit',
