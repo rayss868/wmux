@@ -7,6 +7,7 @@ import { prStatusCache } from '../../metadata/PrStatusCache';
 import { PTYManager } from '../../pty/PTYManager';
 import { wrapHandler } from '../wrapHandler';
 import { metadataStore } from '../../metadata/MetadataStore';
+import { ORCH_ROLE_KEY, readOrchRole } from '../../../shared/orchestratorRole';
 
 /**
  * Single source for IPC.METADATA_UPDATE outgoing messages. All metadata-like
@@ -121,12 +122,20 @@ export function registerMetadataHandlers(
   // live renames then flow via the pane.metadata.changed relay.
   ipcMain.removeHandler(IPC.METADATA_SNAPSHOT);
   ipcMain.handle(IPC.METADATA_SNAPSHOT, wrapHandler(IPC.METADATA_SNAPSHOT, async () => {
+    // Seed BOTH the label and the orchestrator-role mirrors on mount. The
+    // boot-time push (index.ts) can land before useNotificationListener
+    // subscribes, so this pull is the reliable complement — and it must carry
+    // role too, or a persisted role stays invisible after restart until the
+    // next metadata change (CodeRabbit review). Include a pane if it has EITHER
+    // a label or a role; send '' for the absent field. Non-empty gate matches
+    // the live relay so a cleared value never resurrects from the snapshot.
     return metadataStore.snapshot().entries
-      // Match the live relay (src/main/index.ts): seed only NON-EMPTY labels, else
-      // a cleared ('') label would be re-applied from the restart snapshot and
-      // resurrect a label the user removed (CodeRabbit review).
-      .filter((e) => typeof e.metadata.label === 'string' && (e.metadata.label as string).length > 0)
-      .map((e) => ({ paneId: e.paneId, label: e.metadata.label as string }));
+      .map((e) => ({
+        paneId: e.paneId,
+        label: typeof e.metadata.label === 'string' ? e.metadata.label : '',
+        role: readOrchRole(e.metadata.custom) ?? '',
+      }))
+      .filter((e) => e.label.length > 0 || e.role.length > 0);
   }));
 
   // P2 GUI pane rename: the renderer is the only non-MCP writer of pane labels.
@@ -140,6 +149,24 @@ export function registerMetadataHandlers(
     label: string,
   ) => {
     metadataStore.set(paneId, { label }, { workspaceId });
+    return { ok: true };
+  }));
+
+  // Fleet dropdown → set a pane's operator-assigned orchestrator role. Writes
+  // custom['orchestrator.role'] through the SAME MetadataStore authority as the
+  // MCP pane_set_metadata tool (custom deep-merge, so a role write never clobbers
+  // the pane's label or other tools' custom keys), so it persists (metadata.json)
+  // and relays to every renderer + the orchestrator via pane.metadata.changed.
+  // An empty string is the "unassigned" sentinel (additive merge has no
+  // delete-one-key op); readOrchRole normalizes '' → undefined on read.
+  ipcMain.removeHandler(IPC.METADATA_SET_ROLE);
+  ipcMain.handle(IPC.METADATA_SET_ROLE, wrapHandler(IPC.METADATA_SET_ROLE, async (
+    _event: Electron.IpcMainInvokeEvent,
+    paneId: string,
+    workspaceId: string,
+    role: string,
+  ) => {
+    metadataStore.set(paneId, { custom: { [ORCH_ROLE_KEY]: role } }, { workspaceId, mergeMode: 'merge' });
     return { ok: true };
   }));
 
@@ -179,6 +206,7 @@ export function registerMetadataHandlers(
     ipcMain.removeHandler(IPC.METADATA_REQUEST);
     ipcMain.removeHandler(IPC.METADATA_SNAPSHOT);
     ipcMain.removeHandler(IPC.METADATA_SET);
+    ipcMain.removeHandler(IPC.METADATA_SET_ROLE);
   };
 }
 

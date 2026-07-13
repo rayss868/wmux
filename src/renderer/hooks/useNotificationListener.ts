@@ -500,14 +500,21 @@ export function useNotificationListener() {
       // workspace metadata — pull it OUT here, alongside ptyId, so it can never
       // flow into `...rest` and get written into updateWorkspaceMetadata by
       // applyToWorkspace's spread.
-      const { ptyId, workspaceId: payloadWsId, activity, paneId, paneLabel, agentSlug, ...rest } = payload;
+      const { ptyId, workspaceId: payloadWsId, activity, paneId, paneLabel, paneRole, agentSlug, ...rest } = payload;
 
       // P2 (checklist D): a paneId-only payload is the pane-label relay from
-      // MetadataStore. Route it to the per-pane label mirror and return so
-      // paneId/paneLabel never reach applyToWorkspace (whose spread would
-      // mis-record them onto the active workspace's metadata).
+      // MetadataStore. Route it to the per-pane label + role mirrors and return
+      // so paneId/paneLabel/paneRole never reach applyToWorkspace (whose spread
+      // would mis-record them onto the active workspace's metadata).
       if (paneId !== undefined) {
         state.setPaneLabel(paneId, typeof paneLabel === 'string' ? paneLabel : undefined);
+        // paneRole is teed on the same relay. Only touch the role mirror when the
+        // payload actually carries it (a string, incl. '' as the clear tombstone);
+        // an omitted paneRole must NOT wipe an existing role, in case some other
+        // emitter ever sends a label-only paneId payload.
+        if (typeof paneRole === 'string') {
+          state.setPaneRole(paneId, paneRole);
+        }
         return;
       }
 
@@ -665,7 +672,12 @@ export function useNotificationListener() {
         if (snapCancelled) return;
         if (entries.length > 0) {
           const s = useStore.getState();
-          for (const e of entries) s.setPaneLabel(e.paneId, e.label);
+          for (const e of entries) {
+            s.setPaneLabel(e.paneId, e.label);
+            // Seed the role mirror too so a persisted role shows after restart
+            // even if the boot push raced the listener subscription.
+            s.setPaneRole(e.paneId, e.role);
+          }
         } else if (snapAttempts < 5) {
           snapAttempts += 1;
           snapTimer = setTimeout(seedPaneLabels, 300);
