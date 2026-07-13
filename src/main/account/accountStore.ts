@@ -192,6 +192,15 @@ export class AccountStore {
     return this.ensureCache().bindings[workspaceId]?.[vendor];
   }
 
+  /** Full bindings snapshot (deep-copied) for the renderer. */
+  getBindings(): Bindings {
+    const out: Bindings = {};
+    for (const [wsId, perVendor] of Object.entries(this.ensureCache().bindings)) {
+      out[wsId] = { ...perVendor };
+    }
+    return out;
+  }
+
   /**
    * Resolve the account env overlay for a spawn — SYNC, cache-only, hot path.
    * Returns `{ CLAUDE_CONFIG_DIR }` / `{ CODEX_HOME }` when the workspace binds
