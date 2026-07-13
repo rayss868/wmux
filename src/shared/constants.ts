@@ -156,6 +156,18 @@ export const IPC = {
   //   + schedules. Same renderer-only trust boundary.
   DECK_MODE_GET: 'deck:mode:get',
   DECK_MODE_SET: 'deck:mode:set',
+  //   ACCOUNT_* (invoke) renderer → main: multi-account registry CRUD +
+  //   per-workspace bindings. Renderer-only trust boundary (main owns
+  //   accounts.json; the renderer never resolves spawn env). Onboarding
+  //   provisions an isolated config dir (hybrid share) and reports credential
+  //   status by polling; the renderer commits ACCOUNT_ADD once login lands.
+  ACCOUNT_LIST: 'account:list',
+  ACCOUNT_ONBOARD_PREPARE: 'account:onboard:prepare',
+  ACCOUNT_ADD: 'account:add',
+  ACCOUNT_RENAME: 'account:rename',
+  ACCOUNT_REMOVE: 'account:remove',
+  ACCOUNT_SET_BINDING: 'account:set-binding',
+  ACCOUNT_CREDENTIAL_STATUS: 'account:credential-status',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

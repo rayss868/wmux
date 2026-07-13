@@ -5,6 +5,7 @@ import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
+import { getAccountStore } from '../account/accountStore';
 import { withheldCredentialNames } from '../../shared/envFilter';
 import { getShellUtf8Locale } from './shellLocale';
 import { isWindows } from '../../shared/platform';
@@ -174,7 +175,18 @@ export class PTYManager {
     // 실행 컨텍스트 정책. 로컬 모드는 exec/supervision이 없으므로 spawnKind만으로
     // 결정 — 'user-shell'이면 자격증명 투과, 아니면 fail-closed gated.
     const policy = resolveEnvPolicy({ spawnKind: options?.spawnKind });
-    const env = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale(), policy);
+    // Multi-account (M0): overlay the workspace's bound-account env (main-owned
+    // store) between baseline and profile; a manual profile CLAUDE_CONFIG_DIR
+    // wins. Missing bound dir → default-credential fallback + warn.
+    const accountEnv = options?.workspaceId
+      ? getAccountStore().resolveWorkspaceAccountEnv(options.workspaceId, (acc) =>
+          console.warn(
+            `[account] pane ${id}: bound account "${acc.name}" (${acc.vendor}) configDir missing on disk ` +
+            `(${acc.configDir}) — falling back to the default credential.`,
+          ),
+        )
+      : undefined;
+    const env = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale(), policy, accountEnv);
     // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄로 남긴다.
     // 침묵이 신고 사건의 실제 원인이었다 — "왜 없지?"를 로그로 즉시 답한다.
     if (policy === 'gated') {

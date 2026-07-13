@@ -27,6 +27,7 @@ import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { loadCommanderMemory, getMemoryRootDir } from './commanderMemory';
+import { getAccountStore } from '../account/accountStore';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { evaluateCommanderToolPermission } from './commanderToolSandbox';
 import {
@@ -460,6 +461,19 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     const env: Record<string, string | undefined> = { ...process.env };
     // Zero-API: never let an ambient key flip the session onto metered API auth.
     delete env.ANTHROPIC_API_KEY;
+    // Multi-account (M0): the orchestrator brain is a claude spawn that bypasses
+    // the PTY path, so it must honor its workspace's claude account binding here
+    // too — otherwise it silently runs on the default account (Codex 3-way review
+    // P1). A missing bound dir falls back to the default credential + a warn.
+    if (this._workspaceId) {
+      const accountEnv = getAccountStore().resolveAccountEnv(this._workspaceId, 'claude', (acc) =>
+        console.warn(
+          `[account] orchestrator ws ${this._workspaceId}: bound account "${acc.name}" configDir missing ` +
+          `(${acc.configDir}) — falling back to the default credential.`,
+        ),
+      );
+      Object.assign(env, accountEnv);
+    }
     if (this.profile?.baseUrl) env.ANTHROPIC_BASE_URL = this.profile.baseUrl;
     if (this.profile?.authToken) env.ANTHROPIC_AUTH_TOKEN = this.profile.authToken;
     return env;

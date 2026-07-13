@@ -291,6 +291,38 @@ const electronAPI = {
   // over `onStream`). Renderer-trusted, pipe-unreachable — same boundary as
   // fanout. A brain stream is NOT channel semantics, so it rides a dedicated
   // push channel, never the channels plumbing.
+  // Multi-account registry (M1). Main owns accounts.json; the renderer only
+  // reads snapshots + requests mutations. Onboarding: onboardPrepare() creates
+  // an isolated (hybrid-shared) config dir, the renderer spawns a login pane
+  // pointed at it, polls credentialStatus() until login lands, then add()s.
+  accounts: {
+    list: () =>
+      ipcRenderer.invoke(IPC.ACCOUNT_LIST) as Promise<{
+        accounts: import('../main/ipc/handlers/account.handler').AccountRow[];
+        bindings: Record<string, Partial<Record<'claude' | 'codex', string>>>;
+      }>,
+    onboardPrepare: (args: { vendor: 'claude' | 'codex'; share?: boolean }) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_ONBOARD_PREPARE, args) as Promise<
+        import('../main/ipc/handlers/account.handler').OnboardPrepareResult
+      >,
+    add: (args: { name: string; vendor: 'claude' | 'codex'; configDir: string }) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_ADD, args) as Promise<
+        import('../main/account/accountStore').Account
+      >,
+    rename: (args: { id: string; name: string }) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_RENAME, args) as Promise<{ ok: boolean }>,
+    remove: (id: string) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_REMOVE, { id }) as Promise<{
+        ok: boolean;
+        affectedWorkspaceIds: string[];
+      }>,
+    setBinding: (args: { workspaceId: string; vendor: 'claude' | 'codex'; accountId?: string }) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_SET_BINDING, args) as Promise<{ ok: boolean }>,
+    credentialStatus: (args: { vendor: 'claude' | 'codex'; configDir: string }) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_CREDENTIAL_STATUS, args) as Promise<
+        import('../main/ipc/handlers/account.handler').CredentialStatus
+      >,
+  },
   deck: {
     // M1.5: one orchestrator per workspace — every call names the workspace
     // whose brain it addresses. `model` is the orchestrator model override

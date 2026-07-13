@@ -1,5 +1,4 @@
 import { buildGatedAutomationEnv, buildInteractiveShellEnv } from '../../shared/envFilter';
-import { applyProfileEnv } from '../../shared/workspaceProfile';
 import { ENV_KEYS } from '../../shared/constants';
 import type { EnvPolicy } from '../../shared/spawnKind';
 
@@ -14,6 +13,13 @@ import type { EnvPolicy } from '../../shared/spawnKind';
  *          strip. 에이전트/자동화 pane. 기존 동작과 동일(하위호환).
  *        'passthrough'               → buildInteractiveShellEnv: 내부만 strip,
  *          자격증명 투과. 사용자가 직접 연 셸 (타 터미널 동형).
+ *   1.5 accountEnv (multi-account) — overlay the workspace's bound-account env
+ *      (CLAUDE_CONFIG_DIR / CODEX_HOME), resolved in MAIN from the workspace
+ *      binding, AFTER the denylist and BEFORE the profile. Applied before the
+ *      profile deliberately so a MANUAL profile CLAUDE_CONFIG_DIR always WINS
+ *      over an account binding (the existing contributor workflow must keep
+ *      working; UI warns on conflict). Empty when the workspace binds no
+ *      account for this vendor. Same skip-WMUX_* discipline as the profile.
  *   2. applyProfileEnv(...)       — overlay the workspace profile AFTER the
  *      denylist, so a configured profile key is applied verbatim and not
  *      re-stripped; reserved WMUX_* keys are skipped. NOTE: this is the spawn
@@ -33,12 +39,37 @@ import type { EnvPolicy } from '../../shared/spawnKind';
  * The result is a fresh object the caller may further mutate (e.g. shell-
  * integration injection layered on top).
  */
+/**
+ * Overlay `src` onto `target` in place, skipping reserved WMUX_* keys and
+ * non-string values (mirrors applyProfileEnv). On win32, env vars are
+ * case-insensitive, so before writing a key we delete any existing
+ * different-cased alias — otherwise `CLAUDE_CONFIG_DIR` and `claude_config_dir`
+ * would both survive and the OS would pick one nondeterministically, breaking
+ * the account-vs-profile precedence contract.
+ */
+function applyOverlay(target: Record<string, string>, src: Record<string, string> | undefined): void {
+  if (!src) return;
+  const win = process.platform === 'win32';
+  for (const [key, value] of Object.entries(src)) {
+    if (typeof value !== 'string') continue;
+    if (key.toUpperCase().startsWith('WMUX_')) continue;
+    if (win) {
+      const lower = key.toLowerCase();
+      for (const existing of Object.keys(target)) {
+        if (existing !== key && existing.toLowerCase() === lower) delete target[existing];
+      }
+    }
+    target[key] = value;
+  }
+}
+
 export function resolveSpawnEnv(
   baseEnv: NodeJS.ProcessEnv,
   profileEnv: Record<string, string> | undefined,
   identity: Record<string, string>,
   fallbackLocale?: string,
   policy: EnvPolicy = 'gated',
+  accountEnv?: Record<string, string>,
 ): Record<string, string> {
   const env = policy === 'passthrough'
     ? buildInteractiveShellEnv(baseEnv)
@@ -66,7 +97,14 @@ export function resolveSpawnEnv(
   for (const key of Object.keys(env)) {
     if (key.toUpperCase().startsWith('WMUX_')) delete env[key];
   }
-  applyProfileEnv(env, profileEnv);
+  // 1.5: account overlay BEFORE the profile so a manual profile CLAUDE_CONFIG_DIR
+  // wins. On Windows env vars are case-INSENSITIVE, so a bound `CLAUDE_CONFIG_DIR`
+  // and a profile's `claude_config_dir` would otherwise survive as two keys and
+  // the OS would keep an arbitrary one — silently defeating the manual-override
+  // precedence (Codex review P1). applyOverlay drops existing case-variants on
+  // win32 before writing each key, so the last overlay (profile) truly wins.
+  applyOverlay(env, accountEnv);
+  applyOverlay(env, profileEnv);
   for (const [k, v] of Object.entries(identity)) {
     if (typeof v === 'string') env[k] = v;
   }

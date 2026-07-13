@@ -25,6 +25,7 @@ import { registerWorktreeHandlers } from './handlers/worktree.handler';
 import { registerGithubHandlers } from './handlers/github.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerLanLinkHandlers } from './handlers/lanlink.handler';
+import { registerAccountHandlers } from './handlers/account.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
 import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
@@ -167,6 +168,10 @@ export function registerAllHandlers(
   // the daemon). Without a DaemonClient there is no control pipe to forward to, so
   // the handlers stay unregistered and the Settings section hides itself.
   const cleanupLanLink = daemonClient ? registerLanLinkHandlers(daemonClient) : null;
+
+  // Multi-account registry (M1) — renderer-only, mode-agnostic (main owns
+  // accounts.json in both local and daemon mode; spawn env is resolved in main).
+  const cleanupAccounts = registerAccountHandlers();
 
   // X1 local-mode context watchers (git HEAD fs.watch + PID-tree ports).
   // Daemon mode gets the same data from the daemon process via
@@ -320,6 +325,7 @@ export function registerAllHandlers(
     cleanupGithub();
     if (cleanupMcp) cleanupMcp();
     if (cleanupLanLink) cleanupLanLink();
+    cleanupAccounts();
     // Mirror the register-side removeHandler so a teardown leaves no stale
     // handle behind (handle handlers are not .on listeners — see above).
     ipcMain.removeHandler(IPC.RPC_INVOKE);

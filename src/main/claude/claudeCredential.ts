@@ -62,19 +62,27 @@ export type LoadResult =
  * with the underlying message tucked in `detail` — useful for logging
  * the FAILURE but never the credential itself.
  */
-export async function loadClaudeCredential(): Promise<LoadResult> {
+export async function loadClaudeCredential(configDir?: string): Promise<LoadResult> {
   try {
     if (process.platform === 'darwin') {
+      // Multi-account (M1): the macOS keychain reader keys on the current
+      // USERNAME, not the config dir (see loadFromMacKeychain), so it cannot
+      // partition per-account. A per-account read on macOS is not supported —
+      // report it explicitly rather than silently returning the default
+      // account's credential for account B (3-way review OQ1).
+      if (configDir) {
+        return { ok: false, reason: 'unsupported-platform', detail: 'macOS keychain cannot partition by config dir' };
+      }
       return await loadFromMacKeychain();
     }
     if (process.platform === 'win32') {
-      return await loadFromWindowsJson();
+      return await loadFromWindowsJson(configDir);
     }
     if (process.platform === 'linux') {
       // Linux Claude Code stores credentials in the same json shape as
       // Windows when launched outside a keyring. libsecret support is a
       // follow-up — explicit miss rather than silent fallback.
-      return await loadFromWindowsJson();
+      return await loadFromWindowsJson(configDir);
     }
     return { ok: false, reason: 'unsupported-platform' };
   } catch (err) {
@@ -128,8 +136,11 @@ async function loadFromMacKeychain(): Promise<LoadResult> {
   }
 }
 
-async function loadFromWindowsJson(): Promise<LoadResult> {
-  const credentialPath = path.join(os.homedir(), '.claude', '.credentials.json');
+async function loadFromWindowsJson(configDir?: string): Promise<LoadResult> {
+  // Multi-account (M1): read from the account's config dir when given
+  // (`<configDir>/.credentials.json`), else the default `~/.claude/`.
+  const baseDir = configDir ?? path.join(os.homedir(), '.claude');
+  const credentialPath = path.join(baseDir, '.credentials.json');
   let raw: string;
   try {
     raw = await readFile(credentialPath, 'utf8');
