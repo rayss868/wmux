@@ -58,6 +58,20 @@ describe('AccountStore CRUD', () => {
     ).rejects.toBeInstanceOf(AccountError);
   });
 
+  it('rejects a non-existent configDir (no lexical fallback → no alias dupes)', async () => {
+    await expect(
+      store.addAccount({ name: 'ghost', vendor: 'claude', configDir: path.join(dir, 'does-not-exist') }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+  });
+
+  it('rejects a configDir that is a file, not a directory', async () => {
+    const filePath = path.join(dir, 'afile');
+    fs.writeFileSync(filePath, 'x');
+    await expect(
+      store.addAccount({ name: 'f', vendor: 'claude', configDir: filePath }),
+    ).rejects.toMatchObject({ code: 'invalid' });
+  });
+
   it('remove clears bindings and reports affected workspaces', async () => {
     const acc = await store.addAccount({ name: 'w', vendor: 'claude', configDir: mkConfigDir('w') });
     await store.setBinding('ws-1', 'claude', acc.id);
@@ -89,6 +103,25 @@ describe('AccountStore bindings', () => {
     await store.setBinding('ws-1', 'claude', c.id);
     await store.setBinding('ws-1', 'claude', undefined);
     expect(store.getBinding('ws-1', 'claude')).toBeUndefined();
+  });
+
+  it('rejects a prototype-pollution workspaceId (does not touch Object.prototype)', async () => {
+    const c = await store.addAccount({ name: 'c', vendor: 'claude', configDir: mkConfigDir('c') });
+    await expect(store.setBinding('__proto__', 'claude', c.id)).rejects.toMatchObject({ code: 'invalid' });
+    // Prototype stayed clean.
+    expect(({} as Record<string, unknown>).claude).toBeUndefined();
+  });
+
+  it('drops a binding whose account vendor does not match the slot (recovered file)', async () => {
+    const c = await store.addAccount({ name: 'c', vendor: 'claude', configDir: mkConfigDir('c') });
+    // Hand-edit the file: put the claude account in the codex slot.
+    const p = getAccountsPath(dir);
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+    raw.bindings = { 'ws-1': { codex: c.id } };
+    fs.writeFileSync(p, JSON.stringify(raw));
+    const fresh = new AccountStore(dir);
+    fresh.load();
+    expect(fresh.getBinding('ws-1', 'codex')).toBeUndefined(); // vendor mismatch → dropped
   });
 
   it('lazily prunes bindings for unknown workspaces on load', async () => {

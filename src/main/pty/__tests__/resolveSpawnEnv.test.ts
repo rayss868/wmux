@@ -70,6 +70,24 @@ describe('resolveSpawnEnv', () => {
     expect(env.A_ONLY_PROFILE).toBe('p');
   });
 
+  // Windows env vars are case-insensitive; a manual profile 'claude_config_dir'
+  // must still beat a bound 'CLAUDE_CONFIG_DIR' without both surviving.
+  (process.platform === 'win32' ? it : it.skip)(
+    'win32: manual profile beats account even with different key casing', () => {
+      const env = resolveSpawnEnv(
+        { PATH: '/usr/bin' },
+        { claude_config_dir: 'C:/manual' },
+        {},
+        undefined,
+        'gated',
+        { CLAUDE_CONFIG_DIR: 'C:/account' },
+      );
+      // Only one case-variant survives, and it is the profile's value.
+      const keys = Object.keys(env).filter((k) => k.toLowerCase() === 'claude_config_dir');
+      expect(keys).toHaveLength(1);
+      expect(env[keys[0]]).toBe('C:/manual');
+    });
+
   it('accountEnv cannot spoof reserved WMUX_* identity', () => {
     const env = resolveSpawnEnv(
       { PATH: '/usr/bin' },

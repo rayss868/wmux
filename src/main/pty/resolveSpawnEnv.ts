@@ -1,5 +1,4 @@
 import { buildGatedAutomationEnv, buildInteractiveShellEnv } from '../../shared/envFilter';
-import { applyProfileEnv } from '../../shared/workspaceProfile';
 import { ENV_KEYS } from '../../shared/constants';
 import type { EnvPolicy } from '../../shared/spawnKind';
 
@@ -40,6 +39,30 @@ import type { EnvPolicy } from '../../shared/spawnKind';
  * The result is a fresh object the caller may further mutate (e.g. shell-
  * integration injection layered on top).
  */
+/**
+ * Overlay `src` onto `target` in place, skipping reserved WMUX_* keys and
+ * non-string values (mirrors applyProfileEnv). On win32, env vars are
+ * case-insensitive, so before writing a key we delete any existing
+ * different-cased alias — otherwise `CLAUDE_CONFIG_DIR` and `claude_config_dir`
+ * would both survive and the OS would pick one nondeterministically, breaking
+ * the account-vs-profile precedence contract.
+ */
+function applyOverlay(target: Record<string, string>, src: Record<string, string> | undefined): void {
+  if (!src) return;
+  const win = process.platform === 'win32';
+  for (const [key, value] of Object.entries(src)) {
+    if (typeof value !== 'string') continue;
+    if (key.toUpperCase().startsWith('WMUX_')) continue;
+    if (win) {
+      const lower = key.toLowerCase();
+      for (const existing of Object.keys(target)) {
+        if (existing !== key && existing.toLowerCase() === lower) delete target[existing];
+      }
+    }
+    target[key] = value;
+  }
+}
+
 export function resolveSpawnEnv(
   baseEnv: NodeJS.ProcessEnv,
   profileEnv: Record<string, string> | undefined,
@@ -75,10 +98,13 @@ export function resolveSpawnEnv(
     if (key.toUpperCase().startsWith('WMUX_')) delete env[key];
   }
   // 1.5: account overlay BEFORE the profile so a manual profile CLAUDE_CONFIG_DIR
-  // wins. applyProfileEnv's skip-WMUX_* + string-only discipline is exactly what
-  // we want for the account env too, so it is reused as the apply mechanism.
-  applyProfileEnv(env, accountEnv);
-  applyProfileEnv(env, profileEnv);
+  // wins. On Windows env vars are case-INSENSITIVE, so a bound `CLAUDE_CONFIG_DIR`
+  // and a profile's `claude_config_dir` would otherwise survive as two keys and
+  // the OS would keep an arbitrary one — silently defeating the manual-override
+  // precedence (Codex review P1). applyOverlay drops existing case-variants on
+  // win32 before writing each key, so the last overlay (profile) truly wins.
+  applyOverlay(env, accountEnv);
+  applyOverlay(env, profileEnv);
   for (const [k, v] of Object.entries(identity)) {
     if (typeof v === 'string') env[k] = v;
   }

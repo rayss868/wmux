@@ -68,6 +68,14 @@ function isVendor(v: unknown): v is Vendor {
   return v === 'claude' || v === 'codex';
 }
 
+/** Keys that would pollute Object.prototype if used to index a plain object.
+ *  workspaceId / accountId flow from renderer IPC, so they are rejected before
+ *  ever indexing bindings (Codex review P1: prototype pollution). */
+const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+export function isUnsafeKey(key: string): boolean {
+  return UNSAFE_KEYS.has(key);
+}
+
 function emptyFile(): AccountsFile {
   return { version: SCHEMA_VERSION, accounts: [], bindings: {} };
 }
@@ -82,13 +90,22 @@ function emptyFile(): AccountsFile {
  */
 export function canonicalizeConfigDir(input: string): string {
   const resolved = path.resolve(input);
+  // .native uses the OS realpath: on Windows it collapses 8.3 + case aliases,
+  // on POSIX it resolves symlinks — exactly the aliases lexical normalize misses.
+  // We REQUIRE it to succeed (see addAccount): a lexical fallback would let two
+  // Windows case-spellings register as distinct accounts that later resolve to
+  // one credential dir (Codex review P1). Throws when the dir is missing/
+  // inaccessible; addAccount surfaces that as an 'invalid' AccountError.
+  return fs.realpathSync.native(resolved);
+}
+
+/** True when `dir` resolves to an accessible DIRECTORY on disk (not a file,
+ *  not a dangling link). Used at spawn time before injecting the overlay. */
+function isAccessibleDir(dir: string): boolean {
   try {
-    // .native uses the OS realpath: on Windows it collapses 8.3 + case aliases,
-    // on POSIX it resolves symlinks — exactly the aliases lexical normalize misses.
-    return fs.realpathSync.native(resolved);
+    return fs.statSync(dir).isDirectory();
   } catch {
-    // ENOENT (dir not created yet) or permission — fall back to lexical resolve.
-    return resolved;
+    return false;
   }
 }
 
@@ -116,20 +133,24 @@ function sanitizeFile(raw: unknown, knownWorkspaceIds?: ReadonlySet<string>): Ac
   const accounts: Account[] = Array.isArray(o.accounts)
     ? o.accounts.map(sanitizeAccount).filter((a): a is Account => a !== null)
     : [];
-  const accountIds = new Set(accounts.map((a) => a.id));
+  // Map id → vendor so a binding can be dropped when its account is gone OR when
+  // the account's vendor doesn't match the slot (a recovered/hand-edited file
+  // must never route a claude dir through CODEX_HOME — Codex review P2).
+  const accountVendor = new Map(accounts.map((a) => [a.id, a.vendor] as const));
 
-  const bindings: Bindings = {};
+  const bindings: Bindings = Object.create(null) as Bindings;
   const rawBindings = o.bindings;
   if (rawBindings && typeof rawBindings === 'object') {
     for (const [wsId, perVendor] of Object.entries(rawBindings as Record<string, unknown>)) {
+      if (isUnsafeKey(wsId)) continue; // prototype-pollution guard
       // Lazy prune: drop bindings for workspaces that no longer exist.
       if (knownWorkspaceIds && !knownWorkspaceIds.has(wsId)) continue;
       if (!perVendor || typeof perVendor !== 'object') continue;
       const entry: Partial<Record<Vendor, string>> = {};
       for (const vendor of ['claude', 'codex'] as const) {
         const accId = (perVendor as Record<string, unknown>)[vendor];
-        // Drop dangling accountId references (account removed out of band).
-        if (typeof accId === 'string' && accountIds.has(accId)) entry[vendor] = accId;
+        // Keep only a reference whose account exists AND matches this vendor slot.
+        if (typeof accId === 'string' && accountVendor.get(accId) === vendor) entry[vendor] = accId;
       }
       if (Object.keys(entry).length > 0) bindings[wsId] = entry;
     }
@@ -218,7 +239,10 @@ export class AccountStore {
     if (!accountId) return {};
     const account = this.getAccount(accountId);
     if (!account) return {};
-    if (!fs.existsSync(account.configDir)) {
+    // Must be an accessible DIRECTORY — a regular file, dangling link, or
+    // unreadable path is treated as missing (fall back to default credential)
+    // rather than injected into the child (Codex review P2).
+    if (!isAccessibleDir(account.configDir)) {
       onMissing?.(account);
       return {};
     }
@@ -251,9 +275,13 @@ export class AccountStore {
    */
   private mutate<T>(fn: (file: AccountsFile) => T): Promise<T> {
     const run = this.writeChain.then(async () => {
-      // Reload from disk so concurrent-process writes are not clobbered, then
-      // apply the mutation on the fresh copy.
-      const file = this.load();
+      // Reload from disk into a DETACHED copy (does not touch this.cache) so a
+      // failed write leaves the published cache — and thus spawn routing —
+      // exactly as it was committed (Codex review P2). Publish only after the
+      // durable write succeeds.
+      let raw: unknown = null;
+      try { raw = atomicReadJSONSync<unknown>(this.filePath); } catch { raw = null; }
+      const file = sanitizeFile(raw);
       const result = fn(file);
       await atomicWriteJSON(this.filePath, file, { durable: true });
       this.cache = file;
@@ -268,7 +296,18 @@ export class AccountStore {
     const name = input.name.trim();
     if (!name) throw new AccountError('invalid', 'account name is required');
     if (!isVendor(input.vendor)) throw new AccountError('invalid', 'invalid vendor');
-    const canonical = canonicalizeConfigDir(input.configDir);
+    // Require an existing, canonicalizable directory: a lexical fallback would
+    // let two case/8.3/UNC spellings register as distinct accounts that later
+    // resolve to one credential dir (Codex review P1).
+    let canonical: string;
+    try {
+      canonical = canonicalizeConfigDir(input.configDir);
+    } catch {
+      throw new AccountError('invalid', `config directory does not exist or is inaccessible: ${input.configDir}`);
+    }
+    if (!isAccessibleDir(canonical)) {
+      throw new AccountError('invalid', `config directory is not a directory: ${input.configDir}`);
+    }
     return this.mutate((file) => {
       if (file.accounts.length >= MAX_ACCOUNTS) {
         throw new AccountError('limit', `account limit (${MAX_ACCOUNTS}) reached`);
@@ -330,6 +369,7 @@ export class AccountStore {
    *  workspace. Validates the account exists and matches the vendor. */
   async setBinding(workspaceId: string, vendor: Vendor, accountId: string | undefined): Promise<void> {
     if (!workspaceId) throw new AccountError('invalid', 'workspaceId is required');
+    if (isUnsafeKey(workspaceId)) throw new AccountError('invalid', 'invalid workspaceId');
     await this.mutate((file) => {
       if (accountId !== undefined) {
         const account = file.accounts.find((a) => a.id === accountId);

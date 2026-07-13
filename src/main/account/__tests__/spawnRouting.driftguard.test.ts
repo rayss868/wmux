@@ -50,8 +50,8 @@ describe('account spawn-routing drift guard', () => {
 
   it('resolveSpawnEnv applies accountEnv BEFORE the profile (manual override wins)', () => {
     const src = read('src/main/pty/resolveSpawnEnv.ts');
-    const accountIdx = src.indexOf('applyProfileEnv(env, accountEnv)');
-    const profileIdx = src.indexOf('applyProfileEnv(env, profileEnv)');
+    const accountIdx = src.indexOf('applyOverlay(env, accountEnv)');
+    const profileIdx = src.indexOf('applyOverlay(env, profileEnv)');
     expect(accountIdx).toBeGreaterThan(-1);
     expect(profileIdx).toBeGreaterThan(-1);
     // Account overlay must be applied first so the profile can override it.

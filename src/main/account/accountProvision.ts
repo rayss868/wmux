@@ -25,10 +25,24 @@ import path from 'node:path';
 import os from 'node:os';
 import type { Vendor } from './accountStore';
 
-/** Read-mostly directories shared LIVE via symlink/junction. */
-const SHARED_LINK_DIRS = ['commands', 'skills', 'agents', 'plugins'] as const;
-/** Rewritten-in-place files shared by COPY (snapshot; may diverge later). */
-const SHARED_COPY_FILES = ['settings.json', 'CLAUDE.md'] as const;
+// Per-vendor share manifests. Codex stores user settings + MCP in config.toml
+// (NOT settings.json/CLAUDE.md) and its login lives in auth.json, which must
+// NEVER be shared (Codex review P2). Directories that the CLI reads but doesn't
+// atomic-rewrite are LINKED (live share); rewritten files are COPIED (snapshot).
+const SHARE_MANIFEST: Record<Vendor, { linkDirs: readonly string[]; copyFiles: readonly string[] }> = {
+  claude: {
+    linkDirs: ['commands', 'skills', 'agents', 'plugins'],
+    copyFiles: ['settings.json', 'CLAUDE.md'],
+  },
+  codex: {
+    // Codex keeps prompts/ shareable; config.toml holds settings + MCP servers.
+    linkDirs: ['prompts'],
+    copyFiles: ['config.toml', 'AGENTS.md'],
+  },
+};
+/** Back-compat export for tests / callers that referenced the claude manifest. */
+const SHARED_LINK_DIRS = SHARE_MANIFEST.claude.linkDirs;
+const SHARED_COPY_FILES = SHARE_MANIFEST.claude.copyFiles;
 
 /** Default source config dir per vendor (where the user's existing setup lives). */
 export function defaultSourceDir(vendor: Vendor): string {
@@ -37,19 +51,21 @@ export function defaultSourceDir(vendor: Vendor): string {
     : path.join(os.homedir(), '.claude');
 }
 
-function linkDir(target: string, linkPath: string): void {
+/** Returns true only when the link now exists — a swallowed failure must not be
+ *  reported as a successful share (Codex review P3). */
+function linkDir(target: string, linkPath: string): boolean {
   // Directory junction on Windows (no elevation), symlink elsewhere.
   const type = process.platform === 'win32' ? 'junction' : 'dir';
   try {
     fs.symlinkSync(target, linkPath, type);
+    return true;
   } catch (err) {
-    // EEXIST (already linked) is fine; anything else is best-effort — a failed
-    // share must not block account creation (the account still works, just
-    // without that shared asset).
+    // best-effort — a failed share must not block account creation.
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== 'EEXIST') {
       console.warn(`[account] hybrid-share: could not link ${linkPath} → ${target}: ${String(err)}`);
     }
+    return false;
   }
 }
 
@@ -78,15 +94,16 @@ export function provisionAccountDir(opts: {
   const copied: string[] = [];
   if (!share) return { configDir, linked, copied };
 
-  for (const name of SHARED_LINK_DIRS) {
+  const manifest = SHARE_MANIFEST[vendor];
+  for (const name of manifest.linkDirs) {
     const src = path.join(sourceDir, name);
     const dst = path.join(configDir, name);
     if (fs.existsSync(src) && !fs.existsSync(dst)) {
-      linkDir(src, dst);
-      linked.push(name);
+      // Record only on VERIFIED creation — a swallowed link failure is not a share.
+      if (linkDir(src, dst)) linked.push(name);
     }
   }
-  for (const name of SHARED_COPY_FILES) {
+  for (const name of manifest.copyFiles) {
     const src = path.join(sourceDir, name);
     const dst = path.join(configDir, name);
     if (fs.existsSync(src) && !fs.existsSync(dst)) {

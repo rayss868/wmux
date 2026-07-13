@@ -303,7 +303,7 @@ const electronAPI = {
       }>,
     onboardPrepare: (args: { vendor: 'claude' | 'codex'; share?: boolean }) =>
       ipcRenderer.invoke(IPC.ACCOUNT_ONBOARD_PREPARE, args) as Promise<
-        import('../main/account/accountProvision').ProvisionResult
+        import('../main/ipc/handlers/account.handler').OnboardPrepareResult
       >,
     add: (args: { name: string; vendor: 'claude' | 'codex'; configDir: string }) =>
       ipcRenderer.invoke(IPC.ACCOUNT_ADD, args) as Promise<
