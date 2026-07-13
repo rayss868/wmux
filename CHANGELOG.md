@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Agents no longer run a helper process on every single tool call.** The Claude integration used to fire a small background process after each tool use, only to keep the "running" dot lit in the fleet view — on a tool-heavy turn that added up to seconds of overhead per turn and a lot of process churn. The running dots now come from the daemon watching each pane's output directly (which it already did), so background agents still show as working with zero per-tool overhead. One tradeoff: the fleet card's one-line "what tool just ran" label goes away for Claude (the daemon can't see the tool name), falling back to the terminal's last line instead. Existing installs pick this up when the plugin/hooks are next updated.
+
 ## [3.21.2] — 2026-07-13
 
 ### Added

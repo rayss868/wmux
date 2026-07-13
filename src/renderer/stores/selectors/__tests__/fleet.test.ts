@@ -458,8 +458,10 @@ describe('selectAllWorkspaceAgentStatus', () => {
 describe('selectFleetPanes hook-driven running', () => {
   const NOW = 1_000_000_000_000;
   // One quiet background pane (no attention, no active-metadata running) whose
-  // only signal is a PostToolUse stamp — the "thinking mid-turn / background
-  // running" case the byte-silence path misread as idle.
+  // only signal is a `surfaceActivityAt` stamp — the "thinking mid-turn /
+  // background running" case. The stamp is source-agnostic: since 2026-07-13
+  // it comes from the daemon's byte-based 'running' broadcast (markSurfaceRunning)
+  // rather than the per-tool-call PostToolUse hook; the selector is unchanged.
   const wq = workspace('ws-q', 'quiet', leaf('pq', [surface('sq', 'pty-q')]), 'other-pane');
   const base = { workspaces: [wq], surfaceAgentStatus: {}, surfaceActivity: {} };
 

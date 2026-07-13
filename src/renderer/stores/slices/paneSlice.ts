@@ -118,12 +118,24 @@ export interface PaneSlice {
   // (buildSessionData is an allowlist and deliberately omits it).
   surfaceActivity: Record<string, string>;
   setSurfaceActivity: (ptyId: string, activity: string | null) => void;
-  // Hook-driven "running" (orca-style): epoch-ms of each pane's last PostToolUse
-  // activity, stamped alongside surfaceActivity. The fleet selector treats a
-  // fresh stamp (within HOOK_RUNNING_TTL_MS) as 'running' even when the terminal
-  // has gone quiet — so a Claude agent thinking mid-turn (no output, no new
-  // tool) is not misread as idle by the 5s byte-silence path. Cleared with the
-  // activity string (new-idle broadcast / pane disposal).
+  // Stamp the "running" freshness clock for a pane WITHOUT an activity string —
+  // the byte-based per-PTY 'running' broadcast has no tool name. Same 120s-TTL
+  // decay as setSurfaceActivity's stamp; lights background dots from bytes.
+  markSurfaceRunning: (ptyId: string) => void;
+  // "running" freshness (orca-style): epoch-ms of each pane's last activity
+  // signal. The fleet selector treats a fresh stamp (within HOOK_RUNNING_TTL_MS)
+  // as 'running' even when the terminal has gone quiet — so an agent thinking
+  // mid-turn (no output) is not misread as idle by the 5s byte-silence path,
+  // AND a BACKGROUND pane (no ws-metadata status) lights its dot.
+  //
+  // Sources (2026-07-13): the DAEMON's byte-based per-PTY 'running' broadcast
+  // (ActivityMonitor onActive → DaemonNotificationRouter → METADATA_UPDATE.
+  // agentStatus='running' → markSurfaceRunning) is the primary source; this
+  // replaced the per-tool-call PostToolUse hook (which spawned a ~110ms node
+  // bridge on EVERY tool call). An agent that still emits PostToolUse also
+  // stamps this via setSurfaceActivity (which carries the activity string too).
+  // Cleared with the activity string (pane disposal); byte-'running' has no
+  // string, so it stamps the timestamp only (markSurfaceRunning).
   surfaceActivityAt: Record<string, number>;
   // A coarse clock the status derivation re-reads so a fresh stamp DECAYS to
   // idle on its own with no new store event. Bumped ~every 2s by
@@ -278,6 +290,13 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       delete state.surfaceActivity[ptyId];
       delete state.surfaceActivityAt[ptyId];
     }
+  }),
+
+  markSurfaceRunning: (ptyId) => set((state: StoreState) => {
+    if (!ptyId) return;
+    // Byte-based 'running' with no tool name: stamp only the freshness clock,
+    // NOT the activity string (leave the card's raw-tail fallback in place).
+    state.surfaceActivityAt[ptyId] = Date.now();
   }),
 
   splitCwdSeed: {},

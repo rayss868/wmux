@@ -154,6 +154,27 @@ describe('useNotificationListener — Fleet activity line (METADATA_UPDATE.activ
     expect(useStore.getState().surfaceActivity['pty-1']).toBe('✎ leak.ts');
   });
 
+  // Byte-based per-PTY 'running' (daemon ActivityMonitor) has no activity
+  // string; it must stamp the running freshness clock (surfaceActivityAt) so a
+  // background dot lights — this replaced the per-tool PostToolUse hook. The
+  // attention-only surfaceAgentStatus map still drops 'running'.
+  it('stamps surfaceActivityAt from a byte-based agentStatus=running (no string)', () => {
+    seedActivePaneSurface('pty-1');
+    act(() => { metaCb!({ ptyId: 'pty-1', agentStatus: 'running' }); });
+    expect(useStore.getState().surfaceActivityAt['pty-1']).toBeGreaterThan(0);
+    // running is not an attention status → not retained in the status map.
+    expect(useStore.getState().surfaceAgentStatus['pty-1']).toBeUndefined();
+    // and no phantom activity string was written.
+    expect(useStore.getState().surfaceActivity['pty-1']).toBeUndefined();
+  });
+
+  it('does NOT stamp surfaceActivityAt for a non-running agentStatus', () => {
+    // Fresh ptyId — surfaceActivityAt is not reset between tests in this suite.
+    seedActivePaneSurface('pty-nr');
+    act(() => { metaCb!({ ptyId: 'pty-nr', agentStatus: 'awaiting_input' }); });
+    expect(useStore.getState().surfaceActivityAt['pty-nr']).toBeUndefined();
+  });
+
   // A metadata payload that also carries a real workspace field (e.g. cwd) must
   // still apply that field; only `activity` is diverted. This proves the
   // destructure removed activity WITHOUT eating the rest of the payload.

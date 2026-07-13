@@ -505,6 +505,19 @@ describe('PaneSlice', () => {
       expect(store.getState().surfaceAgentStatus['']).toBeUndefined();
     });
 
+    it('markSurfaceRunning stamps the freshness clock WITHOUT an activity string', () => {
+      // Byte-based 'running' has no tool name — it must light the dot (via
+      // surfaceActivityAt) but leave surfaceActivity empty (raw-tail fallback).
+      store.getState().markSurfaceRunning('pty-b');
+      expect(store.getState().surfaceActivityAt['pty-b']).toBeGreaterThan(0);
+      expect(store.getState().surfaceActivity['pty-b']).toBeUndefined();
+    });
+
+    it('markSurfaceRunning ignores an empty ptyId', () => {
+      store.getState().markSurfaceRunning('');
+      expect(store.getState().surfaceActivityAt['']).toBeUndefined();
+    });
+
     it('overwrites an existing attention status with a newer attention status', () => {
       store.getState().setSurfaceAgentStatus('pty-1', 'waiting');
       store.getState().setSurfaceAgentStatus('pty-1', 'complete');
