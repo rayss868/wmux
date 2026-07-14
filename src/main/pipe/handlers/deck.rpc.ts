@@ -22,6 +22,7 @@ import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import { commanderTokenWorkspace } from '../../deck/commanderTrust';
+import { loadWorkspaceDecision, raiseDecision } from '../../deck/deckDecisionStore';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -70,5 +71,34 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
       throw new Error('deck.resolveCommanderWorkspace: not a live commander session');
     }
     return { workspaceId: tokenWorkspaceId };
+  });
+
+  // `deck.requestDecision` is how the commander brain RAISES a decision gate —
+  // it pauses its own working loop and asks the human operator to settle a fork
+  // it should not settle itself. Auth is the same per-spawn commander token; a
+  // missing/stale token (or a non-commander MCP client, which never has one)
+  // is rejected. The pending decision is persisted (deckDecisionStore) and the
+  // wake-suppression check (CommanderEventCoalescer / DeckScheduler) blocks
+  // auto-advance until a human resolves it. At most one active decision per
+  // workspace: a second raise while one is pending is refused, not stacked.
+  router.register('deck.requestDecision', async (params) => {
+    const ws = commanderTokenWorkspace(params['token']);
+    if (!ws) {
+      throw new Error('deck.requestDecision: not a live commander session');
+    }
+    const question = params['question'];
+    if (typeof question !== 'string' || question.trim().length === 0) {
+      throw new Error('deck.requestDecision: missing required param "question"');
+    }
+    const existing = loadWorkspaceDecision(ws);
+    if (existing && existing.status === 'pending') {
+      return { ok: false, error: 'decision_pending', id: existing.id };
+    }
+    const options = Array.isArray(params['options'])
+      ? (params['options'] as unknown[]).filter((s): s is string => typeof s === 'string')
+      : [];
+    const context = typeof params['context'] === 'string' ? (params['context'] as string) : '';
+    const decision = await raiseDecision(ws, { question, options, context });
+    return { ok: true, id: decision?.id ?? null };
   });
 }

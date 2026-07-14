@@ -105,6 +105,9 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // commander-brain self-identity (token→home workspace) for A2A sender
   // resolution — same per-spawn-token auth, fails closed without a live token.
   'deck.resolveCommanderWorkspace',
+  // commander-brain decision gate (deck_ask_decision tool). Same per-spawn-token
+  // auth; a non-commander caller has no token and fails closed.
+  'deck.requestDecision',
   // events
   'events.poll',
   // browser (Playwright + packaged CDP/RPC fallbacks)

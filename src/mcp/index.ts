@@ -680,6 +680,37 @@ server.tool(
   },
 );
 
+// === Orchestrator (Command Deck) tools ===
+
+server.tool(
+  'deck_ask_decision',
+  'Pause your working loop and ask the human operator to make a decision you should NOT make yourself — an ambiguous requirement, a risky or irreversible action, or a genuine choice between approaches. Your loop STOPS and will not auto-advance until the human answers; the pending decision survives an app restart or reboot, so the human can answer later and you will resume from here. After calling this, END YOUR TURN and do not act further. Use only for real forks — never for routine progress updates or questions you can resolve yourself.',
+  {
+    question: z
+      .string()
+      .describe('The decision you need the human to make, in one clear sentence.'),
+    options: z
+      .array(z.string())
+      .optional()
+      .describe('Optional discrete choices, e.g. ["approach A", "approach B"]. Omit for a free-text answer.'),
+    context: z
+      .string()
+      .optional()
+      .describe('Optional short note on what is at stake or why you cannot decide yourself.'),
+  },
+  async ({ question, options, context }) => {
+    // Only the commander brain has WMUX_COMMANDER_TOKEN; a non-commander caller
+    // sends an undefined token and the RPC fail-closes ("not a live commander").
+    const params: Record<string, unknown> = {
+      token: process.env.WMUX_COMMANDER_TOKEN,
+      question,
+    };
+    if (options && options.length > 0) params.options = options;
+    if (context) params.context = context;
+    return callRpc('deck.requestDecision', params);
+  },
+);
+
 // === Workspace tools ===
 
 server.tool(

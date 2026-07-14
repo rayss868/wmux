@@ -53,6 +53,14 @@ import {
   type WorkspaceLoopState,
   type LoopTier,
 } from '../../deck/deckLoopStateStore';
+import {
+  loadWorkspaceDecision,
+  resolveDecision,
+  clearResolvedDecision,
+  renderDecisionBlock,
+  hasPendingDecision,
+  type WorkspaceDecision,
+} from '../../deck/deckDecisionStore';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
 import { eventBus } from '../../events/EventBus';
 import {
@@ -186,9 +194,16 @@ export function registerDeckHandler(
   // to write `passes` and `done` does not suppress wakes in v1 (owner decision:
   // the human stops the loop).
   const withLoopContext = (workspaceId: string, text: string): string => {
+    const decision = loadWorkspaceDecision(workspaceId);
     const loop = loadWorkspaceLoopState(workspaceId);
-    if (!loop) return text;
-    return `${renderLoopStateBlock(loop)}\n\n${text}`;
+    const blocks: string[] = [];
+    // The decision block LEADS — a blocked (or just-resolved) decision is the
+    // most urgent trusted context for this turn. Both survive a reboot as
+    // atomic JSON, so a resumed brain re-reads exactly where it paused.
+    if (decision) blocks.push(renderDecisionBlock(decision));
+    if (loop) blocks.push(renderLoopStateBlock(loop));
+    if (blocks.length === 0) return text;
+    return `${blocks.join('\n\n')}\n\n${text}`;
   };
 
   ipcMain.removeHandler(IPC.DECK_SEND);
@@ -273,22 +288,31 @@ export function registerDeckHandler(
   // manager will actually accept it (a busy reject must not open a phantom
   // stuck-streaming bubble). The status check and send are one synchronous
   // sequence, so nothing can interleave between them.
-  const runTurnForWorkspace = (
+  const runTurnForWorkspace = async (
     prompt: string,
     workspaceId: string,
   ): Promise<{ ok: boolean; code?: string }> => {
     if (!WORKSPACE_ID_RE.test(workspaceId)) {
-      return Promise.resolve({ ok: false, code: 'invalid_workspace' as const });
+      return { ok: false, code: 'invalid_workspace' as const };
     }
     const mgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
     if (mgr.getStatus().status !== 'idle') {
-      return Promise.resolve({ ok: false, code: 'busy' as const });
+      return { ok: false, code: 'busy' as const };
     }
+    // Build the wire prompt (prepends any pending/resolved [decision] block and
+    // the loop block) BEFORE the send — the status check and send stay one
+    // synchronous sequence (nothing awaits between them).
     // turn-start announces the ORIGINAL prompt (what the human should see as
-    // the turn's cause); the loop block is prepended only on the wire to the
-    // brain, mirroring the DECK_SEND path.
+    // the turn's cause); the context blocks ride only on the wire to the brain,
+    // mirroring the DECK_SEND path.
+    const prompted = withLoopContext(workspaceId, prompt);
     emit(workspaceId, { type: 'turn-start', prompt });
-    return mgr.send(withLoopContext(workspaceId, prompt));
+    const verdict = await mgr.send(prompted);
+    // Consume-once: a RESOLVED decision that just rode this turn is cleared so
+    // it never re-injects. A PENDING decision is left intact (it keeps
+    // blocking); a plain turn with no decision is a no-op.
+    if (verdict.ok) void clearResolvedDecision(workspaceId);
+    return verdict;
   };
 
   // The first turn a freshly started/resumed loop takes. Without this, START
@@ -337,6 +361,9 @@ export function registerDeckHandler(
     // Global kill switch (Settings): OFF drops ambient wakes; running loops
     // still wake. Read fresh at every flush so the toggle applies immediately.
     isAutoWakeEnabled: () => loadAutoWakeEnabled(),
+    // A PENDING decision gate blocks every wake for this workspace (even a
+    // running loop) until the human resolves it. Read fresh at each flush.
+    hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
   });
   const offBus = eventBus.subscribe((ev) => {
     if (ev.type !== 'agent.lifecycle') return;
@@ -357,7 +384,12 @@ export function registerDeckHandler(
   // workspace's orchestrator (streamed over DECK_STREAM like any typed
   // command). A scheduled turn reuses that workspace's live manager — and its
   // model — or lazily creates one exactly like deck:send.
-  const scheduler = new DeckScheduler({ runTurn: runTurnForWorkspace });
+  const scheduler = new DeckScheduler({
+    runTurn: runTurnForWorkspace,
+    // A pending decision gate blocks scheduled wakes too (the schedule stays
+    // due and retries once resolved).
+    hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
+  });
   scheduler.start();
 
   ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
@@ -777,6 +809,63 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── Decision gate (brain-raised human-in-the-loop) ────────────────────────
+  // The brain raises a decision via the deck_ask_decision MCP tool → pipe RPC
+  // (deck.rpc.ts); these two renderer-only handlers are the HUMAN's side. GET
+  // hydrates the pending/just-resolved decision for the active workspace so the
+  // card shows after a reboot. RESOLVE records the answer (durable), un-blocks
+  // the wake loop, and kicks a resume turn — withLoopContext injects the
+  // resolution so the brain continues from exactly where it paused.
+  const DECISION_RESUME_PROMPT =
+    'The operator just resolved the decision you raised (see the [decision] block above). ' +
+    'Act on their answer now and continue — take the next concrete step, then end the turn.';
+
+  ipcMain.removeHandler(IPC.DECK_DECISION_GET);
+  ipcMain.handle(
+    IPC.DECK_DECISION_GET,
+    wrapHandler(IPC.DECK_DECISION_GET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ decision: WorkspaceDecision | null }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      return { decision: workspaceId ? loadWorkspaceDecision(workspaceId) : null };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_DECISION_RESOLVE);
+  ipcMain.handle(
+    IPC.DECK_DECISION_RESOLVE,
+    wrapHandler(IPC.DECK_DECISION_RESOLVE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; code?: string; decision?: WorkspaceDecision }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      const id = typeof req.id === 'string' ? req.id : '';
+      const resolution = typeof req.resolution === 'string' ? req.resolution : '';
+      if (!id || !resolution.trim()) return { ok: false, code: 'invalid' };
+      const decision = await resolveDecision(workspaceId, id, resolution);
+      if (!decision || decision.status !== 'resolved') {
+        // Stale id, already resolved, or empty answer — nothing to resume.
+        return { ok: false, code: 'not_pending' };
+      }
+      // Un-blocked now (hasPendingDecision is false). Kick a resume turn; a busy
+      // reject is fine — the resolution rides withLoopContext on the next turn
+      // (event / schedule / human) and is consumed then. Fire-and-forget: the
+      // renderer only needs the resolve's accept, not the turn's outcome.
+      void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId).catch(() => {
+        /* best-effort resume — the durable resolved decision rides the next turn */
+      });
+      return { ok: true, decision };
+    }),
+  );
+
   const disposeAll = (): void => {
     for (const { manager } of managers.values()) manager.dispose();
     managers.clear();
@@ -810,5 +899,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_AUTOWAKE_SET);
     ipcMain.removeHandler(IPC.DECK_MODE_GET);
     ipcMain.removeHandler(IPC.DECK_MODE_SET);
+    ipcMain.removeHandler(IPC.DECK_DECISION_GET);
+    ipcMain.removeHandler(IPC.DECK_DECISION_RESOLVE);
   };
 }

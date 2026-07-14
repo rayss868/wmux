@@ -113,6 +113,12 @@ export interface CoalescerDeps {
    *  still wakes (explicit opt-in, bounded by its own iteration budget).
    *  Absent/throwing resolves to enabled (the shipped behavior). */
   isAutoWakeEnabled?: () => boolean;
+  /** A workspace with a PENDING decision gate must not be auto-woken — even a
+   *  RUNNING loop: the brain raised a decision and must not proceed until a
+   *  human answers. Overrides the loop carve-out (unlike the auto-wake switch).
+   *  Absent/throwing resolves to "no pending decision" (fail open so a torn
+   *  store can't wedge every wake). */
+  hasPendingDecision?: (workspaceId: string) => boolean;
   now?: () => number;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
@@ -313,6 +319,16 @@ export class CommanderEventCoalescer {
     }
   }
 
+  /** Pending decision gate, never-throw. Missing dep or a throwing read = no
+   *  pending decision (fail open — a corrupt store must not wedge every wake). */
+  private safeHasPendingDecision(workspaceId: string): boolean {
+    try {
+      return this.deps.hasPendingDecision?.(workspaceId) === true;
+    } catch {
+      return false;
+    }
+  }
+
   private safeAutonomy(workspaceId: string): WorkspaceAutonomy {
     try {
       return this.deps.getAutonomy(workspaceId);
@@ -341,6 +357,15 @@ export class CommanderEventCoalescer {
     const events = this.collectBuffer(st);
     if (events.length === 0) {
       st.phase = 'idle';
+      return;
+    }
+    // Decision gate: a PENDING decision blocks EVERY wake — even a running loop
+    // (unlike the auto-wake switch and mode policy below, which a running loop
+    // overrides). The brain raised a decision and must not proceed until a human
+    // answers. Consume (drop) the buffered events: resolving the decision
+    // explicitly kicks a resume turn, so there is nothing to replay here.
+    if (this.safeHasPendingDecision(workspaceId)) {
+      this.consume(st, events);
       return;
     }
     // Global auto-wake switch: OFF suppresses AMBIENT wakes. The buffered
