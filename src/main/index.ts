@@ -31,6 +31,8 @@ import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { UsagePoller } from './claude/UsagePoller';
+import { AccountUsageService } from './account/AccountUsageService';
+import { getAccountStore } from './account/accountStore';
 import { IPC } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
@@ -580,7 +582,35 @@ registerWorktaskHandlers(() => daemonClient);
 const disposeDeckHandler = registerDeckHandler(() => mainWindow);
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
-const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient);
+// ─── M2 — per-account usage service (hook-gated, opt-in) ─────────────────────
+// Shares the opt-in USAGE_TOGGLE with the default-account poller below. Probes
+// fire on the `agent.stop` hook for the pane's bound claude account (main
+// resolves workspace → account here so hooks.rpc stays account-agnostic).
+const accountUsageService = new AccountUsageService();
+const disposeAccountUsageListener = accountUsageService.onChange((entry) => {
+  const win = mainWindow;
+  if (win && !win.isDestroyed()) {
+    win.webContents.send(IPC.ACCOUNT_USAGE_UPDATE, entry);
+  }
+});
+const onClaudeTurnEnd = (workspaceId: string): void => {
+  // Resolve the workspace's bound claude account; only registered accounts probe
+  // (an unbound workspace uses the default credential, covered by usagePoller).
+  //
+  // KNOWN M2 LIMITATION (Codex review 2026-07-14, accepted — defer to M3 §4c):
+  // this follows the workspace's CURRENT claude binding, not the ending pane's
+  // spawn-time account. Binding is a per-PTY generation (plan §2): a "bind-only"
+  // change leaves running terminals on their spawn-time account. So a pane that
+  // outlived a rebind refreshes the NEW binding's card on turn-end, and the
+  // account it actually runs on refreshes only on its next spawn or a manual ↻.
+  // No wrong NUMBER is ever shown (each probe reads the probed account's real
+  // quota) and it self-heals — but the trigger routing is imprecise until M3
+  // persists a per-pane resolved accountId (plan §4c) that this can key on via
+  // the hook's ptyId instead of the workspace binding.
+  const accountId = getAccountStore().getBinding(workspaceId, 'claude');
+  if (accountId) void accountUsageService.maybeProbe(accountId);
+};
+const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient, onClaudeTurnEnd);
 
 // ─── Phase 2 — Anthropic 5h/7d usage meter ──────────────────────────────────
 // Opt-in. Stays idle until the renderer sends IPC.USAGE_TOGGLE with `true`.
@@ -604,8 +634,10 @@ ipcMain.on(IPC.LANLINK_RESYNC, () => {
 ipcMain.on(IPC.USAGE_TOGGLE, (_event, enabled: unknown) => {
   if (enabled === true) {
     usagePoller.start();
+    accountUsageService.setEnabled(true);
   } else {
     usagePoller.stop();
+    accountUsageService.setEnabled(false);
   }
 });
 ipcMain.on(IPC.USAGE_REFRESH, () => {
@@ -613,6 +645,16 @@ ipcMain.on(IPC.USAGE_REFRESH, () => {
   // push the resulting state to the renderer. Wrapping in `void` so
   // the floating promise doesn't trip lint.
   void usagePoller.refreshNow();
+});
+
+// M2 — per-account usage IPC. LIST pulls the current cache on Settings mount;
+// REFRESH forces a manual probe for one account (explicit user action, bypasses
+// the opt-in/cooldown gates in the service). The UPDATE push is wired above.
+ipcMain.handle(IPC.ACCOUNT_USAGE_LIST, () => accountUsageService.getAll());
+ipcMain.on(IPC.ACCOUNT_USAGE_REFRESH, (_event, accountId: unknown) => {
+  if (typeof accountId === 'string' && accountId) {
+    void accountUsageService.refreshNow(accountId);
+  }
 });
 
 // Wire the legacy-contact bookkeeping so envelope-less RPCs land in
@@ -808,6 +850,7 @@ app.on('ready', async () => {
   // unpauses immediately and forces a catch-up fetch.
   mainWindow.on('hide', () => {
     usagePoller.setWindowVisible(false);
+    accountUsageService.setWindowVisible(false);
     // Quit-to-tray is the accumulation blind spot: the daemon keeps every
     // live session (and any agent inside it) running with no visible UI.
     // Refresh the tray's session-count nudge so the user can see how much is
@@ -817,6 +860,7 @@ app.on('ready', async () => {
   });
   mainWindow.on('show', () => {
     usagePoller.setWindowVisible(true);
+    accountUsageService.setWindowVisible(true);
     // Window is visible again — the panes speak for themselves, so clear the
     // background-session nudge back to the plain "wmux" tooltip/menu. Bump the
     // refresh token first so a slow in-flight hide refresh can't overwrite this
@@ -1366,6 +1410,11 @@ app.on('before-quit', async (e) => {
   safeStep('disposeHooksRpc', () => disposeHooksRpc());
   safeStep('disposeUsagePollerListener', () => disposeUsagePollerListener());
   safeStep('usagePoller.dispose', () => usagePoller.dispose());
+  safeStep('disposeAccountUsageListener', () => disposeAccountUsageListener());
+  safeStep('cleanupAccountUsageIpc', () => {
+    ipcMain.removeHandler(IPC.ACCOUNT_USAGE_LIST);
+    ipcMain.removeAllListeners(IPC.ACCOUNT_USAGE_REFRESH);
+  });
   // Tear down the respawn controller BEFORE the daemon-shutdown race so
   // a daemon close during the race window can't trigger a respawn attempt
   // while the rest of the app is exiting. `dispose()` only stops timers
