@@ -95,31 +95,59 @@ function nonEmptyStr(v) {
 }
 
 /**
- * Build the canonical wmux AgentSignal envelope for an OpenCode turn completion.
+ * Build a canonical wmux AgentSignal envelope for an OpenCode lifecycle event.
  * Pure: reads env + args, returns the object, does no I/O. `env` is injected so
  * the unit test can drive it without mutating process.env.
  *
- * kind 'agent.stop' = a turn finished (the strongest "task done" signal the
- * orchestrator wakes on). agentSessionId is opaque/forensic; routing uses ptyId
- * (exact per-pane) → workspaceId → cwd, in that order (see signal-types.ts).
+ * `kind` is 'agent.stop' (a turn finished — the strongest "task done" signal) or
+ * 'agent.awaiting_input' (the session is blocked on a permission approval).
+ * agentSessionId is opaque/forensic; routing uses ptyId (exact per-pane) →
+ * workspaceId → cwd, in that order (see signal-types.ts).
  */
-export function buildOpencodeStopEnvelope({ env = process.env, cwd, sessionId, now } = {}) {
+export function buildOpencodeEnvelope(kind, { env = process.env, cwd, sessionId, payload, now } = {}) {
   const ptyId = nonEmptyStr(env.WMUX_PTY_ID);
   const workspaceId = nonEmptyStr(env.WMUX_WORKSPACE_ID);
   const surfaceId = nonEmptyStr(env.WMUX_SURFACE_ID);
   const resolvedCwd = nonEmptyStr(cwd) ?? process.cwd();
   const sid = nonEmptyStr(sessionId);
   return {
-    kind: 'agent.stop',
+    kind,
     agent: 'opencode',
     ...(sid ? { agentSessionId: sid } : {}),
     ...(workspaceId ? { workspaceId } : {}),
     ...(surfaceId ? { surfaceId } : {}),
     ...(ptyId ? { ptyId } : {}),
     cwd: resolvedCwd,
-    payload: {},
+    payload: payload && typeof payload === 'object' ? payload : {},
     ts: typeof now === 'number' ? now : Date.now(),
   };
+}
+
+/** Back-compat thin wrapper (agent.stop). */
+export function buildOpencodeStopEnvelope(opts = {}) {
+  return buildOpencodeEnvelope('agent.stop', opts);
+}
+
+/**
+ * Is this session a CHILD (sub-agent) session? Sub-sessions go idle on every
+ * sub-agent turn; waking the orchestrator on each would over-fire. We treat a
+ * session with a `parentID` as a child and suppress its lifecycle signal
+ * (matches opencode-notify's notifyChildSessions=false default). FAIL-OPEN: if
+ * there is no client, no session id, or the lookup throws, return false (treat
+ * as a root session and EMIT) — a slightly noisy wake beats a missed completion.
+ * Exported for unit testing with a fake client.
+ */
+export async function isChildSession(client, sessionID) {
+  if (!client || !sessionID) return false;
+  try {
+    const res = await client.session.get({ path: { id: sessionID } });
+    // hey-api client returns { data, error }; older/fake clients may return the
+    // session directly. Accept either shape.
+    const session = res && typeof res === 'object' && 'data' in res ? res.data : res;
+    return typeof session?.parentID === 'string' && session.parentID.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 // ----- RPC over named pipe (mirrors the Codex bridge) ----------------------
@@ -189,39 +217,45 @@ async function sendRpcWithRetry(pipePath, request) {
 
 // ----- Signal dispatch -----------------------------------------------------
 
-async function signalTurnComplete({ cwd, sessionId }) {
+/** Read the wmux auth token, or null (logged) when unavailable. */
+function readAuthToken() {
   const tokenPath = getAuthTokenPath();
   if (!existsSync(tokenPath)) {
     logEvent('no-auth-token', { path: tokenPath });
-    return;
+    return null;
   }
   let token;
   try {
     token = readFileSync(tokenPath, 'utf8').trim();
   } catch (err) {
     logEvent('auth-token-read-error', { error: String(err) });
-    return;
+    return null;
   }
   if (!token) {
     logEvent('empty-auth-token', {});
-    return;
+    return null;
   }
+  return token;
+}
 
-  const envelope = buildOpencodeStopEnvelope({ cwd, sessionId });
+/** Send one already-built AgentSignal envelope over the wmux hooks.signal pipe. */
+async function sendSignal(envelope, idPrefix) {
+  const token = readAuthToken();
+  if (!token) return;
   const request = {
-    id: `opencode-idle-${randomUUID()}`,
+    id: `${idPrefix}-${randomUUID()}`,
     method: 'hooks.signal',
     params: envelope,
     token,
   };
-
   const rpcResult = await sendRpcWithRetry(getPipeName(), request);
   const outerOk = rpcResult && rpcResult.ok === true;
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;
   if (innerOk) {
-    logEvent('ok', { ptyId: envelope.ptyId, sessionId: envelope.agentSessionId });
+    logEvent('ok', { kind: envelope.kind, ptyId: envelope.ptyId, sessionId: envelope.agentSessionId });
   } else {
     logEvent(outerOk ? 'rpc-rejected' : 'rpc-failed', {
+      kind: envelope.kind,
       reason: rpcResult?.result?.reason,
       error: rpcResult?.error,
       detail: rpcResult?.detail,
@@ -231,28 +265,93 @@ async function signalTurnComplete({ cwd, sessionId }) {
 
 // ----- Plugin export -------------------------------------------------------
 
+/** How long a `permission.updated` may sit unanswered before we treat it as a
+ *  genuine wait. Auto-approved permissions (opencode `"permission": "allow"`)
+ *  fire permission.updated then permission.replied within milliseconds; holding
+ *  briefly lets us cancel those and only surface awaiting_input for permissions
+ *  a human/orchestrator actually has to act on. Not latency-critical. */
+const PERMISSION_SETTLE_MS = 500;
+
 /**
- * The OpenCode plugin. Subscribes to the event stream and forwards each
- * `session.idle` (a session finished its turn) to wmux as an `agent.stop`
- * signal. Every branch is guarded + best-effort — an exception here must never
- * disrupt the opencode session.
+ * The OpenCode plugin. Subscribes to the event stream and forwards:
+ *   - session.idle          → agent.stop           (a turn finished)
+ *   - permission.updated    → agent.awaiting_input  (blocked on an approval),
+ *                             debounced so auto-allowed permissions don't fire.
+ * Child (sub-agent) sessions are suppressed so the orchestrator wakes on the
+ * root session's turns, not every sub-agent turn. Every branch is guarded +
+ * best-effort — an exception here must never disrupt the opencode session.
  *
- * `directory` (the plugin context's project dir) seeds the envelope cwd; the
- * pane env (WMUX_PTY_ID etc.) does the actual routing.
+ * `client` (the OpenCode SDK client) resolves a session's parentID; `directory`
+ * seeds the envelope cwd; the pane env (WMUX_PTY_ID etc.) does the routing.
  */
-export const WmuxBridge = async ({ directory } = {}) => {
-  logEvent('loaded', { directory: nonEmptyStr(directory) });
+export const WmuxBridge = async ({ directory, client } = {}) => {
+  logEvent('loaded', { directory: nonEmptyStr(directory), hasClient: !!client });
+  const cwd = nonEmptyStr(directory);
+  // permissionID → settle timer. A permission.replied for the same id before the
+  // timer fires cancels the awaiting_input (the permission auto-resolved).
+  const pendingPermissions = new Map();
+
   return {
     event: async ({ event }) => {
       try {
-        if (!event || event.type !== 'session.idle') return;
-        // Field shape is version-dependent; read the session id defensively for
-        // forensic logging only (routing never depends on it).
-        const sessionId =
-          nonEmptyStr(event?.properties?.sessionID) ??
-          nonEmptyStr(event?.properties?.sessionId) ??
-          nonEmptyStr(event?.sessionID);
-        await signalTurnComplete({ cwd: nonEmptyStr(directory), sessionId });
+        if (!event || typeof event.type !== 'string') return;
+
+        if (event.type === 'session.idle') {
+          const sessionId = nonEmptyStr(event?.properties?.sessionID);
+          if (await isChildSession(client, sessionId)) {
+            logEvent('skip-child-idle', { sessionId });
+            return;
+          }
+          await sendSignal(buildOpencodeEnvelope('agent.stop', { cwd, sessionId }), 'opencode-idle');
+          return;
+        }
+
+        if (event.type === 'permission.updated') {
+          // properties: Permission { id, sessionID, title, ... }
+          const perm = event?.properties ?? {};
+          const permId = nonEmptyStr(perm.id);
+          if (!permId || pendingPermissions.has(permId)) return;
+          const sessionId = nonEmptyStr(perm.sessionID);
+          const title = nonEmptyStr(perm.title);
+          const timer = setTimeout(() => {
+            pendingPermissions.delete(permId);
+            void (async () => {
+              try {
+                // Only the root session's approvals are the orchestrator's to
+                // handle (same child suppression as idle).
+                if (await isChildSession(client, sessionId)) {
+                  logEvent('skip-child-permission', { sessionId, permId });
+                  return;
+                }
+                await sendSignal(
+                  buildOpencodeEnvelope('agent.awaiting_input', {
+                    cwd,
+                    sessionId,
+                    payload: title ? { title } : {},
+                  }),
+                  'opencode-perm',
+                );
+              } catch (err) {
+                logEvent('permission-signal-error', { error: String(err) });
+              }
+            })();
+          }, PERMISSION_SETTLE_MS);
+          timer.unref?.();
+          pendingPermissions.set(permId, timer);
+          return;
+        }
+
+        if (event.type === 'permission.replied') {
+          // properties: { sessionID, permissionID, response }
+          const permId = nonEmptyStr(event?.properties?.permissionID);
+          const timer = permId ? pendingPermissions.get(permId) : undefined;
+          if (timer) {
+            clearTimeout(timer);
+            pendingPermissions.delete(permId);
+            logEvent('permission-auto-resolved', { permId });
+          }
+          return;
+        }
       } catch (err) {
         logEvent('event-handler-error', { error: String(err) });
       }

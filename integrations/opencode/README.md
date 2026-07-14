@@ -49,21 +49,27 @@ Restart `opencode` after copying.
 
 ## What it sends
 
-On each `session.idle`, one canonical wmux `AgentSignal`:
+Two canonical wmux `AgentSignal`s, over the same `hooks.signal` pipe RPC the
+Claude/Codex bridges use (`hooks.rpc.ts` is agent-agnostic, so no wmux-side
+change is needed). Routing prefers `ptyId` (exact per-pane) → `workspaceId` → `cwd`.
 
-```json
-{ "kind": "agent.stop", "agent": "opencode", "ptyId": "<WMUX_PTY_ID>",
-  "workspaceId": "<WMUX_WORKSPACE_ID>", "cwd": "<pane cwd>", "payload": {}, "ts": 0 }
-```
+- On **`session.idle`** (a turn finished) → `agent.stop`:
 
-sent over the same `hooks.signal` pipe RPC the Claude/Codex bridges use.
-`hooks.rpc.ts` is agent-agnostic, so no wmux-side change is needed. Routing
-prefers `ptyId` (exact per-pane) → `workspaceId` → `cwd`.
+  ```json
+  { "kind": "agent.stop", "agent": "opencode", "ptyId": "<WMUX_PTY_ID>",
+    "workspaceId": "<WMUX_WORKSPACE_ID>", "cwd": "<pane cwd>", "payload": {}, "ts": 0 }
+  ```
 
-## Scope
+- On **`permission.updated`** (OpenCode is asking to run something) → `agent.awaiting_input`,
+  with the approval `title` in `payload`. Debounced by `PERMISSION_SETTLE_MS`
+  (500 ms): a `permission.replied` arriving first — the case under
+  `"permission": "allow"`, where approvals auto-resolve in milliseconds —
+  cancels it, so an auto-approved permission never raises a false "waiting"
+  signal.
 
-This bridge covers **turn completion** (`agent.stop`) — the reported gap.
-Approval-prompt detection (`agent.awaiting_input`) is a follow-up: it needs the
-exact shape of OpenCode's permission events, which should be captured against a
-live session before wiring it, so a wrong signal never makes the orchestrator
-think a pane is waiting for a y/N it is not.
+**Sub-agent suppression:** both signals fire only for the **root** session. The
+plugin looks up the session via the SDK `client` and drops anything with a
+`parentID` (a sub-agent session), so the orchestrator wakes on the top-level
+turn, not every internal sub-turn (mirrors opencode-notify's
+`notifyChildSessions=false`). If the lookup can't run (no client / offline) it
+fails open and treats the session as root, so a real completion is never lost.
