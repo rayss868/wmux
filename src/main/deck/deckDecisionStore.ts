@@ -101,6 +101,24 @@ function sanitizeDecision(raw: unknown): WorkspaceDecision | null {
 
 type DecisionFile = Record<string, WorkspaceDecision>;
 
+// Single-writer serialization. loadDeckDecisions (sync read) → compute →
+// `await atomicWriteJSON` has an async boundary, so two concurrent mutate calls
+// could each read the same snapshot and the later write would clobber the
+// earlier one — silently dropping a pending/resolved decision (3-way review
+// P1). Chaining every mutate through one promise makes read-modify-write
+// atomic per process. Decisions are low-frequency, so the serialization cost is
+// negligible.
+let opChain: Promise<unknown> = Promise.resolve();
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const run = opChain.then(fn, fn);
+  // Keep the chain alive even if a write rejects (never wedge future mutates).
+  opChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 /** Load the whole map; a missing/corrupt file is an empty map (fail open — a
  *  torn store must never brick the deck). Bad keys/entries dropped. */
 export function loadDeckDecisions(dir?: string): DecisionFile {
@@ -138,21 +156,26 @@ export function hasPendingDecision(workspaceId: string, dir?: string): boolean {
   return d !== null && d.status === 'pending';
 }
 
-async function mutate(
+function mutate(
   workspaceId: string,
   fn: (prev: WorkspaceDecision | null) => WorkspaceDecision | null,
   dir?: string,
 ): Promise<WorkspaceDecision | null> {
-  if (!WORKSPACE_ID_RE.test(workspaceId)) return null;
-  const all = loadDeckDecisions(dir);
-  const next = fn(all[workspaceId] ?? null);
-  if (next === null) {
-    delete all[workspaceId];
-  } else {
-    all[workspaceId] = next;
-  }
-  await atomicWriteJSON(getDeckDecisionPath(dir), all);
-  return next;
+  if (!WORKSPACE_ID_RE.test(workspaceId)) return Promise.resolve(null);
+  // Serialized: the load + compute + write runs to completion before the next
+  // mutate begins, so a concurrent raise/resolve/clear cannot read a stale
+  // snapshot and clobber the other's write.
+  return serialize(async () => {
+    const all = loadDeckDecisions(dir);
+    const next = fn(all[workspaceId] ?? null);
+    if (next === null) {
+      delete all[workspaceId];
+    } else {
+      all[workspaceId] = next;
+    }
+    await atomicWriteJSON(getDeckDecisionPath(dir), all);
+    return next;
+  });
 }
 
 /** Raise (or replace) a workspace's pending decision. Callers should reject a
@@ -192,11 +215,22 @@ export async function resolveDecision(
   dir?: string,
 ): Promise<WorkspaceDecision | null> {
   const answer = resolution.trim();
-  if (!answer) return loadWorkspaceDecision(workspaceId, dir);
-  return mutate(
+  if (!answer) return null;
+  // Fast no-op WITHOUT a disk write for a stale resolve (wrong id / already
+  // resolved / no decision); the serialized mutate below re-checks
+  // authoritatively under the write lock for the concurrent case.
+  const cur = loadWorkspaceDecision(workspaceId, dir);
+  if (!cur || cur.id !== id || cur.status !== 'pending') return null;
+  let transitioned = false;
+  const result = await mutate(
     workspaceId,
     (prev) => {
+      // Resolve ONLY a still-pending decision whose id matches. A stale resolve
+      // (wrong id, already resolved, or a rapid second click) is a no-op — it
+      // returns the record unchanged and, via `transitioned`, tells the caller
+      // NOT to kick a duplicate resume turn (3-way review: double-resume).
       if (!prev || prev.id !== id || prev.status !== 'pending') return prev;
+      transitioned = true;
       return {
         ...prev,
         status: 'resolved',
@@ -206,6 +240,7 @@ export async function resolveDecision(
     },
     dir,
   );
+  return transitioned ? result : null;
 }
 
 /** Remove a workspace's decision entirely (called when its loop is cleared, or
@@ -218,13 +253,32 @@ export async function clearDecision(workspaceId: string, dir?: string): Promise<
  *  has ridden a turn via `renderDecisionBlock`). A pending decision is left
  *  intact — it must keep blocking.
  *
- *  This runs after EVERY main-originated turn, so it READS first and writes only
- *  when a resolved decision is actually being consumed — the common path (no
- *  decision, or a still-pending one) must never touch disk. */
-export async function clearResolvedDecision(workspaceId: string, dir?: string): Promise<void> {
+ *  Consume ONLY the resolved decision identified by `expectedId` (the one THIS
+ *  turn actually injected). Without that scoping, the very turn that RAISED a
+ *  decision would, on completion, delete a resolution created mid-turn that it
+ *  never carried — silently dropping the human's answer and unblocking the loop
+ *  (3-way review P1). A `null`/omitted expectedId clears any resolved decision
+ *  (unscoped) — used only where no specific turn owns the consume.
+ *
+ *  Reads first and writes only when there is actually a matching resolved
+ *  decision to clear — this may run after a turn, and the common path (nothing
+ *  to clear) must never touch disk. */
+export async function clearResolvedDecision(
+  workspaceId: string,
+  expectedId?: string,
+  dir?: string,
+): Promise<void> {
   const cur = loadWorkspaceDecision(workspaceId, dir);
   if (!cur || cur.status !== 'resolved') return;
-  await mutate(workspaceId, (prev) => (prev && prev.status === 'resolved' ? null : prev), dir);
+  if (expectedId !== undefined && cur.id !== expectedId) return;
+  await mutate(
+    workspaceId,
+    (prev) =>
+      prev && prev.status === 'resolved' && (expectedId === undefined || prev.id === expectedId)
+        ? null
+        : prev,
+    dir,
+  );
 }
 
 /**

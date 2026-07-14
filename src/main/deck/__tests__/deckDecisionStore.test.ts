@@ -6,6 +6,7 @@ import {
   raiseDecision,
   resolveDecision,
   clearDecision,
+  clearResolvedDecision,
   loadWorkspaceDecision,
   hasPendingDecision,
   renderDecisionBlock,
@@ -100,5 +101,35 @@ describe('deckDecisionStore', () => {
     const resolved = renderDecisionBlock(r);
     expect(resolved).toContain('RESOLVED');
     expect(resolved).toContain('yes');
+  });
+
+  it('resolveDecision returns null on a stale resolve (no double-transition kick)', async () => {
+    const d = (await raiseDecision('ws-1', { question: 'Q?' }, dir))!;
+    expect(await resolveDecision('ws-1', d.id, 'answer', dir)).toMatchObject({ status: 'resolved' });
+    // A second resolve of the now-resolved decision returns null so the caller
+    // does not kick a duplicate resume turn (double-resume guard).
+    expect(await resolveDecision('ws-1', d.id, 'again', dir)).toBeNull();
+    expect(loadWorkspaceDecision('ws-1', dir)!.resolution).toBe('answer');
+    // Wrong id → null, and the pending decision stays pending.
+    const e = (await raiseDecision('ws-2', { question: 'Q2?' }, dir))!;
+    expect(await resolveDecision('ws-2', 'wrong-id', 'x', dir)).toBeNull();
+    expect(hasPendingDecision('ws-2', dir)).toBe(true);
+    expect(e.id).toBeTruthy();
+  });
+
+  it('clearResolvedDecision consumes ONLY the matching resolved id, never a pending one', async () => {
+    const d = (await raiseDecision('ws-1', { question: 'Q?' }, dir))!;
+    await resolveDecision('ws-1', d.id, 'answer', dir);
+    // A different id must not clear it (guards the "turn that raised a new
+    // decision deletes the resolution it never carried" P1).
+    await clearResolvedDecision('ws-1', 'other-id', dir);
+    expect(loadWorkspaceDecision('ws-1', dir)?.status).toBe('resolved');
+    // The matching id clears it.
+    await clearResolvedDecision('ws-1', d.id, dir);
+    expect(loadWorkspaceDecision('ws-1', dir)).toBeNull();
+    // Never clears a PENDING decision, even with a matching id.
+    const p = (await raiseDecision('ws-2', { question: 'P?' }, dir))!;
+    await clearResolvedDecision('ws-2', p.id, dir);
+    expect(hasPendingDecision('ws-2', dir)).toBe(true);
   });
 });

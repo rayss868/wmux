@@ -99,6 +99,13 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
       : [];
     const context = typeof params['context'] === 'string' ? (params['context'] as string) : '';
     const decision = await raiseDecision(ws, { question, options, context });
-    return { ok: true, id: decision?.id ?? null };
+    // Fail CLOSED: if nothing was persisted (write failure, or the question
+    // sanitized to empty), do NOT tell the brain the decision was raised — it
+    // would end its turn believing the loop is blocked while hasPendingDecision
+    // stays false and the loop auto-resumes without waiting (3-way review).
+    if (!decision) {
+      return { ok: false, error: 'raise_failed' };
+    }
+    return { ok: true, id: decision.id };
   });
 }

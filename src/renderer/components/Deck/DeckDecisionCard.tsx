@@ -61,16 +61,32 @@ export function DeckDecisionCard({
   const [decision, setDecision] = useState<WorkspaceDecision | null>(null);
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // Monotonic request id: ignore a slow get() whose response lands after the
+  // workspace changed (or after a newer get), so a stale response can't overwrite
+  // the active workspace's card (3-way review — workspace-switch race).
+  const reqSeq = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!resolvedApi || !workspaceId) return;
+    const seq = ++reqSeq.current;
     try {
       const r = await resolvedApi.get(workspaceId);
+      if (seq !== reqSeq.current) return; // superseded by a newer request / ws switch
       setDecision(r.decision);
     } catch {
       /* main gone — leave the stale view */
     }
   }, [resolvedApi, workspaceId]);
+
+  // Clear the card IMMEDIATELY on a workspace switch so the previous workspace's
+  // decision never lingers while the new fetch is in flight, and bump reqSeq so
+  // any in-flight get for the old workspace is ignored when it resolves.
+  useEffect(() => {
+    reqSeq.current++;
+    setDecision(null);
+    setAnswer('');
+    setSubmitting(false);
+  }, [workspaceId]);
 
   // Hydrate on mount + whenever the deck rebinds to another workspace. This is
   // the reboot-survival surface: the pending decision is on disk, so a fresh app
@@ -160,6 +176,7 @@ export function DeckDecisionCard({
         <input
           type="text"
           data-decision-answer
+          aria-label={t('deck.decisionAnswerLabel') || 'Your answer to the orchestrator decision'}
           value={answer}
           disabled={submitting}
           onChange={(e) => setAnswer(e.target.value)}

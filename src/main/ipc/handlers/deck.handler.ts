@@ -57,6 +57,7 @@ import {
   loadWorkspaceDecision,
   resolveDecision,
   clearResolvedDecision,
+  clearDecision,
   renderDecisionBlock,
   hasPendingDecision,
   type WorkspaceDecision,
@@ -241,10 +242,16 @@ export function registerDeckHandler(
         coalescer?.notifyHumanSend(workspaceId);
       }
       // Awaits the full turn (events stream over DECK_STREAM meanwhile); the
-      // resolved value is only the accept/reject verdict. The loop block (when
-      // a loop exists) rides in front of the typed text — invisible to the
-      // renderer's optimistic user bubble, visible to the brain.
-      return mgr.send(withLoopContext(workspaceId, text));
+      // resolved value is only the accept/reject verdict. The loop + decision
+      // blocks ride in front of the typed text — invisible to the renderer's
+      // optimistic user bubble, visible to the brain. If this human turn carried
+      // a resolved decision's block, consume it (id-scoped) so it never re-injects.
+      const injectedDecision = loadWorkspaceDecision(workspaceId);
+      const verdict = await mgr.send(withLoopContext(workspaceId, text));
+      if (verdict.ok && injectedDecision?.status === 'resolved') {
+        void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => {});
+      }
+      return verdict;
     }),
   );
 
@@ -305,13 +312,18 @@ export function registerDeckHandler(
     // turn-start announces the ORIGINAL prompt (what the human should see as
     // the turn's cause); the context blocks ride only on the wire to the brain,
     // mirroring the DECK_SEND path.
+    // Capture the decision THIS turn will inject (withLoopContext reads the same
+    // on-disk state synchronously right below) so at turn end we consume ONLY a
+    // resolution this turn actually carried — never one RAISED mid-turn, whose
+    // prompt this turn was built before (that would silently drop the human's
+    // answer and unblock the loop — 3-way review P1).
+    const injected = loadWorkspaceDecision(workspaceId);
     const prompted = withLoopContext(workspaceId, prompt);
     emit(workspaceId, { type: 'turn-start', prompt });
     const verdict = await mgr.send(prompted);
-    // Consume-once: a RESOLVED decision that just rode this turn is cleared so
-    // it never re-injects. A PENDING decision is left intact (it keeps
-    // blocking); a plain turn with no decision is a no-op.
-    if (verdict.ok) void clearResolvedDecision(workspaceId);
+    if (verdict.ok && injected?.status === 'resolved') {
+      void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
+    }
     return verdict;
   };
 
@@ -510,6 +522,10 @@ export function registerDeckHandler(
       await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== loop.scheduleId));
     }
     if (loop) await clearLoop(workspaceId);
+    // A lingering pending/resolved decision must not survive a teardown into a
+    // fresh loop — it would keep blocking wakes with a question about work that
+    // is gone (3-way review). Clear it alongside the loop.
+    await clearDecision(workspaceId);
   };
   const setLoopScheduleEnabled = async (
     scheduleId: string | undefined,
@@ -620,11 +636,13 @@ export function registerDeckHandler(
         iterations = Math.floor(n);
       }
       // Replacing an existing loop: clean up its cadence schedule first so two
-      // loops never leave two schedules behind.
+      // loops never leave two schedules behind, and clear any stale decision so
+      // a fresh loop does not start blocked on a prior loop's question.
       const prior = loadWorkspaceLoopState(workspaceId);
       if (prior?.scheduleId) {
         await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== prior.scheduleId));
       }
+      await clearDecision(workspaceId);
       let scheduleId: string | undefined;
       if (intervalMinutes) {
         const schedules = loadDeckSchedules();
@@ -678,6 +696,7 @@ export function registerDeckHandler(
         await saveDeckSchedules(loadDeckSchedules().filter((s) => s.id !== loop.scheduleId));
       }
       await clearLoop(workspaceId);
+      await clearDecision(workspaceId);
       await dropCaps(workspaceId);
       return { ok: true };
     }),
