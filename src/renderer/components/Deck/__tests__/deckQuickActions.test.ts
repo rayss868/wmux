@@ -1,11 +1,7 @@
-// Unit tests for the P3c quick-action chip builder — pure objects, no store.
+// Unit tests for the recovery re-entry chip builder — pure objects, no store.
 
 import { describe, it, expect } from 'vitest';
-import {
-  buildQuickActions,
-  FLEET_STATUS_PROMPT,
-  PR_STATUS_PROMPT,
-} from '../deckQuickActions';
+import { buildQuickActions } from '../deckQuickActions';
 import type { RecoveryPane } from '../deckRecovery';
 
 const recoveryPane = (over: Partial<RecoveryPane> = {}): RecoveryPane => ({
@@ -20,40 +16,26 @@ const recoveryPane = (over: Partial<RecoveryPane> = {}): RecoveryPane => ({
 });
 
 describe('buildQuickActions', () => {
-  it('always offers fleet status and PR status, in that order', () => {
-    const actions = buildQuickActions({ recoveryPanes: [] });
-    expect(actions.map((a) => a.id)).toEqual(['fleet-status', 'pr-status']);
-    expect(actions[0].label).toBe('Agent status');
-    expect(actions[1].label).toBe('PR status');
+  it('is empty without recoverable panes — no always-on canned-prompt chips', () => {
+    // "Agent status" / "PR status" were removed (owner 2026-07-14): the bar is
+    // for controls, not canned prompts. Nothing to recover ⇒ no chips.
+    expect(buildQuickActions({ recoveryPanes: [] })).toEqual([]);
   });
 
-  it('adds the recover chip only while recoverable panes exist', () => {
-    const none = buildQuickActions({ recoveryPanes: [] });
-    expect(none.some((a) => a.id === 'recover-fleet')).toBe(false);
-
+  it('offers the recover chip only while recoverable panes exist', () => {
     const some = buildQuickActions({ recoveryPanes: [recoveryPane()] });
-    const recover = some.find((a) => a.id === 'recover-fleet');
-    expect(recover).toBeDefined();
+    expect(some.map((a) => a.id)).toEqual(['recover-fleet']);
+    const recover = some[0];
     // The chip carries the same canned prompt the greeting card sends —
     // per-pane exact commands included.
-    expect(recover!.prompt).toContain('claude --resume sess-1');
-    expect(recover!.prompt).toContain('pty-1');
+    expect(recover.prompt).toContain('claude --resume sess-1');
+    expect(recover.prompt).toContain('pty-1');
+    expect(recover.label).toBe('Recover agents');
   });
 
-  it('uses the translator when it yields a value, English fallback otherwise', () => {
-    const t = (key: string): string => (key === 'deck.qaFleetStatus' ? '함대 상태' : '');
-    const actions = buildQuickActions({ recoveryPanes: [], t });
-    expect(actions[0].label).toBe('함대 상태');
-    expect(actions[1].label).toBe('PR status');
-  });
-
-  it('fleet-status prompt drives terminal_read (the allow-listed read path)', () => {
-    expect(FLEET_STATUS_PROMPT).toContain('terminal_read');
-  });
-
-  it('PR prompt delegates to a worker pane — never assumes a brain shell (D2)', () => {
-    expect(PR_STATUS_PROMPT).toContain('You have no shell');
-    expect(PR_STATUS_PROMPT).toContain('terminal_send');
-    expect(PR_STATUS_PROMPT).toContain('gh pr status');
+  it('uses the translator for the recover label when it yields a value', () => {
+    const t = (key: string): string => (key === 'deck.recoveryRun' ? '에이전트 복구' : '');
+    const actions = buildQuickActions({ recoveryPanes: [recoveryPane()], t });
+    expect(actions[0].label).toBe('에이전트 복구');
   });
 });

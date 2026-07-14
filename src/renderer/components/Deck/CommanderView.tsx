@@ -295,41 +295,58 @@ export function CommanderViewContent({
         </div>
       )}
 
-      {/* Quick-action chips (P3c) + the schedules chip/panel (P3d) — one-click
-          canned prompts and persisted schedules, sitting where the hand already
-          is (right above the composer). Chips disable while a turn streams. */}
-      {quickActions.length > 0 && (
+      {/* Orchestrator control bar — the persistent automation controls, right
+          above the composer where the hand already is. Mode is the master
+          autonomy switch (off/manual/assist/orchestrate; 'off' even tears down
+          running loops + schedules), so it anchors the left and a hairline
+          separates it from the two automations it governs — Loop and Schedules.
+          The reboot-recovery re-entry chip, when present, trails on the right so
+          it never crowds the always-on controls. Each control's container
+          self-hides when its preload API is absent, so pure jsdom parent tests
+          are unaffected. */}
+      {(activeWorkspaceId || quickActions.length > 0) && (
         <div
-          data-deck-quick-actions
-          className="flex flex-wrap gap-1.5 px-4 py-1.5 border-t border-[var(--bg-surface)] shrink-0"
+          data-deck-control-bar
+          className="flex flex-wrap items-center gap-1.5 px-4 py-1.5 border-t border-[var(--bg-surface)] shrink-0"
           style={{ borderColor: 'var(--border-soft)' }}
           {...tokenAttrs('bgSurface', 'border')}
         >
-          {quickActions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              data-deck-quick-action
-              data-action-id={action.id}
-              disabled={brainBusy}
-              onClick={() => onQuickAction?.(action)}
-              className={`px-2.5 py-1 rounded-md text-[12px] text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
-              {...tokenAttrs('textSub', 'text')}
-            >
-              {action.label}
-            </button>
-          ))}
-          {/* Schedules chip + inline panel (self-contained IPC container —
-              renders nothing when the preload doesn't expose the API, so pure
-              jsdom tests of this view are unaffected). New schedules bind to
-              THIS workspace's orchestrator (M1.5). */}
-          <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
-          {/* The one-click loop chip + panel (loop engineering v1) — same
-              self-contained pattern; the loop binds to THIS workspace. */}
-          <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
-          {/* Per-workspace agent mode (off/manual/assist/orchestrate) — the
-              single autonomy knob, always-visible current mode. */}
+          {/* Mode = the single autonomy knob, always showing the current mode. */}
           <AgentModeChipContainer t={t} workspaceId={activeWorkspaceId} />
+          {/* Hairline seam: master switch │ the automations it governs. */}
+          <span
+            aria-hidden="true"
+            data-deck-control-sep
+            className="h-4 w-px mx-0.5 bg-[var(--border-soft)]"
+          />
+          {/* The one-click loop chip + panel (loop engineering v1) — binds to
+              THIS workspace. */}
+          <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
+          {/* Schedules chip + inline panel — new schedules bind to THIS
+              workspace's orchestrator (M1.5). */}
+          <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
+
+          {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click
+              recovery, trailing right. Neutral at rest, accent on hover (the
+              DESIGN.md AI-action grammar), disabled while a turn streams. */}
+          {quickActions.length > 0 && (
+            <div data-deck-quick-actions className="flex flex-wrap gap-1.5 ml-auto">
+              {quickActions.map((action) => (
+                <button
+                  key={action.id}
+                  type="button"
+                  data-deck-quick-action
+                  data-action-id={action.id}
+                  disabled={brainBusy}
+                  onClick={() => onQuickAction?.(action)}
+                  className={`px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-blue)] transition-colors disabled:opacity-40 ${FOCUS_RING}`}
+                  {...tokenAttrs('textSub', 'text')}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

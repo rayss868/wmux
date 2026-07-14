@@ -1,51 +1,37 @@
-// ─── Command Deck — quick-action chips (P3c) ─────────────────────────────────
+// ─── Command Deck — recovery re-entry chip ───────────────────────────────────
 //
-// Canned-prompt chips above the Commander composer: the operations a human
-// runs many times a day become one click instead of retyped prose. Each chip
-// just sends a fixed prompt to the brain — no new IPC, no new permissions.
+// The deck's chip row is the orchestrator CONTROL bar (Mode · Loop · Schedules
+// — the persistent automation controls, rendered directly in CommanderView).
+// This builder produces the ONE ephemeral chip that lives alongside them: the
+// reboot-recovery re-entry.
 //
-// The PR chip is the deliberate one: the brain has NO shell of its own (gh /
-// Bash are absent from the D2 allow-list, on purpose), so its prompt tells the
-// brain to DELEGATE — type the command into a worker pane with terminal_send
-// and read the result back. Zero added grants, and the evidence stays visible
-// in a pane the human can jump to.
+// After a reboot with recoverable panes, the greeting card offers one-click
+// recovery. Once that card is dismissed it hides forever — this chip is the
+// re-entry path so the human can still recover the fleet in one click until it
+// is actually back. It carries the SAME canned prompt the card sends.
+//
+// (History: this builder used to also emit always-on "Agent status" / "PR
+// status" canned-prompt chips. They were removed — the human types those asks
+// directly, and the two chips were noise on a bar meant for controls, not
+// canned prompts. Owner request 2026-07-14.)
 //
 // Pure + store-free so the chip set is unit-testable with plain objects.
 
 import { buildRecoveryPrompt, type RecoveryPane } from './deckRecovery';
 
 export interface DeckQuickAction {
-  id: 'fleet-status' | 'pr-status' | 'recover-fleet';
+  id: 'recover-fleet';
   /** Chip label (already localized by the builder). */
   label: string;
   /** The canned prompt this chip sends to the brain. */
   prompt: string;
 }
 
-/** Agent health in one glance — the brain reads each pane's screen. */
-export const FLEET_STATUS_PROMPT = [
-  'Give me a status report on my agents. For each agent pane, read its screen',
-  'with terminal_read and summarize it in one line: what it is working on, and',
-  'whether it is running, waiting for input, idle, or showing an error.',
-  'Lead with anything that needs my attention.',
-].join('\n');
-
-/** PR overview via DELEGATION — the brain has no shell (D2), so it must run
- *  `gh pr status` through a worker pane and read the output back. */
-export const PR_STATUS_PROMPT = [
-  "Check the status of this project's open pull requests. You have no shell of",
-  'your own — delegate: find a pane sitting at a shell prompt and run',
-  '`gh pr status` there with terminal_send (submit: true), then read the output',
-  'with terminal_read. If every pane is busy or running an agent, ask an idle',
-  'agent pane to check and report back instead. Summarize per PR: title, CI',
-  'state, review state, and anything blocked on me.',
-].join('\n');
-
 /**
  * The chip set for the current deck state. `recover-fleet` appears only while
  * recoverable panes exist — it is the re-entry path after the greeting card
  * was dismissed (the card hides forever; the chip keeps the one-click recovery
- * reachable until the fleet is actually back).
+ * reachable until the fleet is actually back). Empty otherwise.
  */
 export function buildQuickActions(args: {
   recoveryPanes: RecoveryPane[];
@@ -54,18 +40,7 @@ export function buildQuickActions(args: {
   // Default to the empty string (not key-echo) so the English fallbacks apply
   // when no translator is supplied.
   const t = args.t ?? (() => '');
-  const actions: DeckQuickAction[] = [
-    {
-      id: 'fleet-status',
-      label: t('deck.qaFleetStatus') || 'Agent status',
-      prompt: FLEET_STATUS_PROMPT,
-    },
-    {
-      id: 'pr-status',
-      label: t('deck.qaPrStatus') || 'PR status',
-      prompt: PR_STATUS_PROMPT,
-    },
-  ];
+  const actions: DeckQuickAction[] = [];
   if (args.recoveryPanes.length > 0) {
     actions.push({
       id: 'recover-fleet',

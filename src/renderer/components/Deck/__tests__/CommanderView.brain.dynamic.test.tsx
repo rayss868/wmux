@@ -166,25 +166,25 @@ describe('CommanderViewContent — brain surface', () => {
     expect(container.querySelector('[data-commander-recovery]')).toBeNull();
   });
 
-  it('renders quick-action chips and clicking one fires onQuickAction (P3c)', () => {
+  it('renders the recovery re-entry chip and clicking it fires onQuickAction', () => {
     const onQuickAction = vi.fn();
     const actions = [
-      { id: 'fleet-status' as const, label: 'Fleet status', prompt: 'status please' },
-      { id: 'pr-status' as const, label: 'PR status', prompt: 'pr please' },
+      { id: 'recover-fleet' as const, label: 'Recover agents', prompt: 'recover please' },
     ];
-    mount({ quickActions: actions, onQuickAction });
+    mount({ activeWorkspaceId: 'ws-1', quickActions: actions, onQuickAction });
 
     const chips = container.querySelectorAll('[data-deck-quick-action]');
-    expect(chips).toHaveLength(2);
-    expect(chips[0].textContent).toBe('Fleet status');
+    expect(chips).toHaveLength(1);
+    expect(chips[0].textContent).toBe('Recover agents');
 
-    act(() => (chips[1] as HTMLButtonElement).click());
-    expect(onQuickAction).toHaveBeenCalledWith(actions[1]);
+    act(() => (chips[0] as HTMLButtonElement).click());
+    expect(onQuickAction).toHaveBeenCalledWith(actions[0]);
   });
 
-  it('disables quick-action chips while a brain turn streams', () => {
+  it('disables the recovery chip while a brain turn streams', () => {
     mount({
-      quickActions: [{ id: 'fleet-status' as const, label: 'Fleet status', prompt: 'x' }],
+      activeWorkspaceId: 'ws-1',
+      quickActions: [{ id: 'recover-fleet' as const, label: 'Recover agents', prompt: 'x' }],
       brainBusy: true,
       brainMessages: brainTurn(),
     });
@@ -192,8 +192,19 @@ describe('CommanderViewContent — brain surface', () => {
     expect(chip.disabled).toBe(true);
   });
 
-  it('renders no chip row when there are no quick actions', () => {
+  it('renders the control bar for an active workspace even with no recovery chip', () => {
+    // The persistent controls (Mode · Loop · Schedules) live in the bar; it
+    // shows whenever there is a workspace to control. Their containers self-hide
+    // without a preload (jsdom), so the bar is present but the recovery
+    // sub-group is absent.
+    mount({ activeWorkspaceId: 'ws-1', quickActions: [] });
+    expect(container.querySelector('[data-deck-control-bar]')).not.toBeNull();
+    expect(container.querySelector('[data-deck-quick-actions]')).toBeNull();
+  });
+
+  it('renders no control bar when there is no workspace and nothing to recover', () => {
     mount({ quickActions: [] });
+    expect(container.querySelector('[data-deck-control-bar]')).toBeNull();
     expect(container.querySelector('[data-deck-quick-actions]')).toBeNull();
   });
 
