@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The OpenCode bridge now also flags approval prompts and ignores sub-agent chatter.** Building on the turn-completion signal, the OpenCode plugin now forwards a `permission.updated` (OpenCode asking to run something) as an "awaiting input" signal so the orchestrator can notice a pane blocked on an approval — debounced so an auto-approved permission (`"permission": "allow"`) that resolves instantly never raises a false alarm. It also only signals for the **root** session now: a sub-agent going idle no longer wakes the orchestrator, only the top-level turn does. Re-copy `integrations/opencode/plugins/wmux.js` to pick this up.
+
 ### Fixed
 
 - **Orchestrator mode stays smooth even while it observes a busy fleet.** Reading a pane's text (`terminal_read`) used to walk the terminal's *entire* backlog — up to 10,000 lines — synchronously on the render thread, every call, and an explicit line cap only trimmed the result *after* the full walk. The orchestrator reads panes in bursts, so those reads pinned the render thread and starved typing, switching, and paint — the "everything lags when the orchestrator is working, especially when it's reading terminals" symptom. Now a read returns a bounded recent tail by default (read in proportion to the lines returned, not the whole scrollback), an explicit `tail_lines` is genuinely cheap, and the full backlog is an opt-in (`full_scrollback`) for the rare case the tail isn't enough. A 10,000-line pane now costs the same to read as a fresh one.
