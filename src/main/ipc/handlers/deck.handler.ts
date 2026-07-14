@@ -850,7 +850,17 @@ export function registerDeckHandler(
         ? (raw as Record<string, unknown>)
         : {};
       const workspaceId = readWorkspaceId(req);
-      return { decision: workspaceId ? loadWorkspaceDecision(workspaceId) : null };
+      const decision = workspaceId ? loadWorkspaceDecision(workspaceId) : null;
+      // Reboot-stranding guard (minimal): if a resolution was persisted but its
+      // resume turn never ran (the app closed between resolve and the
+      // fire-and-forget kick), reopening the deck hydrates it here — nudge a
+      // resume so the answer is delivered instead of sitting forever. Idempotent:
+      // the resumed turn consumes the resolved record, and a busy reject is fine.
+      // A full headless (no-deck-open) startup reconcile is the M2 follow-up.
+      if (workspaceId && decision?.status === 'resolved') {
+        void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId).catch(() => {});
+      }
+      return { decision };
     }),
   );
 

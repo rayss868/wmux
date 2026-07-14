@@ -142,6 +142,46 @@ vi.mock('../../../deck/deckScheduleStore', () => ({
   DECK_SCHEDULE_LIMITS: { MAX_SCHEDULES: 50, MAX_PROMPT_CHARS: 4000 },
 }));
 
+// In-memory decision-gate store. Mirrors the real signatures the handler uses
+// (the store's own file/atomic/serialize behavior is covered by its own suite).
+interface FakeDecision {
+  id: string;
+  question: string;
+  options: string[];
+  context: string;
+  status: 'pending' | 'resolved';
+  resolution?: string;
+  raisedAt: number;
+  resolvedAt?: number;
+}
+const decisions = new Map<string, FakeDecision>();
+vi.mock('../../../deck/deckDecisionStore', () => ({
+  loadWorkspaceDecision: vi.fn((ws: string) => decisions.get(ws) ?? null),
+  hasPendingDecision: vi.fn((ws: string) => decisions.get(ws)?.status === 'pending'),
+  resolveDecision: vi.fn(async (ws: string, id: string, resolution: string) => {
+    const d = decisions.get(ws);
+    if (!d || d.id !== id || d.status !== 'pending' || !resolution.trim()) return null;
+    d.status = 'resolved';
+    d.resolution = resolution.trim();
+    d.resolvedAt = 2;
+    return d;
+  }),
+  clearResolvedDecision: vi.fn(async (ws: string, expectedId?: string) => {
+    const d = decisions.get(ws);
+    if (d && d.status === 'resolved' && (expectedId === undefined || d.id === expectedId)) {
+      decisions.delete(ws);
+    }
+  }),
+  clearDecision: vi.fn(async (ws: string) => {
+    decisions.delete(ws);
+  }),
+  renderDecisionBlock: vi.fn((d: FakeDecision) =>
+    d.status === 'resolved'
+      ? `[decision] RESOLVED — ${d.question} — decided: ${d.resolution ?? ''}`
+      : `[decision] BLOCKED — ${d.question}`,
+  ),
+}));
+
 import { registerDeckHandler } from '../deck.handler';
 import { IPC } from '../../../../shared/constants';
 import { eventBus } from '../../../events/EventBus';
@@ -181,6 +221,7 @@ const invoke = (channel: string, payload: Record<string, unknown>) =>
 beforeEach(() => {
   captured.clear();
   loops.clear();
+  decisions.clear();
   capWrites.length = 0;
   schedules = [];
   scheduleSeq = 0;
@@ -253,6 +294,75 @@ describe('deck:loop:start — the one click', () => {
     await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'b', intervalMinutes: 60 });
     expect(schedules).toHaveLength(1);
     expect(schedules[0].id).not.toBe(firstId);
+  });
+});
+
+describe('deck:decision — the gate (handler wiring)', () => {
+  const seedPending = (ws: string, id = 'd1', options: string[] = ['A', 'B']) =>
+    decisions.set(ws, {
+      id,
+      question: 'A or B?',
+      options,
+      context: '',
+      status: 'pending',
+      raisedAt: 1,
+    });
+
+  it('GET hydrates a pending decision', async () => {
+    seedPending('ws-1');
+    const got = await invoke(IPC.DECK_DECISION_GET, { workspaceId: 'ws-1' });
+    expect(got.decision).toMatchObject({ id: 'd1', status: 'pending' });
+  });
+
+  it('RESOLVE resumes the loop with the resolution injected, then consumes it once', async () => {
+    seedPending('ws-1');
+    const res = await invoke(IPC.DECK_DECISION_RESOLVE, {
+      workspaceId: 'ws-1',
+      id: 'd1',
+      resolution: 'go with A',
+    });
+    expect(res.ok).toBe(true);
+    // A resume turn fired on ws-1's brain, carrying the resolved decision block.
+    await vi.waitFor(() => {
+      const a = adapters.find((x) => x.workspaceId === 'ws-1');
+      expect(a?.sentTexts.some((t) => t.includes('RESOLVED') && t.includes('go with A'))).toBe(true);
+    });
+    // Consumed once the turn carried it (id-scoped clear).
+    await vi.waitFor(() => expect(decisions.has('ws-1')).toBe(false));
+  });
+
+  it('a stale/second RESOLVE is rejected and kicks NO extra turn', async () => {
+    seedPending('ws-1');
+    await invoke(IPC.DECK_DECISION_RESOLVE, { workspaceId: 'ws-1', id: 'd1', resolution: 'ans' });
+    await vi.waitFor(() => expect(decisions.has('ws-1')).toBe(false)); // first resume consumed it
+    const a = adapters.find((x) => x.workspaceId === 'ws-1')!;
+    const turns = a.sentTexts.length;
+    const res2 = await invoke(IPC.DECK_DECISION_RESOLVE, {
+      workspaceId: 'ws-1',
+      id: 'd1',
+      resolution: 'again',
+    });
+    expect(res2.ok).toBe(false);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(a.sentTexts.length).toBe(turns);
+  });
+
+  it('GET resumes a resolved-but-unconsumed decision (reboot-stranding guard)', async () => {
+    decisions.set('ws-1', {
+      id: 'd1',
+      question: 'Q?',
+      options: [],
+      context: '',
+      status: 'resolved',
+      resolution: 'answered',
+      raisedAt: 1,
+      resolvedAt: 2,
+    });
+    await invoke(IPC.DECK_DECISION_GET, { workspaceId: 'ws-1' });
+    await vi.waitFor(() => {
+      const a = adapters.find((x) => x.workspaceId === 'ws-1');
+      expect(a?.sentTexts.some((t) => t.includes('RESOLVED') && t.includes('answered'))).toBe(true);
+    });
   });
 });
 
