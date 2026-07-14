@@ -33,6 +33,22 @@ export interface DeckToolChip {
 export type DeckBrainRole = 'user' | 'assistant';
 export type DeckBrainStatus = 'streaming' | 'done' | 'error';
 
+/** A surfaced subscription rate-limit notice (M3). Attached to the in-flight
+ *  assistant message as a SIBLING field (never spliced into its streaming text
+ *  bubble — that would corrupt order), rendered as a small amber banner. Only
+ *  `rejected` / `allowed_warning` are surfaced; `retrying` never becomes a
+ *  notice (the SDK auto-recovers). */
+export interface DeckLimitNotice {
+  status: 'rejected' | 'allowed_warning';
+  /** Plan window (five_hour / seven_day / …). */
+  window?: string;
+  resetsAtMs?: number;
+  utilization?: number;
+  /** Account the limited session runs on (name omitted if since removed). */
+  accountId?: string;
+  accountName?: string;
+}
+
 export interface DeckBrainMessage {
   id: string;
   role: DeckBrainRole;
@@ -46,6 +62,27 @@ export interface DeckBrainMessage {
   status?: DeckBrainStatus;
   /** Assistant only: populated on an `error` event. */
   errorText?: string;
+  /** Assistant only: surfaced rate-limit notices for this turn (M3). */
+  limitNotices?: DeckLimitNotice[];
+}
+
+/** Severity rank for limit-notice dedupe: a higher-severity notice for the SAME
+ *  episode always shows (allowed_warning → rejected must NOT be hidden), while a
+ *  same-or-lower repeat is suppressed (3-way review P1: dedupe must allow
+ *  escalation). `retrying` is 0 — it never renders. */
+function limitSeverity(status: 'rejected' | 'allowed_warning' | 'retrying'): number {
+  return status === 'rejected' ? 2 : status === 'allowed_warning' ? 1 : 0;
+}
+
+/** Two notices belong to the SAME rate-limit episode when their account, window,
+ *  AND reset time match. A new `resetsAtMs` = a new episode (shows again). The
+ *  caller only reaches here when the INCOMING notice has a `resetsAtMs` (see
+ *  applyBrainEvent — a notice without one is never deduped), so the `?? 0`
+ *  sentinel below can never collide two reset-less notices into a false match. */
+function sameLimitEpisode(a: DeckLimitNotice, b: DeckLimitNotice): boolean {
+  return (a.accountId ?? '') === (b.accountId ?? '')
+    && (a.window ?? '') === (b.window ?? '')
+    && (a.resetsAtMs ?? 0) === (b.resetsAtMs ?? 0);
 }
 
 /** Chat timestamp — LOCAL wall-clock HH:MM (chat convention). The thread
@@ -117,6 +154,38 @@ export function applyBrainEvent(
     case 'error':
       next = { ...target, status: 'error', errorText: event.message };
       break;
+    case 'limit': {
+      // `retrying` is silent (the SDK auto-recovers) — event exists only for a
+      // future M3 consumer, never a surfaced message.
+      if (event.status === 'retrying') return messages;
+      const incoming: DeckLimitNotice = {
+        status: event.status,
+        ...(event.window ? { window: event.window } : {}),
+        ...(event.resetsAtMs != null ? { resetsAtMs: event.resetsAtMs } : {}),
+        ...(event.utilization != null ? { utilization: event.utilization } : {}),
+        ...(event.accountId ? { accountId: event.accountId } : {}),
+        ...(event.accountName ? { accountName: event.accountName } : {}),
+      };
+      const existing = target.limitNotices ?? [];
+      // Dedupe WITH escalation: suppress only when a same-or-higher severity
+      // notice for the SAME episode was already shown. A `rejected` after an
+      // `allowed_warning` for the same episode still shows (escalation).
+      //
+      // `resetsAtMs` is the ONLY reliable episode discriminator — two limits on
+      // the same account+window are the same episode iff they reset at the same
+      // time. Without it we can't tell a repeat from a genuinely new/worse limit,
+      // and hiding a real limit is worse than a duplicate line, so a notice with
+      // no reset time never dedupes — it just appends (3-way review fix 5). This
+      // also subsumes the fully-keyless case (no account/window/reset either).
+      if (incoming.resetsAtMs != null) {
+        const covered = existing.some(
+          (n) => sameLimitEpisode(n, incoming) && limitSeverity(n.status) >= limitSeverity(incoming.status),
+        );
+        if (covered) return messages;
+      }
+      next = { ...target, limitNotices: [...existing, incoming] };
+      break;
+    }
     default:
       return messages;
   }

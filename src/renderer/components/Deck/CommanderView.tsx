@@ -24,7 +24,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
-import { formatChatTime } from './deckBrain';
+import { formatChatTime, type DeckLimitNotice } from './deckBrain';
 import DeckFleet from './DeckFleet';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { generateId } from '../../../shared/types';
@@ -468,8 +468,56 @@ function CommanderBrainItem({
           {message.errorText}
         </div>
       )}
+      {/* M3: surfaced subscription rate-limit notices for this turn. Amber (the
+          "alive + focus" cue) — a hard `rejected` is the one the operator must
+          act on; `allowed_warning` is a quieter heads-up. */}
+      {message.limitNotices && message.limitNotices.length > 0 && (
+        <div className="flex flex-col gap-0.5 pt-1" data-commander-brain-limits>
+          {message.limitNotices.map((notice, i) => (
+            <div
+              // Key includes `status`: escalation intentionally keeps BOTH an
+              // allowed_warning AND a rejected for the same account/window/reset
+              // episode, so omitting status collided their keys (Codex review).
+              key={`${notice.status}-${notice.accountId ?? ''}-${notice.window ?? ''}-${notice.resetsAtMs ?? i}`}
+              role="status"
+              data-limit-status={notice.status}
+              className="text-[11px] text-[var(--accent-amber)]"
+              {...tokenAttrs('warning', 'text')}
+            >
+              {formatLimitNotice(notice, t)}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
+}
+
+/** One line of copy for a surfaced rate-limit notice, fully routed through the
+ *  locale system (no hard-coded sentences — 3-way review). `rejected` = hard
+ *  wall; `allowed_warning` = approaching. Account name, utilization, and reset
+ *  countdown are optional fragments blanked when absent. */
+function formatLimitNotice(notice: DeckLimitNotice, t: ReturnType<typeof useT>): string {
+  const window = notice.window ? notice.window.replace(/_/g, '-') : t('deck.limit.window');
+  const on = notice.accountName ? t('deck.limit.onAccount', { account: notice.accountName }) : '';
+  const reset = notice.resetsAtMs != null ? ` — ${formatResetCountdown(notice.resetsAtMs, t)}` : '';
+  if (notice.status === 'rejected') {
+    return t('deck.limit.rejected', { window, on, reset });
+  }
+  const util = notice.utilization != null ? t('deck.limit.utilSuffix', { util: Math.round(notice.utilization) }) : '';
+  return t('deck.limit.approaching', { window, on, util, reset });
+}
+
+/** "resets in 2h13m" / "resets soon" from an epoch-ms reset time. Past/near → a
+ *  soft "soon" rather than a negative countdown. Both wrappers are localized. */
+function formatResetCountdown(resetsAtMs: number, t: ReturnType<typeof useT>): string {
+  const deltaMs = resetsAtMs - Date.now();
+  if (deltaMs <= 60_000) return t('deck.limit.resetsSoon');
+  const mins = Math.round(deltaMs / 60_000);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  const rel = h > 0 ? `${h}h${m > 0 ? `${m}m` : ''}` : `${m}m`;
+  return t('deck.limit.resetsIn', { rel });
 }
 
 /** The compact rendition of an event-woken turn's machine-generated prompt:
