@@ -819,9 +819,7 @@ export const en = {
   'deck.recoveryTitle': '{count} agent pane(s) were running before the last shutdown and can be recovered.',
   'deck.recoveryRun': 'Recover agents',
   'deck.recoveryDismiss': 'Dismiss',
-  // Command Deck P3c — quick-action chips above the composer.
-  'deck.qaFleetStatus': 'Agent status',
-  'deck.qaPrStatus': 'PR status',
+  // Command Deck — the control bar (Mode·Loop·Schedules) is component-owned.
   // Command Deck P3d — orchestrator schedules (reboot-surviving).
   'deck.schedules': 'Schedules',
   'deck.schedulesEmpty': 'No schedules yet. Schedules survive reboots, and the orchestrator runs them when the time comes.',

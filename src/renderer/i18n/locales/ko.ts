@@ -740,9 +740,7 @@ export const ko = {
   'deck.recoveryTitle': '마지막 종료 전 실행 중이던 에이전트 pane {count}개를 복구할 수 있습니다.',
   'deck.recoveryRun': '에이전트 복구',
   'deck.recoveryDismiss': '무시',
-  // 커맨드 데크 P3c — composer 위 퀵액션 칩.
-  'deck.qaFleetStatus': '에이전트 상태',
-  'deck.qaPrStatus': 'PR 상태',
+  // 커맨드 데크 — 컨트롤 바(Mode·Loop·Schedules)는 각 컴포넌트가 담당.
   // 커맨드 데크 P3d — agent 예약(재부팅 생존).
   'deck.schedules': '예약',
   'deck.schedulesEmpty': '예약이 없습니다. 예약은 재부팅 후에도 유지되고, 시간이 되면 agent가 실행합니다.',
