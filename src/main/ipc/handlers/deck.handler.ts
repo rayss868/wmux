@@ -291,6 +291,33 @@ export function registerDeckHandler(
     return mgr.send(withLoopContext(workspaceId, prompt));
   };
 
+  // The first turn a freshly started/resumed loop takes. Without this, START
+  // only writes loop-state + caps and RETURNS — the loop sits at status=running
+  // waiting for the next pane event or cadence tick, which (with the default
+  // "Events only" cadence and no active pane) may be far away or never come.
+  // The whole thing reads as "I started a loop and the orchestrator did
+  // nothing" (owner dogfood 2026-07-14). Kicking one turn now gets the loop
+  // DOING something immediately; its own action then produces the pane events
+  // that keep the loop iterating. Neutral across tiers — report-only assesses
+  // and reports, continue drives the first pane action.
+  const LOOP_KICKOFF_PROMPT =
+    'The loop above has just started. Take the first iteration NOW: assess the ' +
+    'current state of the relevant panes against the objective, then — if your ' +
+    'autonomy caps allow — drive the first concrete action (e.g. terminal_send the ' +
+    'next instruction to a pane). Say what you did and what you are waiting on. ' +
+    'Activity from your action will wake you to continue the next iteration.';
+
+  // Fire the kickoff turn — fire-and-forget on purpose: START/RESUME must
+  // return their verdict immediately (the loop modal awaits it), and a busy
+  // reject (a turn already streaming) is fine — the loop's event/cadence
+  // drivers take over. runTurnForWorkspace prepends the loop-state block and
+  // emits turn-start, so the kick renders in the thread like a scheduled run.
+  const kickLoop = (workspaceId: string): void => {
+    void runTurnForWorkspace(LOOP_KICKOFF_PROMPT, workspaceId).catch(() => {
+      /* best-effort — a rejected kick just means the drivers take over */
+    });
+  };
+
   // ── Event-push: EventBus → coalescer → orchestrator wake-turn ─────────────
   // The main-process EventBus already carries agent.stop / agent.awaiting_input
   // (hook + detector sourced). Subscribe, coalesce per workspace, and wake the
@@ -595,6 +622,9 @@ export function registerDeckHandler(
       });
       if (!loop) return { ok: false, code: 'invalid' };
       await applyTierCaps(workspaceId, tier);
+      // Kick the loop into motion immediately (see kickLoop) so starting a loop
+      // visibly does something instead of silently waiting for an event/tick.
+      kickLoop(workspaceId);
       return { ok: true, loop };
     }),
   );
@@ -659,6 +689,10 @@ export function registerDeckHandler(
       await setLoopStatus(workspaceId, 'running');
       await setLoopScheduleEnabled(loop.scheduleId, true);
       await applyTierCaps(workspaceId, loop.tier);
+      // Resuming re-engages the orchestrator the same way starting does — a
+      // paused loop that only re-arms its schedule would sit idle until the
+      // next tick.
+      kickLoop(workspaceId);
       return { ok: true };
     }),
   );

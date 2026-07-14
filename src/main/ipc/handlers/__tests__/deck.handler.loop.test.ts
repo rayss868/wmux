@@ -398,9 +398,47 @@ describe('loop-state block on the brain wire', () => {
     expect(adapters[0].sentTexts[0]).toBe('no loop yet');
 
     await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'keep green' });
+    // START now fires a fire-and-forget kickoff turn — let it settle so the
+    // manager is idle before the human send (else the send is busy-rejected).
+    await new Promise((r) => setTimeout(r, 20));
     await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'progress?' });
     const last = adapters[0].sentTexts.at(-1)!;
     expect(last.startsWith('[loop] objective: keep green')).toBe(true);
     expect(last.endsWith('progress?')).toBe(true);
+  });
+});
+
+describe('deck:loop kickoff — the loop actually starts working (owner dogfood 2026-07-14)', () => {
+  it('START fires an immediate orchestrator turn carrying the loop block', async () => {
+    const res = await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'keep CI green' });
+    expect(res.ok).toBe(true);
+    // The kick is fire-and-forget (START must return its verdict at once — the
+    // modal awaits it), so let the streamed turn land on the fake adapter.
+    await new Promise((r) => setTimeout(r, 20));
+    const texts = adapters[0].sentTexts;
+    expect(texts.length).toBeGreaterThanOrEqual(1);
+    const kick = texts[texts.length - 1];
+    // The loop-state block (mocked renderLoopStateBlock) rides in front, and the
+    // prompt tells the brain to take the first iteration now.
+    expect(kick).toContain('[loop] objective: keep CI green');
+    expect(kick.toLowerCase()).toContain('first iteration');
+  });
+
+  it('RESUME re-engages the orchestrator too (a paused loop should not sit idle)', async () => {
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'o' });
+    await new Promise((r) => setTimeout(r, 20));
+    const afterStart = adapters[0].sentTexts.length;
+    await invoke(IPC.DECK_LOOP_PAUSE, { workspaceId: 'ws-1' });
+    await invoke(IPC.DECK_LOOP_RESUME, { workspaceId: 'ws-1' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(adapters[0].sentTexts.length).toBeGreaterThan(afterStart);
+  });
+
+  it('a rejected START (bad interval) fires no kickoff turn', async () => {
+    const res = await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'o', intervalMinutes: 1 });
+    expect(res).toMatchObject({ ok: false, code: 'invalid_interval' });
+    await new Promise((r) => setTimeout(r, 20));
+    // No loop was created ⇒ no manager, no turn.
+    expect(adapters).toHaveLength(0);
   });
 });
