@@ -55,6 +55,7 @@ import {
 } from '../../deck/deckLoopStateStore';
 import {
   loadWorkspaceDecision,
+  loadDeckDecisions,
   resolveDecision,
   clearResolvedDecision,
   clearDecision,
@@ -81,6 +82,10 @@ export interface RegisterDeckHandlerOptions {
    *  `workspaceId` binds the commander token to the one workspace this brain
    *  serves. */
   createAdapter?: (opts: { model?: string; workspaceId: string }) => BrainAdapter;
+  /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
+   *  are resumed headlessly. Deferred so daemon/session recovery settles first;
+   *  injected small in tests. */
+  reconcileDelayMs?: number;
 }
 
 /** Fleet-context token budget (~2KB). A larger snapshot is truncated so the
@@ -895,6 +900,28 @@ export function registerDeckHandler(
     }),
   );
 
+  // M2 — headless startup reconcile. A resolution can be persisted but never
+  // consumed if the app closed between resolve and the fire-and-forget resume
+  // kick, and the deck may never be reopened (so the GET-hydrate nudge above
+  // can't fire). On startup we scan for resolved-but-unconsumed decisions and
+  // kick a resume for each, headlessly — the brain acts on the answer even
+  // before the deck tab is opened, and each resumed turn consumes its record.
+  // Deferred so the daemon's session recovery settles first (a resume turn
+  // wants the recovered fleet); unref'd so it never keeps Electron alive.
+  const DECISION_RECONCILE_DELAY_MS = 4000;
+  const reconcileResolvedDecisions = (): void => {
+    for (const [workspaceId, decision] of Object.entries(loadDeckDecisions())) {
+      if (decision.status === 'resolved') {
+        void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId).catch(() => {});
+      }
+    }
+  };
+  const reconcileTimer = setTimeout(
+    reconcileResolvedDecisions,
+    opts.reconcileDelayMs ?? DECISION_RECONCILE_DELAY_MS,
+  );
+  (reconcileTimer as { unref?: () => void }).unref?.();
+
   const disposeAll = (): void => {
     for (const { manager } of managers.values()) manager.dispose();
     managers.clear();
@@ -906,6 +933,7 @@ export function registerDeckHandler(
 
   return () => {
     app.removeListener('before-quit', disposeAll);
+    clearTimeout(reconcileTimer);
     offBus();
     coalescer?.dispose();
     scheduler.stop();

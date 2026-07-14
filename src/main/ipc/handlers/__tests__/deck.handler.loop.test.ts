@@ -157,6 +157,7 @@ interface FakeDecision {
 const decisions = new Map<string, FakeDecision>();
 vi.mock('../../../deck/deckDecisionStore', () => ({
   loadWorkspaceDecision: vi.fn((ws: string) => decisions.get(ws) ?? null),
+  loadDeckDecisions: vi.fn(() => Object.fromEntries(decisions.entries())),
   hasPendingDecision: vi.fn((ws: string) => decisions.get(ws)?.status === 'pending'),
   resolveDecision: vi.fn(async (ws: string, id: string, resolution: string) => {
     const d = decisions.get(ws);
@@ -362,6 +363,36 @@ describe('deck:decision — the gate (handler wiring)', () => {
     await vi.waitFor(() => {
       const a = adapters.find((x) => x.workspaceId === 'ws-1');
       expect(a?.sentTexts.some((t) => t.includes('RESOLVED') && t.includes('answered'))).toBe(true);
+    });
+  });
+
+  it('M2: startup reconcile resumes a resolved decision headlessly — no GET needed', async () => {
+    // Simulate the app relaunching with a resolution that was persisted but never
+    // consumed (resolved then closed before the resume kick), and the deck never
+    // reopened. The deferred startup reconcile must resume it on its own.
+    cleanup?.();
+    decisions.set('ws-1', {
+      id: 'd1',
+      question: 'Q?',
+      options: [],
+      context: '',
+      status: 'resolved',
+      resolution: 'reconciled',
+      raisedAt: 1,
+      resolvedAt: 2,
+    });
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.workspaceId);
+        adapters.push(a);
+        return a;
+      },
+      reconcileDelayMs: 5,
+    });
+    // No DECK_DECISION_GET / RESOLVE invoked — the reconcile timer alone drives it.
+    await vi.waitFor(() => {
+      const a = adapters.find((x) => x.workspaceId === 'ws-1');
+      expect(a?.sentTexts.some((t) => t.includes('RESOLVED') && t.includes('reconciled'))).toBe(true);
     });
   });
 });
