@@ -48,7 +48,9 @@ export type RegisterMcpResult =
 export type SampleTaskOutcome = 'ok' | 'timeout' | 'aborted';
 
 // Renderer → main payload for firstRun:start-sample-task.
-// `ptyId` is the upper-left Claude pane id (D3 strict OSC133).
+// `ptyId` is the upper-left pane's shell — the sample task launches `claude`
+// there once the shell emits OSC133 prompt-ready (D3). It is a plain shell,
+// not a pre-running Claude pane (#452).
 export interface SampleTaskStartPayload {
   ptyId: string;
 }
@@ -66,11 +68,20 @@ export interface SampleTaskStartPayload {
 export const FIRST_RUN_REOPEN_EVENT = 'wmux:firstrun-reopen';
 
 /**
- * Deterministic command sent to Claude after OSC133 prompt-ready (D3).
+ * Deterministic command injected into the upper-left pane's shell once it
+ * emits OSC133 prompt-ready (D3). This launches Claude Code with the sample
+ * prompt as its initial query.
+ *
+ * IMPORTANT (#452): the OSC133 prompt-ready we scan for comes from the *shell*
+ * (e.g. PowerShell/pwsh shell integration), NOT from Claude — nothing spawns
+ * Claude in the pane on its own. So we must invoke `claude` here; pasting the
+ * bare prompt would make the shell try to run it as a command (that was the
+ * #452 symptom: the prompt text landed directly in a PowerShell session).
+ *
  * Verbatim — do not alter without coordinating with SampleTaskRunner / wizard copy.
  */
 export const SAMPLE_TASK_COMMAND =
-  'Use the wmux browser_open tool to navigate to https://www.google.com/search?q=wmux';
+  'claude "Use the wmux browser_open tool to navigate to https://www.google.com/search?q=wmux"';
 
 /** OSC133 prompt-ready handshake timeout (ms). After this, fallback "Press Enter" UI. */
 export const OSC133_TIMEOUT_MS = 5000;
