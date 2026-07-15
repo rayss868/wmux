@@ -75,8 +75,7 @@ export default function RemoteInboxList({ items, focusedIdx, onDismiss }: Remote
                 aria-label={t('fleet.remote.dismiss')}
                 tabIndex={focused ? 0 : -1}
                 onClick={(e) => { e.stopPropagation(); onDismiss(item.recordId); }}
-                className="px-2 py-0.5 rounded text-xs shrink-0 transition-colors"
-                style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)' }}
+                className="px-2 py-0.5 rounded-[5px] text-xs shrink-0 transition-colors text-[var(--text-subtle)] hover:bg-[var(--bg-overlay)] hover:text-[var(--text-main)]"
               >
                 ✕
               </button>

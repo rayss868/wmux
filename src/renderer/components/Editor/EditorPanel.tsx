@@ -94,23 +94,66 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
         </span>
         <div className="flex-1" />
         <button
-          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--text-main)] transition-colors border border-[var(--bg-mantle)]"
+          className="px-2 py-0.5 rounded-[5px] text-[10px] transition-colors border bg-[color-mix(in_srgb,var(--bg-surface)_72%,transparent)] border-[color-mix(in_srgb,var(--text-main)_10%,transparent)] text-[var(--text-sub)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_6%,transparent)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-main)] hover:border-[color-mix(in_srgb,var(--text-main)_16%,transparent)] hover:shadow-[0_1px_3px_rgba(0,0,0,0.25)]"
           onClick={handleReload}
           title="Reload file"
         >
           Reload
         </button>
-        <button
-          className={`px-2 py-0.5 rounded text-[10px] transition-colors border border-[var(--bg-mantle)] ${
-            editing
-              ? 'bg-[var(--accent-blue)] text-white'
-              : 'bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--text-main)]'
-          }`}
-          onClick={handleToggleEdit}
-          title={editing ? 'Switch to view mode' : 'Switch to edit mode'}
+        {/* View | Edit — a single segmented control (one track, active segment
+            raised). Replaces the paired toggle button per the gpui recipe. */}
+        <div
+          role="tablist"
+          aria-label="Editor mode"
+          className="inline-flex items-center gap-0.5 p-0.5 rounded-[7px]"
+          style={{
+            background: 'var(--bg-mantle)',
+            border: '1px solid color-mix(in srgb, var(--text-main) 8%, transparent)',
+          }}
         >
-          {editing ? 'View' : 'Edit'}
-        </button>
+          <button
+            role="tab"
+            aria-selected={!editing}
+            className="px-2 py-0.5 rounded-[5px] text-[10px] transition-colors"
+            style={
+              !editing
+                ? {
+                    background: 'var(--bg-surface)',
+                    color: 'var(--text-main)',
+                    boxShadow:
+                      'inset 0 1px 0 color-mix(in srgb, var(--text-main) 8%, transparent), 0 1px 2px rgba(0, 0, 0, 0.3)',
+                  }
+                : { color: 'var(--text-sub)' }
+            }
+            onClick={() => {
+              if (editing) setEditing(false);
+            }}
+            title="Switch to view mode"
+          >
+            View
+          </button>
+          <button
+            role="tab"
+            aria-selected={editing}
+            className="px-2 py-0.5 rounded-[5px] text-[10px] transition-colors"
+            style={
+              editing
+                ? {
+                    background: 'var(--bg-surface)',
+                    color: 'var(--text-main)',
+                    boxShadow:
+                      'inset 0 1px 0 color-mix(in srgb, var(--text-main) 8%, transparent), 0 1px 2px rgba(0, 0, 0, 0.3)',
+                  }
+                : { color: 'var(--text-sub)' }
+            }
+            onClick={() => {
+              if (!editing) handleToggleEdit();
+            }}
+            title="Switch to edit mode"
+          >
+            Edit
+          </button>
+        </div>
         {/* No Save button: the panel is a read-only viewer with a local-only
             edit/scratch mode (changes are not persisted). A disabled "Save not
             available yet" button read as unfinished; removed (NN5-T5-ALT).

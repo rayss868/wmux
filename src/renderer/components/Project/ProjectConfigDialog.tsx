@@ -17,6 +17,7 @@ import { countLayoutLeaves, PROJECT_SUPERVISION_DEFAULT_BURST } from '../../../s
 import type { WmuxProjectLayoutNode } from '../../../shared/wmuxProjectConfig';
 import { applyProjectLayoutFresh, decideProjectTrust, probeProjectConfig } from '../../utils/projectConfigProbe';
 import { runProjectCommand } from '../../utils/projectCommands';
+import Button from '../ui/Button';
 
 interface LayoutRow {
   label: string;
@@ -106,7 +107,7 @@ export default function ProjectConfigDialog() {
       onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}
     >
       <div
-        className="flex flex-col gap-4 p-5 rounded-xl"
+        className="flex flex-col gap-4 p-5 rounded-[7px]"
         style={{
           width: 560,
           maxWidth: '92vw',
@@ -227,47 +228,36 @@ export default function ProjectConfigDialog() {
         <div className="flex items-center justify-end gap-2">
           {isTrusted ? (
             <>
-              <button
+              <Button
+                variant="secondary"
                 onClick={() => { void decideProjectTrust(wsId, 'clear'); close(); }}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium"
-                style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)' }}
               >
                 {t('project.revoke')}
-              </button>
-              <button
-                onClick={close}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium"
-                style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)' }}
-              >
+              </Button>
+              <Button variant="secondary" onClick={close}>
                 {t('project.close')}
-              </button>
+              </Button>
             </>
           ) : (
             <>
               {trust !== 'denied' && (
-                <button
+                <Button
+                  variant="secondary"
                   onClick={() => { void decideProjectTrust(wsId, 'denied'); close(); }}
-                  className="px-4 py-1.5 rounded-lg text-xs font-medium"
-                  style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)' }}
                 >
                   {t('project.deny')}
-                </button>
+                </Button>
               )}
-              <button
-                onClick={close}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium"
-                style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)' }}
-              >
+              <Button variant="secondary" onClick={close}>
                 {t('project.notNow')}
-              </button>
+              </Button>
               {!project.invalid && (
-                <button
+                <Button
+                  variant="primary"
                   onClick={() => { void decideProjectTrust(wsId, 'trusted', unattendedConsent); close(); }}
-                  className="px-4 py-1.5 rounded-lg text-xs font-medium"
-                  style={{ backgroundColor: 'var(--accent-yellow)', color: 'var(--bg-base)' }}
                 >
                   {t('project.trust')}
-                </button>
+                </Button>
               )}
             </>
           )}

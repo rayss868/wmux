@@ -7,6 +7,14 @@ import { groupCapabilities } from '../Approval/PermissionApprovalDialog';
 import type { RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import type { InboxItem } from '../../stores/selectors/approvalInbox';
 
+// gpui button recipes (theme-safe). Approve = primary warm CTA; deny = danger
+// tinted. The row still carries the critical/attention border + countdown, so
+// warm-approve does not drop the "this is a sensitive grant" signal.
+const BTN_PRIMARY_WARM =
+  'rounded-lg font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors';
+const BTN_DANGER_TINTED =
+  'rounded-lg border transition-colors bg-[color-mix(in_srgb,var(--accent-red)_15%,transparent)] border-[color-mix(in_srgb,var(--accent-red)_32%,transparent)] text-[color-mix(in_srgb,var(--accent-red)_70%,var(--text-main))] hover:bg-[color-mix(in_srgb,var(--accent-red)_22%,transparent)]';
+
 // ─── S-C2 Approval Inbox list ─────────────────────────────────────────────────
 //
 // A role="listbox" of pending-approval rows. Mirrors FleetCard's roving-focus
@@ -81,8 +89,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
           <button
             type="button"
             onClick={(e) => { stop(e); onResolve(item, false); }}
-            className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
-            style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)' }}
+            className={`px-4 py-1.5 text-xs font-medium ${BTN_DANGER_TINTED}`}
           >
             {t('fleet.approvals.deny')}
           </button>
@@ -150,8 +157,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
                   <button
                     type="button"
                     onClick={(e) => { stop(e); onResolve(item, true); }}
-                    className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                    style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
+                    className={`px-4 py-1.5 text-xs ${BTN_PRIMARY_WARM}`}
                   >
                     {t('fleet.approvals.approve')}
                   </button>
@@ -217,11 +223,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
               <button
                 type="button"
                 onClick={(e) => { stop(e); onResolve(item, true); }}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                style={{
-                  backgroundColor: item.isCritical ? 'var(--accent-red)' : 'var(--accent-yellow)',
-                  color: 'var(--bg-base)',
-                }}
+                className={`px-4 py-1.5 text-xs ${BTN_PRIMARY_WARM}`}
               >
                 {t('fleet.approvals.approve')}
               </button>

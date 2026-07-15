@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { injectText } from './inject';
+import Button from '../ui/Button';
 
 export default function SnippetsMenu({ ptyId }: { ptyId: string }) {
   const t = useT();
@@ -19,7 +20,7 @@ export default function SnippetsMenu({ ptyId }: { ptyId: string }) {
 
   return (
     <div
-      className="absolute bottom-full left-2 mb-1 w-72 rounded-lg border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 p-2 font-mono text-xs"
+      className="absolute bottom-full left-2 mb-1 w-72 rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 p-2 font-mono text-xs"
       data-testid="snippets-menu"
     >
       <div className="max-h-48 overflow-y-auto">
@@ -29,7 +30,7 @@ export default function SnippetsMenu({ ptyId }: { ptyId: string }) {
         {snippets.map((s) => (
           <div key={s.id} className="flex items-center gap-1 group">
             <button
-              className="flex-1 text-left px-2 py-1 rounded hover:bg-[var(--bg-surface)] text-[var(--text-sub)] hover:text-[var(--text-main)] truncate"
+              className="ui-row-ghost flex-1 text-left px-2 py-1 truncate"
               title={s.text}
               onClick={() => insert(s.text)}
             >
@@ -58,13 +59,14 @@ export default function SnippetsMenu({ ptyId }: { ptyId: string }) {
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
-        <button
-          className="self-end px-3 py-1 rounded bg-[var(--accent-blue)] text-[var(--bg-base)] disabled:opacity-40"
+        <Button
+          variant="primary"
+          className="self-end"
           disabled={!label.trim() || !text.trim()}
           onClick={() => { addSnippet(label.trim(), text.trim()); setLabel(''); setText(''); }}
         >
           {t('toolbar.addSnippet')}
-        </button>
+        </Button>
       </div>
     </div>
   );

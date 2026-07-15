@@ -225,7 +225,7 @@ export default function SurfaceTabs({
       // signal in the design system.
       style={{
         borderColor: 'var(--border-soft)',
-        ...(paneActive ? { boxShadow: 'inset 0 -2px 0 var(--accent-cursor)' } : {}),
+        ...(paneActive ? { boxShadow: 'inset 0 -2px 0 var(--accent-blue)' } : {}),
       }}
       data-pane-tabs-active={paneActive ? 'true' : undefined}
       {...tokenAttrs('bgMantle', 'bg')}
@@ -241,7 +241,7 @@ export default function SurfaceTabs({
         <input
           ref={paneInputRef}
           data-pane-label-input
-          className="bg-[var(--bg-base)] text-[var(--text-main)] text-[10px] font-mono px-1 py-0 mx-1 rounded border border-[var(--accent)] outline-none max-w-[150px] shrink-0"
+          className="ui-mini-input text-[var(--text-main)] text-[10px] font-mono px-1 py-0 mx-1 border border-[var(--accent-blue)] max-w-[150px] shrink-0"
           value={paneEditName}
           maxLength={64}
           placeholder={paneAutoName}
@@ -305,7 +305,7 @@ export default function SurfaceTabs({
           {editingId === s.id ? (
             <input
               ref={inputRef}
-              className="bg-[var(--bg-base)] text-[var(--text-main)] text-xs font-mono px-1 py-0 rounded border border-[var(--text-muted)] outline-none max-w-[120px]"
+              className="ui-mini-input text-[var(--text-main)] text-xs font-mono px-1 py-0 border border-[var(--text-muted)] max-w-[120px]"
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               onBlur={() => commitRename(s.id)}
@@ -348,7 +348,7 @@ export default function SurfaceTabs({
               header. The Ctrl+T keyboard path is intentionally kept (power-user
               escape hatch); only the discoverable button is gone. */}
           <button
-            className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            className={`ui-icon-btn ${FOCUS_RING} w-6 h-6`}
             onClick={(e) => { e.stopPropagation(); onSplitHorizontal(); }}
             title={withShortcut(t('pane.splitRight'), SC_SPLIT_RIGHT)}
             aria-label={t('pane.splitRight')}
@@ -357,7 +357,7 @@ export default function SurfaceTabs({
             <IconSplitRight size={14} />
           </button>
           <button
-            className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            className={`ui-icon-btn ${FOCUS_RING} w-6 h-6`}
             onClick={(e) => { e.stopPropagation(); onSplitVertical(); }}
             title={withShortcut(t('pane.splitDown'), SC_SPLIT_DOWN)}
             aria-label={t('pane.splitDown')}
@@ -366,7 +366,7 @@ export default function SurfaceTabs({
             <IconSplitDown size={14} />
           </button>
           <button
-            className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            className={`ui-icon-btn ${FOCUS_RING} w-6 h-6`}
             onClick={(e) => { e.stopPropagation(); onAddBrowser(); }}
             title={t('pane.newBrowser')}
             aria-label={t('pane.newBrowser')}
@@ -381,11 +381,7 @@ export default function SurfaceTabs({
               (accent) styling + aria-pressed convey the zoomed state. */}
           <div className="flex items-center border-l border-[var(--border-soft)] ml-0.5 pl-1">
             <button
-              className={`flex items-center justify-center w-6 h-6 rounded transition-colors ${FOCUS_RING} ${
-                isZoomed
-                  ? 'text-[var(--accent-cursor)] bg-[var(--bg-surface)]'
-                  : 'text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)]'
-              }`}
+              className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 ${isZoomed ? 'ui-icon-btn-active' : ''}`}
               onClick={(e) => { e.stopPropagation(); useStore.getState().togglePaneZoom(paneId); }}
               title={t('settings.prefix.toggleZoom')}
               aria-label={t('settings.prefix.toggleZoom')}

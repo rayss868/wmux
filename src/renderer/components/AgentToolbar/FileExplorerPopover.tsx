@@ -83,7 +83,7 @@ export default function FileExplorerPopover() {
 
   return (
     <div
-      className="absolute bottom-full left-24 mb-1 w-80 max-h-80 overflow-y-auto rounded-lg border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 p-1 font-mono text-xs"
+      className="absolute bottom-full left-24 mb-1 w-80 max-h-80 overflow-y-auto rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 p-1 font-mono text-xs"
       data-testid="file-explorer"
     >
       {!cwd && (

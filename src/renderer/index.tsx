@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import { useStore } from './stores';
 import './styles/globals.css';
+import './styles/ui.css';
 import './styles/onboarding.css';
 
 // Apply the store's DEFAULT theme before first paint. Without this a fresh

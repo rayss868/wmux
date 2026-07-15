@@ -1,0 +1,264 @@
+/* ─── wmux UI component classes (GPUI / Zed-style) ───────────────────────────
+ *
+ * Raised / recessed / ghost / primary / danger recipes shared by <Button>,
+ * <Input>, and the converted chrome surfaces. Theme-safe by construction:
+ * every colour is derived from a --* token via color-mix (never a white/black
+ * literal for a border or highlight), so all nine built-in themes and any
+ * custom theme stay in grammar. Warm --accent = action / CTA; cool
+ * --accent-blue = navigation / interactive (focus, selection). Radii follow
+ * DESIGN.md discipline: buttons 5px, inputs 6px, cards/panels 7px.
+ *
+ * The keyboard focus ring is the app-wide FOCUS_RING utility (a single ring
+ * system) — button/toggle/icon classes below deliberately DO NOT paint their
+ * own :focus-visible ring; every call site pairs them with FOCUS_RING (the
+ * <Button> wrapper appends it automatically). Recessed inputs are the one
+ * exception: they carry the recipe's accent-blue border + glow themselves.
+ */
+
+/* ─── Buttons: shared base ──────────────────────────────────────────────── */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  padding: 5px 12px;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 140ms ease-out, border-color 140ms ease-out,
+    color 140ms ease-out, box-shadow 140ms ease-out, transform 140ms ease-out;
+}
+.ui-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Secondary = raised (the default control). */
+.ui-btn-secondary {
+  background: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+  border-color: color-mix(in srgb, var(--text-main) 10%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent);
+  color: var(--text-main);
+}
+.ui-btn-secondary:hover:not(:disabled) {
+  background: var(--bg-surface);
+  border-color: color-mix(in srgb, var(--text-main) 16%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent),
+    0 1px 3px rgba(0, 0, 0, 0.25);
+}
+.ui-btn-secondary:active:not(:disabled) {
+  transform: translateY(0.5px);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* Primary = warm-accent CTA. Text sits on the fill as --bg-base. */
+.ui-btn-primary {
+  background: var(--accent);
+  color: var(--bg-base);
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.ui-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, var(--text-main));
+}
+.ui-btn-primary:active:not(:disabled) {
+  transform: translateY(0.5px);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* Ghost = boxless toolbar action; a subtle surface chip appears on hover. */
+.ui-btn-ghost {
+  background: transparent;
+  color: var(--text-sub);
+}
+.ui-btn-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-surface) 65%, transparent);
+  color: var(--text-main);
+}
+.ui-btn-ghost:active:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-surface) 80%, transparent);
+}
+
+/* Danger = solid destructive CTA. */
+.ui-btn-danger {
+  background: var(--accent-red);
+  color: var(--bg-base);
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.ui-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-red) 88%, var(--text-main));
+}
+.ui-btn-danger:active:not(:disabled) {
+  transform: translateY(0.5px);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* Danger tinted = low-emphasis destructive (revoke / deny). */
+.ui-btn-danger-tinted {
+  background: color-mix(in srgb, var(--accent-red) 15%, transparent);
+  border-color: color-mix(in srgb, var(--accent-red) 32%, transparent);
+  color: color-mix(in srgb, var(--accent-red) 70%, var(--text-main));
+}
+.ui-btn-danger-tinted:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-red) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent-red) 45%, transparent);
+}
+.ui-btn-danger-tinted:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+/* ─── Icon button: square ghost chip (24–28px, sized by the call site) ───── */
+.ui-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-sub);
+  cursor: pointer;
+  transition: background-color 140ms ease-out, color 140ms ease-out;
+}
+.ui-icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-surface) 65%, transparent);
+  color: var(--text-main);
+}
+.ui-icon-btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+}
+.ui-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* Pressed / toggled icon button (e.g. zoom active) — amber "alive" state.
+ * Declared after the base :hover so it also holds while hovered. */
+.ui-icon-btn-active,
+.ui-icon-btn-active:hover:not(:disabled) {
+  background: var(--bg-surface);
+  color: var(--accent-cursor);
+}
+/* Destructive icon button (e.g. close) — red on hover, keeping the chip. */
+.ui-icon-btn-danger:hover:not(:disabled) {
+  color: var(--accent-red);
+}
+
+/* ─── Toggle: tinted-active pill (NOT a solid accent fill) ───────────────── */
+.ui-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-sub2);
+  cursor: pointer;
+  transition: background-color 140ms ease-out, color 140ms ease-out,
+    box-shadow 140ms ease-out;
+}
+.ui-toggle:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-surface) 65%, transparent);
+  color: var(--text-main);
+}
+.ui-toggle-on,
+.ui-toggle-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* ─── Ghost helpers (colour-only; pair with your own layout/sizing) ──────── */
+.ui-ghost {
+  background: transparent;
+  color: var(--text-sub);
+}
+.ui-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-surface) 65%, transparent);
+  color: var(--text-main);
+}
+/* Active toolbar action (popover open) — cool accent-blue reads as "selected"
+ * navigation state, not a warm CTA. */
+.ui-ghost-active {
+  background: color-mix(in srgb, var(--bg-surface) 82%, transparent);
+  color: var(--accent-blue);
+}
+/* Left-aligned ghost row (list item that hovers to a chip). */
+.ui-row-ghost {
+  background: transparent;
+  color: var(--text-sub);
+  border-radius: 5px;
+  transition: background-color 140ms ease-out, color 140ms ease-out;
+}
+.ui-row-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-surface) 65%, transparent);
+  color: var(--text-main);
+}
+
+/* ─── Recessed inputs ────────────────────────────────────────────────────── */
+.ui-input {
+  width: 100%;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-base) 92%, #000);
+  border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22);
+  color: var(--text-main);
+  padding: 4px 8px;
+  outline: none;
+  transition: border-color 140ms ease-out, box-shadow 140ms ease-out;
+}
+.ui-input::placeholder {
+  color: var(--text-muted);
+}
+.ui-input:focus-visible,
+.ui-input:focus {
+  border-color: var(--accent-blue);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22),
+    0 0 0 3px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+}
+.ui-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Recessed mini-input (compact inline rename fields). The call site keeps its
+ * own border colour (e.g. --accent-blue for the pane label, --text-muted for
+ * the surface title), so this only supplies the sunken fill + radius. */
+.ui-mini-input {
+  background: color-mix(in srgb, var(--bg-base) 92%, #000);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22);
+  border-radius: 6px;
+  outline: none;
+}
+
+/* Terminal search bar: recessed field attached to the top chrome (no top
+ * border), floating drop shadow, accent-blue focus-within ring. */
+.ui-search-bar {
+  background: color-mix(in srgb, var(--bg-base) 92%, #000);
+  border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
+  border-top: none;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22), 0 6px 16px rgba(0, 0, 0, 0.28);
+  transition: border-color 140ms ease-out, box-shadow 140ms ease-out;
+}
+.ui-search-bar:focus-within {
+  border-color: var(--accent-blue);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22), 0 6px 16px rgba(0, 0, 0, 0.28),
+    0 0 0 3px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+}
+
+/* ─── Reduced motion: drop the state transitions (end states still convey). */
+@media (prefers-reduced-motion: reduce) {
+  .ui-btn,
+  .ui-icon-btn,
+  .ui-toggle,
+  .ui-row-ghost,
+  .ui-input,
+  .ui-search-bar {
+    transition: none;
+  }
+}

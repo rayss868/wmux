@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { injectText } from './inject';
+import Button from '../ui/Button';
 
 export default function RichInput({ ptyId }: { ptyId: string }) {
   const t = useT();
@@ -50,13 +51,13 @@ export default function RichInput({ ptyId }: { ptyId: string }) {
 
   return (
     <div
-      className="absolute bottom-full right-2 mb-1 w-[30rem] rounded-lg border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 font-mono text-xs"
+      className="absolute bottom-full right-2 mb-1 w-[30rem] rounded-[7px] border border-[var(--accent-blue)] bg-[var(--bg-mantle)] shadow-xl z-50 font-mono text-xs"
       style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}
       data-testid="rich-input"
     >
       {/* Drag handle / header */}
       <div
-        className="flex items-center justify-between px-2.5 py-1.5 border-b border-[var(--bg-surface)] cursor-move select-none rounded-t-lg bg-[var(--bg-surface)]"
+        className="flex items-center justify-between px-2.5 py-1.5 border-b border-[var(--bg-surface)] cursor-move select-none rounded-t-[7px] bg-[var(--bg-surface)]"
         onMouseDown={onHeaderMouseDown}
       >
         <span className="text-[var(--text-sub)]">⌨ {t('toolbar.richInput')}</span>
@@ -74,7 +75,7 @@ export default function RichInput({ ptyId }: { ptyId: string }) {
       <div className="p-2">
         <textarea
           ref={ref}
-          className="w-full h-52 min-h-[8rem] bg-[var(--bg-base)] border border-[var(--bg-surface)] rounded px-2 py-1.5 resize-y outline-none text-[var(--text-main)]"
+          className="ui-input h-52 min-h-[8rem] resize-y"
           placeholder={t('toolbar.richPlaceholder')}
           value={draft}
           onChange={(e) => setRichDraft(ptyId, e.target.value)}
@@ -84,20 +85,20 @@ export default function RichInput({ ptyId }: { ptyId: string }) {
           }}
         />
         <div className="flex items-center justify-end gap-2 mt-1.5">
-          <button
-            className="px-3 py-1 rounded border border-[var(--bg-overlay)] text-[var(--text-sub)] hover:text-[var(--text-main)] disabled:opacity-40"
+          <Button
+            variant="secondary"
             disabled={!draft.trim()}
             onClick={() => void dispatch(false)}
           >
             {t('toolbar.addToPrompt')}
-          </button>
-          <button
-            className="px-3 py-1 rounded bg-[var(--accent-blue)] text-[var(--bg-base)] disabled:opacity-40"
+          </Button>
+          <Button
+            variant="primary"
             disabled={!draft.trim()}
             onClick={() => void dispatch(true)}
           >
             {t('toolbar.send')} ▸
-          </button>
+          </Button>
         </div>
       </div>
     </div>
