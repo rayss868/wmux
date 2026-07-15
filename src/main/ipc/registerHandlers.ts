@@ -208,6 +208,27 @@ export function registerAllHandlers(
   ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
   ipcMain.on(IPC.WINDOW_FLASH_FRAME, onFlashFrame);
 
+  // Renderer-decided OS toast (notification policy `osToast` action). The
+  // policy already established the window is unfocused — and, unlike main,
+  // it knows whether the exact originating surface is being watched — so
+  // this shows via showDirect (no any-window-focused suppression). Trust
+  // boundary: title/body must be strings; click-context ids are coerced to
+  // string-or-null before reaching ToastManager.
+  const onOsToast = (_event: Electron.IpcMainEvent, payload: unknown): void => {
+    if (!payload || typeof payload !== 'object') return;
+    const { title, body, ptyId, workspaceId } = payload as {
+      title?: unknown; body?: unknown; ptyId?: unknown; workspaceId?: unknown;
+    };
+    if (typeof title !== 'string' || title.length === 0) return;
+    if (typeof body !== 'string') return;
+    toastManager.showDirect(title, body, {
+      ptyId: typeof ptyId === 'string' ? ptyId : null,
+      workspaceId: typeof workspaceId === 'string' ? workspaceId : null,
+    });
+  };
+  ipcMain.removeAllListeners(IPC.NOTIFICATION_OS_TOAST);
+  ipcMain.on(IPC.NOTIFICATION_OS_TOAST, onOsToast);
+
   // Bridge redesign — theme-following titleBarOverlay restyle. The custom
   // titlebar (renderer) sends the active theme's mantle/sub colors whenever
   // the theme changes so the native Windows window controls stay coherent
@@ -332,5 +353,6 @@ export function registerAllHandlers(
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
     ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
+    ipcMain.removeAllListeners(IPC.NOTIFICATION_OS_TOAST);
   };
 }

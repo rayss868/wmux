@@ -83,6 +83,7 @@ interface Harness {
     flashFrame: ReturnType<typeof vi.fn>;
     playSound: ReturnType<typeof vi.fn>;
     scheduleRingDecay: ReturnType<typeof vi.fn>;
+    showOsToast: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -105,6 +106,7 @@ function makeHarness(overrides: { state?: Partial<MockState> } = {}): Harness {
     flashFrame: vi.fn(),
     playSound: vi.fn(),
     scheduleRingDecay: vi.fn(),
+    showOsToast: vi.fn(),
   };
 
   const state: MockState = {
@@ -128,6 +130,7 @@ function makeHarness(overrides: { state?: Partial<MockState> } = {}): Harness {
     isWindowFocused: () => false, // Tests default to UNFOCUSED so flashFrame fires; flip per-case.
     flashFrame: spies.flashFrame,
     playSound: spies.playSound,
+    showOsToast: spies.showOsToast,
     flashFrameThrottler: createThrottler(500),
     getSoundThrottler: (() => {
       const map: Record<string, ReturnType<typeof createThrottler>> = {};
@@ -212,7 +215,10 @@ describe('createNotificationHandler (R4-R10)', () => {
   });
 
   // R4 — isActivePtySurface skip
-  it('R4: when target surface IS the active surface, no actions are dispatched', () => {
+  it('R4: when target surface IS the active surface AND the window is focused, no actions are dispatched', () => {
+    // "Watched" = active surface + OS focus. The harness defaults to
+    // unfocused (see makeHarness), so pin focus for the skip case.
+    harness.deps.isWindowFocused = () => true;
     // ptyId matches ws-a's active pane's active surface → active surface.
     handle('pty-1', { type: 'info', title: 't', body: 'b' });
     expect(harness.spies.addNotification).not.toHaveBeenCalled();
@@ -220,6 +226,23 @@ describe('createNotificationHandler (R4-R10)', () => {
     expect(harness.spies.playSound).not.toHaveBeenCalled();
     expect(harness.spies.flashFrame).not.toHaveBeenCalled();
     expect(harness.spies.setPaneNotificationRing).not.toHaveBeenCalled();
+    expect(harness.spies.showOsToast).not.toHaveBeenCalled();
+  });
+
+  // R4c — the chronic false-negative fix: active surface + UNFOCUSED window
+  // (second monitor / alt-tabbed) is NOT watched → full fan-out including
+  // the relayed OS toast, carrying the pane's click-jump context.
+  it('R4c: active surface + unfocused window still dispatches, including osToast', () => {
+    handle('pty-1', { type: 'info', title: 't', body: 'b' });
+    expect(harness.spies.addNotification).toHaveBeenCalledTimes(1);
+    expect(harness.spies.pushToast).toHaveBeenCalledTimes(1);
+    expect(harness.spies.showOsToast).toHaveBeenCalledTimes(1);
+    expect(harness.spies.showOsToast).toHaveBeenCalledWith({
+      title: 't',
+      body: 'b',
+      ptyId: 'pty-1',
+      workspaceId: 'ws-a',
+    });
   });
 
   // R4b — active-surface check only applies when the target workspace is active.
@@ -331,12 +354,21 @@ describe('createNotificationHandler (R4-R10)', () => {
   });
 
   // R10 — Full integration: all gates on, unfocused, every surface fires.
-  it('R10: all toggles on + unfocused → addNotification + toast + sound + ring(flash) + flashFrame', () => {
+  it('R10: all toggles on + unfocused → addNotification + toast + sound + ring(flash) + flashFrame + osToast', () => {
     harness.state.activeWorkspaceId = 'ws-other';
     handle('pty-1', { type: 'info', title: 't', body: 'b' });
     expect(harness.spies.addNotification).toHaveBeenCalledTimes(1);
+    // The record carries the originating ptyId for the panel click-jump.
+    expect(harness.spies.addNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ ptyId: 'pty-1' }),
+    );
     expect(harness.spies.pushToast).toHaveBeenCalledTimes(1);
-    expect(harness.spies.pushToast).toHaveBeenCalledWith({ message: 't', level: 'info' });
+    expect(harness.spies.pushToast).toHaveBeenCalledWith({
+      message: 't',
+      level: 'info',
+      // In-app toast body click jumps to the originating pane.
+      target: { ptyId: 'pty-1', workspaceId: 'ws-a', surfaceId: 'sf-1' },
+    });
     expect(harness.spies.playSound).toHaveBeenCalledTimes(1);
     expect(harness.spies.playSound).toHaveBeenCalledWith('info');
     expect(harness.spies.flashFrame).toHaveBeenCalledTimes(1);
@@ -345,6 +377,11 @@ describe('createNotificationHandler (R4-R10)', () => {
     expect(harness.spies.setPaneNotificationRing).toHaveBeenCalledWith('pane-a', 'flash');
     expect(harness.spies.scheduleRingDecay).toHaveBeenCalledTimes(1);
     expect(harness.spies.scheduleRingDecay).toHaveBeenCalledWith('pane-a');
+    // Out-of-app surface: the relayed native toast with click context.
+    expect(harness.spies.showOsToast).toHaveBeenCalledTimes(1);
+    expect(harness.spies.showOsToast).toHaveBeenCalledWith({
+      title: 't', body: 'b', ptyId: 'pty-1', workspaceId: 'ws-a',
+    });
   });
 
   // R10b — pushToast level mapping: error→error, warning→warn, anything else→info.
@@ -558,6 +595,38 @@ describe('focusNotificationTarget', () => {
     expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
     expect(h.spies.setActivePane).not.toHaveBeenCalled();
     expect(h.spies.setActiveSurface).not.toHaveBeenCalled();
+  });
+
+  it('J5b: dead ptyId falls back to surfaceId — full pane jump via the durable id (panel entries outlive PTYs)', () => {
+    const h = makeJumpHarness({
+      workspaces: [wsA(), wsB()],
+      activeWorkspaceId: 'ws-a',
+      notifications: [{ id: 'n1', read: false, surfaceId: 'sf-b' }],
+    });
+    const handled = focusNotificationTarget(h.getState, {
+      ptyId: 'pty-gone',
+      surfaceId: 'sf-b',
+      workspaceId: 'ws-b',
+    });
+    expect(handled).toBe(true);
+    expect(h.spies.setActiveWorkspace).toHaveBeenCalledWith('ws-b');
+    expect(h.spies.setActivePane).toHaveBeenCalledWith('pane-b');
+    expect(h.spies.setActiveSurface).toHaveBeenCalledWith('pane-b', 'sf-b', 'ws-b');
+    // Read/ring semantics identical to the ptyId path.
+    expect(h.spies.markRead).toHaveBeenCalledWith('n1');
+    expect(h.spies.setPaneNotificationRing).toHaveBeenCalledWith('pane-b', null);
+  });
+
+  it('J5c: dead ptyId + dead surfaceId still lands on the workspace fallback', () => {
+    const h = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a' });
+    const handled = focusNotificationTarget(h.getState, {
+      ptyId: 'pty-gone',
+      surfaceId: 'sf-gone',
+      workspaceId: 'ws-b',
+    });
+    expect(handled).toBe(true);
+    expect(h.spies.setActiveWorkspace).toHaveBeenCalledWith('ws-b');
+    expect(h.spies.setActivePane).not.toHaveBeenCalled();
   });
 
   it('J6: workspaceId-only payload (external notify RPC) → workspace switch only', () => {

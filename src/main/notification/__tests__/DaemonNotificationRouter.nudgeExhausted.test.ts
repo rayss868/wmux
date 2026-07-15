@@ -24,6 +24,13 @@ vi.mock('../sendNotification', () => ({
   sendNotification: vi.fn(),
 }));
 
+// The router funnels user-visible surfaces through dispatchNotification now
+// (renderer decides every surface incl. the OS toast; direct toast only as
+// the no-window fallback). The dispatch layer is stubbed and asserted on.
+vi.mock('../dispatchNotification', () => ({
+  dispatchNotification: vi.fn(),
+}));
+
 vi.mock('../idleSuppression', () => ({
   recentlySuppressed: vi.fn().mockReturnValue(false),
   clearPty: vi.fn(),
@@ -33,12 +40,10 @@ vi.mock('../../pipe/handlers/_bridge', () => ({
   sendToRenderer: vi.fn().mockResolvedValue([]),
 }));
 
-import { toastManager } from '../../pipe/handlers/notify.rpc';
-import { sendNotification } from '../sendNotification';
+import { dispatchNotification } from '../dispatchNotification';
 import { DaemonNotificationRouter } from '../DaemonNotificationRouter';
 
-const toastShowMock = vi.mocked(toastManager.show);
-const sendNotificationMock = vi.mocked(sendNotification);
+const dispatchMock = vi.mocked(dispatchNotification);
 
 type NudgeListener = (payload: { data: unknown }) => void;
 
@@ -58,8 +63,7 @@ function makeRouter() {
 const pollExhausted = () => eventBus.poll(0, { types: ['channel.nudgeExhausted'] }).events;
 
 beforeEach(() => {
-  toastShowMock.mockReset();
-  sendNotificationMock.mockReset();
+  dispatchMock.mockReset();
   eventBus.reset();
 });
 
@@ -81,14 +85,17 @@ describe('DaemonNotificationRouter — channel.nudgeExhausted (human handoff)', 
         mentionUnread: 2,
       });
 
-      // Human surfaces: an in-app/OS toast pointing at the affected workspace.
-      expect(toastShowMock).toHaveBeenCalledTimes(1);
-      const [title, body, opts] = toastShowMock.mock.calls[0];
-      expect(String(title)).toContain('#general');
-      expect(String(title)).toContain('codex');
-      expect(String(body)).toContain('2 mentions');
-      expect(opts).toMatchObject({ workspaceId: 'ws-b' });
-      expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+      // Human surfaces: one dispatch (in-app record/toast + renderer-decided
+      // OS toast) routed at the affected workspace, with the workspace as
+      // the click-jump context.
+      expect(dispatchMock).toHaveBeenCalledTimes(1);
+      const [, dispatchPtyId, payload, focus] = dispatchMock.mock.calls[0];
+      expect(dispatchPtyId).toBeNull();
+      expect(String(payload.title)).toContain('#general');
+      expect(String(payload.title)).toContain('codex');
+      expect(String(payload.body)).toContain('2 mentions');
+      expect(payload).toMatchObject({ workspaceId: 'ws-b' });
+      expect(focus).toMatchObject({ workspaceId: 'ws-b' });
 
       // Orchestrator surface: the EventBus tee, scoped to the member's ws.
       const events = pollExhausted();
@@ -113,7 +120,7 @@ describe('DaemonNotificationRouter — channel.nudgeExhausted (human handoff)', 
       expect(() => fire({ channelId: '', workspaceId: 'ws-b' })).not.toThrow();
       expect(() => fire(null)).not.toThrow();
       expect(() => fire({ channelId: 'ch-1', workspaceId: 'ws-b' })).not.toThrow(); // no memberId
-      expect(toastShowMock).not.toHaveBeenCalled();
+      expect(dispatchMock).not.toHaveBeenCalled();
       expect(pollExhausted()).toHaveLength(0);
     } finally {
       router.stop();
@@ -124,8 +131,8 @@ describe('DaemonNotificationRouter — channel.nudgeExhausted (human handoff)', 
     const { router, fire } = makeRouter();
     try {
       fire({ channelId: 'ch-9', workspaceId: 'ws-b', memberId: 'codex' });
-      const [title] = toastShowMock.mock.calls[0];
-      expect(String(title)).toContain('ch-9');
+      const [, , payload] = dispatchMock.mock.calls[0];
+      expect(String(payload.title)).toContain('ch-9');
       expect(pollExhausted()[0]).toMatchObject({ channelName: 'ch-9', unread: 0, mentionUnread: 0 });
     } finally {
       router.stop();

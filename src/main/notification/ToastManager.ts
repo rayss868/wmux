@@ -21,12 +21,30 @@ export class ToastManager {
   private flashingWindow: BrowserWindow | null = null;
   private focusHandler: (() => void) | null = null;
 
+  /**
+   * Legacy entry: suppress whenever ANY app window has OS focus, then show.
+   * Kept for main-side callers that have no renderer to consult (window
+   * gone / notify fallback). The renderer-decided path uses showDirect —
+   * the policy there already established the window is unfocused, with the
+   * added precision (active-surface awareness) main can't have.
+   */
   show(title: string, body: string, context?: ToastFocusContext): void {
-    if (!this.enabled) return;
-
     // Only show toast when app is not focused
     const focusedWindow = BrowserWindow.getFocusedWindow();
     if (focusedWindow) return;
+
+    this.showDirect(title, body, context);
+  }
+
+  /**
+   * Show without the focused-window suppression. Callers are responsible
+   * for the visibility decision — today that is the renderer notification
+   * policy (`osToast` action, emitted only when `!windowFocused`), relayed
+   * over IPC.NOTIFICATION_OS_TOAST. The click handler / flashFrame / dock
+   * bounce behavior is identical to the legacy show() path.
+   */
+  showDirect(title: string, body: string, context?: ToastFocusContext): void {
+    if (!this.enabled) return;
 
     if (!Notification.isSupported()) return;
 
@@ -85,3 +103,11 @@ export class ToastManager {
     }
   }
 }
+
+/**
+ * Process-wide singleton. Historically lived in pipe/handlers/notify.rpc.ts
+ * (which still re-exports it for existing importers); moved here so
+ * notification-layer modules (dispatchNotification, the OS-toast IPC
+ * handler) can depend on it without reaching into an RPC handler module.
+ */
+export const toastManager = new ToastManager();

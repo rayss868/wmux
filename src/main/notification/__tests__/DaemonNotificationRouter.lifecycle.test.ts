@@ -29,6 +29,13 @@ vi.mock('../sendNotification', () => ({
   sendNotification: vi.fn(),
 }));
 
+// The router now funnels user-visible surfaces through dispatchNotification
+// (renderer-decided OS toast); this file only asserts the EventBus tee, so
+// the dispatch layer is stubbed out entirely.
+vi.mock('../dispatchNotification', () => ({
+  dispatchNotification: vi.fn(),
+}));
+
 vi.mock('../idleSuppression', () => ({
   recentlySuppressed: vi.fn().mockReturnValue(false),
   clearPty: vi.fn(),
@@ -73,6 +80,9 @@ function stubHookRouter(decision: 'emit' | 'dedup'): HookSignalRouter {
   return {
     recordDetector: vi.fn().mockReturnValue(decision),
     recordHook: vi.fn().mockReturnValue('emit'),
+    touchAuthority: vi.fn(),
+    // Tests here exercise the detector tee — no pane is hook-governed.
+    isGovernedFor: vi.fn().mockReturnValue(false),
   } as unknown as HookSignalRouter;
 }
 
@@ -152,6 +162,33 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       await flushMicrotasks();
 
       expect(router.recordDetector).toHaveBeenCalledWith('claude', 'agent.awaiting_input', 'pty-a');
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('hook-authority veto: governed (ptyId, slug) suppresses notification, ledger write and tee', async () => {
+    // Daemon-mode twin of the PTYBridge veto test. While the pane's hook
+    // bridge is fresh for the same agent, the detector must not dispatch,
+    // must not write the dedup ledger (that would kill the real Stop hook),
+    // and must not tee a lifecycle event (the hook emits the canonical one).
+    const hookRouter = {
+      recordDetector: vi.fn(),
+      recordHook: vi.fn(),
+      touchAuthority: vi.fn(),
+      isGovernedFor: vi.fn().mockReturnValue(true),
+    } as unknown as HookSignalRouter;
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'waiting', message: 'Ready for input' },
+      });
+      await flushMicrotasks();
+
+      expect(vi.mocked(hookRouter.isGovernedFor)).toHaveBeenCalledWith('pty-a', 'claude');
+      expect(hookRouter.recordDetector).not.toHaveBeenCalled();
+      expect(pollLifecycle()).toHaveLength(0);
     } finally {
       nr.stop();
     }

@@ -106,7 +106,7 @@ describe('PTYBridge notification wiring', () => {
     vi.advanceTimersByTime(50);
   }
 
-  it('AgentDetector "waiting" emits METADATA_UPDATE + NOTIFICATION + toast', () => {
+  it('AgentDetector "waiting" emits METADATA_UPDATE + NOTIFICATION (OS toast is renderer-decided now)', () => {
     const { proc } = makeBridge();
 
     // Gate Claude Code, then feed an idle prompt line that AgentDetector
@@ -124,13 +124,16 @@ describe('PTYBridge notification wiring', () => {
     expect(metaCalls.length).toBeGreaterThanOrEqual(1);
     expect(metaCalls[0][1]).toMatchObject({ ptyId: 'p1', agentStatus: 'waiting', agentName: 'Claude Code' });
 
-    // sendNotification fires for waiting/complete (not running)
+    // sendNotification fires for waiting/complete (not running). The OS
+    // toast is no longer a direct main-side call — the renderer policy
+    // decides it (osToast action) with window-focus + active-surface
+    // context main doesn't have.
     expect(sendNotificationMock).toHaveBeenCalledWith(
       expect.anything(),
       'p1',
       expect.objectContaining({ type: 'agent' }),
     );
-    expect(toastManagerMock.show).toHaveBeenCalled();
+    expect(toastManagerMock.show).not.toHaveBeenCalled();
   });
 
   it('ActivityMonitor "active" emits METADATA_UPDATE with agentStatus="running"', () => {

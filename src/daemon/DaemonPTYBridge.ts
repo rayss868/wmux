@@ -8,6 +8,7 @@ import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
 import { sanitizeTitle } from '../main/pty/titleDetect';
 import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
+import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 
 /**
  * Daemon version of PTYBridge.
@@ -46,6 +47,21 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private muted = false;
 
+  /**
+   * Last resize timestamp for this session (daemon-process state — the
+   * main-side idleSuppression Maps are unreachable from here). Mirrors the
+   * local-mode PTYBridge resize-redraw guard: an onActive burst that starts
+   * within RESIZE_REDRAW_GUARD_MS of a resize is a TUI repaint, and
+   * resetting the AgentDetector emission dedup on it would let the
+   * unchanged idle footer re-match and re-fire a stale notification.
+   */
+  private lastResizeAtMs = 0;
+
+  /** Called by DaemonSessionManager.resizeSession on every applied resize. */
+  noteResize(): void {
+    this.lastResizeAtMs = Date.now();
+  }
+
   // Prompt-based CWD detection. Parsing is shared with the local PTYBridge via
   // ../main/pty/cwdDetect (parseOsc7Cwd / detectPromptCwd) so both spawn paths
   // stay in lockstep; this only owns the ANSI strip + buffering.
@@ -81,7 +97,14 @@ export class DaemonPTYBridge extends EventEmitter {
     // live in the daemon, so the main-side DaemonNotificationRouter can't
     // reach into them the way local-mode PTYBridge does (Codex P1).
     this.activeUnsubscribe = activityMonitor.onActive((ptyId) => {
-      this.agentDetector?.resetEmissionState();
+      // Resize-redraw guard (twin of PTYBridge local mode): a burst that
+      // starts right after a resize is the TUI repainting at the new
+      // geometry, not new agent activity — resetting the emission dedup
+      // there re-fires the unchanged idle footer. A genuinely new turn
+      // re-arms on its next non-resize burst.
+      if (Date.now() - this.lastResizeAtMs >= RESIZE_REDRAW_GUARD_MS) {
+        this.agentDetector?.resetEmissionState();
+      }
       // gate로 확정된 에이전트 이름을 active 이벤트에 함께 싣는다. main의
       // DaemonNotificationRouter는 daemon AgentDetector에 직접 닿지 못하지만,
       // 같은 daemon 프로세스인 여기서는 getLastAgent()가 닿는다. 이게 있어야

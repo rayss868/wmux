@@ -19,8 +19,7 @@ import { scheduleInitialCommand } from './scheduleInitialCommand';
 import { updateCwd } from './metadata.handler';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
-import { toastManager } from '../../pipe/handlers/notify.rpc';
-import { sendNotification } from '../../notification/sendNotification';
+import { dispatchNotification } from '../../notification/dispatchNotification';
 import {
   PROJECT_SUPERVISION_DEFAULT_BURST,
   PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
@@ -488,8 +487,12 @@ export function registerPTYHandlers(
           const win = getWindow?.() ?? null;
           const title = 'Supervision unavailable';
           const body = 'Supervision requires daemon mode — running without auto-restart.';
-          sendNotification(win, null, { type: 'warning', title, body, workspaceId: options?.workspaceId });
-          toastManager.show(title, body, { workspaceId: options?.workspaceId ?? null });
+          dispatchNotification(
+            win,
+            null,
+            { type: 'warning', title, body, workspaceId: options?.workspaceId },
+            { workspaceId: options?.workspaceId ?? null },
+          );
         }
       }
 
@@ -1056,11 +1059,10 @@ export function registerPTYHandlers(
       if (payload.status === 'stopped' && payload.reason === 'guard-trip') {
         const title = 'Supervision stopped';
         const body = `Pane restarted ${payload.restartCount}× in a row — auto-restart disabled. Click to review.`;
-        // In-app notification (unread badge) + OS toast, mirroring the agent
-        // notification surface. Toast click jumps to the originating pane
-        // (ToastManager resolves ptyId → workspace/pane/surface).
-        sendNotification(win, payload.sessionId, { type: 'warning', title, body });
-        toastManager.show(title, body, { ptyId: payload.sessionId });
+        // In-app notification (unread badge) + renderer-decided OS toast,
+        // mirroring the agent notification surface. Toast click jumps to
+        // the originating pane.
+        dispatchNotification(win, payload.sessionId, { type: 'warning', title, body }, { ptyId: payload.sessionId });
       }
     };
     daemonClient.on('supervision:changed', onDaemonSupervisionChanged);

@@ -4,6 +4,7 @@ import { useT } from '../../hooks/useT';
 import { timeAgo } from '../../utils/timeAgo';
 import { tokenAttrs } from '../../themes';
 import type { Notification, NotificationType } from '../../../shared/types';
+import { focusNotificationTarget } from '../../hooks/useNotificationListener';
 
 // ─── Pure helpers (exported for tests) ────────────────────────────────────────
 
@@ -203,7 +204,6 @@ export default function NotificationPanel() {
   const markRead = useStore((s) => s.markRead);
   const markAllReadForWorkspace = useStore((s) => s.markAllReadForWorkspace);
   const clearNotifications = useStore((s) => s.clearNotifications);
-  const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
 
   const firstUnreadRef = useRef<HTMLDivElement>(null);
@@ -267,9 +267,16 @@ export default function NotificationPanel() {
 
   const handleNotifClick = (notif: Notification) => {
     markRead(notif.id);
-    if (notif.workspaceId !== activeWorkspaceId) {
-      setActiveWorkspace(notif.workspaceId);
-    }
+    // Full click-jump: workspace + pane + surface (+ zoom coherence), the
+    // same path the OS toast click takes. ptyId is the strongest signal;
+    // surfaceId survives PTY reconnects (panel entries can be old);
+    // workspaceId remains the app-level fallback — focusNotificationTarget
+    // handles the whole cascade, so no separate setActiveWorkspace call.
+    focusNotificationTarget(() => useStore.getState(), {
+      ptyId: notif.ptyId ?? null,
+      surfaceId: notif.surfaceId ?? null,
+      workspaceId: notif.workspaceId,
+    });
   };
 
   const handleNotifKey = (e: React.KeyboardEvent, notif: Notification) => {

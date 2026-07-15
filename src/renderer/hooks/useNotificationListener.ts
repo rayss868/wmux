@@ -9,7 +9,7 @@ import {
   type NotifPayload,
   type PolicyContext,
 } from './useNotificationPolicy';
-import { findSurfaceByPtyId, findActiveLeaf } from '../utils/paneTraversal';
+import { findSurfaceByPtyId, findSurfaceById, findActiveLeaf } from '../utils/paneTraversal';
 import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
 
@@ -120,11 +120,14 @@ export function activatePaneTarget(
 }
 
 /**
- * Jump to the pane that originated an OS toast. Resolution mirrors
- * `resolveNotificationTarget`: ptyId is the strongest signal (activates
- * workspace + pane + surface); workspaceId is the fallback for app-level
- * toasts (activates the workspace only). Unresolvable ids — the PTY may
- * have closed between toast and click — are a silent no-op.
+ * Jump to the pane that originated a notification (OS toast click, panel
+ * row click, in-app toast click — all three share this). Resolution order:
+ * ptyId is the strongest signal (activates workspace + pane + surface);
+ * surfaceId is the durable fallback when the PTY died or was reconnected
+ * since the notification was recorded (surface ids outlive PTYs — panel
+ * entries can be minutes old); workspaceId is the last resort for
+ * app-level notifications (activates the workspace only). Unresolvable
+ * ids are a silent no-op.
  *
  * Read/ring semantics: unread notifications for the TARGET surface (not the
  * whole pane — narrower than Pane's click handler, which clears every tab)
@@ -143,34 +146,42 @@ export function activatePaneTarget(
  */
 export function focusNotificationTarget(
   getState: () => FocusTargetState,
-  payload: { ptyId?: string | null; workspaceId?: string | null },
+  payload: { ptyId?: string | null; workspaceId?: string | null; surfaceId?: string | null },
 ): boolean {
   const state = getState();
+  // Shared tail of both resolver branches: jump (workspace + pane +
+  // surface + zoom coherence), then mark this surface's unread
+  // notifications read and clear the ring iff something was marked.
+  const jumpToSurface = (workspaceId: string, paneId: string, surfaceId: string): void => {
+    const fresh = activatePaneTarget(getState, { workspaceId, paneId, surfaceId });
+    let markedAny = false;
+    for (const n of fresh.notifications) {
+      if (!n.read && n.surfaceId !== undefined && n.surfaceId === surfaceId) {
+        fresh.markRead(n.id);
+        markedAny = true;
+      }
+    }
+    if (markedAny) {
+      fresh.setPaneNotificationRing(paneId, null);
+    }
+  };
   if (payload.ptyId) {
     for (const ws of state.workspaces) {
       const found = findSurfaceByPtyId(ws.rootPane, payload.ptyId);
       if (!found) continue;
-      // Workspace switch + pane/surface activation + zoom coherence, shared
-      // verbatim with the Fleet View jump (activatePaneTarget).
-      const fresh = activatePaneTarget(getState, {
-        workspaceId: ws.id,
-        paneId: found.paneId,
-        surfaceId: found.surfaceId,
-      });
-      let markedAny = false;
-      for (const n of fresh.notifications) {
-        if (!n.read && n.surfaceId !== undefined && n.surfaceId === found.surfaceId) {
-          fresh.markRead(n.id);
-          markedAny = true;
-        }
-      }
-      if (markedAny) {
-        fresh.setPaneNotificationRing(found.paneId, null);
-      }
+      jumpToSurface(ws.id, found.paneId, found.surfaceId);
       return true;
     }
-    // PTY closed since the toast fired — fall through to workspaceId, which
-    // is null for PTY-originated toasts, so this ends as a no-op.
+    // PTY closed since the notification fired — fall through to surfaceId
+    // (durable across reconnects), then workspaceId.
+  }
+  if (payload.surfaceId) {
+    for (const ws of state.workspaces) {
+      const found = findSurfaceById(ws.rootPane, payload.surfaceId);
+      if (!found) continue;
+      jumpToSurface(ws.id, found.paneId, payload.surfaceId);
+      return true;
+    }
   }
   if (payload.workspaceId) {
     const ws = state.workspaces.find((w) => w.id === payload.workspaceId);
@@ -237,8 +248,12 @@ export interface NotificationHandlerDeps {
     paneRingEnabled: boolean;
     paneFlashEnabled: boolean;
     taskbarFlashEnabled: boolean;
-    addNotification: (n: { workspaceId: string; surfaceId?: string; type: NotificationType; title: string; body: string }) => void;
-    pushToast: (t: { message: string; level: 'info' | 'warn' | 'error' }) => string;
+    addNotification: (n: { workspaceId: string; surfaceId?: string; ptyId?: string; type: NotificationType; title: string; body: string }) => void;
+    pushToast: (t: {
+      message: string;
+      level: 'info' | 'warn' | 'error';
+      target?: { ptyId?: string | null; workspaceId?: string | null; surfaceId?: string | null };
+    }) => string;
     setPaneNotificationRing: (paneId: string, ring: 'flash' | 'glow' | null) => void;
     paneNotificationRing: Record<string, 'flash' | 'glow'>;
   };
@@ -248,6 +263,12 @@ export interface NotificationHandlerDeps {
   flashFrame: (on: boolean) => void;
   /** Audio cue for a given notification type. */
   playSound: (type: NotificationType) => void;
+  /**
+   * Relay a policy-decided OS toast to main (IPC.NOTIFICATION_OS_TOAST →
+   * ToastManager.showDirect). ptyId/workspaceId become the click-jump
+   * context main attaches to the native notification.
+   */
+  showOsToast: (payload: { title: string; body: string; ptyId?: string | null; workspaceId?: string | null }) => void;
   flashFrameThrottler: Throttler;
   /** Per-type sound throttler factory (memoized per call site). */
   getSoundThrottler: (type: string) => Throttler;
@@ -320,6 +341,10 @@ export function createNotificationHandler(deps: NotificationHandlerDeps) {
           state.addNotification({
             surfaceId: action.surfaceId,
             workspaceId: action.workspaceId,
+            // Originating PTY (when any) rides on the record so the panel
+            // click-jump has the strongest signal; surfaceId above is the
+            // durable fallback after a PTY reconnect.
+            ptyId: ptyId ?? undefined,
             type: action.payload.type,
             title: action.payload.title,
             body: action.payload.body,
@@ -334,6 +359,13 @@ export function createNotificationHandler(deps: NotificationHandlerDeps) {
                 : action.payload.type === 'warning'
                   ? 'warn'
                   : 'info',
+            // Click-jump target: body click on the in-app toast lands on
+            // the originating pane, same contract as the OS toast click.
+            target: {
+              ptyId: ptyId ?? null,
+              workspaceId: target.workspaceId,
+              surfaceId: target.surfaceId ?? null,
+            },
           });
           break;
         case 'playSound':
@@ -357,6 +389,14 @@ export function createNotificationHandler(deps: NotificationHandlerDeps) {
           }
           break;
         }
+        case 'osToast':
+          deps.showOsToast({
+            title: action.payload.title,
+            body: action.payload.body,
+            ptyId: ptyId ?? null,
+            workspaceId: target.workspaceId,
+          });
+          break;
       }
     }
   };
@@ -449,6 +489,7 @@ export function useNotificationListener() {
       isWindowFocused: () => (typeof document !== 'undefined' && typeof document.hasFocus === 'function' ? document.hasFocus() : true),
       flashFrame: (on) => window.electronAPI.window.flashFrame(on),
       playSound: (type) => playNotificationSound(type),
+      showOsToast: (payload) => window.electronAPI.notification.showOsToast(payload),
       flashFrameThrottler,
       getSoundThrottler,
       scheduleRingDecay,

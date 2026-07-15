@@ -34,6 +34,7 @@ import { PTYBridge } from '../PTYBridge';
 import type { PTYManager, PTYInstance } from '../PTYManager';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { eventBus } from '../../events/EventBus';
+import { markResize, clearPty as clearSuppression } from '../../notification/idleSuppression';
 
 interface MockProcess {
   onData: (cb: (data: string) => void) => void;
@@ -79,10 +80,15 @@ function makeBridge(opts: { workspaceId?: string; hookRouter?: HookSignalRouter 
   return { bridge, proc };
 }
 
-function stubHookRouter(decision: 'emit' | 'dedup'): HookSignalRouter {
+function stubHookRouter(
+  decision: 'emit' | 'dedup',
+  opts: { governed?: boolean } = {},
+): HookSignalRouter {
   return {
     recordDetector: vi.fn().mockReturnValue(decision),
     recordHook: vi.fn().mockReturnValue('emit'),
+    touchAuthority: vi.fn(),
+    isGovernedFor: vi.fn().mockReturnValue(opts.governed ?? false),
   } as unknown as HookSignalRouter;
 }
 
@@ -154,17 +160,77 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     expect(pollLifecycle()).toHaveLength(0);
   });
 
-  it('REGRESSION: existing sendNotification + toast still fire alongside the tee', () => {
+  it('REGRESSION: sendNotification still fires alongside the tee; direct main toast is gone (renderer decides)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 
     proc.emitData('Claude Code\n');
     proc.emitData('  shift+tab to cycle\n');
     flush();
 
+    // dispatchNotification → sendNotification (window alive). The OS toast
+    // is now a renderer policy decision (osToast action → IPC), so the
+    // legacy direct toastManager.show call must NOT happen here.
     expect(mocks.sendNotification).toHaveBeenCalled();
-    expect(mocks.toastManager.show).toHaveBeenCalled();
+    expect(mocks.toastManager.show).not.toHaveBeenCalled();
     // And tee emitted.
     expect(pollLifecycle().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('hook-authority veto: governed (ptyId, slug) suppresses detector notification, ledger write and tee — status dot stays', () => {
+    // While the pane's hook bridge is fresh for the SAME agent, the
+    // detector's footer heuristics must go fully silent on the
+    // notification path: no sendNotification, no recordDetector (a ledger
+    // write here would make the REAL Stop hook land as 'dedup' → silent
+    // completion), no lifecycle tee (the hook path emits the canonical
+    // one). Metadata/status broadcasts are NOT gated.
+    const router = stubHookRouter('emit', { governed: true });
+    const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+
+    expect(router.isGovernedFor).toHaveBeenCalledWith('pty-1', 'claude');
+    expect(mocks.sendNotification).not.toHaveBeenCalled();
+    expect(router.recordDetector).not.toHaveBeenCalled();
+    expect(pollLifecycle()).toHaveLength(0);
+    // Sidebar dot still updated (agentStatus broadcast precedes the veto).
+    expect(mocks.broadcastMetadataUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'waiting' }),
+    );
+  });
+
+  it('resize-redraw guard: a burst within 3s of a resize does not reset emission dedup (no stale re-fire)', () => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    // Turn 1: gate + waiting prompt → one notification.
+    proc.emitData('Claude Code\n');
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(1);
+
+    // Workspace switch refits xterm → pty:resize → multi-KB TUI repaint.
+    // The repaint burst trips ActivityMonitor.onActive, but within the
+    // guard window the emission dedup must survive, so the unchanged
+    // footer re-match stays silent.
+    markResize('pty-1');
+    proc.emitData('x'.repeat(3000));
+    flush();
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(1);
+
+    // Control: a burst well past the guard window resets dedup as before,
+    // so the next genuine turn's identical footer CAN notify again.
+    vi.advanceTimersByTime(10_000);
+    proc.emitData('y'.repeat(3000));
+    flush();
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(2);
+
+    clearSuppression('pty-1');
   });
 
   it('honors HookSignalRouter dedup — detector after hook returns decision:"dedup"', () => {

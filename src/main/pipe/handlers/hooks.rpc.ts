@@ -41,7 +41,7 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
-import { sendNotification } from '../../notification/sendNotification';
+import { dispatchNotification } from '../../notification/dispatchNotification';
 import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
@@ -250,6 +250,18 @@ export function registerHooksRpc(
       return { ok: false, reason: 'no-workspace-match' };
     }
 
+    // Hook authority: EVERY resolved bridge signal (emit-class or not —
+    // SessionStart and per-tool agent.activity count) marks this pane as
+    // hook-governed for this agent. PTYBridge / DaemonNotificationRouter
+    // consult isGovernedFor before fanning out detector-sourced
+    // notifications: while the bridge is alive, its Stop/awaiting_input
+    // signals are canonical and the detector's footer heuristics (which
+    // match Claude's ALWAYS-visible status footer and would both re-alert
+    // mid-turn and pre-poison the dedup ledger against the real Stop) are
+    // notification-suppressed. Detector metadata/status broadcasts are
+    // unaffected. See HOOK_AUTHORITY_TTL_MS for staleness.
+    hookRouter.touchAuthority(ptyId, signal.agent);
+
     // X6 ③: persist the resume binding for session-LIFECYCLE kinds. This runs
     // BEFORE the isEmitKind gate below, which drops SessionStart for the
     // notification path — but SessionStart is a key live-capture point (the
@@ -387,13 +399,18 @@ export function registerHooksRpc(
       return { ok: true };
     }
 
+    // dispatchNotification: renderer alive → IPC only (its policy decides
+    // every surface INCLUDING the OS toast — hook completions finally get
+    // one); renderer gone → direct-toast fallback so the completion isn't
+    // silently lost during a window teardown.
+    dispatchNotification(
+      getWindow(),
+      ptyId,
+      { type: 'agent', title: titleFor(signal), body: bodyFor(signal) },
+      { ptyId },
+    );
     const win = getWindow();
     if (win) {
-      sendNotification(win, ptyId, {
-        type: 'agent',
-        title: titleFor(signal),
-        body: bodyFor(signal),
-      });
       // Hook path (unlike the detector path in DaemonNotificationRouter) does
       // not otherwise touch agentStatus. For awaiting_input, set it so the
       // sidebar dot turns yellow — the part users see at a glance.

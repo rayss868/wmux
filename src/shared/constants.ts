@@ -50,6 +50,12 @@ export const IPC = {
   // toast's {ptyId, workspaceId} context; renderer resolves and activates
   // the workspace/pane/surface (see useNotificationListener).
   NOTIFICATION_FOCUS: 'notification:focus',
+  // Renderer-decided OS toast. The notification policy (single decision
+  // point for every surface) emits an `osToast` action when the window is
+  // unfocused; the listener relays it here and main shows it WITHOUT the
+  // legacy any-window-focused suppression (ToastManager.showDirect).
+  // Payload: { title, body, ptyId?, workspaceId? } — the toast click context.
+  NOTIFICATION_OS_TOAST: 'notification:os-toast',
   CWD_CHANGED: 'notification:cwd-changed',
   /** J3 §3: initialCommand 재시도 소진(프롬프트 미발사) — payload: sessionId. */
   PTY_INITIAL_CMD_EXHAUSTED: 'notification:initial-cmd-exhausted',

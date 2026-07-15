@@ -42,6 +42,17 @@ import type { SignalLatencyMeter } from './SignalLatencyMeter';
  *  likely (a single agent turn is bounded well over 10s in practice). */
 export const DEFAULT_DEDUP_WINDOW_MS = 10_000;
 
+/** Hook-authority freshness window. While a pane has seen ANY bridge signal
+ *  for an agent within this TTL, that agent's detector notifications on the
+ *  pane are vetoed entirely (hook is canonical; the detector's always-visible
+ *  footer matches — `bypass permissions on` etc. — otherwise re-fire mid-turn
+ *  AND poison the dedup ledger so the real Stop hook lands as 'dedup').
+ *  30min mirrors Orca's AGENT_STATUS_STALE_AFTER_MS: long enough to span a
+ *  long tool call between hook signals, short enough that a bridge killed
+ *  with -9 (no Stop ever arrives) eventually returns the pane to the
+ *  detector backstop. PTY dispose clears immediately via dropPty. */
+export const HOOK_AUTHORITY_TTL_MS = 30 * 60_000;
+
 /** Ledger entry. Source field is what lets us implement the Iron Rule
  *  ("hook wins") asymmetrically — a detector emission gets suppressed
  *  by a later hook signal, but only if the recorded source was 'hook'. */
@@ -75,10 +86,42 @@ export class HookSignalRouter {
   private readonly ledger = new Map<string, LedgerEntry>();
   private readonly latencyMeter: SignalLatencyMeter;
   private readonly windowMs: number;
+  private readonly authorityTtlMs: number;
+  /** ptyId → last bridge signal for that pane (any kind, incl. non-emit
+   *  SessionStart/activity). Drives the detector veto — see HOOK_AUTHORITY_TTL_MS. */
+  private readonly authority = new Map<string, { agent: string; lastSignalAt: number }>();
 
-  constructor(deps: { latencyMeter: SignalLatencyMeter; dedupWindowMs?: number }) {
+  constructor(deps: { latencyMeter: SignalLatencyMeter; dedupWindowMs?: number; authorityTtlMs?: number }) {
     this.latencyMeter = deps.latencyMeter;
     this.windowMs = deps.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS;
+    this.authorityTtlMs = deps.authorityTtlMs ?? HOOK_AUTHORITY_TTL_MS;
+  }
+
+  /**
+   * Record that a live bridge signal (any kind) arrived for this pane.
+   * Called by hooks.rpc on every resolved signal — including the non-emit
+   * kinds (SessionStart, agent.activity) — so authority freshness tracks
+   * "the bridge is alive for this pane", not "a toast just fired".
+   */
+  touchAuthority(ptyId: string, agent: string, now: number = Date.now()): void {
+    this.authority.set(ptyId, { agent, lastSignalAt: now });
+  }
+
+  /**
+   * True when `slug`'s hook bridge has signaled on this pane within the
+   * authority TTL. Callers (PTYBridge / DaemonNotificationRouter) suppress
+   * detector-sourced NOTIFICATIONS for governed (ptyId, slug) pairs — the
+   * hook is canonical there and the detector's footer heuristics both
+   * re-fire mid-turn and pre-poison the dedup ledger against the real Stop.
+   * A different agent on the same pane (e.g. detector sees codex while the
+   * claude bridge governs) is NOT vetoed — that's a genuinely distinct
+   * signal source the hook can't speak for. Metadata/status-dot broadcasts
+   * are never gated by this; notifications only.
+   */
+  isGovernedFor(ptyId: string, slug: string, now: number = Date.now()): boolean {
+    const entry = this.authority.get(ptyId);
+    if (!entry || entry.agent !== slug) return false;
+    return now - entry.lastSignalAt < this.authorityTtlMs;
   }
 
   /**
@@ -175,6 +218,7 @@ export class HookSignalRouter {
   /** Test-only: clear all dedup state. Latency meter is independent. */
   resetForTests(): void {
     this.ledger.clear();
+    this.authority.clear();
   }
 
   /**
@@ -192,6 +236,9 @@ export class HookSignalRouter {
    */
   dropPty(ptyId: string): number {
     if (!ptyId) return 0;
+    // Authority rides the same lifecycle: a disposed PTY must return to
+    // detector-backstop behavior immediately if the id is ever reused.
+    this.authority.delete(ptyId);
     const needle = `:${ptyId}:`;
     let removed = 0;
     for (const k of this.ledger.keys()) {

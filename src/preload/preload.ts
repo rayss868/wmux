@@ -189,6 +189,12 @@ const electronAPI = {
       ipcRenderer.on(IPC.NOTIFICATION_FOCUS, listener);
       return () => { ipcRenderer.removeListener(IPC.NOTIFICATION_FOCUS, listener); };
     },
+    // Renderer-decided OS toast: the notification policy emits `osToast`
+    // only when the window is unfocused (with active-surface awareness main
+    // can't have); main shows it without the legacy any-window-focused
+    // suppression. ptyId/workspaceId become the toast's click-jump context.
+    showOsToast: (payload: { title: string; body: string; ptyId?: string | null; workspaceId?: string | null }) =>
+      ipcRenderer.send(IPC.NOTIFICATION_OS_TOAST, payload),
     // J3 §3: initialCommand 재시도 소진(프롬프트 미발사) 통지 — fan-out 토스트 소비.
     onInitialCmdExhausted: (callback: (ptyId: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, ptyId: string) => callback(ptyId);

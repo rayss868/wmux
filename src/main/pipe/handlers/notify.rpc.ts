@@ -1,8 +1,8 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { NotificationType } from '../../../shared/types';
-import { ToastManager } from '../../notification/ToastManager';
-import { sendNotification } from '../../notification/sendNotification';
+import { toastManager } from '../../notification/ToastManager';
+import { dispatchNotification } from '../../notification/dispatchNotification';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -12,7 +12,10 @@ function isNotificationType(value: unknown): value is NotificationType {
   return typeof value === 'string' && VALID_TYPES.has(value as NotificationType);
 }
 
-export const toastManager = new ToastManager();
+// Re-export the singleton at its historical path — PTYBridge,
+// DaemonNotificationRouter and pty.handler imported it from here long
+// before the notification layer owned it.
+export { toastManager };
 
 export function registerNotifyRpc(router: RpcRouter, getWindow: GetWindow): void {
   /**
@@ -47,13 +50,11 @@ export function registerNotifyRpc(router: RpcRouter, getWindow: GetWindow): void
 
     // ptyId is null here — this RPC originates outside any PTY. The renderer
     // resolves a surface via `workspaceId` (if provided) or falls back to
-    // the active workspace.
-    sendNotification(getWindow(), null, { title, body, type, workspaceId });
-
-    // Show OS-level toast (only when window is not focused). workspaceId
-    // (when the caller sent one) makes the toast clickable: click jumps to
-    // that workspace. No ptyId exists for this RPC — see comment above.
-    toastManager.show(title, body, { workspaceId });
+    // the active workspace, and its notification policy decides every
+    // surface — including the OS toast (osToast action when the window is
+    // unfocused). With no renderer window at all, dispatchNotification
+    // falls back to a direct OS toast.
+    dispatchNotification(getWindow(), null, { title, body, type, workspaceId }, { workspaceId });
 
     return Promise.resolve({ delivered: true, type });
   });

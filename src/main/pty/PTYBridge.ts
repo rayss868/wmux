@@ -6,11 +6,10 @@ import { AgentDetector, agentDisplayToSlug } from './AgentDetector';
 import { ActivityMonitor } from './ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from './cwdDetect';
 import { sanitizeTitle } from './titleDetect';
-import { toastManager } from '../pipe/handlers/notify.rpc';
 import { IPC } from '../../shared/constants';
 import { updateCwd, removeCwd, updateBranch, removeBranch, broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
-import { sendNotification } from '../notification/sendNotification';
-import { recentlySuppressed, clearPty as clearSuppression } from '../notification/idleSuppression';
+import { dispatchNotification } from '../notification/dispatchNotification';
+import { recentlySuppressed, recentlyResized, RESIZE_REDRAW_GUARD_MS, clearPty as clearSuppression } from '../notification/idleSuppression';
 import { eventBus } from '../events/EventBus';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import type { AgentStatus } from '../../shared/types';
@@ -289,8 +288,7 @@ export class PTYBridge {
             title: parsed.title ?? 'Terminal',
             body: parsed.body,
           };
-          sendNotification(win, ptyId, notification);
-          toastManager.show(notification.title, notification.body, { ptyId });
+          dispatchNotification(win, ptyId, notification, { ptyId });
           // X1 — sidebar "latest notification" line (schema-freeze §2),
           // parity with DaemonNotificationRouter's fold.
           broadcastMetadataUpdate(win, {
@@ -406,12 +404,30 @@ export class PTYBridge {
 
         if (status === 'waiting' || status === 'complete' || status === 'awaiting_input') {
           this.lastAgentEventAt.set(ptyId, Date.now());
+
+          // Hook-authority veto: while this pane has a live hook bridge for
+          // the SAME agent, the hook's Stop/awaiting_input signals are
+          // canonical and the detector's footer heuristics must stay out of
+          // the user-visible path entirely. Claude's status footer ("bypass
+          // permissions on", "shift+tab to cycle") is visible MID-TURN, so
+          // without this veto the detector both re-alerts while the agent is
+          // still working AND pre-poisons the HookSignalRouter ledger so the
+          // real Stop hook lands as 'dedup' → the true completion goes
+          // silent. Skipping recordDetector + the EventBus tee here is the
+          // point: the hook path emits the one canonical lifecycle event.
+          // The metadata broadcast above (status dot) is intentionally NOT
+          // gated — visual state stays live either way.
+          const slug = agentDisplayToSlug(agentEvent.agent);
+          const hookRouter = this.getHookRouter?.() ?? null;
+          if (slug && hookRouter?.isGovernedFor(ptyId, slug)) {
+            return;
+          }
+
           const title = `${agentEvent.agent}: ${agentEvent.message}`;
           const body = status === 'awaiting_input'
             ? 'Awaiting input'
             : status === 'waiting' ? 'Ready for input' : 'Task finished';
-          sendNotification(win, ptyId, { type: 'agent', title, body });
-          toastManager.show(title, body, { ptyId });
+          dispatchNotification(win, ptyId, { type: 'agent', title, body }, { ptyId });
 
           // Tee to EventBus for external observers (orchestrator clients).
           // 'waiting' and 'complete' collapse to kind:'agent.stop' — they
@@ -425,17 +441,13 @@ export class PTYBridge {
           // now resolves to one 'emit' and one 'dedup', not two emits.
           // Without this, an orchestrator filtering on `decision === 'emit'`
           // would re-run follow-up work twice on the standard
-          // plugin-plus-detector setup. The existing sendNotification/toast
-          // above is unchanged — that dedup gate lives in the hook path,
-          // not here, and is pre-existing scope. Skip when workspaceId is
+          // plugin-plus-detector setup. Skip when workspaceId is
           // unknown — same gate as the process.started emit above.
           if (instance.workspaceId) {
-            const slug = agentDisplayToSlug(agentEvent.agent);
             if (slug) {
               const lifecycleKind = status === 'awaiting_input'
                 ? 'agent.awaiting_input' as const
                 : 'agent.stop' as const;
-              const hookRouter = this.getHookRouter?.() ?? null;
               const decision = hookRouter
                 ? hookRouter.recordDetector(slug, lifecycleKind, ptyId)
                 : 'emit';
@@ -472,7 +484,15 @@ export class PTYBridge {
           // detected yet → agentDisplayToSlug returns undefined → null).
           agentSlug: agentDisplayToSlug(lastAgent) ?? null,
         });
-        agentDetector.resetEmissionState();
+        // Resize-redraw guard: a workspace switch / split / zoom refits xterm,
+        // fires pty:resize, and TUI agents answer with a multi-KB full redraw —
+        // a burst indistinguishable from real activity. Resetting the emission
+        // dedup on THAT burst lets the unchanged idle footer re-match and
+        // re-fire a stale "Ready for input" for a pane where nothing happened.
+        // A genuinely new turn resets on its next (non-resize) output burst.
+        if (!recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
+          agentDetector.resetEmissionState();
+        }
       } catch (err) {
         console.warn('[PTYBridge] onActive callback error:', err);
       }
@@ -594,8 +614,7 @@ export class PTYBridge {
             title: 'Process exited with error',
             body: `Exit code ${exitCode} after ${seconds}s`,
           };
-          sendNotification(win, ptyId, notification);
-          toastManager.show(notification.title, notification.body, { ptyId });
+          dispatchNotification(win, ptyId, notification, { ptyId });
         }
       }
       this.cleanupInstance(ptyId);
