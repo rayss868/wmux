@@ -108,7 +108,7 @@ export const XTERM_PALETTES: Record<XtermPaletteId, XtermThemeColors> = {
 // palette directly. Built from BUILTIN_XTERM_PALETTE + XTERM_PALETTES.
 export const XTERM_THEMES: Record<BuiltinThemeId, XtermThemeColors> = {} as Record<BuiltinThemeId, XtermThemeColors>;
 
-// ─── 10-token UI palette per built-in theme ─────────────────────────────────
+// ─── 11-token UI palette per built-in theme ─────────────────────────────────
 
 export interface UIThemeTokens {
   bgBase: string;    // main window background
@@ -140,36 +140,36 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
   amber: {
     bgBase: '#151517', bgSurface: '#202024', bgMantle: '#19191C',
     textMain: '#EFEEEC', textSub: '#A5A29C', textMuted: '#66645F',
-    accent: '#E8A33D', accentSecondary: '#E8A33D', success: '#8FBF7F', danger: '#D96C6C', warning: '#E8A33D',
+    accent: '#E8A33D', accentSecondary: '#6E9BC4', success: '#8FBF7F', danger: '#D96C6C', warning: '#E8A33D', // 2-accent (owner 2026-07-15): amber = alive/attention, steel-blue --accent-blue = navigation/interactive
   },
   'catppuccin-mocha': {
     bgBase: '#1E1E2E', bgSurface: '#313244', bgMantle: '#181825',
-    textMain: '#CDD6F4', textSub: '#BAC2DE', textMuted: '#7F849C',
+    textMain: '#CDD6F4', textSub: '#BAC2DE', textMuted: '#585B70', // SSOT: authentic Catppuccin Surface2 (matches shipped globals.css)
     accent: '#89B4FA', accentSecondary: '#89B4FA', success: '#A6E3A1', danger: '#F38BA8', warning: '#F9E2AF',
   },
   monochrome: {
     bgBase: '#080808', bgSurface: '#1A1A1A', bgMantle: '#050505',
-    textMain: '#E0E0E0', textSub: '#B0B0B0', textMuted: '#707070',
+    textMain: '#E0E0E0', textSub: '#B0B0B0', textMuted: '#404040', // SSOT: matches shipped globals.css
     accent: '#A0A0A0', accentSecondary: '#A0A0A0', success: '#909090', danger: '#FF5555', warning: '#C0C0C0',
   },
   'stars-and-stripes': {
     bgBase: '#0C1428', bgSurface: '#1E2E4A', bgMantle: '#091020',
-    textMain: '#C8D6E8', textSub: '#A0B0C8', textMuted: '#6A7A98',
+    textMain: '#C8D6E8', textSub: '#A0B0C8', textMuted: '#3A5070', // SSOT: matches shipped globals.css
     accent: '#5B8DEF', accentSecondary: '#5B8DEF', success: '#4EBF8B', danger: '#E8554E', warning: '#F2C85B',
   },
   'red-dynasty': {
     bgBase: '#1A0A0A', bgSurface: '#3A1A1A', bgMantle: '#140808',
-    textMain: '#E8D0C0', textSub: '#C0A898', textMuted: '#8A6A5A',
-    accent: '#E84040', accentSecondary: '#E84040', success: '#5AAE6A', danger: '#E84040', warning: '#F2C744',
+    textMain: '#E8D0C0', textSub: '#C0A898', textMuted: '#5A3A30', // SSOT: matches shipped globals.css
+    accent: '#E84040', accentSecondary: '#6AA0CC', success: '#5AAE6A', danger: '#E84040', warning: '#F2C744', // accentSecondary (--accent-blue) is a distinct blue for links, per shipped globals.css
   },
   nightowl: {
     bgBase: '#1E1B16', bgSurface: '#2E2A22', bgMantle: '#161310',
-    textMain: '#C8BFA8', textSub: '#9A9080', textMuted: '#6B6350',
+    textMain: '#C8BFA8', textSub: '#9A9080', textMuted: '#5A5340', // SSOT: matches shipped globals.css
     accent: '#C4A055', accentSecondary: '#C4A055', success: '#8AAA70', danger: '#CC6B5A', warning: '#C89060',
   },
   void: {
     bgBase: '#000000', bgSurface: '#0A0A0A', bgMantle: '#000000',
-    textMain: '#C0C0C0', textSub: '#909090', textMuted: '#606060',
+    textMain: '#C0C0C0', textSub: '#909090', textMuted: '#333333', // SSOT: matches shipped globals.css
     accent: '#C0C0C0', accentSecondary: '#C0C0C0', success: '#909090', danger: '#FF4444', warning: '#A0A0A0',
   },
   hinomaru: {
@@ -177,7 +177,7 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
     // Previous textMuted #A8A098 / textSubtle #8A827A were too pale → invisible.
     bgBase: '#FAF8F5', bgSurface: '#E2DDD4', bgMantle: '#F0ECE6',
     textMain: '#2A2522', textSub: '#4A4540', textMuted: '#6E6862',
-    accent: '#BC002D', accentSecondary: '#BC002D', success: '#3D6750', danger: '#BC002D', warning: '#A06A1A',
+    accent: '#BC002D', accentSecondary: '#1C4D6A', success: '#3D6750', danger: '#BC002D', warning: '#A06A1A', // accentSecondary (--accent-blue) is a distinct blue for links, per shipped globals.css
   },
   taegeuk: {
     bgBase: '#F8F8FA', bgSurface: '#DDDDE4', bgMantle: '#EEEEF2',
@@ -204,7 +204,7 @@ for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
   XTERM_THEMES[id] = XTERM_PALETTES[BUILTIN_XTERM_PALETTE[id]];
 }
 
-// ─── Full 14-var CSS palette (derived from 10 manual tokens) ────────────────
+// ─── Full 14-var CSS palette (derived from 11 manual tokens) ────────────────
 
 export interface FullCssPalette {
   bgBase: string;
@@ -223,7 +223,7 @@ export interface FullCssPalette {
   accentYellow: string;    // = warning
 }
 
-/** Expand 10 manual UI tokens to the 14 CSS variables we ship at runtime. */
+/** Expand the 11 manual UI tokens to the 14 CSS variables we ship at runtime. */
 export function deriveFullPalette(tokens: UIThemeTokens): FullCssPalette {
   const lightTheme = isLight(tokens.bgBase);
   const shadeDir = lightTheme ? -1 : 1;
@@ -243,6 +243,43 @@ export function deriveFullPalette(tokens: UIThemeTokens): FullCssPalette {
     accentRed: tokens.danger,
     accentYellow: tokens.warning,
   };
+}
+
+// ─── Built-in derived-var overrides (SSOT completion) ───────────────────────
+//
+// A few built-in themes ship hand-tuned values for DERIVED CSS vars that
+// deriveFullPalette's formulas cannot reproduce — authentic upstream palettes
+// (Catppuccin's rosewater cursor / Subtext0), pure-white cursors (monochrome /
+// void), and per-theme bgOverlay/textSubtle/textSub2 that were nudged by hand.
+// Historically these lived ONLY in globals.css, so themes.ts and globals.css
+// drifted silently (a built-in theme rendered differently from "custom based on
+// that built-in"). Capturing them here makes themes.ts the single source of
+// truth: deriveBuiltinPalette() reproduces every shipped [data-theme] block
+// EXACTLY (locked by themeParity.test.ts). The values are byte-identical to what
+// already ships — this changes NO built-in's on-screen appearance.
+//
+// These apply to BUILT-IN rendering only. Custom themes intentionally derive
+// purely from their 11 editable tokens (deriveFullPalette) so a user's live
+// edits are never pinned to a stale override.
+export const BUILTIN_CSS_OVERRIDES: Partial<Record<BuiltinThemeId, Partial<FullCssPalette>>> = {
+  amber: { bgOverlay: '#28282D', textSubtle: '#85827B' },
+  'catppuccin-mocha': { bgOverlay: '#45475A', textSubtle: '#6C7086', textSub2: '#A6ADC8', accentCursor: '#F5E0DC' },
+  monochrome: { bgOverlay: '#2A2A2A', textSubtle: '#606060', textSub2: '#888888', accentCursor: '#FFFFFF' },
+  'stars-and-stripes': { bgOverlay: '#2A3E5A', textSubtle: '#4A6080', textSub2: '#8090A8' },
+  'red-dynasty': { bgOverlay: '#4A2A2A', textSubtle: '#6A4A3E', textSub2: '#A08878' },
+  nightowl: { bgOverlay: '#38332A', textSubtle: '#6B6350', textSub2: '#847A68' },
+  void: { bgOverlay: '#141414', textSubtle: '#505050', textSub2: '#707070', accentCursor: '#FFFFFF' },
+  hinomaru: { bgOverlay: '#D4CFC6', textSubtle: '#5C5651' },
+  taegeuk: { textSubtle: '#4F4F62', textSub2: '#2A2A40' },
+};
+
+/**
+ * The exact 14-var CSS palette a BUILT-IN theme ships: deriveFullPalette() plus
+ * that theme's hand-tuned overrides. This is what globals.css encodes; the
+ * parity test asserts they match so the two can never drift again.
+ */
+export function deriveBuiltinPalette(id: BuiltinThemeId): FullCssPalette {
+  return { ...deriveFullPalette(UI_THEME_TOKENS[id]), ...(BUILTIN_CSS_OVERRIDES[id] ?? {}) };
 }
 
 // ─── Built-in CssThemeVars (legacy export — kept for backwards compat) ──────
@@ -266,7 +303,9 @@ export interface CssThemeVars {
 
 export const CSS_THEME_VARS: Record<BuiltinThemeId, CssThemeVars> = {} as Record<BuiltinThemeId, CssThemeVars>;
 for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
-  CSS_THEME_VARS[id] = deriveFullPalette(UI_THEME_TOKENS[id]);
+  // Use the override-aware builtin palette so this table equals the shipped
+  // globals.css blocks (not the raw formula output).
+  CSS_THEME_VARS[id] = deriveBuiltinPalette(id);
 }
 
 // ─── Theme options for UI picker ────────────────────────────────────────────
@@ -327,8 +366,8 @@ export function extractXtermColors(colors: CustomThemeColors): XtermThemeColors 
   return merged;
 }
 
-/** CSS variable name mapping. */
-const CSS_VAR_MAP: Record<keyof FullCssPalette, string> = {
+/** CSS variable name mapping (FullCssPalette key → CSS custom property). */
+export const CSS_VAR_MAP: Record<keyof FullCssPalette, string> = {
   bgBase: '--bg-base', bgMantle: '--bg-mantle', bgSurface: '--bg-surface', bgOverlay: '--bg-overlay',
   textMuted: '--text-muted', textSubtle: '--text-subtle', textSub: '--text-sub', textSub2: '--text-sub2',
   textMain: '--text-main', accentCursor: '--accent-cursor',

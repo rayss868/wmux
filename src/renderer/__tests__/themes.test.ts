@@ -118,12 +118,21 @@ describe('themes — 10-token system', () => {
       expect(full.accentCursor).toBe(custom.accent);
     });
 
-    it('accentSecondary defaults to accent on every built-in (visually inert)', () => {
+    it('accentSecondary defaults to accent except themes that ship a distinct link blue', () => {
+      // Most built-ins keep --accent-blue == the brand accent (the split is
+      // visually inert for them). red-dynasty and hinomaru intentionally diverge:
+      // their shipped globals.css uses a separate blue for links/info so links
+      // don't vanish into a red / light base. themeParity.test.ts locks these
+      // values against globals.css.
+      const DISTINCT_LINK_ACCENT: Record<string, string> = {
+        'red-dynasty': '#6AA0CC',
+        hinomaru: '#1C4D6A',
+      };
       for (const id of builtinIds) {
         const tokens = UI_THEME_TOKENS[id];
-        expect(tokens.accentSecondary, `${id} accentSecondary must default to accent`).toBe(tokens.accent);
-        // And the derived --accent-blue stays identical to the pre-split value.
-        expect(deriveFullPalette(tokens).accentBlue).toBe(tokens.accent);
+        const expected = DISTINCT_LINK_ACCENT[id] ?? tokens.accent;
+        expect(tokens.accentSecondary, `${id} accentSecondary`).toBe(expected);
+        expect(deriveFullPalette(tokens).accentBlue, `${id} --accent-blue`).toBe(expected);
       }
     });
 

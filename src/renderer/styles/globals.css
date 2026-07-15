@@ -74,11 +74,11 @@
   --text-sub2: #CAC8C4;
   --text-main: #EFEEEC;
   --accent-cursor: #E8A33D;
-  --accent-blue: #E8A33D;
+  --accent-blue: #6E9BC4;
   --accent-green: #8FBF7F;
   --accent-red: #D96C6C;
   --accent-yellow: #E8A33D;
-  --accent-blue-rgb: 232, 163, 61;
+  --accent-blue-rgb: 110, 155, 196;
   --bg-surface-rgb: 32, 32, 36;
   --bg-base-rgb: 21, 21, 23;
 }
