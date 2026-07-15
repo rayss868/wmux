@@ -16,35 +16,7 @@ Fan out one prompt into **N isolated agents** — each in its own git worktree �
 
 </div>
 
-<img width="1578" alt="wmux in action" src="https://github.com/user-attachments/assets/3a75969a-d383-418e-96aa-d3f108c87e9a" />
-
 > **Windows has no native tmux.** Without WSL there was no clean way to run several AI coding agents at once. wmux is a native Windows multiplexer + browser automation + MCP server, purpose-built so your agents **read the terminal, drive a real browser, and run in parallel — all in one window.**
-
----
-
-## ⚡ Install in 30 seconds
-
-```powershell
-winget install openwong2kim.wmux
-```
-
-<sub>or `choco install wmux` &nbsp;·&nbsp; or [**download Setup.exe**](https://github.com/openwong2kim/wmux/releases/latest) &nbsp;·&nbsp; winget/choco avoid the SmartScreen prompt ([why?](#install-help))</sub>
-
----
-
-## 🤔 Why wmux?
-
-|   |   |
-|---|---|
-| 🧵 **One prompt → N agents → merge the best** | Fan out a prompt into up to 8 tasks, each in an **isolated git worktree** with its own agent pane and a private mission channel. Review each task's diff side by side, **adopt hunks all-or-nothing**, then close it or open a **PR in one click** — leftovers land in a cleanup list, never as mystery folders. |
-| 🌿 **Git & GitHub live in the dock** | A **Git tab** shows the worktrees of the repo behind your active pane — create, open as a workspace, or remove — plus its **pull requests and comments** (GitHub via `gh`, GitLab via `glab`, including self-hosted). A read-only **workspace diff** is one palette command away, and from any hunk you can **ask the orchestrator** with the code attached. No alt-tabbing to the browser to see if review feedback landed. |
-| 🪟 **Many agents, one window** | Split panes + workspaces. Claude on the left, Codex on the right, Gemini running tests below — simultaneously. |
-| 🤝 **Agents coordinate, not just coexist** | Agent-to-agent messaging + task delegation, plus **channels** — Slack-style rooms several agents read, post, and get @-mentioned into. An **execute approval gate** stops any agent running code in your workspace without your OK. This is the multi-agent moat. |
-| 🌐 **Agents drive a *real* browser** | Built-in Chrome over CDP. Say *"search Google for this"* and your agent actually clicks, types, and screenshots. Works with React inputs and CJK text. |
-| 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace in an **always-on side panel** (other panes stay live), blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
-| 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
-| 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
-| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — browser + terminal tools register automatically. |
 
 ---
 
@@ -94,6 +66,32 @@ winget install openwong2kim.wmux
 </td>
 </tr>
 </table>
+
+---
+
+## ⚡ Install in 30 seconds
+
+```powershell
+winget install openwong2kim.wmux
+```
+
+<sub>or `choco install wmux` &nbsp;·&nbsp; or [**download Setup.exe**](https://github.com/openwong2kim/wmux/releases/latest) &nbsp;·&nbsp; winget/choco avoid the SmartScreen prompt ([why?](#install-help))</sub>
+
+---
+
+## 🤔 Why wmux?
+
+|   |   |
+|---|---|
+| 🧵 **One prompt → N agents → merge the best** | Fan out a prompt into up to 8 tasks, each in an **isolated git worktree** with its own agent pane and a private mission channel. Review each task's diff side by side, **adopt hunks all-or-nothing**, then close it or open a **PR in one click** — leftovers land in a cleanup list, never as mystery folders. |
+| 🌿 **Git & GitHub live in the dock** | A **Git tab** shows the worktrees of the repo behind your active pane — create, open as a workspace, or remove — plus its **pull requests and comments** (GitHub via `gh`, GitLab via `glab`, including self-hosted). A read-only **workspace diff** is one palette command away, and from any hunk you can **ask the orchestrator** with the code attached. No alt-tabbing to the browser to see if review feedback landed. |
+| 🪟 **Many agents, one window** | Split panes + workspaces. Claude on the left, Codex on the right, Gemini running tests below — simultaneously. |
+| 🤝 **Agents coordinate, not just coexist** | Agent-to-agent messaging + task delegation, plus **channels** — Slack-style rooms several agents read, post, and get @-mentioned into. An **execute approval gate** stops any agent running code in your workspace without your OK. This is the multi-agent moat. |
+| 🌐 **Agents drive a *real* browser** | Built-in Chrome over CDP. Say *"search Google for this"* and your agent actually clicks, types, and screenshots. Works with React inputs and CJK text. |
+| 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace in an **always-on side panel** (other panes stay live), blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
+| 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
+| 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
+| 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — browser + terminal tools register automatically. |
 
 ---
 
