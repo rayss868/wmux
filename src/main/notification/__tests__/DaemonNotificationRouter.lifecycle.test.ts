@@ -29,6 +29,13 @@ vi.mock('../sendNotification', () => ({
   sendNotification: vi.fn(),
 }));
 
+// The router now funnels user-visible surfaces through dispatchNotification
+// (renderer-decided OS toast); this file only asserts the EventBus tee, so
+// the dispatch layer is stubbed out entirely.
+vi.mock('../dispatchNotification', () => ({
+  dispatchNotification: vi.fn(),
+}));
+
 vi.mock('../idleSuppression', () => ({
   recentlySuppressed: vi.fn().mockReturnValue(false),
   clearPty: vi.fn(),
@@ -39,7 +46,10 @@ vi.mock('../../pipe/handlers/_bridge', () => ({
 }));
 
 import { sendToRenderer } from '../../pipe/handlers/_bridge';
+import { dispatchNotification } from '../dispatchNotification';
 import { DaemonNotificationRouter } from '../DaemonNotificationRouter';
+
+const dispatchNotificationMock = vi.mocked(dispatchNotification);
 
 const sendToRendererMock = vi.mocked(sendToRenderer);
 
@@ -73,6 +83,9 @@ function stubHookRouter(decision: 'emit' | 'dedup'): HookSignalRouter {
   return {
     recordDetector: vi.fn().mockReturnValue(decision),
     recordHook: vi.fn().mockReturnValue('emit'),
+    touchAuthority: vi.fn(),
+    // Tests here exercise the detector tee — no pane is hook-governed.
+    isGovernedFor: vi.fn().mockReturnValue(false),
   } as unknown as HookSignalRouter;
 }
 
@@ -152,6 +165,63 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       await flushMicrotasks();
 
       expect(router.recordDetector).toHaveBeenCalledWith('claude', 'agent.awaiting_input', 'pty-a');
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('hook-authority veto: governed (ptyId, slug) suppresses notification, ledger write and tee', async () => {
+    // Daemon-mode twin of the PTYBridge veto test. While the pane's hook
+    // bridge is fresh for the same agent, the detector must not dispatch,
+    // must not write the dedup ledger (that would kill the real Stop hook),
+    // and must not tee a lifecycle event (the hook emits the canonical one).
+    const hookRouter = {
+      recordDetector: vi.fn(),
+      recordHook: vi.fn(),
+      touchAuthority: vi.fn(),
+      isGovernedFor: vi.fn().mockReturnValue(true),
+    } as unknown as HookSignalRouter;
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'waiting', message: 'Ready for input' },
+      });
+      await flushMicrotasks();
+
+      expect(vi.mocked(hookRouter.isGovernedFor)).toHaveBeenCalledWith('pty-a', 'claude');
+      expect(hookRouter.recordDetector).not.toHaveBeenCalled();
+      expect(pollLifecycle()).toHaveLength(0);
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('codex review catch (round 2): the veto does NOT cover awaiting_input — daemon-mode twin of the PTYBridge exemption test', async () => {
+    // Same rationale as the PTYBridge test: Claude's hooks.json only wires
+    // PreToolUse for AskUserQuestion — generic approval prompts ("Do you
+    // want to proceed?") have no hook, so the detector must remain the
+    // live signal source for awaiting_input regardless of hook authority.
+    const hookRouter = {
+      recordDetector: vi.fn().mockReturnValue('emit'),
+      recordHook: vi.fn(),
+      touchAuthority: vi.fn(),
+      isGovernedFor: vi.fn().mockReturnValue(true),
+    } as unknown as HookSignalRouter;
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      dispatchNotificationMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' },
+      });
+      await flushMicrotasks();
+
+      expect(dispatchNotificationMock).toHaveBeenCalledTimes(1);
+      const events = pollLifecycle();
+      const awaiting = events.find((e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input');
+      expect(awaiting).toBeDefined();
+      expect(awaiting).toMatchObject({ decision: 'emit' });
     } finally {
       nr.stop();
     }

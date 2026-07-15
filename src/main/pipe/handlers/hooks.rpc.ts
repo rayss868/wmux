@@ -41,7 +41,7 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
-import { sendNotification } from '../../notification/sendNotification';
+import { dispatchNotification } from '../../notification/dispatchNotification';
 import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
@@ -250,6 +250,18 @@ export function registerHooksRpc(
       return { ok: false, reason: 'no-workspace-match' };
     }
 
+    // Hook authority: EVERY resolved bridge signal (emit-class or not —
+    // SessionStart and per-tool agent.activity count) marks this pane as
+    // hook-governed for this agent. PTYBridge / DaemonNotificationRouter
+    // consult isGovernedFor before fanning out detector-sourced
+    // notifications: while the bridge is alive, its Stop/awaiting_input
+    // signals are canonical and the detector's footer heuristics (which
+    // match Claude's ALWAYS-visible status footer and would both re-alert
+    // mid-turn and pre-poison the dedup ledger against the real Stop) are
+    // notification-suppressed. Detector metadata/status broadcasts are
+    // unaffected. See HOOK_AUTHORITY_TTL_MS for staleness.
+    hookRouter.touchAuthority(ptyId, signal.agent);
+
     // X6 ③: persist the resume binding for session-LIFECYCLE kinds. This runs
     // BEFORE the isEmitKind gate below, which drops SessionStart for the
     // notification path — but SessionStart is a key live-capture point (the
@@ -322,6 +334,27 @@ export function registerHooksRpc(
       }
     }
 
+    // Codex review catch: PostToolUse populates surfaceActivity (+ its
+    // freshness stamp), but nothing ever cleared it. A turn that ends
+    // without the final prompt matching the detector (hook-only agents, or
+    // any turn once the hook-authority veto suppresses the detector) left
+    // Fleet View showing the pane as "running: <last tool>" for the full
+    // HOOK_RUNNING_TTL_MS (120s) after the turn was actually done — a stale
+    // status that reads as "still working" right when it finished. Clear on
+    // agent.stop (the turn definitively ended) and agent.session_start
+    // (fresh session on this ptyId — a previous session's tool label must
+    // not leak in). NOT on agent.subagent_stop: a Task-tool subagent
+    // finishing happens WITHIN the parent turn, which may still have more
+    // tool calls coming — clearing there would erase live activity.
+    // `activity: ''` is the established clear signal (setSurfaceActivity
+    // deletes both the string and its freshness timestamp on a falsy value).
+    if (signal.kind === 'agent.stop' || signal.kind === 'agent.session_start') {
+      const win = getWindow();
+      if (win) {
+        broadcastMetadataUpdate(win, { ptyId, activity: '' });
+      }
+    }
+
     // 4. Emit decision. PostToolUse / SessionStart never produce a
     //    toast (would be spam — codex round-2 P1 #5). They also
     //    DO NOT write to the dedup ledger (claude review 2026-05-23
@@ -387,13 +420,18 @@ export function registerHooksRpc(
       return { ok: true };
     }
 
+    // dispatchNotification: renderer alive → IPC only (its policy decides
+    // every surface INCLUDING the OS toast — hook completions finally get
+    // one); renderer gone → direct-toast fallback so the completion isn't
+    // silently lost during a window teardown.
+    dispatchNotification(
+      getWindow(),
+      ptyId,
+      { type: 'agent', title: titleFor(signal), body: bodyFor(signal) },
+      { ptyId },
+    );
     const win = getWindow();
     if (win) {
-      sendNotification(win, ptyId, {
-        type: 'agent',
-        title: titleFor(signal),
-        body: bodyFor(signal),
-      });
       // Hook path (unlike the detector path in DaemonNotificationRouter) does
       // not otherwise touch agentStatus. For awaiting_input, set it so the
       // sidebar dot turns yellow — the part users see at a glance.

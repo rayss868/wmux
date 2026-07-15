@@ -3,10 +3,9 @@ import type { DaemonClient } from '../DaemonClient';
 import type { AgentStatus } from '../../shared/types';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { IPC } from '../../shared/constants';
-import { sendNotification } from './sendNotification';
+import { dispatchNotification } from './dispatchNotification';
 import { recentlySuppressed, clearPty as clearSuppression } from './idleSuppression';
 import { broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
-import { toastManager } from '../pipe/handlers/notify.rpc';
 import { eventBus } from '../events/EventBus';
 import { findWorkspaceIdForPty } from '../pipe/handlers/hooks.rpc';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
@@ -488,10 +487,17 @@ export class DaemonNotificationRouter {
       const title = `#${channelName}: ${event.memberId} is not responding`;
       const body = `${mentionUnread} mention${mentionUnread === 1 ? '' : 's'} unanswered after repeated nudges — needs a human`;
       const win = this.getWindow();
-      sendNotification(win, null, { type: 'agent', title, body });
-      // workspaceId makes the OS toast clickable — click jumps to the
-      // affected member's workspace (same contract as notify.rpc).
-      toastManager.show(title, body, { workspaceId: event.workspaceId });
+      // workspaceId rides in the payload so the renderer routes/records the
+      // notification against the affected member's workspace AND the OS
+      // toast click (renderer-decided osToast action, or the no-window
+      // fallback inside dispatchNotification) jumps there — same contract
+      // as notify.rpc.
+      dispatchNotification(
+        win,
+        null,
+        { type: 'agent', title, body, workspaceId: event.workspaceId },
+        { workspaceId: event.workspaceId },
+      );
       eventBus.emit({
         type: 'channel.nudgeExhausted',
         channelId: event.channelId,
@@ -531,12 +537,41 @@ export class DaemonNotificationRouter {
         }
         if (ev.status === 'waiting' || ev.status === 'complete' || ev.status === 'awaiting_input') {
           this.lastAgentEventAt.set(payload.sessionId, Date.now());
+
+          // Hook-authority veto — daemon-mode twin of PTYBridge.onEvent.
+          // While this pane's hook bridge is alive for the SAME agent, the
+          // hook Stop signal is canonical: the detector's footer heuristics
+          // fire mid-turn (Claude's status footer is always visible) and
+          // would pre-poison the dedup ledger so the real Stop lands as
+          // 'dedup' → silent completion. The metadata broadcast above
+          // (status dot) stays live either way.
+          //
+          // codex review catch (round 2): this must NOT cover
+          // 'awaiting_input'. Claude's hooks.json wires PreToolUse ONLY for
+          // the AskUserQuestion tool — the far more common approval
+          // prompts ("Do you want to proceed?", "Allow tool use for X",
+          // Claude's default permission-mode Y/N gate) have NO hook at
+          // all; AgentDetector's regex patterns are the ONLY signal source
+          // for those. Vetoing 'awaiting_input' here would leave an agent
+          // blocked on a real approval prompt completely silent for the
+          // full authority TTL (up to 30 minutes) — worse than any bug
+          // this PR set out to fix.
+          const slug = agentDisplayToSlug(ev.agent);
+          const hookRouter = this.getHookRouter?.() ?? null;
+          if (ev.status !== 'awaiting_input' && slug && hookRouter?.isGovernedFor(payload.sessionId, slug)) {
+            return;
+          }
+
           const title = `${ev.agent}: ${ev.message}`;
           const body = ev.status === 'awaiting_input'
             ? 'Awaiting input'
             : ev.status === 'waiting' ? 'Ready for input' : 'Task finished';
-          sendNotification(win, payload.sessionId, { type: 'agent', title, body });
-          toastManager.show(title, body, { ptyId: payload.sessionId });
+          dispatchNotification(
+            win,
+            payload.sessionId,
+            { type: 'agent', title, body },
+            { ptyId: payload.sessionId },
+          );
 
           // Tee to EventBus for external observers (orchestrator clients via
           // `wmux_events_poll`). The local-mode mirror of this lives in
@@ -591,12 +626,12 @@ export class DaemonNotificationRouter {
         if (typeof ev.body !== 'string' || ev.body.length === 0) return;
         const title = typeof ev.title === 'string' && ev.title.length > 0 ? ev.title : null;
         const win = this.getWindow();
-        sendNotification(win, payload.sessionId, {
-          type: 'info',
-          title: title ?? 'Terminal',
-          body: ev.body,
-        });
-        toastManager.show(title ?? 'Terminal', ev.body, { ptyId: payload.sessionId });
+        dispatchNotification(
+          win,
+          payload.sessionId,
+          { type: 'info', title: title ?? 'Terminal', body: ev.body },
+          { ptyId: payload.sessionId },
+        );
         // X1 — fold the latest notification text into the sidebar metadata
         // (schema-freeze §2 lastNotificationText). The renderer merges it
         // into WorkspaceMetadata and renders the one-line summary.
@@ -692,6 +727,12 @@ export class DaemonNotificationRouter {
         this.lastAgentEventAt.delete(payload.sessionId);
         this.lastAgentNameByPty.delete(payload.sessionId);
         clearSuppression(payload.sessionId);
+        // Release the dedup ledger AND the hook authority for this pane.
+        // Daemon-backed panes never pass through PTYBridge.cleanupInstance
+        // (the local-mode caller of dropPty), so without this a disposed
+        // pane's hook authority would linger for the 30min TTL and veto
+        // detector notifications on a reused session id.
+        this.getHookRouter?.()?.dropPty(payload.sessionId);
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session end error:', err);
       }

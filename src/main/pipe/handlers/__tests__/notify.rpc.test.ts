@@ -13,15 +13,28 @@ vi.mock('../../../notification/sendNotification', () => ({
 }));
 
 vi.mock('../../../notification/ToastManager', () => ({
-  ToastManager: class { show = mocks.toastManagerShow; },
+  ToastManager: class { show = mocks.toastManagerShow; showDirect = mocks.toastManagerShow; },
+  // Module-level singleton consumed by dispatchNotification's no-window
+  // fallback (via showDirect — see dispatchNotification.ts) and re-exported
+  // by notify.rpc for legacy importers.
+  toastManager: { show: mocks.toastManagerShow, showDirect: mocks.toastManagerShow, enabled: true },
+}));
+
+// The "window alive" case must exercise the sendNotification path, not the
+// readiness-gate fallback — this file tests notify.rpc's routing, not the
+// gate itself (see dispatchNotification.test.ts for that).
+vi.mock('../../../notification/rendererNotificationReadiness', () => ({
+  isRendererNotificationListenerReady: () => true,
 }));
 
 import { RpcRouter } from '../../RpcRouter';
 import { registerNotifyRpc } from '../notify.rpc';
 
-function setupRouter() {
+function setupRouter(opts: { window?: boolean } = {}) {
   const router = new RpcRouter();
-  const win = { isDestroyed: () => false, webContents: { send: vi.fn() } };
+  const win = opts.window === false
+    ? null
+    : { isDestroyed: () => false, webContents: { send: vi.fn() } };
   registerNotifyRpc(router, () => win as never);
   return { router, win };
 }
@@ -78,21 +91,26 @@ describe('notify.rpc', () => {
     expect(payload.type).toBe('info');
   });
 
-  it('always invokes the OS toast manager (focus gate is internal to ToastManager)', async () => {
+  it('window alive → NO direct OS toast (renderer policy owns the osToast decision)', async () => {
     const { router } = setupRouter();
     await router.dispatch({ id: '6', method: 'notify', params: { title: 't', body: 'b' } });
-    // Third arg is the X2 click-to-jump context. With no workspaceId in the
-    // request it carries undefined — ToastManager treats that as "click only
-    // focuses the window" (legacy behavior).
-    expect(mocks.toastManagerShow).toHaveBeenCalledWith('t', 'b', { workspaceId: undefined });
+    // dispatchNotification sends only the IPC notification when a renderer
+    // exists; the renderer's policy emits an `osToast` action (unfocused
+    // window) which round-trips over IPC.NOTIFICATION_OS_TOAST. A second
+    // main-side toast here would double-announce.
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(1);
+    expect(mocks.toastManagerShow).not.toHaveBeenCalled();
   });
 
-  it('passes workspaceId to the toast click context when provided (X2 pane jump)', async () => {
-    const { router } = setupRouter();
+  it('no window → direct OS toast fallback carries the workspaceId click context (X2 pane jump)', async () => {
+    const { router } = setupRouter({ window: false });
     await router.dispatch({
       id: '7', method: 'notify',
       params: { title: 't', body: 'b', workspaceId: 'ws-7' },
     });
+    // No renderer to decide — the event must not be lost, so the legacy
+    // direct toast fires with the click-jump context.
+    expect(mocks.sendNotification).not.toHaveBeenCalled();
     expect(mocks.toastManagerShow).toHaveBeenCalledWith('t', 'b', { workspaceId: 'ws-7' });
   });
 });

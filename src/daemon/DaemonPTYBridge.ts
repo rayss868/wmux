@@ -8,6 +8,7 @@ import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
 import { sanitizeTitle } from '../main/pty/titleDetect';
 import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
+import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 
 /**
  * Daemon version of PTYBridge.
@@ -33,6 +34,7 @@ export class DaemonPTYBridge extends EventEmitter {
   private activeUnsubscribe: (() => void) | null = null;
   private agentUnsubscribe: (() => void) | null = null;
   private criticalUnsubscribe: (() => void) | null = null;
+  private resizeGuardTimer: ReturnType<typeof setTimeout> | null = null;
   private sessionId: string | null = null;
   /**
    * v2.8.1 hotfix: when true, drop PTY output instead of writing it to
@@ -45,6 +47,21 @@ export class DaemonPTYBridge extends EventEmitter {
    * while muted so the daemon notices when a recovered shell dies.
    */
   private muted = false;
+
+  /**
+   * Last resize timestamp for this session (daemon-process state — the
+   * main-side idleSuppression Maps are unreachable from here). Mirrors the
+   * local-mode PTYBridge resize-redraw guard: an onActive burst that starts
+   * within RESIZE_REDRAW_GUARD_MS of a resize is a TUI repaint, and
+   * resetting the AgentDetector emission dedup on it would let the
+   * unchanged idle footer re-match and re-fire a stale notification.
+   */
+  private lastResizeAtMs = 0;
+
+  /** Called by DaemonSessionManager.resizeSession on every applied resize. */
+  noteResize(): void {
+    this.lastResizeAtMs = Date.now();
+  }
 
   // Prompt-based CWD detection. Parsing is shared with the local PTYBridge via
   // ../main/pty/cwdDetect (parseOsc7Cwd / detectPromptCwd) so both spawn paths
@@ -81,7 +98,29 @@ export class DaemonPTYBridge extends EventEmitter {
     // live in the daemon, so the main-side DaemonNotificationRouter can't
     // reach into them the way local-mode PTYBridge does (Codex P1).
     this.activeUnsubscribe = activityMonitor.onActive((ptyId) => {
-      this.agentDetector?.resetEmissionState();
+      // Resize-redraw guard (twin of PTYBridge local mode): a burst that
+      // starts right after a resize is the TUI repainting at the new
+      // geometry, not new agent activity — resetting the emission dedup
+      // there re-fires the unchanged idle footer.
+      //
+      // onActive fires EXACTLY ONCE per active-to-idle cycle, so skipping
+      // the reset outright (rather than deferring it) would permanently
+      // skip it for the rest of THIS cycle too — if a genuinely new turn's
+      // output continues into the same cycle (no 5s idle gap after the
+      // repaint), its completion would never see a fresh dedup state and
+      // would be silently deduped as a repeat (codex review catch, mirrors
+      // the local-mode PTYBridge fix). Defer the reset to fire once the
+      // guard window elapses instead of skipping it.
+      const elapsed = Date.now() - this.lastResizeAtMs;
+      if (elapsed < RESIZE_REDRAW_GUARD_MS) {
+        if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
+        this.resizeGuardTimer = setTimeout(() => {
+          this.resizeGuardTimer = null;
+          this.agentDetector?.resetEmissionState();
+        }, RESIZE_REDRAW_GUARD_MS - elapsed);
+      } else {
+        this.agentDetector?.resetEmissionState();
+      }
       // gate로 확정된 에이전트 이름을 active 이벤트에 함께 싣는다. main의
       // DaemonNotificationRouter는 daemon AgentDetector에 직접 닿지 못하지만,
       // 같은 daemon 프로세스인 여기서는 getLastAgent()가 닿는다. 이게 있어야
@@ -232,6 +271,9 @@ export class DaemonPTYBridge extends EventEmitter {
 
     this.activeUnsubscribe?.();
     this.activeUnsubscribe = null;
+
+    if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
+    this.resizeGuardTimer = null;
 
     // AgentDetector subscriptions: without explicit unsubscribe, recovered
     // sessions or repeated setupDataForwarding calls would accumulate

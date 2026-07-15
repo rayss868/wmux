@@ -29,6 +29,7 @@ import { registerAccountHandlers } from './handlers/account.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
 import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
+import { markRendererNotificationListenerReady } from '../notification/rendererNotificationReadiness';
 import { eventBus } from '../events/EventBus';
 import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
 import { VALID_TRANSITIONS, type TaskState } from '../../shared/types';
@@ -208,6 +209,48 @@ export function registerAllHandlers(
   ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
   ipcMain.on(IPC.WINDOW_FLASH_FRAME, onFlashFrame);
 
+  // Renderer-decided OS toast (notification policy `osToast` action). The
+  // policy already established the window is unfocused — and, unlike main,
+  // it knows whether the exact originating surface is being watched — so
+  // this shows via showDirect (no any-window-focused suppression). Trust
+  // boundary: title/body must be strings; click-context ids are coerced to
+  // string-or-null before reaching ToastManager.
+  const onOsToast = (_event: Electron.IpcMainEvent, payload: unknown): void => {
+    if (!payload || typeof payload !== 'object') return;
+    const { title, body, ptyId, workspaceId, windowsFlashEnabled, dockBounceEnabled } = payload as {
+      title?: unknown; body?: unknown; ptyId?: unknown; workspaceId?: unknown;
+      windowsFlashEnabled?: unknown; dockBounceEnabled?: unknown;
+    };
+    if (typeof title !== 'string' || title.length === 0) return;
+    if (typeof body !== 'string') return;
+    toastManager.showDirect(title, body, {
+      ptyId: typeof ptyId === 'string' ? ptyId : null,
+      workspaceId: typeof workspaceId === 'string' ? workspaceId : null,
+      // This IPC channel is exclusively fed by the renderer's osToast relay,
+      // which always sends windowsFlashEnabled:false (it owns Windows flash
+      // itself via a separately-throttled action — see useNotificationListener.ts).
+      // A missing/malformed value defaults to the SAFE side for this specific
+      // channel: false, not the legacy true, so a mismatched/old preload can't
+      // reintroduce the double-flash-bypasses-throttle bug.
+      windowsFlashEnabled: typeof windowsFlashEnabled === 'boolean' ? windowsFlashEnabled : false,
+      // macOS has no renderer-side equivalent at all, so a malformed value
+      // here defaults to true (preserve the only attention signal mac has)
+      // rather than false.
+      dockBounceEnabled: typeof dockBounceEnabled === 'boolean' ? dockBounceEnabled : true,
+    });
+  };
+  ipcMain.removeAllListeners(IPC.NOTIFICATION_OS_TOAST);
+  ipcMain.on(IPC.NOTIFICATION_OS_TOAST, onOsToast);
+
+  // Renderer confirms useNotificationListener's effect has subscribed —
+  // dispatchNotification consults this before trusting webContents.send to
+  // actually reach a listener. See rendererNotificationReadiness.ts.
+  const onNotificationListenerReady = (): void => {
+    markRendererNotificationListenerReady();
+  };
+  ipcMain.removeAllListeners(IPC.NOTIFICATION_LISTENER_READY);
+  ipcMain.on(IPC.NOTIFICATION_LISTENER_READY, onNotificationListenerReady);
+
   // Bridge redesign — theme-following titleBarOverlay restyle. The custom
   // titlebar (renderer) sends the active theme's mantle/sub colors whenever
   // the theme changes so the native Windows window controls stay coherent
@@ -332,5 +375,7 @@ export function registerAllHandlers(
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
     ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
+    ipcMain.removeAllListeners(IPC.NOTIFICATION_OS_TOAST);
+    ipcMain.removeAllListeners(IPC.NOTIFICATION_LISTENER_READY);
   };
 }

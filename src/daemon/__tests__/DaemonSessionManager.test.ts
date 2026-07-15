@@ -369,6 +369,31 @@ describe('DaemonSessionManager', () => {
     expect(() => manager.resizeSession('nope', 80, 24)).toThrow("Session 'nope' not found");
   });
 
+  it('codex review catch: an actual geometry change stamps the bridge resize-guard timestamp (noteResize)', () => {
+    // DaemonPTYBridge.noteResize() feeds the resize-redraw guard that
+    // defers (not skips) the AgentDetector emission-dedup reset — without
+    // this wiring, the daemon-mode guard would never engage at all and
+    // every workspace switch would risk a stale re-notification (the local-
+    // mode PTYBridge equivalent is covered end-to-end in
+    // PTYBridge.lifecycle.test.ts; DaemonPTYBridge has no dedicated harness,
+    // so this pins the SessionManager→bridge wiring specifically).
+    manager.createSession({ id: 'rsz-note', cmd: 'cmd.exe', cwd: '.', cols: 80, rows: 24 });
+    const session = manager.getSession('rsz-note');
+    const noteResizeSpy = vi.spyOn(session!.bridge, 'noteResize');
+
+    manager.resizeSession('rsz-note', 120, 40);
+    expect(noteResizeSpy).toHaveBeenCalledTimes(1);
+
+    // Same geometry again → the early-return-on-unchanged-size path (SIGWINCH
+    // avoidance) must also skip noting a resize — nothing actually changed.
+    manager.resizeSession('rsz-note', 120, 40);
+    expect(noteResizeSpy).toHaveBeenCalledTimes(1);
+
+    // A genuine further change notes again.
+    manager.resizeSession('rsz-note', 100, 30);
+    expect(noteResizeSpy).toHaveBeenCalledTimes(2);
+  });
+
   // getSession
   it('returns managed session by id', () => {
     manager.createSession({ id: 'get-me', cmd: 'cmd.exe', cwd: '.' });

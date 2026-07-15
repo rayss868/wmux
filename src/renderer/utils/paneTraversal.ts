@@ -30,6 +30,26 @@ export function findSurfaceByPtyId(
 }
 
 /**
+ * Locate a surface by its own id anywhere in a pane tree. Returns the owning
+ * leaf pane id, or null when no leaf carries the surface. Fallback resolver
+ * for notification click-jumps: surface ids outlive PTY reconnects, so a
+ * panel entry whose originating ptyId has died can still land on its pane.
+ */
+export function findSurfaceById(
+  root: Pane,
+  surfaceId: string,
+): { paneId: string } | null {
+  if (root.type === 'leaf') {
+    return root.surfaces.some((s) => s.id === surfaceId) ? { paneId: root.id } : null;
+  }
+  for (const child of root.children) {
+    const found = findSurfaceById(child, surfaceId);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
  * Collect every terminal surface in a pane tree, left-to-right / top-to-bottom
  * (the natural reading order of the split layout). Browser and editor surfaces
  * are skipped — they have no shell working directory. Used by the workspace

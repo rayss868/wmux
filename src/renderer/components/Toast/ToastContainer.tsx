@@ -9,7 +9,8 @@
  */
 import { useEffect } from 'react';
 import { useStore } from '../../stores';
-import type { ToastLevel } from '../../stores/slices/toastSlice';
+import type { Toast, ToastLevel } from '../../stores/slices/toastSlice';
+import { focusNotificationTarget } from '../../hooks/useNotificationListener';
 
 const AUTO_DISMISS_MS = 5_000;
 
@@ -30,11 +31,13 @@ function ToastItem({
   message,
   level,
   action,
+  target,
 }: {
   id: string;
   message: string;
   level: ToastLevel;
   action?: { label: string; onClick: () => void };
+  target?: Toast['target'];
 }) {
   const dismissToast = useStore((s) => s.dismissToast);
 
@@ -42,6 +45,16 @@ function ToastItem({
     const t = setTimeout(() => dismissToast(id), AUTO_DISMISS_MS);
     return () => clearTimeout(t);
   }, [id, dismissToast]);
+
+  // Notification-sourced toasts carry a click-jump target: body click lands
+  // on the originating pane (ptyId → surfaceId → workspaceId resolution),
+  // then dismisses — same contract as the OS toast / panel row click.
+  const jumpToTarget = target
+    ? () => {
+        focusNotificationTarget(() => useStore.getState(), target);
+        dismissToast(id);
+      }
+    : undefined;
 
   return (
     <div
@@ -59,7 +72,18 @@ function ToastItem({
         style={{ backgroundColor: levelColor(level) }}
         aria-hidden="true"
       />
-      <span className="flex-1 leading-snug">{message}</span>
+      {jumpToTarget ? (
+        <button
+          type="button"
+          onClick={jumpToTarget}
+          title="Go to terminal"
+          className="flex-1 leading-snug text-left cursor-pointer bg-transparent border-0 p-0 text-inherit hover:underline"
+        >
+          {message}
+        </button>
+      ) : (
+        <span className="flex-1 leading-snug">{message}</span>
+      )}
       {/* F5 — optional action button (fan-out "diff 열기"). Runs then dismisses. */}
       {action && (
         <button
@@ -102,7 +126,7 @@ export default function ToastContainer() {
     >
       {toasts.map((t) => (
         <div key={t.id} className="pointer-events-auto">
-          <ToastItem id={t.id} message={t.message} level={t.level} action={t.action} />
+          <ToastItem id={t.id} message={t.message} level={t.level} action={t.action} target={t.target} />
         </div>
       ))}
     </div>

@@ -48,6 +48,11 @@ function installElectronApi(): void {
       onGitBranchChanged: sub(),
       // J3 §3 — 새 구독. 나머지 알림 구독과 동일하게 no-op unsub를 반환한다.
       onInitialCmdExhausted: sub(),
+      // Renderer-readiness ping (codex review catch) + renderer-decided OS
+      // toast relay — both fire unconditionally on mount / dispatch, so the
+      // stub must exist even though this file doesn't assert on them.
+      listenerReady: vi.fn(),
+      showOsToast: vi.fn(),
     },
     metadata: {
       // Capture the real handler so the test can drive it.

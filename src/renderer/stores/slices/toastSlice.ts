@@ -27,6 +27,17 @@ export interface Toast {
     label: string;
     onClick: () => void;
   };
+  /**
+   * Click-jump target for notification-sourced toasts. When present,
+   * clicking the toast body resolves via focusNotificationTarget (ptyId →
+   * surfaceId → workspaceId) and lands on the originating pane — same
+   * contract as clicking the OS toast or a notification-panel row.
+   */
+  target?: {
+    ptyId?: string | null;
+    workspaceId?: string | null;
+    surfaceId?: string | null;
+  };
 }
 
 export interface ToastSlice {

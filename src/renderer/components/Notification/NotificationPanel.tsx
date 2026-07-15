@@ -4,6 +4,7 @@ import { useT } from '../../hooks/useT';
 import { timeAgo } from '../../utils/timeAgo';
 import { tokenAttrs } from '../../themes';
 import type { Notification, NotificationType } from '../../../shared/types';
+import { focusNotificationTarget } from '../../hooks/useNotificationListener';
 
 // ─── Pure helpers (exported for tests) ────────────────────────────────────────
 
@@ -203,7 +204,6 @@ export default function NotificationPanel() {
   const markRead = useStore((s) => s.markRead);
   const markAllReadForWorkspace = useStore((s) => s.markAllReadForWorkspace);
   const clearNotifications = useStore((s) => s.clearNotifications);
-  const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
 
   const firstUnreadRef = useRef<HTMLDivElement>(null);
@@ -266,9 +266,32 @@ export default function NotificationPanel() {
   if (!notificationPanelVisible) return null;
 
   const handleNotifClick = (notif: Notification) => {
-    markRead(notif.id);
-    if (notif.workspaceId !== activeWorkspaceId) {
-      setActiveWorkspace(notif.workspaceId);
+    // Full click-jump: workspace + pane + surface (+ zoom coherence), the
+    // same path the OS toast click takes. ptyId is the strongest signal;
+    // surfaceId survives PTY reconnects (panel entries can be old);
+    // workspaceId remains the app-level fallback — focusNotificationTarget
+    // handles the whole cascade, so no separate setActiveWorkspace call.
+    //
+    // Codex review catch: do NOT pre-mark read here. focusNotificationTarget
+    // marks-read-and-clears-ring together, but only for notifications it
+    // still SEES as unread at that moment — if this click's own notif.id was
+    // the surface's only unread entry and we'd already marked it read above,
+    // the helper would find nothing unread, `markedAny` stays false, and the
+    // pane keeps a stale flash/glow ring despite the user having just
+    // visited it. Let the helper observe the real pre-click state instead.
+    focusNotificationTarget(() => useStore.getState(), {
+      ptyId: notif.ptyId ?? null,
+      surfaceId: notif.surfaceId ?? null,
+      workspaceId: notif.workspaceId,
+    });
+    // Guaranteed fallback: a pure workspace-level record (no ptyId/
+    // surfaceId) or a surface that's fully gone (pane closed, not just a
+    // reconnected PTY) never reaches focusNotificationTarget's internal
+    // mark-read loop — that loop only runs inside its ptyId/surfaceId match
+    // branches. Re-check post-jump so the click always marks read; this is
+    // a no-op when the jump above already marked it (the common case).
+    if (!useStore.getState().notifications.find((n) => n.id === notif.id)?.read) {
+      markRead(notif.id);
     }
   };
 

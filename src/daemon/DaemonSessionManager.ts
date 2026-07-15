@@ -646,6 +646,10 @@ export class DaemonSessionManager extends EventEmitter {
       managed.ptyProcess.resize(safeCols, safeRows);
       managed.meta.cols = safeCols;
       managed.meta.rows = safeRows;
+      // Resize-redraw guard: stamp the bridge so the TUI's repaint burst
+      // (arriving within RESIZE_REDRAW_GUARD_MS) does not reset the
+      // AgentDetector emission dedup and re-fire stale prompt matches.
+      managed.bridge.noteResize();
     }
 
     // First resize on a deferred (recovery) session unmutes data

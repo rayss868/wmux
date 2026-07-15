@@ -74,7 +74,18 @@ export type NotificationAction =
   | { kind: 'pushToast'; payload: NotifPayload }
   | { kind: 'playSound'; type: NotificationType }
   | { kind: 'flashFrame' }
-  | { kind: 'setPaneRing'; paneId: string; ring: 'flash' | 'glow' };
+  | { kind: 'setPaneRing'; paneId: string; ring: 'flash' | 'glow' }
+  /**
+   * Show a native OS toast (relayed to main over IPC.NOTIFICATION_OS_TOAST →
+   * ToastManager.showDirect). Emitted only when the window is unfocused —
+   * the user is outside the app, so in-app surfaces can't reach them. This
+   * REPLACES the old main-side direct toast calls, whose "any window
+   * focused → suppress" check knew nothing about which pane was actually
+   * visible; the policy decides with full context now, and hook-sourced
+   * completions (which previously never toasted at all) get the same
+   * treatment as every other source.
+   */
+  | { kind: 'osToast'; payload: NotifPayload };
 
 /**
  * Everything the policy needs to decide, lifted out of the listener so the
@@ -116,9 +127,13 @@ export interface PolicyContext {
  * Translate one notification into its side-effect list.
  *
  * Priority order:
- *   1. Active-surface skip — return []. Highest precedence: even muted
+ *   1. Watched-surface skip — return []. Highest precedence: even muted
  *      workspaces never reach here because the user is looking at the
- *      source already. The test suite pins this explicitly (C1, C13).
+ *      source already. "Watched" requires BOTH the store's active-surface
+ *      bookkeeping AND real OS window focus — an active surface in an
+ *      unfocused window (second monitor, alt-tabbed away) is NOT watched,
+ *      and suppressing there was the chronic "agent finished, total
+ *      silence" hole. The test suite pins this explicitly (C1, C13).
  *   2. Muted workspace — return [addNotification] only. Data is preserved
  *      in the panel, every surface action is suppressed regardless of
  *      individual toggles.
@@ -130,13 +145,15 @@ export function decideNotificationActions(
   target: { workspaceId: string; surfaceId?: string },
   ctx: PolicyContext,
 ): NotificationAction[] {
-  // 1. Active surface — skip the notification entirely. The user can see
-  //    the source terminal, so adding to the badge / popping a toast would
-  //    be pure noise. This overrides every other gate including mute,
-  //    because a user actively looking at a muted workspace's terminal
-  //    still doesn't want a phantom notification logged for what they're
-  //    already watching.
-  if (ctx.isActiveSurface) {
+  // 1. Watched surface — skip the notification entirely. The user can see
+  //    the source terminal RIGHT NOW (active surface + OS-focused window),
+  //    so adding to the badge / popping a toast would be pure noise. This
+  //    overrides every other gate including mute. cmux applies the same
+  //    triple test (app frontmost AND tab selected AND surface focused);
+  //    the old single `isActiveSurface` check silenced completions whose
+  //    pane happened to be active while the user wasn't even looking at
+  //    the app.
+  if (ctx.isActiveSurface && ctx.windowFocused) {
     return [];
   }
 
@@ -195,6 +212,16 @@ export function decideNotificationActions(
   // on the active window. Also gated by user toggle.
   if (ctx.settings.taskbarFlashEnabled && !ctx.windowFocused) {
     actions.push({ kind: 'flashFrame' });
+  }
+
+  // Native OS toast only when the window is OUT of focus — inside the app,
+  // the in-app toast/ring/badge already reach the user and an OS banner
+  // would double-announce. Shares the in-app toast's `toastEnabled` gate:
+  // that same setting has always driven main's ToastManager.enabled over
+  // IPC.TOAST_ENABLED, so one toggle governing both toast surfaces is the
+  // established semantics (main re-checks enabled in showDirect anyway).
+  if (ctx.settings.toastEnabled && !ctx.windowFocused) {
+    actions.push({ kind: 'osToast', payload });
   }
 
   return actions;

@@ -203,4 +203,53 @@ describe('HookSignalRouter', () => {
       expect(router.recordDetector('claude', 'agent.stop', 'p10', 1100)).toBe('dedup');
     });
   });
+
+  describe('hook authority (detector veto)', () => {
+    it('untouched pane is not governed', () => {
+      expect(router.isGovernedFor('p1', 'claude', 1000)).toBe(false);
+    });
+
+    it('touchAuthority governs the SAME agent on that pane only', () => {
+      router.touchAuthority('p1', 'claude', 1000);
+      expect(router.isGovernedFor('p1', 'claude', 2000)).toBe(true);
+      // Different agent on the same pane: the claude bridge can't speak
+      // for a codex session — detector stays authoritative there.
+      expect(router.isGovernedFor('p1', 'codex', 2000)).toBe(false);
+      // Different pane entirely.
+      expect(router.isGovernedFor('p2', 'claude', 2000)).toBe(false);
+    });
+
+    it('authority expires after the TTL (bridge killed without a Stop)', () => {
+      router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+      router.touchAuthority('p1', 'claude', 1000);
+      expect(router.isGovernedFor('p1', 'claude', 5_999)).toBe(true);
+      expect(router.isGovernedFor('p1', 'claude', 6_000)).toBe(false);
+    });
+
+    it('a fresh touch renews the TTL', () => {
+      router = new HookSignalRouter({ latencyMeter: meter, authorityTtlMs: 5_000 });
+      router.touchAuthority('p1', 'claude', 1000);
+      router.touchAuthority('p1', 'claude', 5_000);
+      expect(router.isGovernedFor('p1', 'claude', 9_999)).toBe(true);
+    });
+
+    it('a later agent takes over the pane authority (last writer wins)', () => {
+      router.touchAuthority('p1', 'claude', 1000);
+      router.touchAuthority('p1', 'codex', 2000);
+      expect(router.isGovernedFor('p1', 'claude', 2100)).toBe(false);
+      expect(router.isGovernedFor('p1', 'codex', 2100)).toBe(true);
+    });
+
+    it('dropPty releases authority immediately (pane disposal)', () => {
+      router.touchAuthority('p1', 'claude', 1000);
+      router.dropPty('p1');
+      expect(router.isGovernedFor('p1', 'claude', 1100)).toBe(false);
+    });
+
+    it('resetForTests clears authority alongside the ledger', () => {
+      router.touchAuthority('p1', 'claude', 1000);
+      router.resetForTests();
+      expect(router.isGovernedFor('p1', 'claude', 1100)).toBe(false);
+    });
+  });
 });

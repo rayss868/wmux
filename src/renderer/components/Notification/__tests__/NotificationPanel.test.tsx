@@ -36,7 +36,8 @@ import {
   type NotificationPanelViewProps,
 } from '../NotificationPanel';
 import { useStore } from '../../../stores';
-import type { Notification } from '../../../../shared/types';
+import type { Notification, Pane } from '../../../../shared/types';
+import { focusNotificationTarget } from '../../../hooks/useNotificationListener';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -224,6 +225,105 @@ describe('NotificationPanel store contract', () => {
     useStore.getState().markAllRead();
 
     expect(useStore.getState().paneNotificationRing).toEqual({});
+  });
+
+  // Codex review catch: NotificationPanel's click handler used to call
+  // markRead(notif.id) BEFORE focusNotificationTarget. If the clicked
+  // notification was the surface's only unread entry, focusNotificationTarget's
+  // internal mark-read+ring-clear loop would then see NOTHING unread (it was
+  // already marked) and leave the pane's flash/glow ring stuck despite the
+  // user having just visited it. This test exercises the exact sequence the
+  // fixed handler now performs — focusNotificationTarget FIRST (observing
+  // the real pre-click unread state), matching the fix's intent.
+  it('clicking the surface\'s only unread notification clears the ring (focus-first ordering)', () => {
+    const leaf: Pane = {
+      id: 'pane-ring-test',
+      type: 'leaf',
+      surfaces: [{ id: 'sf-ring-test', ptyId: 'pty-ring-test', title: 't', shell: 'powershell', cwd: 'C:\\', surfaceType: 'terminal' }],
+      activeSurfaceId: 'sf-ring-test',
+    };
+    useStore.setState((s) => {
+      s.workspaces.push({
+        id: 'ws-ring-test',
+        name: 'ws-ring-test',
+        rootPane: leaf,
+        activePaneId: leaf.id,
+      });
+      s.notifications.push(mkNotif('ring-notif', {
+        workspaceId: 'ws-ring-test',
+        surfaceId: 'sf-ring-test',
+        ptyId: 'pty-ring-test',
+        read: false,
+      }));
+      s.paneNotificationRing['pane-ring-test'] = 'glow';
+      // SAME-workspace jump on purpose: activatePaneTarget only calls
+      // setActiveWorkspace (which has its OWN unrelated "entering this
+      // workspace clears its rings" side effect) on a CROSS-workspace jump.
+      // Pre-activating the target workspace isolates the specific
+      // mark-read+ring-clear loop this test is actually about.
+      s.activeWorkspaceId = 'ws-ring-test';
+    });
+
+    // The fix: focusNotificationTarget runs against the untouched (still
+    // unread) state, so its own mark-read+ring-clear loop finds and clears it.
+    const jumped = focusNotificationTarget(() => useStore.getState(), {
+      ptyId: 'pty-ring-test',
+      surfaceId: 'sf-ring-test',
+      workspaceId: 'ws-ring-test',
+    });
+    expect(jumped).toBe(true);
+
+    expect(useStore.getState().notifications.find((n) => n.id === 'ring-notif')?.read).toBe(true);
+    expect(useStore.getState().paneNotificationRing['pane-ring-test']).toBeUndefined();
+
+    // Cleanup — this test mutates the shared store's workspace list.
+    useStore.setState((s) => {
+      s.workspaces = s.workspaces.filter((w) => w.id !== 'ws-ring-test');
+    });
+  });
+
+  it('regression (the bug this fixes): pre-marking read BEFORE focusNotificationTarget leaves the ring stuck', () => {
+    // This test documents the OLD broken ordering for contrast — it is not
+    // exercised by the fixed NotificationPanel anymore, but pins the
+    // mechanism so a future regression back to "markRead first" is caught.
+    const leaf: Pane = {
+      id: 'pane-ring-test-2',
+      type: 'leaf',
+      surfaces: [{ id: 'sf-ring-test-2', ptyId: 'pty-ring-test-2', title: 't', shell: 'powershell', cwd: 'C:\\', surfaceType: 'terminal' }],
+      activeSurfaceId: 'sf-ring-test-2',
+    };
+    useStore.setState((s) => {
+      s.workspaces.push({
+        id: 'ws-ring-test-2',
+        name: 'ws-ring-test-2',
+        rootPane: leaf,
+        activePaneId: leaf.id,
+      });
+      s.notifications.push(mkNotif('ring-notif-2', {
+        workspaceId: 'ws-ring-test-2',
+        surfaceId: 'sf-ring-test-2',
+        ptyId: 'pty-ring-test-2',
+        read: false,
+      }));
+      s.paneNotificationRing['pane-ring-test-2'] = 'glow';
+      // Same-workspace jump — see the sibling test above for why.
+      s.activeWorkspaceId = 'ws-ring-test-2';
+    });
+
+    // The OLD (buggy) ordering: mark read FIRST.
+    useStore.getState().markRead('ring-notif-2');
+    focusNotificationTarget(() => useStore.getState(), {
+      ptyId: 'pty-ring-test-2',
+      surfaceId: 'sf-ring-test-2',
+      workspaceId: 'ws-ring-test-2',
+    });
+
+    // The ring is stuck — this is the bug codex caught.
+    expect(useStore.getState().paneNotificationRing['pane-ring-test-2']).toBe('glow');
+
+    useStore.setState((s) => {
+      s.workspaces = s.workspaces.filter((w) => w.id !== 'ws-ring-test-2');
+    });
   });
 
   it('Esc keydown toggles the panel via toggleNotificationPanel', () => {

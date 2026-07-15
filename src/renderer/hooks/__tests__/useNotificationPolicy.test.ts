@@ -50,10 +50,30 @@ function baseCtx(overrides: Partial<PolicyContext> = {}): PolicyContext {
 }
 
 describe('decideNotificationActions', () => {
-  // C1
-  it('returns [] when the target IS the active surface', () => {
+  // C1 — "watched" now means active surface AND OS-focused window (the
+  // baseCtx default). An active surface alone no longer suppresses (see N1).
+  it('returns [] when the target IS the active surface and the window is focused', () => {
     const result = decideNotificationActions(samplePayload, sampleTarget, baseCtx({ isActiveSurface: true }));
     expect(result).toEqual([]);
+  });
+
+  // N1 — the chronic false-negative fix: an active surface in an UNFOCUSED
+  // window (second monitor / alt-tabbed away) is NOT watched. Full fan-out,
+  // including the OS toast.
+  it('active surface + unfocused window → full fan-out (not watched)', () => {
+    const result = decideNotificationActions(
+      samplePayload,
+      sampleTarget,
+      baseCtx({ isActiveSurface: true, windowFocused: false }),
+    );
+    expect(result.map((a) => a.kind)).toEqual([
+      'addNotification',
+      'pushToast',
+      'playSound',
+      'setPaneRing',
+      'flashFrame',
+      'osToast',
+    ]);
   });
 
   // C2
@@ -83,8 +103,10 @@ describe('decideNotificationActions', () => {
     }
   });
 
-  // C4
-  it('unfocused window with everything else equal → add + toast + sound + ring + flashFrame', () => {
+  // C4 — unfocused adds the two out-of-app surfaces: taskbar flash AND the
+  // native OS toast (renderer-decided; previously main fired it blindly and
+  // hook-sourced completions never got one at all).
+  it('unfocused window with everything else equal → add + toast + sound + ring + flashFrame + osToast', () => {
     const result = decideNotificationActions(
       samplePayload,
       sampleTarget,
@@ -96,7 +118,43 @@ describe('decideNotificationActions', () => {
       'playSound',
       'setPaneRing',
       'flashFrame',
+      'osToast',
     ]);
+  });
+
+  // N2 — the OS toast never fires while the window is focused: in-app
+  // surfaces already reach the user; a banner would double-announce.
+  it('focused window never emits osToast', () => {
+    const result = decideNotificationActions(samplePayload, sampleTarget, baseCtx());
+    expect(result.some((a) => a.kind === 'osToast')).toBe(false);
+  });
+
+  // N3 — osToast shares the toastEnabled gate (that setting has always
+  // driven main's ToastManager.enabled over IPC, so one toggle governs
+  // both toast surfaces).
+  it('toastEnabled=false suppresses osToast too (unfocused)', () => {
+    const result = decideNotificationActions(
+      samplePayload,
+      sampleTarget,
+      baseCtx({
+        windowFocused: false,
+        settings: { toastEnabled: false } as PolicyContext['settings'],
+      }),
+    );
+    expect(result.some((a) => a.kind === 'osToast')).toBe(false);
+    expect(result.some((a) => a.kind === 'pushToast')).toBe(false);
+  });
+
+  // N4 — mute silences the OS toast like every other surface (previously
+  // main's direct toast path ignored the workspace mute entirely).
+  it('muted workspace suppresses osToast even when unfocused', () => {
+    const result = decideNotificationActions(
+      samplePayload,
+      sampleTarget,
+      baseCtx({ isMutedWorkspace: true, windowFocused: false }),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].kind).toBe('addNotification');
   });
 
   // C5
@@ -203,7 +261,7 @@ describe('decideNotificationActions', () => {
   });
 
   // C13
-  it('active-surface skip takes precedence over mute (still returns [] when both are true)', () => {
+  it('watched-surface skip takes precedence over mute (still returns [] when both are true)', () => {
     const result = decideNotificationActions(
       samplePayload,
       sampleTarget,
@@ -225,6 +283,7 @@ describe('decideNotificationActions', () => {
       'playSound',
       'setPaneRing',
       'flashFrame',
+      'osToast',
     ]);
   });
 

@@ -49,6 +49,28 @@ export function recentlySuppressed(ptyId: string, now: number = Date.now()): boo
   return (now - r < SUPPRESSION_WINDOW_MS) || (now - w < SUPPRESSION_WINDOW_MS);
 }
 
+/**
+ * Resize-only check with a caller-chosen (much shorter) window. Used by the
+ * AgentDetector emission-reset guard in PTYBridge: a pty:resize is followed
+ * within a couple of seconds by the TUI's full-screen redraw burst, and
+ * resetting the detector's dedup on that burst lets the UNCHANGED idle
+ * footer re-match and re-fire a stale "Ready for input". 3s is deliberately
+ * far tighter than SUPPRESSION_WINDOW_MS: this guard delays a dedup RESET
+ * (bookkeeping), not a user-visible notification — a genuinely new agent
+ * turn re-arms on its next non-resize burst. The daemon process keeps its
+ * own timestamp (DaemonPTYBridge.noteResize); these Maps are main-process
+ * state only.
+ */
+export const RESIZE_REDRAW_GUARD_MS = 3_000;
+
+export function recentlyResized(
+  ptyId: string,
+  windowMs: number = RESIZE_REDRAW_GUARD_MS,
+  now: number = Date.now(),
+): boolean {
+  return now - (lastResizeAt.get(ptyId) ?? 0) < windowMs;
+}
+
 export function clearPty(ptyId: string): void {
   lastResizeAt.delete(ptyId);
   lastUserWriteAt.delete(ptyId);

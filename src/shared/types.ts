@@ -212,6 +212,11 @@ export interface Notification {
   // without an originating PTY) have no specific surface. Renderer resolves the
   // active surface from store when displaying, or treats it as workspace-scoped.
   surfaceId?: string;
+  // Originating PTY, when the notification came from a specific terminal.
+  // Strongest click-jump signal for the panel row (focusNotificationTarget);
+  // surfaceId above is the durable fallback once the PTY has died or been
+  // reconnected (surface ids outlive PTYs).
+  ptyId?: string;
   workspaceId: string;
   type: NotificationType;
   title: string;
