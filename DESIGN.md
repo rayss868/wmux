@@ -83,10 +83,14 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 - **Two-accent grammar (owner 2026-07-15) — warm amber vs cool steel, each with
   ONE job.** Splits what was previously amber-overloaded ("alive AND focus AND
   links AND warning") so each color says exactly one thing:
-  - **Amber `--accent-cursor` = alive + attention:** running dots, spinners,
-    terminal cursor, warning, "needs you" emphasis, the footer model name.
-    Reads as "the system is alive / wants you." Budget: **5±2 amber
-    meaning-points per screen** (dots of the same class count as one system).
+  - **Warm accent (`--accent`, cursor variant `--accent-cursor`) = alive +
+    attention + action:** running dots, spinners, terminal cursor, warning,
+    "needs you" emphasis, unread badges, the footer model name — AND primary
+    action (CTA) buttons. Actions are warm because pressing one makes the
+    system DO something (alive), not GO somewhere (nav). A solid warm fill is
+    reserved for the single primary action of a surface + tiny count badges;
+    everything else warm is dots/rings/text. Budget: **5±2 warm meaning-points
+    per screen** (dots of the same class count as one system).
   - **Steel-blue `--accent-blue` #6E9BC4 = navigation + interactive:** links,
     jump affordances, active-tab underline, focused-pane edge, focus rings,
     selection highlight. Reads as "where you are / what you click." An even
@@ -94,6 +98,15 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   - Focus moved from amber → steel (it's a "where you are" cue, not an "alive"
     one). The single `accentSecondary` token drives all of steel, so the hue is
     a 1-line change like the primary accent.
+  - **Every theme carries the split** (`--accent` warm / `--accent-blue` cool):
+    amber, nightowl, stars-and-stripes, taegeuk got dedicated cool/warm
+    counterparts; catppuccin, red-dynasty, hinomaru already shipped two-tone;
+    monochrome and void are exempt (colorlessness is their identity).
+  - **Alive ≠ warning:** a theme's running/cursor hue must be perceptibly
+    distinct from its warning hue (stars-and-stripes alive `#E89B4A` vs warning
+    `#F2C85B`; taegeuk alive `#B87500` vs warning `#9B6A07`) so "running" never
+    reads as "caution". Amber theme is the deliberate exception (one lit
+    instrument: warning IS the amber).
 - **No area washes.** Amber never fills areas. The only permitted wash is the
   danger `needs input` row. Accent may *expand* on hover only (links, AI-action
   buttons); at rest they are neutral.
@@ -125,8 +138,8 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   (`h-9`) so hairlines across the three columns land on the same y. A new
   chrome row must justify deviating from the module.
 - Base unit 4px. Density: compact-leaning (rows 26–30px).
-- Radii: **4px buttons · 7px cards/panels**. Never larger on chrome. Full-round
-  only for status dots.
+- Radii: **5px buttons/controls · 6px inputs · 7px cards/panels**. Never larger
+  on chrome. Full-round only for status dots and count badges.
 - Borders: 1px hairline `rgba(255,255,255,.06)` (dark). Panel seams via inset
   box-shadow hairlines, not borders.
 - Elevation: exactly 3 levels (flat hairline / subtle surface lift / one
@@ -139,8 +152,19 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   arg summary + right-aligned jump link (muted at rest, accent on hover).
 - **Every claim is one click from its evidence:** anything referencing a pane
   gets a jump affordance (litmus test inherited from the deck).
-- Toolbar buttons are text-first, boxless until hover. AI-directed actions
-  (fan-out, broadcast) are neutral at rest, accent on hover.
+- **gpui-style control surfacing (2026-07-15):** two physical treatments only.
+  *Raised* (buttons, active segments, menu-item hover chips, cards): faint
+  surface fill + 1px `color-mix(text-main 10%)` hairline + **top 1px inset
+  highlight** (`inset 0 1px 0 color-mix(text-main 6%)`) — the "machined" look;
+  press = 0.5px sink. *Recessed* (inputs, search): slightly-darker-than-base
+  fill + inset shadow + **cool focus ring** (`--accent-blue` border + 3px 22%
+  ring). All values via color-mix on tokens so every theme inherits them.
+- **Primary action = solid warm fill** (`--accent` bg, `--bg-base` text, top
+  inset highlight): the one filled button per surface. Secondary = raised
+  neutral. Destructive = red tint at rest, solid red only for final confirm.
+- Toolbar buttons are text-first, boxless until hover; hover shows a soft
+  raised chip (not a color change alone). AI-directed actions (fan-out,
+  broadcast) stay neutral at rest.
 - No emoji glyphs in chrome; use monochrome glyphs/icons only.
 - Status dot vocabulary: amber = running · green = ok/idle-complete · gray =
   idle · red = needs input (with wash).
@@ -176,3 +200,4 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 | 2026-07-11 | Status footer instrument strip (model·approval·ctx·cwd·running·needs) | Codex pattern; always-visible agent state |
 | 2026-07-15 | Two-accent split: amber (`--accent-cursor`) = alive/attention, steel-blue (`--accent-blue` #6E9BC4) = navigation/interactive; focus moves amber→steel | `--accent-blue` was overloaded (157 renderer usages, all reading amber since accentSecondary==accent); one hue can't say "alive" AND "clickable". Cockpit warm/cool tension; `accentSecondary` token already existed for it |
 | 2026-07-15 | gpui-style component surfacing: buttons/inputs/menus/cards get surface-lift + top inset-highlight (①), inputs recessed + accent focus ring (②); button radius 4→5px | Flat-to-the-point-of-unfinished read as cheap; adds crafted depth within the existing "elevation 3 levels" rule (not gradients/glows). Amber diet unchanged/improved |
+| 2026-07-15 | Action = warm: primary/CTA buttons moved to `--accent` (solid warm fill, the one filled button per surface); new `--accent`/`--accent-rgb` semantic vars in every theme; alive≠warning hues for stars/taegeuk; 4 mono-accent themes gained the warm/cool split | Design review scored "primary=steel" as the brand-weakening flaw: the most important button read cold and amber demoted to a dot. Actions DO (warm), navigation GOES (cool) |
