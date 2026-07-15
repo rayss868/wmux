@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wmux 색 조합 — A / B / C</title>
+<style>
+  :root {
+    --bg-base:#151517; --bg-mantle:#19191C; --bg-surface:#202024; --bg-overlay:#28282D;
+    --text-muted:#66645F; --text-subtle:#85827B; --text-sub:#A5A29C; --text-sub2:#CAC8C4; --text-main:#EFEEEC;
+    --green:#8FBF7F; --red:#D96C6C; --gray:#66645F;
+    --hairline:rgba(255,255,255,.06);
+    --font-ui:'Inter','Segoe UI',system-ui,-apple-system,sans-serif;
+    --font-mono:'Cascadia Code','JetBrains Mono',ui-monospace,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{background:var(--bg-base);color:var(--text-main);font-family:var(--font-ui);}
+  body{padding:40px clamp(20px,5vw,64px) 96px;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1000px;margin:0 auto;}
+
+  .eyebrow{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);font-weight:600;}
+  h1{font-size:22px;font-weight:600;letter-spacing:-.01em;margin:8px 0 10px;}
+  .lede{font-size:13px;line-height:1.6;color:var(--text-sub);max-width:66ch;}
+  .lede b{color:var(--text-sub2);font-weight:500;}
+
+  /* legend of the B semantic split */
+  .legend{display:flex;gap:22px;flex-wrap:wrap;margin:22px 0 8px;padding:14px 16px;border:1px solid var(--hairline);border-radius:8px;background:var(--bg-mantle);}
+  .legend .li{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--text-sub);}
+  .legend .sw{width:11px;height:11px;border-radius:3px;flex-shrink:0;}
+  .legend b{color:var(--text-sub2);font-weight:600;}
+  .legend .li small{color:var(--text-muted);font-size:11px;}
+
+  /* direction panel */
+  .dir{margin-top:26px;border:1px solid var(--hairline);border-radius:11px;overflow:hidden;}
+  .dir.rec{box-shadow:0 0 0 1px color-mix(in srgb,var(--ac2) 45%,transparent),0 10px 30px rgba(0,0,0,.35);border-color:transparent;}
+  .dir-head{display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--hairline);background:var(--bg-mantle);}
+  .dir-head .name{font-size:14px;font-weight:600;}
+  .dir-head .name .tag{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ac2);border:1px solid color-mix(in srgb,var(--ac2) 40%,transparent);padding:1px 6px;border-radius:5px;margin-left:8px;}
+  .dir-head .swatches{display:flex;gap:6px;margin-left:auto;align-items:center;}
+  .dir-head .sw{width:22px;height:22px;border-radius:6px;box-shadow:inset 0 1px 0 rgba(255,255,255,.15);}
+  .dir-head .hex{font-family:var(--font-mono);font-size:10px;color:var(--text-muted);}
+  .dir-body{padding:20px 18px;display:grid;grid-template-columns:1fr 1fr;gap:18px 26px;}
+  .cluster{display:flex;flex-direction:column;gap:11px;min-width:0;}
+  .clabel{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-muted);font-weight:600;}
+  .clabel .warm{color:var(--ac);} .clabel .cool{color:var(--ac2);}
+  .rowx{display:flex;flex-wrap:wrap;gap:10px;align-items:center;}
+
+  /* ── components (read --ac warm / --ac2 cool) ── */
+  .btn{font-family:var(--font-ui);cursor:pointer;display:inline-flex;align-items:center;gap:6px;border:0;}
+  .p-btn{padding:5px 13px;border-radius:5px;font-size:11px;font-weight:600;background:var(--ac);color:var(--ac-ink);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 1px 2px rgba(0,0,0,.35);}
+  .s-btn{padding:5px 13px;border-radius:5px;font-size:11px;font-weight:500;color:var(--text-sub2);
+    background:color-mix(in srgb,var(--bg-surface) 72%,transparent);border:1px solid rgba(255,255,255,.09);box-shadow:inset 0 1px 0 rgba(255,255,255,.045);}
+  .g-btn{padding:5px 11px;border-radius:5px;font-size:11px;font-weight:500;color:var(--ac2);background:transparent;border:1px solid transparent;}
+  .g-btn:hover{background:color-mix(in srgb,var(--ac2) 12%,transparent);}
+
+  .inp{padding:6px 10px;border-radius:6px;font-size:12px;color:var(--text-main);width:170px;background:#111113;
+    border:1px solid rgba(255,255,255,.08);box-shadow:inset 0 1px 2px rgba(0,0,0,.28);outline:none;}
+  .inp.ring{border-color:var(--ac2);box-shadow:inset 0 1px 2px rgba(0,0,0,.28),0 0 0 3px color-mix(in srgb,var(--ac2) 22%,transparent);}
+  .inp::placeholder{color:var(--text-muted);}
+
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
+  .dot.run{background:var(--ac);box-shadow:0 0 6px 0 color-mix(in srgb,var(--ac) 65%,transparent);}
+  .dot.ok{background:var(--green);}
+  .dot.idle{background:var(--gray);}
+  .dot.need{background:var(--red);box-shadow:0 0 6px 0 color-mix(in srgb,var(--red) 60%,transparent);}
+  .dotlab{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-sub);}
+
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;padding:3px 9px 3px 7px;border-radius:999px;background:color-mix(in srgb,var(--bg-surface) 70%,transparent);border:1px solid var(--hairline);color:var(--text-sub2);}
+  .chip b{color:var(--text-main);font-weight:600;font-variant-numeric:tabular-nums;}
+  .chip.need{background:color-mix(in srgb,var(--red) 15%,transparent);border-color:color-mix(in srgb,var(--red) 30%,transparent);color:#eab0b0;}
+  .chip .cd{width:5px;height:5px;border-radius:50%;background:var(--ac);}
+  .chip.need .cd{background:var(--red);}
+
+  .lnk{font-size:12px;color:var(--ac2);cursor:pointer;font-family:var(--font-mono);}
+  .lnk:hover{text-decoration:underline;}
+
+  .tabs{display:inline-flex;height:30px;align-items:stretch;border-bottom:1px solid var(--hairline);}
+  .tab{position:relative;display:inline-flex;align-items:center;padding:0 12px;margin:2px 1px 0;border-radius:6px 6px 0 0;font-size:12px;color:var(--text-sub);}
+  .tab.on{color:var(--text-main);background:color-mix(in srgb,var(--bg-surface) 80%,transparent);}
+  .tab.on::after{content:'';position:absolute;bottom:-3px;left:8px;right:8px;height:2px;border-radius:2px;background:var(--ac2);}
+
+  .lr{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:6px;font-size:12px;width:250px;}
+  .lr.on{background:linear-gradient(180deg,color-mix(in srgb,var(--bg-surface) 94%,var(--text-main)),var(--bg-surface));box-shadow:inset 0 1px 0 rgba(255,255,255,.05);}
+  .lr .lname{color:var(--text-main);} .lr .lmeta{font-family:var(--font-mono);font-size:10px;color:var(--text-muted);flex:1;}
+  .lr .lj{color:var(--ac2);font-family:var(--font-mono);}
+
+  /* focused terminal pane mock — shows both accents doing distinct jobs */
+  .pane{width:250px;border:1px solid var(--hairline);border-radius:7px;overflow:hidden;background:#101012;position:relative;}
+  .pane::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--ac2);} /* focus edge = cool (where you are) */
+  .pane .pbar{display:flex;align-items:center;gap:6px;padding:6px 9px;background:var(--bg-mantle);border-bottom:1px solid var(--hairline);font-size:10.5px;color:var(--text-sub);}
+  .pane .pbody{padding:9px 10px;font-family:var(--font-mono);font-size:10.5px;line-height:1.7;color:var(--text-sub);}
+  .pane .cur{display:inline-block;width:6px;height:12px;background:var(--ac);vertical-align:-2px;box-shadow:0 0 5px 0 color-mix(in srgb,var(--ac) 60%,transparent);} /* cursor = warm (alive) */
+  .pane .ok{color:var(--green);}
+
+  /* cool-accent candidate row (for direction B) */
+  .cands{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:16px 18px;border-top:1px solid var(--hairline);background:color-mix(in srgb,var(--bg-mantle) 60%,transparent);}
+  .cand{border:1px solid var(--hairline);border-radius:8px;padding:12px;}
+  .cand .ch{display:flex;align-items:center;gap:8px;margin-bottom:11px;}
+  .cand .csw{width:16px;height:16px;border-radius:5px;}
+  .cand .cn{font-size:11.5px;font-weight:600;} .cand .chex{font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:auto;}
+  .cand .crow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+
+  .note{font-size:11px;line-height:1.55;color:var(--text-subtle);margin-top:2px;}
+  .note b{color:var(--text-sub2);font-weight:500;}
+  footer{margin-top:44px;border-top:1px solid var(--hairline);padding-top:22px;font-size:12px;color:var(--text-sub);line-height:1.65;max-width:72ch;}
+  footer b{color:var(--text-sub2);font-weight:500;}
+  @media (max-width:760px){.dir-body{grid-template-columns:1fr;}.cands{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">wmux · design exploration · 색 조합</div>
+  <h1>Accent 방향 A / B / C</h1>
+  <p class="lede">웜 그래파이트 중립색은 <b>유지</b>(프리미엄 토대). 바꾸는 건 accent 축뿐이에요. 핵심은 지금 amber가 <b>살아있음·포커스·링크·경고</b>를 다 떠맡는 과부하 — B는 이걸 <b>웜(살아있음)/쿨(내비게이션)</b>으로 나눕니다.</p>
+
+  <div class="legend" style="--ac:#E8A33D;--ac2:#6E9BC4;">
+    <div class="li"><span class="sw" style="background:#E8A33D"></span><b>웜(amber)</b> = 살아있음·주의 <small>running dot · 커서 · 경고 · needs-you 강조 · primary</small></div>
+    <div class="li"><span class="sw" style="background:#6E9BC4"></span><b>쿨</b> = 내비게이션·인터랙티브 <small>링크 · jump → · 활성탭 · 포커스링 · 선택 · 포커스 pane edge</small></div>
+  </div>
+
+  <!-- ══ A ══ -->
+  <section class="dir" style="--ac:#E8A33D;--ac2:#E8A33D;--ac-ink:#1c1305;">
+    <div class="dir-head">
+      <div class="name">A — Amber, 단색 <span style="font-size:11px;color:var(--text-muted);font-weight:400">(현재)</span></div>
+      <div class="swatches"><span class="hex">#E8A33D</span><span class="sw" style="background:#E8A33D"></span></div>
+    </div>
+    <div class="dir-body">
+      <div class="cluster">
+        <div class="clabel">Actions · input</div>
+        <div class="rowx"><button class="btn p-btn">Create</button><button class="btn s-btn">Cancel</button><button class="btn g-btn">Fan out</button></div>
+        <div class="rowx"><input class="inp ring" value="workspace name"></div>
+        <div class="clabel">Tabs · <span>links</span></div>
+        <div class="rowx"><div class="tabs"><div class="tab on">Fleet</div><div class="tab">Orchestrator</div><div class="tab">Channels</div></div></div>
+        <div class="rowx"><span class="lnk">jump to pane →</span></div>
+      </div>
+      <div class="cluster">
+        <div class="clabel">Status · attention</div>
+        <div class="rowx"><span class="dotlab"><span class="dot run"></span>running</span><span class="dotlab"><span class="dot ok"></span>ok</span><span class="dotlab"><span class="dot idle"></span>idle</span><span class="dotlab"><span class="dot need"></span>needs</span></div>
+        <div class="rowx"><span class="chip"><span class="cd"></span><b>3</b> running</span><span class="chip need"><span class="cd"></span><b>2</b> need you</span></div>
+        <div class="rowx" style="align-items:stretch">
+          <div class="pane"><div class="pbar"><span class="dot run" style="width:6px;height:6px"></span>claude-main</div><div class="pbody">$ npm test<br><span class="ok">✓ 28 passed</span><br>$ <span class="cur"></span></div></div>
+          <div class="lr on"><span class="dot run" style="width:6px;height:6px"></span><span class="lname">claude-main</span><span class="lmeta">App.tsx</span><span class="lj">→</span></div>
+        </div>
+      </div>
+    </div>
+    <div style="padding:0 18px 16px"><p class="note">한 hue가 전부. amber가 running·커서·포커스·링크·탭·선택을 동시에 → <b>어디가 "살아있음"이고 어디가 "클릭"인지 색으로 구분 안 됨.</b></p></div>
+  </section>
+
+  <!-- ══ B ══ -->
+  <section class="dir rec" style="--ac:#E8A33D;--ac2:#6E9BC4;--ac-ink:#1c1305;">
+    <div class="dir-head">
+      <div class="name">B — 웜/쿨 2-accent <span class="tag">추천</span></div>
+      <div class="swatches"><span class="hex">#E8A33D</span><span class="sw" style="background:#E8A33D"></span><span class="hex" style="margin-left:6px">#6E9BC4</span><span class="sw" style="background:#6E9BC4"></span></div>
+    </div>
+    <div class="dir-body">
+      <div class="cluster">
+        <div class="clabel">Actions · <span class="cool">input(쿨 포커스링)</span></div>
+        <div class="rowx"><button class="btn p-btn">Create</button><button class="btn s-btn">Cancel</button><button class="btn g-btn">Fan out</button></div>
+        <div class="rowx"><input class="inp ring" value="workspace name"></div>
+        <div class="clabel"><span class="cool">Tabs · links (쿨)</span></div>
+        <div class="rowx"><div class="tabs"><div class="tab on">Fleet</div><div class="tab">Orchestrator</div><div class="tab">Channels</div></div></div>
+        <div class="rowx"><span class="lnk">jump to pane →</span></div>
+      </div>
+      <div class="cluster">
+        <div class="clabel"><span class="warm">Status · attention (웜)</span></div>
+        <div class="rowx"><span class="dotlab"><span class="dot run"></span>running</span><span class="dotlab"><span class="dot ok"></span>ok</span><span class="dotlab"><span class="dot idle"></span>idle</span><span class="dotlab"><span class="dot need"></span>needs</span></div>
+        <div class="rowx"><span class="chip"><span class="cd"></span><b>3</b> running</span><span class="chip need"><span class="cd"></span><b>2</b> need you</span></div>
+        <div class="rowx" style="align-items:stretch">
+          <div class="pane"><div class="pbar"><span class="dot run" style="width:6px;height:6px"></span>claude-main</div><div class="pbody">$ npm test<br><span class="ok">✓ 28 passed</span><br>$ <span class="cur"></span></div></div>
+          <div class="lr on"><span class="dot run" style="width:6px;height:6px"></span><span class="lname">claude-main</span><span class="lmeta">App.tsx</span><span class="lj">→</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="cands">
+      <div class="cand" style="--ac2:#6E9BC4">
+        <div class="ch"><span class="csw" style="background:#6E9BC4"></span><span class="cn">Steel blue</span><span class="chex">#6E9BC4</span></div>
+        <div class="crow"><input class="inp ring" style="width:110px" value="focus"><span class="lnk">jump →</span><div class="tabs" style="height:24px"><div class="tab on" style="padding:0 8px">Fleet</div></div></div>
+      </div>
+      <div class="cand" style="--ac2:#5FA8A0">
+        <div class="ch"><span class="csw" style="background:#5FA8A0"></span><span class="cn">Teal</span><span class="chex">#5FA8A0</span></div>
+        <div class="crow"><input class="inp ring" style="width:110px" value="focus"><span class="lnk">jump →</span><div class="tabs" style="height:24px"><div class="tab on" style="padding:0 8px">Fleet</div></div></div>
+      </div>
+      <div class="cand" style="--ac2:#8798C4">
+        <div class="ch"><span class="csw" style="background:#8798C4"></span><span class="cn">Slate periwinkle</span><span class="chex">#8798C4</span></div>
+        <div class="crow"><input class="inp ring" style="width:110px" value="focus"><span class="lnk">jump →</span><div class="tabs" style="height:24px"><div class="tab on" style="padding:0 8px">Fleet</div></div></div>
+      </div>
+    </div>
+    <div style="padding:14px 18px 16px"><p class="note"><b>왜 추천</b> — amber는 "열(살아있음)"만, 쿨은 "차가운 금속(내비게이션)"만. 항공 계기판의 웜/쿨 긴장. <b>토큰 모델에 이미 <code style="font-family:var(--font-mono);font-size:10.5px">accentSecondary</code>가 있어 공짜에 가까움</b>(방금 SSOT 작업서 확인). 쿨 후보: 스틸블루=중성·안전 / 틸=웜베이스와 더 붙음 / 슬레이트=가장 조용.</p></div>
+  </section>
+
+  <!-- ══ C ══ -->
+  <section class="dir" style="--ac:#E08A57;--ac2:#E08A57;--ac-ink:#200f06;">
+    <div class="dir-head">
+      <div class="name">C — Copper, 단색</div>
+      <div class="swatches"><span class="hex">#E08A57</span><span class="sw" style="background:#E08A57"></span></div>
+    </div>
+    <div class="dir-body">
+      <div class="cluster">
+        <div class="clabel">Actions · input</div>
+        <div class="rowx"><button class="btn p-btn">Create</button><button class="btn s-btn">Cancel</button><button class="btn g-btn">Fan out</button></div>
+        <div class="rowx"><input class="inp ring" value="workspace name"></div>
+        <div class="clabel">Tabs · links</div>
+        <div class="rowx"><div class="tabs"><div class="tab on">Fleet</div><div class="tab">Orchestrator</div><div class="tab">Channels</div></div></div>
+        <div class="rowx"><span class="lnk">jump to pane →</span></div>
+      </div>
+      <div class="cluster">
+        <div class="clabel">Status · attention</div>
+        <div class="rowx"><span class="dotlab"><span class="dot run"></span>running</span><span class="dotlab"><span class="dot ok"></span>ok</span><span class="dotlab"><span class="dot idle"></span>idle</span><span class="dotlab"><span class="dot need"></span>needs</span></div>
+        <div class="rowx"><span class="chip"><span class="cd"></span><b>3</b> running</span><span class="chip need"><span class="cd"></span><b>2</b> need you</span></div>
+        <div class="rowx" style="align-items:stretch">
+          <div class="pane"><div class="pbar"><span class="dot run" style="width:6px;height:6px"></span>claude-main</div><div class="pbody">$ npm test<br><span class="ok">✓ 28 passed</span><br>$ <span class="cur"></span></div></div>
+          <div class="lr on"><span class="dot run" style="width:6px;height:6px"></span><span class="lname">claude-main</span><span class="lmeta">App.tsx</span><span class="lj">→</span></div>
+        </div>
+      </div>
+    </div>
+    <div style="padding:0 18px 16px"><p class="note">amber보다 <b>덜 "노랑"</b>, 더 붉은 구리톤 → 오너가 DESIGN.md에 남긴 "노랑 망설임" 해소. 여전히 단색이라 과부하 구조는 A와 동일.</p></div>
+  </section>
+
+  <footer>
+    <b>제 순위:</b> B(2-accent) > C(copper) > A(현재). B는 아키텍처가 이미 준비돼 있고 amber 과부하를 구조적으로 풀어요. 쿨 accent는 amber보다 <b>더 조용하게</b>, 인터랙티브에만 — 면 채우기 금지(amber diet 유지). <br>주의: B는 DESIGN.md의 "amber = alive + focus"에서 <b>focus를 쿨로 이관</b>하는 테제 변경이라 오너 승인 대상이에요.
+  </footer>
+</div>
+</body>
+</html>

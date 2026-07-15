@@ -75,14 +75,25 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 
 ## Color
 
-- **Approach:** restrained. Warm graphite neutrals + ONE amber. Values are the
-  `amber` theme tokens in `themes.ts` (`bgBase #151517 · bgMantle #19191C ·
-  bgSurface #202024 · textMain #EFEEEC · textSub #A5A29C · textMuted #66645F ·
-  accent #E8A33D · success #8FBF7F · danger #D96C6C`).
-- **Amber grammar — amber means "alive + focus", nothing else:**
-  running dots, spinners, terminal cursor, focused-pane top edge, active-tab
-  underline, and the footer model name. Budget: **5±2 amber meaning-points per
-  screen** (dots of the same class count as one system).
+- **Approach:** restrained. Warm graphite neutrals + a warm amber + a cool
+  steel-blue counter-accent. Values are the `amber` theme tokens in `themes.ts`
+  (`bgBase #151517 · bgMantle #19191C · bgSurface #202024 · textMain #EFEEEC ·
+  textSub #A5A29C · textMuted #66645F · accent #E8A33D · accentSecondary
+  (--accent-blue) #6E9BC4 · success #8FBF7F · danger #D96C6C`).
+- **Two-accent grammar (owner 2026-07-15) — warm amber vs cool steel, each with
+  ONE job.** Splits what was previously amber-overloaded ("alive AND focus AND
+  links AND warning") so each color says exactly one thing:
+  - **Amber `--accent-cursor` = alive + attention:** running dots, spinners,
+    terminal cursor, warning, "needs you" emphasis, the footer model name.
+    Reads as "the system is alive / wants you." Budget: **5±2 amber
+    meaning-points per screen** (dots of the same class count as one system).
+  - **Steel-blue `--accent-blue` #6E9BC4 = navigation + interactive:** links,
+    jump affordances, active-tab underline, focused-pane edge, focus rings,
+    selection highlight. Reads as "where you are / what you click." An even
+    quieter counter-accent than amber; **never fills areas** (same no-wash rule).
+  - Focus moved from amber → steel (it's a "where you are" cue, not an "alive"
+    one). The single `accentSecondary` token drives all of steel, so the hue is
+    a 1-line change like the primary accent.
 - **No area washes.** Amber never fills areas. The only permitted wash is the
   danger `needs input` row. Accent may *expand* on hover only (links, AI-action
   buttons); at rest they are neutral.
@@ -163,3 +174,5 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 | 2026-07-11 | Amber kept as focus hue; swappable via single `accent` token | Owner unsure on yellow — de-risked by token architecture + amber diet |
 | 2026-07-11 | Amber diet codified (5±2 points, no washes, hover-expansion, diff=green, 2-rendition attention) | v1 mockup overused amber → read as "yellow app", not "one lit instrument" |
 | 2026-07-11 | Status footer instrument strip (model·approval·ctx·cwd·running·needs) | Codex pattern; always-visible agent state |
+| 2026-07-15 | Two-accent split: amber (`--accent-cursor`) = alive/attention, steel-blue (`--accent-blue` #6E9BC4) = navigation/interactive; focus moves amber→steel | `--accent-blue` was overloaded (157 renderer usages, all reading amber since accentSecondary==accent); one hue can't say "alive" AND "clickable". Cockpit warm/cool tension; `accentSecondary` token already existed for it |
+| 2026-07-15 | gpui-style component surfacing: buttons/inputs/menus/cards get surface-lift + top inset-highlight (①), inputs recessed + accent focus ring (②); button radius 4→5px | Flat-to-the-point-of-unfinished read as cheap; adds crafted depth within the existing "elevation 3 levels" rule (not gradients/glows). Amber diet unchanged/improved |
