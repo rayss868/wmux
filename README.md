@@ -4,7 +4,7 @@
 
 ### The agent fleet that survives a reboot.
 
-Fan out one prompt into **N isolated agents** — each in its own git worktree — review their work **hunk by hunk**, and walk away: after a quit, crash, or **full OS reboot**, your agents come back mid-conversation. A native Windows terminal for **Claude Code**, **Codex CLI**, and **Gemini CLI**, with **verified sender identity**, **human approval gates**, and a real browser agents can drive.
+Fan out one prompt into **N isolated agents** in separate git worktrees, review their diffs **hunk by hunk**, and walk away — after a crash or **full OS reboot**, they come back mid-conversation. Native Windows, for **Claude Code · Codex · Gemini**, with approval gates and a real browser your agents can drive.
 
 <img width="924" alt="wmux" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
 
@@ -16,9 +16,56 @@ Fan out one prompt into **N isolated agents** — each in its own git worktree �
 
 </div>
 
-<img width="1578" alt="wmux in action" src="https://github.com/user-attachments/assets/3a75969a-d383-418e-96aa-d3f108c87e9a" />
+> **Windows has no native tmux.** wmux is the native fix — a terminal multiplexer + browser automation + MCP server that runs your agents **in parallel, in one window.**
 
-> **Windows has no native tmux.** Without WSL there was no clean way to run several AI coding agents at once. wmux is a native Windows multiplexer + browser automation + MCP server, purpose-built so your agents **read the terminal, drive a real browser, and run in parallel — all in one window.**
+---
+
+## 📸 See it in action
+
+<!-- ⭐ HERO SLOT — the animated English 4-agent orchestration clip (Claude×2 · Codex · OpenCode, role-based delegation) drops in here once re-recorded in English; promote to the top hero when ready. -->
+
+<p align="center">
+<img alt="Four agent CLIs — two Claude Code, an OpenAI Codex, and an OpenCode agent — split and orchestrated in one window" src="docs/four-models.png" width="900" />
+<br><sub><b>Four agents, four models, one window.</b> Two Claude Code panes, an OpenAI Codex, and an OpenCode agent — split into a grid and orchestrated <b>by role</b> from the side dock.</sub>
+</p>
+
+<p align="center">
+<img alt="The orchestrator spawns a Claude agent and tasks it to survey a repo" src="docs/orchestrate-subagent.gif" width="820" />
+<br><sub><b>Orchestrate real agents, not just chat.</b> The orchestrator spins up a worker, points a Claude agent at a repo to survey it, and drives the fleet toward the goal.</sub>
+</p>
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img alt="Git tab — pull requests and worktrees in the dock, workspace diff open" src="docs/git-tab.png" />
+<br><sub><b>Git in the dock.</b> Pull requests, worktrees, and a live diff for the repo behind your active pane — create a worktree, open it as a workspace, or one-click a PR.</sub>
+</td>
+<td width="50%" valign="top">
+<img alt="Read-only workspace diff opened from the command palette" src="docs/workspace-diff.png" />
+<br><sub><b>Workspace diff.</b> "Show Git Diff" opens every staged, unstaged, and untracked change against HEAD — read-only, no IDE creep. Non-git panes get a polite toast.</sub>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img alt="Ask the orchestrator about a hunk — code context attached in the chat" src="docs/diff-ask.png" />
+<br><sub><b>Ask about a hunk.</b> From any diff hunk, ask the orchestrator with the repo, file, and code fenced into the message — question and evidence together.</sub>
+</td>
+<td width="50%" valign="top">
+<img alt="One-click loop running — the orchestrator iterating toward an objective" src="docs/loop-demo.gif" />
+<br><sub><b>One-click loops.</b> Point the orchestrator at an objective — with optional per-iteration <b>steps</b> from your <code>.claude</code> skills — and it keeps working, iteration by iteration, event-woken by your agents and surviving restarts.</sub>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img alt="Agents coordinating in a channel" src="docs/channels.png" />
+<br><sub><b>Channels.</b> Slack-style rooms your agents read, post, and get @-mentioned into — durable, server-verified sender, survives reboot.</sub>
+</td>
+<td width="50%" valign="top">
+<img alt="Resume pill after a reboot — restore the exact agent conversation" src="docs/resume.png" />
+<br><sub><b>Survives reboot.</b> After a quit, crash, or full OS reboot, a recovered pane offers a one-click <b>Resume</b> — straight back to the exact agent conversation.</sub>
+</td>
+</tr>
+</table>
 
 ---
 
@@ -45,43 +92,6 @@ winget install openwong2kim.wmux
 | 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
 | 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
 | 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — browser + terminal tools register automatically. |
-
----
-
-## 📸 See it in action
-
-<table>
-<tr>
-<td width="50%" valign="top">
-<img alt="Git tab — pull requests and worktrees in the dock, workspace diff open" src="docs/git-tab.png" />
-<br><sub><b>Git in the dock.</b> Pull requests, worktrees, and a live diff for the repo behind your active pane — create a worktree, open it as a workspace, or one-click a PR.</sub>
-</td>
-<td width="50%" valign="top">
-<img alt="Read-only workspace diff opened from the command palette" src="docs/workspace-diff.png" />
-<br><sub><b>Workspace diff.</b> "Show Git Diff" opens every staged, unstaged, and untracked change against HEAD — read-only, no IDE creep. Non-git panes get a polite toast.</sub>
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-<img alt="Ask the orchestrator about a hunk — code context attached in the chat" src="docs/diff-ask.png" />
-<br><sub><b>Ask about a hunk.</b> From any diff hunk, ask the orchestrator with the repo, file, and code fenced into the message — question and evidence together.</sub>
-</td>
-<td width="50%" valign="top">
-<img alt="Loop setup modal with a skill picker autocompleting from .claude skills" src="docs/loop-modal.png" />
-<br><sub><b>One-click loops.</b> Give the orchestrator an objective and per-iteration <b>steps</b> — type <code>/</code> to pick from your <code>.claude</code> skills — and it keeps working toward it across restarts.</sub>
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-<img alt="Agents coordinating in a channel" src="docs/channels.png" />
-<br><sub><b>Channels.</b> Slack-style rooms your agents read, post, and get @-mentioned into — durable, server-verified sender, survives reboot.</sub>
-</td>
-<td width="50%" valign="top">
-<img alt="Resume pill after a reboot — restore the exact agent conversation" src="docs/resume.png" />
-<br><sub><b>Survives reboot.</b> After a quit, crash, or full OS reboot, a recovered pane offers a one-click <b>Resume</b> — straight back to the exact agent conversation.</sub>
-</td>
-</tr>
-</table>
 
 ---
 
