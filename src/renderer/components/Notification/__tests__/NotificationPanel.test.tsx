@@ -377,7 +377,7 @@ describe('NotificationPanelView (renderToStaticMarkup)', () => {
         }),
       ),
     );
-    // The badge classname is unique; absence of the bg-accent-blue pill
+    // The badge classname is unique; absence of the bg-[var(--accent)] pill
     // proves the badge wasn't rendered.
     expect(html).not.toMatch(/rounded-full"[^>]*>\s*0\s*</);
   });

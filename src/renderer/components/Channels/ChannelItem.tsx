@@ -85,7 +85,7 @@ export function ChannelItemView({
         <span
           data-channel-mention={mentioned ? 'true' : undefined}
           className={`text-[var(--bg-base)] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0 ${
-            mentioned ? 'bg-[var(--accent-red)]' : 'bg-[var(--accent-blue)]'
+            mentioned ? 'bg-[var(--accent-red)]' : 'bg-[var(--accent)]'
           }`}
           {...tokenAttrs(mentioned ? 'danger' : 'accent', 'accent')}
           {...tokenAttrs('bgBase', 'bg')}

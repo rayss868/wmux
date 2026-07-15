@@ -100,7 +100,7 @@ export default function SearchResultsPanel() {
           <span
             className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0"
             style={{
-              backgroundColor: 'var(--accent-blue)',
+              backgroundColor: 'var(--accent)',
               color: 'var(--bg-base)',
             }}
           >

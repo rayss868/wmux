@@ -68,8 +68,12 @@ function ToastItem({
             action.onClick();
             dismissToast(id);
           }}
-          className="flex-shrink-0 px-2 py-0.5 rounded font-medium transition-colors"
-          style={{ backgroundColor: 'var(--accent-blue, #89b4fa)', color: 'var(--bg-base)' }}
+          className="flex-shrink-0 px-2 py-0.5 rounded font-semibold transition-colors"
+          style={{
+            backgroundColor: 'var(--accent)',
+            color: 'var(--bg-base)',
+            boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 1px 2px rgba(0, 0, 0, 0.3)',
+          }}
         >
           {action.label}
         </button>

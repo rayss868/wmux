@@ -99,7 +99,7 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>{dialogLabel}</span>
           {unreadCount > 0 && (
-            <span className="bg-[var(--accent-blue)] text-[var(--bg-base)] text-[10px] font-bold px-1.5 py-0.5 rounded-full" {...tokenAttrs('accentSecondary', 'accent')} {...tokenAttrs('bgBase', 'bg')}>
+            <span className="bg-[var(--accent)] text-[var(--bg-base)] text-[10px] font-bold px-1.5 py-0.5 rounded-full" {...tokenAttrs('accent', 'accent')} {...tokenAttrs('bgBase', 'bg')}>
               {unreadCount}
             </span>
           )}
@@ -177,7 +177,7 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
                   <p className="text-[11px] text-[var(--text-sub2)] mt-0.5 truncate" {...tokenAttrs('textMain', 'text')} data-derived="textSub2">{notif.body}</p>
                 </div>
                 {!notif.read && (
-                  <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent-blue)] mt-1.5 flex-shrink-0" />
+                  <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] mt-1.5 flex-shrink-0" />
                 )}
               </div>
             </div>
