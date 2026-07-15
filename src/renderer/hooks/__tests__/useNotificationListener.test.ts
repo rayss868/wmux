@@ -242,6 +242,13 @@ describe('createNotificationHandler (R4-R10)', () => {
       body: 'b',
       ptyId: 'pty-1',
       workspaceId: 'ws-a',
+      // Windows flash is ALWAYS false here — main's ToastManager must never
+      // flash on top of this relay's own separately-throttled flashFrame
+      // action (codex round 2: the round-1 fix only handled setting=off,
+      // not the double-flash-when-on case). Dock bounce (mac has no
+      // renderer-side equivalent) still follows the real setting.
+      windowsFlashEnabled: false,
+      dockBounceEnabled: true,
     });
   });
 
@@ -381,7 +388,17 @@ describe('createNotificationHandler (R4-R10)', () => {
     expect(harness.spies.showOsToast).toHaveBeenCalledTimes(1);
     expect(harness.spies.showOsToast).toHaveBeenCalledWith({
       title: 't', body: 'b', ptyId: 'pty-1', workspaceId: 'ws-a',
+      windowsFlashEnabled: false, dockBounceEnabled: true,
     });
+  });
+
+  it('R10c: taskbarFlashEnabled setting threads into dockBounceEnabled (windowsFlashEnabled is always false — main never re-flashes Windows)', () => {
+    harness.state.activeWorkspaceId = 'ws-other';
+    harness.state.taskbarFlashEnabled = false;
+    handle('pty-1', { type: 'info', title: 't', body: 'b' });
+    expect(harness.spies.showOsToast).toHaveBeenCalledWith(
+      expect.objectContaining({ windowsFlashEnabled: false, dockBounceEnabled: false }),
+    );
   });
 
   // R10b — pushToast level mapping: error→error, warning→warn, anything else→info.

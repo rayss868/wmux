@@ -28,6 +28,16 @@ vi.mock('../../../ipc/handlers/metadata.handler', () => ({
   broadcastMetadataUpdate: broadcastMetadataUpdateMock,
 }));
 
+// hooks.signal calls dispatchNotification (real implementation) for its
+// hook-sourced notifications; without this, the renderer-readiness gate
+// defaults to false and every call falls to the unmocked ToastManager
+// fallback (which needs a real Electron process — not mockable here, and
+// not what this file is testing; see dispatchNotification.test.ts for gate
+// coverage).
+vi.mock('../../../notification/rendererNotificationReadiness', () => ({
+  isRendererNotificationListenerReady: () => true,
+}));
+
 // Static import — vi.mock declarations are hoisted, so the module-under-test
 // still picks up the mocked _bridge and sendNotification at evaluation time.
 import { registerHooksRpc } from '../hooks.rpc';
@@ -400,7 +410,7 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
 
   // ─── [REGRESSION] activity branch must not alter the emit-kind path ────────
 
-  it('[regression] agent.stop still emits + tees + notifies (activity branch is inert for stop)', async () => {
+  it('[regression] agent.stop still emits + tees + notifies (the agent.activity summarization funnel is inert for stop)', async () => {
     const stub = stubHookRouter();
     stub.setDecision('emit');
     const router = new RpcRouter();
@@ -410,7 +420,7 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
       id: 'r1',
       method: 'hooks.signal',
       // Even with a tool payload present, a stop signal must behave exactly as
-      // before — no activity broadcast, full emit path.
+      // before — no *summarized-activity* broadcast, full emit path.
       params: signal({ kind: 'agent.stop', payload: { tool_name: 'Edit', tool_input: { file_path: '/x.ts' } } }) as unknown as Record<string, unknown>,
     });
 
@@ -420,7 +430,53 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
     expect(events[0]).toMatchObject({ kind: 'agent.stop', decision: 'emit' });
     expect(stub.recordHookCalls).toHaveLength(1);
     expect(sendNotificationMock).toHaveBeenCalledTimes(1);
-    // The activity funnel is NOT used for a stop kind.
+    // The tool_name/tool_input payload is NOT summarized into an activity
+    // string for a stop kind (that's the agent.activity-only funnel) — but
+    // codex review added a SEPARATE, deliberate broadcast clearing any
+    // stale activity left over from this turn's tool calls (PostToolUse
+    // never had its own "turn ended" signal before). Exactly one call,
+    // clearing (not summarizing).
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ activity: '' }),
+    );
+  });
+
+  it('[regression] agent.session_start also clears any stale activity from a previous session on this ptyId', async () => {
+    const stub = stubHookRouter();
+    stub.setDecision('emit');
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'r2',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.session_start' }) as unknown as Record<string, unknown>,
+    });
+
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ activity: '' }),
+    );
+    // session_start is not an emit-kind — no notification, no lifecycle tee.
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    expect(pollLifecycle()).toHaveLength(0);
+  });
+
+  it('[regression] agent.subagent_stop does NOT clear activity (a Task-tool subagent finishing is mid-parent-turn, not turn-end)', async () => {
+    const stub = stubHookRouter();
+    stub.setDecision('emit');
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'r3',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.subagent_stop' }) as unknown as Record<string, unknown>,
+    });
+
     expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
   });
 

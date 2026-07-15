@@ -540,16 +540,25 @@ export class DaemonNotificationRouter {
 
           // Hook-authority veto — daemon-mode twin of PTYBridge.onEvent.
           // While this pane's hook bridge is alive for the SAME agent, the
-          // hook Stop/awaiting_input signal is canonical: the detector's
-          // footer heuristics fire mid-turn (Claude's status footer is
-          // always visible) and would pre-poison the dedup ledger so the
-          // real Stop lands as 'dedup' → silent completion. Skipping
-          // emitDetectorLifecycle too is intentional: the hook path emits
-          // the one canonical lifecycle event. The metadata broadcast above
+          // hook Stop signal is canonical: the detector's footer heuristics
+          // fire mid-turn (Claude's status footer is always visible) and
+          // would pre-poison the dedup ledger so the real Stop lands as
+          // 'dedup' → silent completion. The metadata broadcast above
           // (status dot) stays live either way.
+          //
+          // codex review catch (round 2): this must NOT cover
+          // 'awaiting_input'. Claude's hooks.json wires PreToolUse ONLY for
+          // the AskUserQuestion tool — the far more common approval
+          // prompts ("Do you want to proceed?", "Allow tool use for X",
+          // Claude's default permission-mode Y/N gate) have NO hook at
+          // all; AgentDetector's regex patterns are the ONLY signal source
+          // for those. Vetoing 'awaiting_input' here would leave an agent
+          // blocked on a real approval prompt completely silent for the
+          // full authority TTL (up to 30 minutes) — worse than any bug
+          // this PR set out to fix.
           const slug = agentDisplayToSlug(ev.agent);
           const hookRouter = this.getHookRouter?.() ?? null;
-          if (slug && hookRouter?.isGovernedFor(payload.sessionId, slug)) {
+          if (ev.status !== 'awaiting_input' && slug && hookRouter?.isGovernedFor(payload.sessionId, slug)) {
             return;
           }
 

@@ -1,6 +1,7 @@
 import type { BrowserWindow } from 'electron';
 import { sendNotification, type NotificationPayload } from './sendNotification';
 import { toastManager, type ToastFocusContext } from './ToastManager';
+import { isRendererNotificationListenerReady } from './rendererNotificationReadiness';
 
 /**
  * Single entry point for "surface a notification to the user".
@@ -16,15 +17,26 @@ import { toastManager, type ToastFocusContext } from './ToastManager';
  * intersection produced fully silent completions.
  *
  * New contract:
- *   - Renderer alive → send ONLY the IPC notification. The renderer's
- *     notification policy (useNotificationPolicy.ts) is the single decision
- *     point for every surface, INCLUDING the OS toast: it emits an `osToast`
- *     action when the window is unfocused, which round-trips back to main
- *     over IPC.NOTIFICATION_OS_TOAST → toastManager.showDirect().
- *   - No renderer window (teardown, early boot) → fall back to the legacy
- *     direct toast so the event isn't lost entirely. `show()` keeps its
- *     focused-window suppression, which is trivially satisfied here (a
- *     destroyed/absent window is never focused).
+ *   - Renderer alive AND its notification listener confirmed subscribed →
+ *     send ONLY the IPC notification. The renderer's notification policy
+ *     (useNotificationPolicy.ts) is the single decision point for every
+ *     surface, INCLUDING the OS toast: it emits an `osToast` action when the
+ *     window is unfocused, which round-trips back to main over
+ *     IPC.NOTIFICATION_OS_TOAST → toastManager.showDirect().
+ *   - No renderer window, OR a window that exists but hasn't confirmed its
+ *     listener is live (teardown, early boot, mid-reload crash recovery —
+ *     `webContents.send` reaching an unmounted/reloading page is a silent
+ *     no-op, codex review catch round 1) → fall back to a DIRECT toast via
+ *     `showDirect` (not the focus-suppressing `show()`, codex review catch
+ *     round 2): a window that's OS-focused but mid-reload shows the user a
+ *     blank/reloading page, not the notification — `show()`'s "focused =
+ *     already looking at it, stay quiet" assumption is exactly backwards
+ *     here, and it would otherwise re-introduce the same silent-loss bug
+ *     for a focused-but-not-ready window (readiness gate says "fall back",
+ *     but the fallback itself would then also drop it). For a genuinely
+ *     absent window this is behaviorally identical to `show()` anyway
+ *     (`BrowserWindow.getFocusedWindow()` is trivially null with no window
+ *     open, so `show()`'s own check never suppressed this case either).
  *
  * `focus` is the toast click context (pane jump target). Callers that know
  * the originating pane pass `{ ptyId }`; app-level events pass
@@ -36,11 +48,11 @@ export function dispatchNotification(
   payload: NotificationPayload,
   focus?: ToastFocusContext,
 ): void {
-  if (win && !win.isDestroyed()) {
+  if (win && !win.isDestroyed() && isRendererNotificationListenerReady()) {
     sendNotification(win, ptyId, payload);
     return;
   }
-  toastManager.show(
+  toastManager.showDirect(
     payload.title,
     payload.body,
     focus ?? { ptyId, workspaceId: payload.workspaceId ?? null },

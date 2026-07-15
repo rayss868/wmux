@@ -406,20 +406,30 @@ export class PTYBridge {
           this.lastAgentEventAt.set(ptyId, Date.now());
 
           // Hook-authority veto: while this pane has a live hook bridge for
-          // the SAME agent, the hook's Stop/awaiting_input signals are
-          // canonical and the detector's footer heuristics must stay out of
-          // the user-visible path entirely. Claude's status footer ("bypass
-          // permissions on", "shift+tab to cycle") is visible MID-TURN, so
-          // without this veto the detector both re-alerts while the agent is
-          // still working AND pre-poisons the HookSignalRouter ledger so the
-          // real Stop hook lands as 'dedup' → the true completion goes
-          // silent. Skipping recordDetector + the EventBus tee here is the
-          // point: the hook path emits the one canonical lifecycle event.
-          // The metadata broadcast above (status dot) is intentionally NOT
+          // the SAME agent, the hook's Stop signal is canonical and the
+          // detector's footer heuristics must stay out of the user-visible
+          // path entirely. Claude's status footer ("bypass permissions on",
+          // "shift+tab to cycle") is visible MID-TURN, so without this veto
+          // the detector both re-alerts while the agent is still working
+          // AND pre-poisons the HookSignalRouter ledger so the real Stop
+          // hook lands as 'dedup' → the true completion goes silent.
+          // Skipping recordDetector + the EventBus tee here is the point:
+          // the hook path emits the one canonical lifecycle event. The
+          // metadata broadcast above (status dot) is intentionally NOT
           // gated — visual state stays live either way.
+          //
+          // codex review catch (round 2): must NOT cover 'awaiting_input'.
+          // Claude's hooks.json wires PreToolUse ONLY for the
+          // AskUserQuestion tool — the far more common approval prompts
+          // ("Do you want to proceed?", "Allow tool use for X", Claude's
+          // default permission-mode Y/N gate) have NO hook at all;
+          // AgentDetector's regex patterns (matched right below, in
+          // `status`) are the ONLY signal source for those. Vetoing here
+          // would leave an agent blocked on a real approval prompt
+          // completely silent for the full authority TTL (30 minutes).
           const slug = agentDisplayToSlug(agentEvent.agent);
           const hookRouter = this.getHookRouter?.() ?? null;
-          if (slug && hookRouter?.isGovernedFor(ptyId, slug)) {
+          if (status !== 'awaiting_input' && slug && hookRouter?.isGovernedFor(ptyId, slug)) {
             return;
           }
 
@@ -472,6 +482,7 @@ export class PTYBridge {
     // also resets AgentDetector's emission dedup state here so the next turn's
     // 'waiting' prompt fires again even if its text is byte-identical to the
     // previous turn (otherwise turn N+1 would be silently dropped).
+    let resizeGuardTimer: ReturnType<typeof setTimeout> | null = null;
     const unsubActive = this.activityMonitor.onActive((id) => {
       if (id !== ptyId) return;
       try {
@@ -489,8 +500,27 @@ export class PTYBridge {
         // a burst indistinguishable from real activity. Resetting the emission
         // dedup on THAT burst lets the unchanged idle footer re-match and
         // re-fire a stale "Ready for input" for a pane where nothing happened.
-        // A genuinely new turn resets on its next (non-resize) output burst.
-        if (!recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
+        //
+        // onActive fires EXACTLY ONCE per active-to-idle cycle (ActivityMonitor
+        // re-arms it only on the next idle→active transition). So a plain
+        // "skip the reset this one time" would permanently skip it for the
+        // REST of this cycle too — if a genuinely new turn's output continues
+        // streaming into the SAME cycle (no 5s idle gap between the resize
+        // repaint and the real response), that turn's completion would never
+        // get a fresh dedup state and would be silently deduped as a repeat
+        // of the last-notified turn (codex review catch). Deferring the
+        // reset to fire once the guard window elapses — rather than skipping
+        // it outright — keeps the repaint itself from re-triggering while
+        // still guaranteeing this cycle's real completion (which streams in
+        // over at least one network round-trip, essentially always >3s) sees
+        // a reset dedup state by the time it arrives.
+        if (recentlyResized(ptyId, RESIZE_REDRAW_GUARD_MS)) {
+          if (resizeGuardTimer) clearTimeout(resizeGuardTimer);
+          resizeGuardTimer = setTimeout(() => {
+            resizeGuardTimer = null;
+            agentDetector.resetEmissionState();
+          }, RESIZE_REDRAW_GUARD_MS);
+        } else {
           agentDetector.resetEmissionState();
         }
       } catch (err) {
@@ -498,7 +528,12 @@ export class PTYBridge {
       }
     });
 
-    this.agentDetectorCleanups.set(ptyId, [unsubCritical, unsubAgent, unsubActive]);
+    this.agentDetectorCleanups.set(ptyId, [
+      unsubCritical,
+      unsubAgent,
+      unsubActive,
+      () => { if (resizeGuardTimer) clearTimeout(resizeGuardTimer); },
+    ]);
 
     // Detect CWD from shell prompt patterns (PowerShell: "PS C:\path>", bash: "user@host:~/path$").
     // Parsing lives in ./cwdDetect (pure + unit-tested); see detectPromptCwd for

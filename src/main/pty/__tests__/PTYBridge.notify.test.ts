@@ -31,6 +31,12 @@ vi.mock('../../notification/sendNotification', () => ({
   sendNotification: mocks.sendNotification,
 }));
 
+// See PTYBridge.lifecycle.test.ts for why this is needed — dispatchNotification's
+// real implementation runs here, and its readiness gate defaults to false.
+vi.mock('../../notification/rendererNotificationReadiness', () => ({
+  isRendererNotificationListenerReady: () => true,
+}));
+
 const broadcastMetadataUpdateMock = mocks.broadcastMetadataUpdate;
 const sendNotificationMock = mocks.sendNotification;
 const toastManagerMock = mocks.toastManager;

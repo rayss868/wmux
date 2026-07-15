@@ -13,10 +13,18 @@ vi.mock('../../../notification/sendNotification', () => ({
 }));
 
 vi.mock('../../../notification/ToastManager', () => ({
-  ToastManager: class { show = mocks.toastManagerShow; },
+  ToastManager: class { show = mocks.toastManagerShow; showDirect = mocks.toastManagerShow; },
   // Module-level singleton consumed by dispatchNotification's no-window
-  // fallback (and re-exported by notify.rpc for legacy importers).
-  toastManager: { show: mocks.toastManagerShow, enabled: true },
+  // fallback (via showDirect — see dispatchNotification.ts) and re-exported
+  // by notify.rpc for legacy importers.
+  toastManager: { show: mocks.toastManagerShow, showDirect: mocks.toastManagerShow, enabled: true },
+}));
+
+// The "window alive" case must exercise the sendNotification path, not the
+// readiness-gate fallback — this file tests notify.rpc's routing, not the
+// gate itself (see dispatchNotification.test.ts for that).
+vi.mock('../../../notification/rendererNotificationReadiness', () => ({
+  isRendererNotificationListenerReady: () => true,
 }));
 
 import { RpcRouter } from '../../RpcRouter';

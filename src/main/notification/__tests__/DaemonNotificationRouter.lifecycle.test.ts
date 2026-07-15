@@ -46,7 +46,10 @@ vi.mock('../../pipe/handlers/_bridge', () => ({
 }));
 
 import { sendToRenderer } from '../../pipe/handlers/_bridge';
+import { dispatchNotification } from '../dispatchNotification';
 import { DaemonNotificationRouter } from '../DaemonNotificationRouter';
+
+const dispatchNotificationMock = vi.mocked(dispatchNotification);
 
 const sendToRendererMock = vi.mocked(sendToRenderer);
 
@@ -189,6 +192,36 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       expect(vi.mocked(hookRouter.isGovernedFor)).toHaveBeenCalledWith('pty-a', 'claude');
       expect(hookRouter.recordDetector).not.toHaveBeenCalled();
       expect(pollLifecycle()).toHaveLength(0);
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('codex review catch (round 2): the veto does NOT cover awaiting_input — daemon-mode twin of the PTYBridge exemption test', async () => {
+    // Same rationale as the PTYBridge test: Claude's hooks.json only wires
+    // PreToolUse for AskUserQuestion — generic approval prompts ("Do you
+    // want to proceed?") have no hook, so the detector must remain the
+    // live signal source for awaiting_input regardless of hook authority.
+    const hookRouter = {
+      recordDetector: vi.fn().mockReturnValue('emit'),
+      recordHook: vi.fn(),
+      touchAuthority: vi.fn(),
+      isGovernedFor: vi.fn().mockReturnValue(true),
+    } as unknown as HookSignalRouter;
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      dispatchNotificationMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' },
+      });
+      await flushMicrotasks();
+
+      expect(dispatchNotificationMock).toHaveBeenCalledTimes(1);
+      const events = pollLifecycle();
+      const awaiting = events.find((e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input');
+      expect(awaiting).toBeDefined();
+      expect(awaiting).toMatchObject({ decision: 'emit' });
     } finally {
       nr.stop();
     }

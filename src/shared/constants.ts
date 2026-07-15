@@ -56,6 +56,14 @@ export const IPC = {
   // legacy any-window-focused suppression (ToastManager.showDirect).
   // Payload: { title, body, ptyId?, workspaceId? } — the toast click context.
   NOTIFICATION_OS_TOAST: 'notification:os-toast',
+  // Renderer confirms its notification IPC listener is attached (fired once
+  // per mount, from useNotificationListener's effect). dispatchNotification
+  // consults main's mirror of this to decide whether webContents.send would
+  // actually be received, or whether to fall back to a direct OS toast —
+  // a live BrowserWindow does not imply a live listener (deferred initial
+  // load, mid-reload crash recovery, or a renderer that hasn't mounted yet
+  // all leave the window alive with nothing on the other end of send()).
+  NOTIFICATION_LISTENER_READY: 'notification:listener-ready',
   CWD_CHANGED: 'notification:cwd-changed',
   /** J3 §3: initialCommand 재시도 소진(프롬프트 미발사) — payload: sessionId. */
   PTY_INITIAL_CMD_EXHAUSTED: 'notification:initial-cmd-exhausted',

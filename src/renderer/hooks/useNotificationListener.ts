@@ -268,7 +268,7 @@ export interface NotificationHandlerDeps {
    * ToastManager.showDirect). ptyId/workspaceId become the click-jump
    * context main attaches to the native notification.
    */
-  showOsToast: (payload: { title: string; body: string; ptyId?: string | null; workspaceId?: string | null }) => void;
+  showOsToast: (payload: { title: string; body: string; ptyId?: string | null; workspaceId?: string | null; windowsFlashEnabled?: boolean; dockBounceEnabled?: boolean }) => void;
   flashFrameThrottler: Throttler;
   /** Per-type sound throttler factory (memoized per call site). */
   getSoundThrottler: (type: string) => Throttler;
@@ -395,6 +395,16 @@ export function createNotificationHandler(deps: NotificationHandlerDeps) {
             body: action.payload.body,
             ptyId: ptyId ?? null,
             workspaceId: target.workspaceId,
+            // Codex review catches (rounds 1+2): main's ToastManager must
+            // NOT also flash the Windows taskbar here — the `flashFrame`
+            // action above already does that, throttled (500ms burst
+            // protection) and gated on taskbarFlashEnabled; a second,
+            // untethered flash from showDirect both double-flashed the
+            // first notification and bypassed the throttle on every
+            // subsequent one. macOS has no renderer-side dock-bounce
+            // action at all, so that gate still follows the real setting.
+            windowsFlashEnabled: false,
+            dockBounceEnabled: state.taskbarFlashEnabled,
           });
           break;
       }
@@ -496,6 +506,11 @@ export function useNotificationListener() {
     });
 
     const unsubNotif = window.electronAPI.notification.onNew(handleNotification);
+
+    // Confirm to main that this listener is live — see IPC.NOTIFICATION_LISTENER_READY.
+    // Fires on every mount (including a post-crash mainWindow.reload()), which is
+    // exactly when main's mirrored flag needs to flip back to true.
+    window.electronAPI.notification.listenerReady();
 
     // X2 — OS toast clicked: main already restored/focused the window;
     // jump to the originating workspace/pane/surface.

@@ -334,6 +334,27 @@ export function registerHooksRpc(
       }
     }
 
+    // Codex review catch: PostToolUse populates surfaceActivity (+ its
+    // freshness stamp), but nothing ever cleared it. A turn that ends
+    // without the final prompt matching the detector (hook-only agents, or
+    // any turn once the hook-authority veto suppresses the detector) left
+    // Fleet View showing the pane as "running: <last tool>" for the full
+    // HOOK_RUNNING_TTL_MS (120s) after the turn was actually done — a stale
+    // status that reads as "still working" right when it finished. Clear on
+    // agent.stop (the turn definitively ended) and agent.session_start
+    // (fresh session on this ptyId — a previous session's tool label must
+    // not leak in). NOT on agent.subagent_stop: a Task-tool subagent
+    // finishing happens WITHIN the parent turn, which may still have more
+    // tool calls coming — clearing there would erase live activity.
+    // `activity: ''` is the established clear signal (setSurfaceActivity
+    // deletes both the string and its freshness timestamp on a falsy value).
+    if (signal.kind === 'agent.stop' || signal.kind === 'agent.session_start') {
+      const win = getWindow();
+      if (win) {
+        broadcastMetadataUpdate(win, { ptyId, activity: '' });
+      }
+    }
+
     // 4. Emit decision. PostToolUse / SessionStart never produce a
     //    toast (would be spam — codex round-2 P1 #5). They also
     //    DO NOT write to the dedup ledger (claude review 2026-05-23

@@ -220,6 +220,27 @@ describe('ToastManager (OS-aware notifications)', () => {
       expect(electronMocks.win.on).toHaveBeenCalledTimes(1);
       expect(electronMocks.win.flashFrame).toHaveBeenCalledTimes(3);
     });
+
+    // Codex review catch (round 2): the renderer's osToast relay always
+    // sends windowsFlashEnabled:false — it owns Windows flashing itself via
+    // a separately-throttled (500ms), settings-gated action, and a second
+    // untethered flash from here both double-flashed the first notification
+    // and bypassed that throttle on every one after. This pins the gate.
+    it('windowsFlashEnabled:false suppresses flashFrame entirely (renderer already owns it)', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().showDirect('t', 'b', { windowsFlashEnabled: false });
+
+      expect(electronMocks.notificationInstances).toHaveLength(1); // toast itself still shows
+      expect(electronMocks.win.flashFrame).not.toHaveBeenCalled();
+      expect(electronMocks.win.on).not.toHaveBeenCalled();
+    });
+
+    it('windowsFlashEnabled omitted (legacy direct callers) still flashes — the default is true', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().showDirect('t', 'b', { ptyId: 'pty-1' });
+
+      expect(electronMocks.win.flashFrame).toHaveBeenCalledWith(true);
+    });
   });
 
   describe('on macOS', () => {
@@ -245,6 +266,24 @@ describe('ToastManager (OS-aware notifications)', () => {
       expect(electronMocks.dockBounce).toHaveBeenCalledWith('informational');
       expect(electronMocks.win.flashFrame).not.toHaveBeenCalled();
       expect(electronMocks.win.on).not.toHaveBeenCalled();
+    });
+
+    // windowsFlashEnabled:false (what the renderer always sends) must NOT
+    // suppress the macOS dock bounce — macOS has no renderer-side attention
+    // action of its own, so this is its only path. The two gates are
+    // independent (codex review catch round 2).
+    it('windowsFlashEnabled:false does NOT suppress the dock bounce on macOS', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().showDirect('t', 'b', { windowsFlashEnabled: false, dockBounceEnabled: true });
+
+      expect(electronMocks.dockBounce).toHaveBeenCalledTimes(1);
+    });
+
+    it('dockBounceEnabled:false suppresses the bounce independently of windowsFlashEnabled', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().showDirect('t', 'b', { windowsFlashEnabled: false, dockBounceEnabled: false });
+
+      expect(electronMocks.dockBounce).not.toHaveBeenCalled();
     });
   });
 

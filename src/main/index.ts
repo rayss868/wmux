@@ -64,6 +64,7 @@ import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonCl
 import { raceDaemonShutdown } from './daemonShutdownRace';
 import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
+import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
 import { ensureDaemon, killDaemonByPidFile, killVerifiedDaemonPid, checkProcessLiveness } from './daemon/launcher';
@@ -1085,6 +1086,18 @@ app.on('ready', async () => {
   // dev에서 Vite dev server가 아직 준비 전이거나(포트 점유로 5174 지연) 죽었을 때
   // did-fail-load가 발생한다. 기존엔 2초 고정 간격으로 무한 reload해 콘솔을
   // ERR_CONNECTION_REFUSED로 도배했다. 지수 백오프 + 재시도 상한으로 교체한다.
+  // Codex review catch: dispatchNotification's "window alive → send IPC"
+  // path silently loses notifications whenever the window exists but its
+  // content is mid-reload (crash recovery, did-fail-load retry, dev HMR) —
+  // a live BrowserWindow does not imply a live useNotificationListener
+  // subscription. did-start-loading fires on every navigation regardless of
+  // cause, so this correctly re-arms for the full reload→remount window;
+  // the renderer flips it back via IPC.NOTIFICATION_LISTENER_READY once
+  // useNotificationListener's effect actually resubscribes.
+  mainWindow.webContents.on('did-start-loading', () => {
+    markRendererNotificationListenerNotReady();
+  });
+
   let didFailLoadCount = 0;
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
     // ERR_ABORTED(-3): 새 내비게이션이 이전 로드를 정상 취소한 경우 — 재시도 불필요.

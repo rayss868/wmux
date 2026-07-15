@@ -193,8 +193,12 @@ const electronAPI = {
     // only when the window is unfocused (with active-surface awareness main
     // can't have); main shows it without the legacy any-window-focused
     // suppression. ptyId/workspaceId become the toast's click-jump context.
-    showOsToast: (payload: { title: string; body: string; ptyId?: string | null; workspaceId?: string | null }) =>
+    showOsToast: (payload: { title: string; body: string; ptyId?: string | null; workspaceId?: string | null; windowsFlashEnabled?: boolean; dockBounceEnabled?: boolean }) =>
       ipcRenderer.send(IPC.NOTIFICATION_OS_TOAST, payload),
+    // Fired once when useNotificationListener's effect mounts and subscribes
+    // — confirms to main that IPC.NOTIFICATION sends will actually reach a
+    // live listener, not just a live (but reloading/unmounted) window.
+    listenerReady: () => ipcRenderer.send(IPC.NOTIFICATION_LISTENER_READY),
     // J3 §3: initialCommand 재시도 소진(프롬프트 미발사) 통지 — fan-out 토스트 소비.
     onInitialCmdExhausted: (callback: (ptyId: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, ptyId: string) => callback(ptyId);
