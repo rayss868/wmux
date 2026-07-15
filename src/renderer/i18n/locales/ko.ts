@@ -758,6 +758,10 @@ export const ko = {
   // 커맨드 데크 P3b — 재부팅 복구 인사 카드.
   'deck.recoveryTitle': '마지막 종료 전 실행 중이던 에이전트 pane {count}개를 복구할 수 있습니다.',
   'deck.recoveryRun': '에이전트 복구',
+  'deck.decisionEyebrow': '결정 필요',
+  'deck.decisionResolve': '답하기',
+  'deck.decisionPlaceholder': '답을 입력하세요…',
+  'deck.decisionAnswerLabel': '오케스트레이터 결정에 답',
   'deck.recoveryDismiss': '무시',
   // 커맨드 데크 — 컨트롤 바(Mode·Loop·Schedules)는 각 컴포넌트가 담당.
   // 커맨드 데크 P3d — agent 예약(재부팅 생존).

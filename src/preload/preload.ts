@@ -450,6 +450,21 @@ const electronAPI = {
           code?: string;
         }>,
     },
+    // Brain-raised decision gate. GET hydrates the pending decision on mount (so
+    // it shows after a reboot); RESOLVE is the human's answer, which clears the
+    // block and resumes the loop.
+    decision: {
+      get: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_DECISION_GET, { workspaceId }) as Promise<{
+          decision: import('../main/deck/deckDecisionStore').WorkspaceDecision | null;
+        }>,
+      resolve: (args: { workspaceId: string; id: string; resolution: string }) =>
+        ipcRenderer.invoke(IPC.DECK_DECISION_RESOLVE, args) as Promise<{
+          ok: boolean;
+          code?: string;
+          decision?: import('../main/deck/deckDecisionStore').WorkspaceDecision;
+        }>,
+    },
     // Normalized BrainEvent push, enveloped with the workspace whose
     // orchestrator produced it (see BrainAdapter.BrainEvent).
     onStream: (

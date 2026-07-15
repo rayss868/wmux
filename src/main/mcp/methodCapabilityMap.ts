@@ -251,6 +251,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   //     capability gate here would be redundant.
   'deck.resolvePaneRoute': { capability: null },
   'deck.resolveCommanderWorkspace': { capability: null },
+  // Brain-raised decision gate. Carries its OWN commander-token auth
+  // (deck.rpc.ts), so no capability gate — same posture as the deck.resolve* pair.
+  'deck.requestDecision': { capability: null },
 
   // --- Browser (Playwright). Plugins declaring these get the browser
   //     risk-class prompt; all are gated against KNOWN_CAPABILITIES entries.

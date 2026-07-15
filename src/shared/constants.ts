@@ -156,6 +156,13 @@ export const IPC = {
   //   + schedules. Same renderer-only trust boundary.
   DECK_MODE_GET: 'deck:mode:get',
   DECK_MODE_SET: 'deck:mode:set',
+  //   DECK_DECISION_* — the brain-raised decision gate. The orchestrator brain
+  //   calls the deck_ask_decision MCP tool to PAUSE its loop and ask the human
+  //   a decision; GET hydrates that pending decision on mount (so it shows
+  //   after a reboot) and RESOLVE is the human's answer, which un-blocks the
+  //   loop and resumes the brain. Same renderer-only trust boundary as DECK_SEND.
+  DECK_DECISION_GET: 'deck:decision:get',
+  DECK_DECISION_RESOLVE: 'deck:decision:resolve',
   //   ACCOUNT_* (invoke) renderer → main: multi-account registry CRUD +
   //   per-workspace bindings. Renderer-only trust boundary (main owns
   //   accounts.json; the renderer never resolves spawn env). Onboarding

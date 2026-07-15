@@ -36,6 +36,11 @@ export interface DeckSchedulerDeps {
    *  every schedule is workspace-scoped). Resolves with the accept/reject
    *  verdict — the same shape CommanderSessionManager.send returns. */
   runTurn: (prompt: string, workspaceId: string) => Promise<{ ok: boolean; code?: string }>;
+  /** A workspace with a PENDING decision gate must not have its schedules fired
+   *  — a cadence would otherwise wake the brain straight back into its blocked
+   *  state. When gated, the schedule is left DUE (retries next tick) until the
+   *  human resolves. Absent/throwing = not gated (fail open). */
+  hasPendingDecision?: (workspaceId: string) => boolean;
   now?: () => number;
   setIntervalFn?: typeof setInterval;
   clearIntervalFn?: typeof clearInterval;
@@ -77,6 +82,17 @@ export class DeckScheduler {
       const now = (this.deps.now ?? Date.now)();
       const due = dueSchedules(loadDeckSchedules(this.deps.dir), now);
       for (const s of due) {
+        // A pending decision gate blocks scheduled wakes too — leave the
+        // schedule DUE (skip without advancing) so it retries next tick once
+        // the human resolves. Never throws (fail open).
+        const ws = s.workspaceId ?? '';
+        let gated = false;
+        try {
+          gated = ws !== '' && this.deps.hasPendingDecision?.(ws) === true;
+        } catch {
+          gated = false;
+        }
+        if (gated) continue;
         let result: 'ok' | 'busy' | 'error';
         try {
           // dueSchedules guarantees workspaceId is present.

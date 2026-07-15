@@ -242,6 +242,10 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   WMUX('a2a_broadcast'),
   WMUX('a2a_set_skills'),
   WMUX('send_message'),
+  // Ask the human operator to settle a decision the brain should not make
+  // itself. A benign self-signal — it can ONLY pause the loop and ask, the
+  // opposite of a destructive tool — so it auto-allows like the comms tools.
+  WMUX('deck_ask_decision'),
 ];
 
 // Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only
@@ -388,6 +392,13 @@ export function buildCommanderSystemPrompt(
     '  parallel panes when it genuinely parallelizes; keep the human informed with a',
     '  short summary at the end of each turn. You have no shell or file tools of',
     '  your own — anything that needs one runs in a worker pane via terminal_send.',
+    '- When you hit a fork only the human should settle — an ambiguous requirement, a',
+    '  risky or irreversible action, or a genuine choice between approaches — call',
+    '  deck_ask_decision({question, options?}) and then END YOUR TURN. Your loop pauses',
+    '  and will NOT auto-advance until the operator answers; the pending decision',
+    '  survives an app restart or reboot, so they can answer later and you resume from',
+    '  exactly here. Use it only for real forks — never for routine progress updates or',
+    '  questions you can resolve yourself.',
     '- Panes may carry an operator-assigned role (e.g. "role: Reviewer"), shown in your',
     '  workspace snapshot and readable live via pane_list (custom "orchestrator.role").',
     '  Treat a role as the operator\'s PREFERRED routing: send work to the EXISTING pane',

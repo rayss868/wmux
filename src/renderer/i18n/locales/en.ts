@@ -842,6 +842,10 @@ export const en = {
   // Command Deck P3b — the reboot-recovery greeting card.
   'deck.recoveryTitle': '{count} agent pane(s) were running before the last shutdown and can be recovered.',
   'deck.recoveryRun': 'Recover agents',
+  'deck.decisionEyebrow': 'Decision needed',
+  'deck.decisionResolve': 'Resolve',
+  'deck.decisionPlaceholder': 'Type your answer…',
+  'deck.decisionAnswerLabel': 'Your answer to the orchestrator decision',
   'deck.recoveryDismiss': 'Dismiss',
   // Command Deck — the control bar (Mode·Loop·Schedules) is component-owned.
   // Command Deck P3d — orchestrator schedules (reboot-surviving).

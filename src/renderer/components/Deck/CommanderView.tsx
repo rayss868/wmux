@@ -66,6 +66,7 @@ import { buildQuickActions, type DeckQuickAction } from './deckQuickActions';
 import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { DeckLoopPanel } from './DeckLoopPanel';
+import { DeckDecisionCard } from './DeckDecisionCard';
 import { AgentModeChipContainer } from './AgentModeChip';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
@@ -246,6 +247,12 @@ export function CommanderViewContent({
             </div>
           </div>
         )}
+
+        {/* Decision gate — a brain-raised decision blocking the loop until the
+            operator answers. Self-contained (hydrates from the durable store, so
+            it survives a reboot); renders null unless a decision is pending for
+            this workspace. */}
+        <DeckDecisionCard workspaceId={activeWorkspaceId} t={t} />
 
         {/* Brain conversation — orchestrator turns (text bubbles + tool chips). */}
         {brainMessages.map((m) => (
