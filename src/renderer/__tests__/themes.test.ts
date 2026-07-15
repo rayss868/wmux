@@ -127,6 +127,7 @@ describe('themes — 10-token system', () => {
       const DISTINCT_LINK_ACCENT: Record<string, string> = {
         'red-dynasty': '#6AA0CC',
         hinomaru: '#1C4D6A',
+        nightowl: '#7FA6C9',
       };
       for (const id of builtinIds) {
         const tokens = UI_THEME_TOKENS[id];

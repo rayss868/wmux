@@ -45,6 +45,7 @@ describe('theme SSOT parity (themes.ts ⇄ globals.css)', () => {
     }
 
     const rgb: Array<[string, string]> = [
+      ['--accent-rgb', hexToRgbString(full.accent)],
       ['--accent-blue-rgb', hexToRgbString(full.accentBlue)],
       ['--bg-surface-rgb', hexToRgbString(full.bgSurface)],
       ['--bg-base-rgb', hexToRgbString(full.bgBase)],

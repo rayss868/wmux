@@ -165,7 +165,7 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
   nightowl: {
     bgBase: '#1E1B16', bgSurface: '#2E2A22', bgMantle: '#161310',
     textMain: '#C8BFA8', textSub: '#9A9080', textMuted: '#5A5340', // SSOT: matches shipped globals.css
-    accent: '#C4A055', accentSecondary: '#C4A055', success: '#8AAA70', danger: '#CC6B5A', warning: '#C89060',
+    accent: '#C4A055', accentSecondary: '#7FA6C9', success: '#8AAA70', danger: '#CC6B5A', warning: '#C89060', // 2-accent: gold alive / cool-blue nav (--accent-blue)
   },
   void: {
     bgBase: '#000000', bgSurface: '#0A0A0A', bgMantle: '#000000',
@@ -216,6 +216,7 @@ export interface FullCssPalette {
   textSub: string;
   textSub2: string;        // derived
   textMain: string;
+  accent: string;          // brand/action warm accent (--accent) — passthrough of tokens.accent
   accentCursor: string;    // derived (= accent) — kept separate so builtin themes can override
   accentBlue: string;      // derived (= accent)
   accentGreen: string;     // = success
@@ -237,6 +238,7 @@ export function deriveFullPalette(tokens: UIThemeTokens): FullCssPalette {
     textSub2: mixHex(tokens.textMain, tokens.textSub, 0.5),
     textSubtle: mixHex(tokens.textSub, tokens.textMuted, 0.5),
     textMuted: tokens.textMuted,
+    accent: tokens.accent,
     accentCursor: tokens.accent,
     accentBlue: tokens.accentSecondary,
     accentGreen: tokens.success,
@@ -265,12 +267,12 @@ export const BUILTIN_CSS_OVERRIDES: Partial<Record<BuiltinThemeId, Partial<FullC
   amber: { bgOverlay: '#28282D', textSubtle: '#85827B' },
   'catppuccin-mocha': { bgOverlay: '#45475A', textSubtle: '#6C7086', textSub2: '#A6ADC8', accentCursor: '#F5E0DC' },
   monochrome: { bgOverlay: '#2A2A2A', textSubtle: '#606060', textSub2: '#888888', accentCursor: '#FFFFFF' },
-  'stars-and-stripes': { bgOverlay: '#2A3E5A', textSubtle: '#4A6080', textSub2: '#8090A8' },
+  'stars-and-stripes': { bgOverlay: '#2A3E5A', textSubtle: '#4A6080', textSub2: '#8090A8', accentCursor: '#E89B4A' }, // 2-accent: orange-gold alive, distinct from pale-gold warning (accent stays blue = nav)
   'red-dynasty': { bgOverlay: '#4A2A2A', textSubtle: '#6A4A3E', textSub2: '#A08878' },
   nightowl: { bgOverlay: '#38332A', textSubtle: '#6B6350', textSub2: '#847A68' },
   void: { bgOverlay: '#141414', textSubtle: '#505050', textSub2: '#707070', accentCursor: '#FFFFFF' },
   hinomaru: { bgOverlay: '#D4CFC6', textSubtle: '#5C5651' },
-  taegeuk: { textSubtle: '#4F4F62', textSub2: '#2A2A40' },
+  taegeuk: { textSubtle: '#4F4F62', textSub2: '#2A2A40', accentCursor: '#B87500' }, // 2-accent: rich gold alive, distinct from dark-gold warning (accent stays navy = nav)
 };
 
 /**
@@ -310,17 +312,22 @@ for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
 
 // ─── Theme options for UI picker ────────────────────────────────────────────
 
-export const THEME_OPTIONS: Array<{ value: ThemeId; label: string; preview: [string, string, string, string] }> = [
-  { value: 'amber',             label: 'Amber',            preview: ['#151517', '#E8A33D', '#8FBF7F', '#D96C6C'] },
-  { value: 'catppuccin-mocha',  label: 'Catppuccin',       preview: ['#1E1E2E', '#89B4FA', '#A6E3A1', '#F38BA8'] },
-  { value: 'stars-and-stripes', label: 'Stars & Stripes',  preview: ['#0C1428', '#5B8DEF', '#4EBF8B', '#E8554E'] },
-  { value: 'red-dynasty',       label: 'Red Dynasty',      preview: ['#1A0A0A', '#E84040', '#F2C744', '#6AA0CC'] },
-  { value: 'nightowl',          label: 'Nightowl',         preview: ['#1E1B16', '#C4A055', '#8AAA70', '#CC6B5A'] },
-  { value: 'void',              label: 'Void',             preview: ['#000000', '#C0C0C0', '#909090', '#FF4444'] },
-  { value: 'monochrome',        label: 'Monochrome',       preview: ['#080808', '#A0A0A0', '#909090', '#FF5555'] },
-  { value: 'hinomaru',          label: 'Hinomaru',         preview: ['#FAF8F5', '#BC002D', '#2C5F7C', '#3D6750'] },
-  { value: 'taegeuk',           label: 'Taegeuk',          preview: ['#F8F8FA', '#C60C30', '#003478', '#1F6940'] },
-  { value: 'custom',            label: 'Custom',           preview: ['#1E1E2E', '#89B4FA', '#A6E3A1', '#F38BA8'] },
+// The picker renders each theme as a mini-UI thumbnail from its REAL derived
+// palette (deriveBuiltinPalette / deriveFullPalette), so options carry only an
+// id + label. (The old `preview` 4-tuple was hand-maintained, drifted from the
+// SSOT, and its `custom` entry was a frozen snapshot — removed once the picker,
+// its only consumer, stopped reading it.)
+export const THEME_OPTIONS: Array<{ value: ThemeId; label: string }> = [
+  { value: 'amber',             label: 'Amber' },
+  { value: 'catppuccin-mocha',  label: 'Catppuccin' },
+  { value: 'stars-and-stripes', label: 'Stars & Stripes' },
+  { value: 'red-dynasty',       label: 'Red Dynasty' },
+  { value: 'nightowl',          label: 'Nightowl' },
+  { value: 'void',              label: 'Void' },
+  { value: 'monochrome',        label: 'Monochrome' },
+  { value: 'hinomaru',          label: 'Hinomaru' },
+  { value: 'taegeuk',           label: 'Taegeuk' },
+  { value: 'custom',            label: 'Custom' },
 ];
 
 export const XTERM_PALETTE_OPTIONS: Array<{ value: XtermPaletteId; label: string }> = [
@@ -370,7 +377,7 @@ export function extractXtermColors(colors: CustomThemeColors): XtermThemeColors 
 export const CSS_VAR_MAP: Record<keyof FullCssPalette, string> = {
   bgBase: '--bg-base', bgMantle: '--bg-mantle', bgSurface: '--bg-surface', bgOverlay: '--bg-overlay',
   textMuted: '--text-muted', textSubtle: '--text-subtle', textSub: '--text-sub', textSub2: '--text-sub2',
-  textMain: '--text-main', accentCursor: '--accent-cursor',
+  textMain: '--text-main', accent: '--accent', accentCursor: '--accent-cursor',
   accentBlue: '--accent-blue', accentGreen: '--accent-green', accentRed: '--accent-red',
   accentYellow: '--accent-yellow',
 };
@@ -382,6 +389,7 @@ export function applyCustomCssVars(colors: CustomThemeColors): void {
   for (const [key, varName] of Object.entries(CSS_VAR_MAP)) {
     root.style.setProperty(varName, full[key as keyof FullCssPalette]);
   }
+  root.style.setProperty('--accent-rgb', hexToRgbString(full.accent));
   root.style.setProperty('--accent-blue-rgb', hexToRgbString(full.accentBlue));
   root.style.setProperty('--bg-surface-rgb', hexToRgbString(full.bgSurface));
   root.style.setProperty('--bg-base-rgb', hexToRgbString(full.bgBase));
@@ -393,6 +401,7 @@ export function clearCustomCssVars(): void {
   for (const varName of Object.values(CSS_VAR_MAP)) {
     root.style.removeProperty(varName);
   }
+  root.style.removeProperty('--accent-rgb');
   root.style.removeProperty('--accent-blue-rgb');
   root.style.removeProperty('--bg-surface-rgb');
   root.style.removeProperty('--bg-base-rgb');
