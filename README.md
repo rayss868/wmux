@@ -50,6 +50,18 @@ winget install openwong2kim.wmux
 
 ## 📸 See it in action
 
+<!-- ⭐ HERO SLOT — the animated English 4-agent orchestration clip (Claude×2 · Codex · OpenCode, role-based delegation) drops in here once re-recorded in English; promote to the top hero when ready. -->
+
+<p align="center">
+<img alt="Four agent CLIs — two Claude Code, an OpenAI Codex, and an OpenCode agent — split and orchestrated in one window" src="docs/four-models.png" width="900" />
+<br><sub><b>Four agents, four models, one window.</b> Two Claude Code panes, an OpenAI Codex, and an OpenCode agent — split into a grid and orchestrated <b>by role</b> from the side dock.</sub>
+</p>
+
+<p align="center">
+<img alt="The orchestrator spawns a Claude agent and tasks it to survey a repo" src="docs/orchestrate-subagent.gif" width="820" />
+<br><sub><b>Orchestrate real agents, not just chat.</b> The orchestrator spins up a worker, points a Claude agent at a repo to survey it, and drives the fleet toward the goal.</sub>
+</p>
+
 <table>
 <tr>
 <td width="50%" valign="top">
@@ -67,8 +79,8 @@ winget install openwong2kim.wmux
 <br><sub><b>Ask about a hunk.</b> From any diff hunk, ask the orchestrator with the repo, file, and code fenced into the message — question and evidence together.</sub>
 </td>
 <td width="50%" valign="top">
-<img alt="Loop setup modal with a skill picker autocompleting from .claude skills" src="docs/loop-modal.png" />
-<br><sub><b>One-click loops.</b> Give the orchestrator an objective and per-iteration <b>steps</b> — type <code>/</code> to pick from your <code>.claude</code> skills — and it keeps working toward it across restarts.</sub>
+<img alt="One-click loop running — the orchestrator iterating toward an objective" src="docs/loop-demo.gif" />
+<br><sub><b>One-click loops.</b> Point the orchestrator at an objective — with optional per-iteration <b>steps</b> from your <code>.claude</code> skills — and it keeps working, iteration by iteration, event-woken by your agents and surviving restarts.</sub>
 </td>
 </tr>
 <tr>
