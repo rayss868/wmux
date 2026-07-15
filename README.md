@@ -4,7 +4,7 @@
 
 ### The agent fleet that survives a reboot.
 
-Fan out one prompt into **N isolated agents** — each in its own git worktree — review their work **hunk by hunk**, and walk away: after a quit, crash, or **full OS reboot**, your agents come back mid-conversation. A native Windows terminal for **Claude Code**, **Codex CLI**, and **Gemini CLI**, with **verified sender identity**, **human approval gates**, and a real browser agents can drive.
+Fan out one prompt into **N isolated agents** in separate git worktrees, review their diffs **hunk by hunk**, and walk away — after a crash or **full OS reboot**, they come back mid-conversation. Native Windows, for **Claude Code · Codex · Gemini**, with approval gates and a real browser your agents can drive.
 
 <img width="924" alt="wmux" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
 
@@ -16,7 +16,7 @@ Fan out one prompt into **N isolated agents** — each in its own git worktree �
 
 </div>
 
-> **Windows has no native tmux.** Without WSL there was no clean way to run several AI coding agents at once. wmux is a native Windows multiplexer + browser automation + MCP server, purpose-built so your agents **read the terminal, drive a real browser, and run in parallel — all in one window.**
+> **Windows has no native tmux.** wmux is the native fix — a terminal multiplexer + browser automation + MCP server that runs your agents **in parallel, in one window.**
 
 ---
 
