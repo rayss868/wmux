@@ -306,10 +306,12 @@ describe('ChannelItemView', () => {
     expect(html).toContain('@');
   });
 
-  it('leaves a plain unread badge unmarked (blue, no @)', () => {
+  it('leaves a plain unread badge unmarked (warm accent, no @)', () => {
     const html = renderItem({ id: 'ch-1', name: 'general', isActive: false, unreadCount: 3, mentioned: false });
     expect(html).not.toContain('data-channel-mention');
-    expect(html).toContain('var(--accent-blue)');
+    // Unread badges are warm accent per the color grammar (accent = unread /
+    // alive / action); the red @ badge stays the mention rendition.
+    expect(html).toContain('bg-[var(--accent)]');
   });
 });
 

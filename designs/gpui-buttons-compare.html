@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wmux 버튼 — 현재 vs gpui-style</title>
+<style>
+  :root {
+    --bg-base: #151517;
+    --bg-mantle: #19191C;
+    --bg-surface: #202024;
+    --bg-overlay: #28282D;
+    --text-muted: #66645F;
+    --text-subtle: #85827B;
+    --text-sub: #A5A29C;
+    --text-sub2: #CAC8C4;
+    --text-main: #EFEEEC;
+    --accent: #E8A33D;
+    --green: #8FBF7F;
+    --red: #D96C6C;
+    --hairline: rgba(255,255,255,.06);
+    --font-ui: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --font-mono: 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: var(--bg-base); color: var(--text-main); font-family: var(--font-ui); }
+  body { padding: 40px clamp(20px, 5vw, 64px) 96px; -webkit-font-smoothing: antialiased; }
+  body.surface-mantle { background: var(--bg-mantle); }
+  body.surface-surface { background: var(--bg-surface); }
+
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  /* ── header ─────────────────────────────────────────── */
+  header { margin-bottom: 40px; }
+  .eyebrow { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
+  h1 { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin: 8px 0 10px; }
+  h1 .amber { color: var(--accent); }
+  .lede { font-size: 13px; line-height: 1.6; color: var(--text-sub); max-width: 62ch; }
+  .lede code { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-sub2); background: rgba(255,255,255,.05); padding: 1px 5px; border-radius: 4px; }
+
+  .toolbar-top { display: flex; align-items: center; gap: 10px; margin-top: 22px; }
+  .toolbar-top .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--text-muted); font-weight: 600; }
+  .seg { display: inline-flex; background: var(--bg-mantle); border: 1px solid rgba(255,255,255,.07); border-radius: 7px; padding: 2px; gap: 2px; }
+  body.surface-mantle .seg { background: var(--bg-base); }
+  .seg button { font: inherit; font-size: 11px; color: var(--text-sub); background: transparent; border: 0; padding: 4px 11px; border-radius: 5px; cursor: pointer; transition: color 120ms ease; }
+  .seg button.on { background: var(--bg-surface); color: var(--text-main); box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 1px 2px rgba(0,0,0,.3); }
+  body.surface-surface .seg button.on { background: var(--bg-overlay); }
+
+  /* ── comparison grid ────────────────────────────────── */
+  .row { display: grid; grid-template-columns: 200px 1fr 1fr; gap: 0; border-top: 1px solid var(--hairline); }
+  .row:last-of-type { border-bottom: 1px solid var(--hairline); }
+  .rowhead { padding: 24px 24px 24px 0; }
+  .rowhead .name { font-size: 13px; font-weight: 600; color: var(--text-main); }
+  .rowhead .desc { font-size: 11.5px; line-height: 1.55; color: var(--text-muted); margin-top: 6px; }
+  .cell { padding: 24px; display: flex; flex-direction: column; gap: 14px; align-items: flex-start; justify-content: center; }
+  .cell.before { background: linear-gradient(0deg, rgba(217,108,108,.025), rgba(217,108,108,.025)); }
+  .cell.after  { background: linear-gradient(0deg, rgba(143,191,127,.028), rgba(143,191,127,.028)); border-left: 1px solid var(--hairline); }
+  .celltag { font-size: 9.5px; text-transform: uppercase; letter-spacing: .1em; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .cell.before .celltag { color: var(--text-muted); }
+  .cell.after  .celltag { color: var(--green); }
+  .celltag .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .btnrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .note { font-size: 10.5px; line-height: 1.5; color: var(--text-subtle); font-family: var(--font-mono); }
+
+  /* base reset for every demo button */
+  .btn { font-family: var(--font-ui); cursor: pointer; user-select: none; -webkit-appearance: none; appearance: none; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ═══ BEFORE — faithful reproductions of current classes ═══ */
+  .b-primary { padding: 4px 12px; border-radius: 4px; font-size: 11px; background: var(--accent); color: #fff; border: 0; }
+  .b-primary2 { padding: 4px 12px; border-radius: 4px; font-size: 11px; background: var(--accent); color: var(--bg-base); border: 0; }
+  .b-secondary { padding: 4px 12px; border-radius: 4px; font-size: 11px; background: transparent; border: 1px solid var(--bg-overlay); color: var(--text-sub); transition: color 120ms ease; }
+  .b-secondary:hover { color: var(--text-main); }
+  .b-ghost { padding: 4px 10px; border-radius: 4px; font-size: 11px; background: transparent; border: 1px solid transparent; color: var(--text-sub); transition: color 120ms ease; }
+  .b-ghost:hover { color: var(--text-main); }
+  .b-toggle-wrap { display: inline-flex; gap: 6px; }
+  .b-toggle { padding: 2px 8px; border-radius: 4px; font-size: 10px; background: var(--bg-base); border: 1px solid var(--bg-mantle); color: var(--text-sub); transition: color 120ms ease; }
+  body.surface-surface .b-toggle { background: var(--bg-mantle); }
+  .b-toggle:hover { color: var(--text-main); }
+  .b-toggle.on { background: var(--bg-surface); color: var(--text-main); }
+  .b-danger { padding: 4px 10px; border-radius: 4px; font-size: 11px; background: transparent; border: 0; color: var(--text-subtle); transition: color 120ms ease; }
+  .b-danger:hover { color: var(--red); }
+  .b-icon { width: 26px; height: 26px; justify-content: center; border-radius: 4px; background: transparent; border: 1px solid transparent; color: var(--text-sub); transition: color 120ms ease; }
+  .b-icon:hover { color: var(--text-main); }
+
+  /* ═══ AFTER — gpui / Zed refined ═══ */
+  .g-primary { padding: 5px 13px; border-radius: 5px; font-size: 11px; font-weight: 600; border: 0;
+    background: var(--accent); color: #1c1305;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 1px 2px rgba(0,0,0,.35), 0 0 0 .5px rgba(0,0,0,.25);
+    transition: background 120ms ease, box-shadow 120ms ease, transform 60ms ease; }
+  .g-primary:hover { background: color-mix(in srgb, var(--accent) 91%, #fff); box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 2px 7px rgba(0,0,0,.42), 0 0 0 .5px rgba(0,0,0,.25); }
+  .g-primary:active { background: color-mix(in srgb, var(--accent) 94%, #000); box-shadow: inset 0 1px 2px rgba(0,0,0,.3); transform: translateY(.5px); }
+
+  .g-secondary { padding: 5px 13px; border-radius: 5px; font-size: 11px; font-weight: 500;
+    background: color-mix(in srgb, var(--bg-surface) 72%, transparent); color: var(--text-sub2);
+    border: 1px solid rgba(255,255,255,.09);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.045);
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease, transform 60ms ease; }
+  .g-secondary:hover { background: var(--bg-surface); border-color: rgba(255,255,255,.15); color: var(--text-main); box-shadow: inset 0 1px 0 rgba(255,255,255,.075), 0 1px 3px rgba(0,0,0,.28); }
+  .g-secondary:active { background: var(--bg-mantle); box-shadow: inset 0 1px 2px rgba(0,0,0,.32); transform: translateY(.5px); }
+
+  .g-ghost { padding: 5px 11px; border-radius: 5px; font-size: 11px; font-weight: 500;
+    background: transparent; color: var(--text-sub); border: 1px solid transparent;
+    transition: background 120ms ease, color 120ms ease, transform 60ms ease; }
+  .g-ghost:hover { background: color-mix(in srgb, var(--bg-surface) 65%, transparent); color: var(--text-main); }
+  .g-ghost:active { background: color-mix(in srgb, var(--bg-mantle) 90%, transparent); transform: translateY(.5px); }
+
+  .g-toggle-wrap { display: inline-flex; background: var(--bg-mantle); border: 1px solid rgba(255,255,255,.07); border-radius: 7px; padding: 2px; gap: 2px; }
+  body.surface-mantle .g-toggle-wrap { background: var(--bg-base); }
+  .g-toggle { padding: 3px 11px; border-radius: 5px; font-size: 10.5px; font-weight: 500; background: transparent; border: 0; color: var(--text-sub); transition: color 120ms ease; }
+  .g-toggle:hover:not(.on) { color: var(--text-sub2); }
+  .g-toggle.on { background: var(--bg-surface); color: var(--text-main); box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 1px 2px rgba(0,0,0,.3); }
+  body.surface-surface .g-toggle.on { background: var(--bg-overlay); }
+
+  .g-danger { padding: 5px 12px; border-radius: 5px; font-size: 11px; font-weight: 500;
+    background: color-mix(in srgb, var(--red) 15%, transparent); color: #e59a9a;
+    border: 1px solid color-mix(in srgb, var(--red) 32%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 60ms ease; }
+  .g-danger:hover { background: color-mix(in srgb, var(--red) 26%, transparent); border-color: color-mix(in srgb, var(--red) 52%, transparent); color: #f2adad; }
+  .g-danger:active { transform: translateY(.5px); }
+  .g-danger-solid { padding: 5px 12px; border-radius: 5px; font-size: 11px; font-weight: 600; border: 0;
+    background: var(--red); color: #1a0d0d;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 1px 2px rgba(0,0,0,.35);
+    transition: background 120ms ease, box-shadow 120ms ease, transform 60ms ease; }
+  .g-danger-solid:hover { background: color-mix(in srgb, var(--red) 90%, #fff); }
+  .g-danger-solid:active { transform: translateY(.5px); box-shadow: inset 0 1px 2px rgba(0,0,0,.3); }
+
+  .g-icon { width: 28px; height: 28px; justify-content: center; border-radius: 6px; background: transparent; color: var(--text-sub); border: 1px solid transparent; transition: background 120ms ease, color 120ms ease; }
+  .g-icon:hover { background: color-mix(in srgb, var(--bg-surface) 65%, transparent); color: var(--text-main); }
+  .g-icon.sel { background: var(--bg-surface); color: var(--accent); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); border-color: rgba(255,255,255,.08); }
+
+  svg { display: block; }
+
+  /* ── in-context section ─────────────────────────────── */
+  .section-label { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--text-muted); font-weight: 600; margin: 56px 0 16px; }
+  .context-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .mock { border: 1px solid var(--hairline); border-radius: 8px; overflow: hidden; background: var(--bg-mantle); }
+  body.surface-mantle .mock { background: var(--bg-base); }
+  .mock .caption { font-size: 9.5px; text-transform: uppercase; letter-spacing: .1em; font-weight: 600; padding: 9px 14px; border-bottom: 1px solid var(--hairline); }
+  .mock.before .caption { color: var(--text-muted); }
+  .mock.after .caption { color: var(--green); }
+
+  /* mock dialog */
+  .dlg { padding: 16px; }
+  .dlg .title { font-size: 13px; font-weight: 600; }
+  .dlg .body { font-size: 12px; color: var(--text-sub); line-height: 1.55; margin: 8px 0 18px; }
+  .dlg .footer { display: flex; justify-content: flex-end; gap: 10px; }
+
+  /* mock toolbar */
+  .tb { display: flex; align-items: center; gap: 4px; padding: 8px 10px; }
+  .tb .spacer { flex: 1; }
+  .tb-divider { width: 1px; height: 16px; background: var(--hairline); margin: 0 4px; }
+
+  footer.recipe { margin-top: 64px; border-top: 1px solid var(--hairline); padding-top: 28px; }
+  .recipe h3 { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .recipe p { font-size: 12px; color: var(--text-sub); line-height: 1.6; max-width: 70ch; margin-bottom: 16px; }
+  pre { background: var(--bg-mantle); border: 1px solid var(--hairline); border-radius: 8px; padding: 16px 18px; overflow-x: auto; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.65; color: var(--text-sub2); }
+  body.surface-mantle pre { background: var(--bg-base); }
+  pre .c { color: var(--text-muted); }
+  pre .k { color: var(--accent); }
+  .legend { display: flex; gap: 20px; margin-top: 18px; flex-wrap: wrap; }
+  .legend span { font-size: 11px; color: var(--text-subtle); display: inline-flex; align-items: center; gap: 7px; }
+  .legend b { color: var(--text-sub2); font-weight: 600; }
+
+  @media (max-width: 780px) {
+    .row { grid-template-columns: 1fr; }
+    .rowhead { padding-bottom: 4px; }
+    .cell.after { border-left: 0; border-top: 1px solid var(--hairline); }
+    .context-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">wmux · design exploration</div>
+    <h1>버튼 리디자인 — 현재 vs <span class="amber">gpui-style</span></h1>
+    <p class="lede">
+      "gpui-style"는 <b style="color:var(--text-sub2);font-weight:500">Rust 프레임워크가 아니라 Zed 앱의 룩앤필</b>이에요 — 전부 CSS로 재현됩니다.
+      DESIGN.md가 이미 <code>Zed · quiet chrome</code> 계보를 명시했으니, 이건 노선 변경이 아니라 <b style="color:var(--text-sub2);font-weight:500">플랫을 "미완성"이 아닌 "의도된 미니멀"로 마감하는 것</b>.
+      핵심 재료는 그림자·글로우가 아니라 <b style="color:var(--text-sub2);font-weight:500">미세한 surface lift + 상단 1px inset 하이라이트</b>(이미 <code>sidebar-row-active</code>가 쓰는 트릭). 아래 버튼에 <b style="color:var(--text-sub2);font-weight:500">hover·click</b> 해보세요.
+    </p>
+
+    <div class="toolbar-top">
+      <span class="lbl">표면</span>
+      <div class="seg" id="surface-seg">
+        <button data-s="base" class="on">bg-base</button>
+        <button data-s="mantle">bg-mantle</button>
+        <button data-s="surface">bg-surface</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── PRIMARY ─────────────────────────────────────── -->
+  <div class="row">
+    <div class="rowhead">
+      <div class="name">Primary (accent)</div>
+      <div class="desc">확정·생성 액션. 화면당 보통 1개.</div>
+    </div>
+    <div class="cell before">
+      <div class="celltag"><span class="dot"></span>현재</div>
+      <div class="btnrow">
+        <button class="btn b-primary">Send</button>
+        <button class="btn b-primary2">Create</button>
+      </div>
+      <div class="note">flat 채움 · 반경 4px · <b style="color:var(--red)">text 색 제각각</b>(#fff vs bg-base) · hover 없음</div>
+    </div>
+    <div class="cell after">
+      <div class="celltag"><span class="dot"></span>gpui-style</div>
+      <div class="btnrow">
+        <button class="btn g-primary">Send</button>
+        <button class="btn g-primary">Create workspace</button>
+      </div>
+      <div class="note">상단 inset 하이라이트 + 1px 리프트 그림자 · 어두운 텍스트 통일 · hover 밝아짐 · active 눌림</div>
+    </div>
+  </div>
+
+  <!-- ── SECONDARY ───────────────────────────────────── -->
+  <div class="row">
+    <div class="rowhead">
+      <div class="name">Secondary</div>
+      <div class="desc">일꾼 버튼. 취소·보조 액션. 가장 흔함 → 여기가 인상을 좌우.</div>
+    </div>
+    <div class="cell before">
+      <div class="celltag"><span class="dot"></span>현재</div>
+      <div class="btnrow">
+        <button class="btn b-secondary">Cancel</button>
+        <button class="btn b-secondary">Attach</button>
+      </div>
+      <div class="note">투명 배경 + 딱딱한 bg-overlay 보더 · 텍스트만 hover · "빈 상자"로 읽힘</div>
+    </div>
+    <div class="cell after">
+      <div class="celltag"><span class="dot"></span>gpui-style</div>
+      <div class="btnrow">
+        <button class="btn g-secondary">Cancel</button>
+        <button class="btn g-secondary">Attach</button>
+      </div>
+      <div class="note">은은한 surface fill + 헤어라인 보더 + 상단 하이라이트 · hover에 fill·보더 강해짐 · active 눌림</div>
+    </div>
+  </div>
+
+  <!-- ── GHOST / TOOLBAR ─────────────────────────────── -->
+  <div class="row">
+    <div class="rowhead">
+      <div class="name">Ghost (toolbar)</div>
+      <div class="desc">평상시 boxless, hover에만 등장. DESIGN.md의 "text-first" 계약 유지.</div>
+    </div>
+    <div class="cell before">
+      <div class="celltag"><span class="dot"></span>현재</div>
+      <div class="btnrow">
+        <button class="btn b-ghost">⌥ Fan out</button>
+        <button class="btn b-ghost">Broadcast</button>
+      </div>
+      <div class="note">hover에 텍스트 색만 변함 · 클릭 타깃이 어디까지인지 안 보임</div>
+    </div>
+    <div class="cell after">
+      <div class="celltag"><span class="dot"></span>gpui-style</div>
+      <div class="btnrow">
+        <button class="btn g-ghost">⌥ Fan out</button>
+        <button class="btn g-ghost">Broadcast</button>
+      </div>
+      <div class="note">rest는 여전히 boxless · hover에 "떠오르는 칩"(soft fill)으로 클릭면적 명확</div>
+    </div>
+  </div>
+
+  <!-- ── SEGMENTED TOGGLE ────────────────────────────── -->
+  <div class="row">
+    <div class="rowhead">
+      <div class="name">Segmented</div>
+      <div class="desc">Diff/Editor 뷰 토글 등. 상호배타 선택.</div>
+    </div>
+    <div class="cell before">
+      <div class="celltag"><span class="dot"></span>현재</div>
+      <div class="btnrow">
+        <div class="b-toggle-wrap" data-group="b">
+          <button class="btn b-toggle on">Split</button>
+          <button class="btn b-toggle">Unified</button>
+        </div>
+      </div>
+      <div class="note">떨어진 낱개 보더 버튼 2개 · 그룹으로 안 읽힘</div>
+    </div>
+    <div class="cell after">
+      <div class="celltag"><span class="dot"></span>gpui-style</div>
+      <div class="btnrow">
+        <div class="g-toggle-wrap" data-group="g">
+          <button class="btn g-toggle on">Split</button>
+          <button class="btn g-toggle">Unified</button>
+        </div>
+      </div>
+      <div class="note">하나의 트랙 안에 떠 있는 활성 세그먼트(inset 하이라이트) · iOS/Zed 컨트롤 감성</div>
+    </div>
+  </div>
+
+  <!-- ── DANGER ──────────────────────────────────────── -->
+  <div class="row">
+    <div class="rowhead">
+      <div class="name">Destructive</div>
+      <div class="desc">삭제·kill. DESIGN.md danger 문법(빨강)만 사용.</div>
+    </div>
+    <div class="cell before">
+      <div class="celltag"><span class="dot"></span>현재</div>
+      <div class="btnrow">
+        <button class="btn b-danger">Delete</button>
+      </div>
+      <div class="note">그냥 텍스트 · hover에만 빨강 · 파괴적 행동인데 무게감 0</div>
+    </div>
+    <div class="cell after">
+      <div class="celltag"><span class="dot"></span>gpui-style</div>
+      <div class="btnrow">
+        <button class="btn g-danger">Delete</button>
+        <button class="btn g-danger-solid">Delete pane</button>
+      </div>
+      <div class="note">tinted(반투명 빨강) = 위험하지만 조용 · solid = 최종 확정 · 상황별 2단</div>
+    </div>
+  </div>
+
+  <!-- ── ICON ────────────────────────────────────────── -->
+  <div class="row">
+    <div class="rowhead">
+      <div class="name">Icon</div>
+      <div class="desc">pane 최대화·닫기 등 정사각 아이콘 버튼.</div>
+    </div>
+    <div class="cell before">
+      <div class="celltag"><span class="dot"></span>현재</div>
+      <div class="btnrow">
+        <button class="btn b-icon" aria-label="maximize">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/></svg>
+        </button>
+        <button class="btn b-icon" aria-label="close">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="note">투명 · hover에 색만 · 타깃 경계 불명확</div>
+    </div>
+    <div class="cell after">
+      <div class="celltag"><span class="dot"></span>gpui-style</div>
+      <div class="btnrow">
+        <button class="btn g-icon" aria-label="maximize">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/></svg>
+        </button>
+        <button class="btn g-icon sel" aria-label="split">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="M8 2.5v11"/></svg>
+        </button>
+        <button class="btn g-icon" aria-label="close">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div class="note">hover 칩 + 선택 상태(accent+surface)를 아이콘에도 · 가운데=selected 예시</div>
+    </div>
+  </div>
+
+  <!-- ── IN CONTEXT ──────────────────────────────────── -->
+  <div class="section-label">실제 맥락에서</div>
+  <div class="context-grid">
+    <div class="mock before">
+      <div class="caption">현재 — 다이얼로그 푸터</div>
+      <div class="dlg">
+        <div class="title">Create workspace</div>
+        <div class="body">새 워크스페이스를 만들고 첫 터미널을 엽니다.</div>
+        <div class="footer">
+          <button class="btn b-secondary">Cancel</button>
+          <button class="btn b-primary">Create</button>
+        </div>
+      </div>
+    </div>
+    <div class="mock after">
+      <div class="caption">gpui-style — 다이얼로그 푸터</div>
+      <div class="dlg">
+        <div class="title">Create workspace</div>
+        <div class="body">새 워크스페이스를 만들고 첫 터미널을 엽니다.</div>
+        <div class="footer">
+          <button class="btn g-secondary">Cancel</button>
+          <button class="btn g-primary">Create workspace</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="mock before">
+      <div class="caption">현재 — 에이전트 툴바</div>
+      <div class="tb">
+        <button class="btn b-ghost">Fan out</button>
+        <button class="btn b-ghost">Broadcast</button>
+        <button class="btn b-ghost">Snippets</button>
+        <span class="spacer"></span>
+        <button class="btn b-icon" aria-label="files"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4.5h5l1.5 2h4.5v6.5h-11z"/></svg></button>
+      </div>
+    </div>
+    <div class="mock after">
+      <div class="caption">gpui-style — 에이전트 툴바</div>
+      <div class="tb">
+        <button class="btn g-ghost">Fan out</button>
+        <button class="btn g-ghost">Broadcast</button>
+        <button class="btn g-ghost">Snippets</button>
+        <span class="tb-divider"></span>
+        <span class="spacer"></span>
+        <button class="btn g-icon" aria-label="files"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4.5h5l1.5 2h4.5v6.5h-11z"/></svg></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── RECIPE ──────────────────────────────────────── -->
+  <footer class="recipe">
+    <h3>구현은 "레시피 1개"면 대부분 풀려요</h3>
+    <p>
+      전부 새 CSS가 아니라, 산재한 ad-hoc Tailwind 버튼을 <b style="color:var(--text-sub2);font-weight:500">공유 <code>&lt;Button variant&gt;</code> + 토큰</b>으로 모으는 일입니다.
+      핵심은 secondary의 이 4줄 — DESIGN.md의 "elevation 3레벨" 안에 있고(글로우 아님), color-mix라 8개 테마 전부 자동 대응돼요.
+    </p>
+    <pre><span class="c">/* gpui-style secondary — 나머지 variant는 이걸 변주 */</span>
+<span class="k">background</span>: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+<span class="k">border</span>: 1px solid rgba(255,255,255,.09);
+<span class="k">box-shadow</span>: inset 0 1px 0 rgba(255,255,255,.045);   <span class="c">/* ← 상단 하이라이트 = "깎아만든" 느낌 */</span>
+<span class="k">border-radius</span>: 5px;                                   <span class="c">/* DESIGN.md 4px → 5px 소폭 완화 제안 */</span></pre>
+    <div class="legend">
+      <span><b>바뀌는 것</b> · box-shadow inset 하이라이트, surface fill, 반경 4→5px, active 눌림</span>
+      <span><b>안 바뀌는 것</b> · amber 다이어트(5±2), 그라디언트 금지, hairline, terminal 히어로</span>
+    </div>
+    <p style="margin-top:18px;color:var(--text-muted);font-size:11px;">
+      DESIGN.md 변경 필요 항목: 버튼 반경 <code>4px → 5px</code>, Component Rules에 "buttons: surface-lift + top inset-highlight" 1줄 추가. 오너 승인 대상.
+    </p>
+  </footer>
+
+</div>
+
+<script>
+  // surface toggle
+  const seg = document.getElementById('surface-seg');
+  seg.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    document.body.className = b.dataset.s === 'base' ? '' : 'surface-' + b.dataset.s;
+  });
+  // segmented demo groups
+  document.querySelectorAll('[data-group]').forEach(group => {
+    group.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      group.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+    });
+  });
+</script>
+</body>
+</html>

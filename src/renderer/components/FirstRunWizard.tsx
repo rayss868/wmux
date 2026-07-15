@@ -616,7 +616,7 @@ export function ClaudeStatusBlock({
             data-testid="first-run-wizard-register"
             className="px-3 py-1 rounded text-xs font-medium"
             style={{
-              backgroundColor: 'var(--accent-blue)',
+              backgroundColor: 'var(--accent)',
               color: 'var(--bg-base)',
               border: 'none',
               cursor: registering ? 'wait' : 'pointer',
@@ -702,7 +702,7 @@ export function SampleTaskBlock({
           data-testid="first-run-wizard-fallback-continue"
           className="self-start px-3 py-1 rounded text-xs font-medium"
           style={{
-            backgroundColor: 'var(--accent-blue)',
+            backgroundColor: 'var(--accent)',
             color: 'var(--bg-base)',
             border: 'none',
             cursor: 'pointer',
@@ -749,7 +749,7 @@ export function SampleTaskBlock({
         data-testid="first-run-wizard-try"
         className="self-start px-3 py-1 rounded text-xs font-medium"
         style={{
-          backgroundColor: enabled ? 'var(--accent-blue)' : 'var(--bg-overlay)',
+          backgroundColor: enabled ? 'var(--accent)' : 'var(--bg-overlay)',
           color: enabled ? 'var(--bg-base)' : 'var(--text-subtle)',
           border: 'none',
           cursor: enabled ? 'pointer' : 'not-allowed',

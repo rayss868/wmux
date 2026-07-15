@@ -12,6 +12,8 @@ import { generateId } from '../../../shared/types';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../shared/workTask';
 import { useT } from '../../hooks/useT';
 import { t } from '../../i18n';
+import Button from '../ui/Button';
+import Input from '../ui/Input';
 
 /** title 자동 파생: "{프롬프트 앞 24자} #k"(§7 G6). */
 function deriveTitle(prompt: string, k: number): string {
@@ -130,16 +132,15 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
     }
   }, [submitting, prompt, promptOverCap, repoPath, titles, n, agentCmd, activeWorkspace, pushToast, t]);
 
-  const field = 'w-full px-2 py-1 rounded border border-[var(--bg-overlay)] bg-[var(--bg-surface)] text-[12px] text-[var(--text-main)]';
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';
 
   return (
-    <div className="absolute bottom-full mb-2 left-2 z-50 w-[420px] max-h-[70vh] overflow-y-auto rounded-lg border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl" data-testid="fanout-dialog">
+    <div className="absolute bottom-full mb-2 left-2 z-50 w-[420px] max-h-[70vh] overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl" data-testid="fanout-dialog">
       <div className="text-[12px] font-semibold text-[var(--text-main)] mb-2">{t('fanout.title')}</div>
 
       <label className={label}>{t('fanout.promptLabel')}</label>
       <textarea
-        className={`${field} h-24 resize-none font-mono`}
+        className="ui-input h-24 resize-none font-mono text-[12px]"
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
         placeholder={t('fanout.promptPlaceholder')}
@@ -164,8 +165,8 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
       <div className="space-y-1 mb-2">
         {Array.from({ length: n }, (_, k) => (
           <div key={k} className="flex items-center gap-2">
-            <input
-              className={`${field} flex-1`}
+            <Input
+              className="flex-1 text-[12px]"
               value={titles[k] ?? ''}
               onChange={(e) => setTitleAt(k, e.target.value)}
               data-testid={`fanout-title-${k}`}
@@ -178,23 +179,23 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
       </div>
 
       <label className={label}>{t('fanout.repoLabel')}</label>
-      <input className={`${field} mb-2 font-mono`} value={repoPath} onChange={(e) => setRepoPath(e.target.value)} data-testid="fanout-repo" />
+      <Input className="mb-2 font-mono text-[12px]" value={repoPath} onChange={(e) => setRepoPath(e.target.value)} data-testid="fanout-repo" />
 
       <label className={label}>{t('fanout.agentLabel')}</label>
-      <input className={`${field} mb-3 font-mono`} value={agentCmd} onChange={(e) => setAgentCmd(e.target.value)} data-testid="fanout-agent" />
+      <Input className="mb-3 font-mono text-[12px]" value={agentCmd} onChange={(e) => setAgentCmd(e.target.value)} data-testid="fanout-agent" />
 
       <div className="flex items-center justify-end gap-2">
-        <button className="px-3 py-1 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)]" onClick={onClose}>
+        <Button variant="secondary" onClick={onClose}>
           {t('fanout.cancel')}
-        </button>
-        <button
-          className="px-3 py-1 rounded text-[11px] bg-[var(--accent-blue)] text-white disabled:opacity-40"
+        </Button>
+        <Button
+          variant="primary"
           disabled={submitting || promptOverCap}
           onClick={handleSubmit}
           data-testid="fanout-submit"
         >
           {submitting ? t('fanout.spawning') : t('fanout.spawn', { n })}
-        </button>
+        </Button>
       </div>
     </div>
   );

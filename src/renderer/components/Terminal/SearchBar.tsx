@@ -3,6 +3,7 @@ import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import type { PaneSearchResult } from '../../../shared/types';
+import { FOCUS_RING } from '../focusRing';
 
 const MAX_HISTORY = 50;
 const searchHistory: string[] = [];
@@ -225,15 +226,10 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
       onClick={(e) => e.stopPropagation()}
       style={{ minWidth: '320px' }}
     >
-      {/* Bar row */}
-      <div
-        className="flex items-center gap-1 px-2 py-1.5 rounded-b-md shadow-lg"
-        style={{
-          background: 'var(--bg-surface)',
-          border: '1px solid var(--bg-overlay)',
-          borderTop: 'none',
-        }}
-      >
+      {/* Bar row — recessed field attached to the pane's top chrome. The
+          accent-blue focus-within ring lives on .ui-search-bar; the input's own
+          red border (invalid regex) still shows inside it. */}
+      <div className="ui-search-bar flex items-center gap-1 px-2 py-1.5 rounded-b-md">
         {/* Search icon */}
         <svg
           width="13"
@@ -266,30 +262,22 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
           spellCheck={false}
         />
 
-        {/* All Panes toggle */}
+        {/* All Panes toggle — tinted-active pill (not a solid accent fill). */}
         <button
           onClick={toggleAllPanes}
           title={t('search.allPanes')}
           aria-pressed={allPanes}
-          className="flex items-center justify-center h-5 px-1.5 rounded transition-colors shrink-0"
-          style={{
-            background: allPanes ? 'var(--accent-cursor)' : 'transparent',
-            color: allPanes ? 'var(--bg-base)' : 'var(--text-sub2)',
-          }}
+          className={`ui-toggle ${allPanes ? 'ui-toggle-on' : ''} ${FOCUS_RING} h-5 px-1.5 shrink-0`}
         >
           <span className="text-[10px] font-bold leading-none">{t('search.allPanes')}</span>
         </button>
 
-        {/* Regex toggle */}
+        {/* Regex toggle — tinted-active pill. */}
         <button
           onClick={toggleRegex}
           title={t('search.regexMode')}
           aria-pressed={useRegex}
-          className="flex items-center justify-center w-5 h-5 rounded transition-colors shrink-0"
-          style={{
-            background: useRegex ? 'var(--accent-yellow)' : 'transparent',
-            color: useRegex ? 'var(--bg-base)' : 'var(--text-sub2)',
-          }}
+          className={`ui-toggle ${useRegex ? 'ui-toggle-on' : ''} ${FOCUS_RING} w-5 h-5 shrink-0`}
         >
           <span className="text-[10px] font-bold leading-none">.*</span>
         </button>
@@ -304,7 +292,7 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
                 onFindPrevious(query, useRegex);
               }}
               title={t('search.prevTooltip')}
-              className="flex items-center justify-center w-5 h-5 rounded transition-colors hover:bg-[var(--bg-overlay)] text-[var(--text-sub2)] hover:text-[var(--text-main)] shrink-0"
+              className={`ui-icon-btn ${FOCUS_RING} w-5 h-5 shrink-0`}
             >
               <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                 <path d="M5 8L2 5l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -318,7 +306,7 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
                 onFindNext(query, useRegex);
               }}
               title={t('search.nextTooltip')}
-              className="flex items-center justify-center w-5 h-5 rounded transition-colors hover:bg-[var(--bg-overlay)] text-[var(--text-sub2)] hover:text-[var(--text-main)] shrink-0"
+              className={`ui-icon-btn ${FOCUS_RING} w-5 h-5 shrink-0`}
             >
               <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                 <path d="M2 2l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -332,7 +320,7 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
         <button
           onClick={onClose}
           title={t('search.closeTooltip')}
-          className="flex items-center justify-center w-5 h-5 rounded transition-colors hover:bg-[var(--bg-overlay)] text-[var(--text-subtle)] hover:text-[var(--accent-red)] shrink-0"
+          className={`ui-icon-btn ui-icon-btn-danger ${FOCUS_RING} w-5 h-5 shrink-0`}
         >
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
             <line x1="2" y1="2" x2="8" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />

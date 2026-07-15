@@ -57,7 +57,7 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
         parts.push(
           <span
             key={`${keyPrefix}l${match.index}`}
-            className="text-[var(--accent)] underline"
+            className="text-[var(--accent-blue)] underline"
             title={link[2]}
           >
             {link[1]}

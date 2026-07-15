@@ -217,7 +217,7 @@ export default function BrowserToolbar({
 
           {/* Loading indicator */}
           {isLoading && (
-            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-blue)] animate-pulse shrink-0" />
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse shrink-0" />
           )}
 
           <input

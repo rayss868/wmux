@@ -1182,8 +1182,7 @@ export default function AppLayout() {
                   window.electronAPI.settings.setAutoUpdateEnabled(false);
                   setShowAutoUpdatePrompt(false);
                 }}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)' }}
+                className="ui-btn ui-btn-secondary"
               >
                 {t('firstRun.disable')}
               </button>
@@ -1193,8 +1192,7 @@ export default function AppLayout() {
                   window.electronAPI.settings.setAutoUpdateEnabled(true);
                   setShowAutoUpdatePrompt(false);
                 }}
-                className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                style={{ backgroundColor: 'var(--accent-blue)', color: 'var(--bg-base)' }}
+                className="ui-btn ui-btn-primary"
               >
                 {t('firstRun.enable')}
               </button>

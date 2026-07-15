@@ -282,7 +282,7 @@ export function GitTab(): React.ReactElement {
                 <span
                   aria-hidden="true"
                   className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                    isCurrent(wt) ? 'bg-[var(--accent-blue)]' : 'bg-[var(--bg-overlay)]'
+                    isCurrent(wt) ? 'bg-[var(--accent)]' : 'bg-[var(--bg-overlay)]'
                   }`}
                   {...(isCurrent(wt) ? tokenAttrs('accent', 'bg') : {})}
                 />

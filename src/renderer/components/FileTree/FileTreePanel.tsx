@@ -175,7 +175,7 @@ function applyInlineFormatting(text: string): React.ReactNode[] {
       const linkMatch = m.match(/\[([^\]]+)\]\(([^)]+)\)/);
       if (linkMatch) {
         parts.push(
-          <span key={`l${match.index}`} className="text-[var(--accent)] underline cursor-pointer" title={linkMatch[2]}>
+          <span key={`l${match.index}`} className="text-[var(--accent-blue)] underline cursor-pointer" title={linkMatch[2]}>
             {linkMatch[1]}
           </span>,
         );

@@ -125,7 +125,7 @@ export function DeckLoopPanel({
             aria-hidden="true"
             data-deck-loop-live-dot
             className="inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle"
-            style={{ backgroundColor: 'var(--accent-blue)' }}
+            style={{ backgroundColor: 'var(--accent)' }}
           />
         )}
         {loop
@@ -198,8 +198,8 @@ export function DeckLoopPanel({
                     onClick={() => {
                       if (workspaceId) void resolvedApi.resume(workspaceId).then(() => refresh());
                     }}
-                    className={`px-2.5 py-1 rounded-[4px] text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
-                    {...tokenAttrs('textSub', 'text')}
+                    className={`px-2.5 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
+                    {...tokenAttrs('accent', 'bg')}
                   >
                     {t('deck.loopResume') || 'Resume'}
                   </button>
@@ -222,7 +222,7 @@ export function DeckLoopPanel({
                   onClick={() => {
                     if (workspaceId) void resolvedApi.stop(workspaceId).then(() => refresh());
                   }}
-                  className={`px-2.5 py-1 rounded-[4px] text-[12px] text-[var(--accent-red)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
+                  className={`px-2.5 py-1 rounded-[4px] text-[12px] border transition-colors bg-[color-mix(in_srgb,var(--accent-red)_15%,transparent)] border-[color-mix(in_srgb,var(--accent-red)_32%,transparent)] text-[color-mix(in_srgb,var(--accent-red)_70%,var(--text-main))] hover:bg-[color-mix(in_srgb,var(--accent-red)_22%,transparent)] ${FOCUS_RING}`}
                   {...tokenAttrs('danger', 'text')}
                 >
                   {t('deck.loopStop') || 'Stop loop'}

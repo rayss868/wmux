@@ -61,12 +61,15 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
   return (
     <div
       ref={menuRef}
-      className="fixed z-[var(--z-popover-top)] min-w-[160px] py-1 rounded-md shadow-xl"
+      className="fixed z-[var(--z-popover-top)] min-w-[168px] p-[5px]"
       style={{
         left: x,
         top: y,
         background: 'var(--bg-surface)',
-        border: '1px solid var(--bg-overlay)',
+        border: '1px solid color-mix(in srgb, var(--text-main) 9%, transparent)',
+        borderRadius: 8,
+        boxShadow:
+          '0 12px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 color-mix(in srgb, var(--text-main) 5%, transparent)',
       }}
       onClick={(e) => e.stopPropagation()}
     >
@@ -91,7 +94,10 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
       {linkUrl && (
         <>
           {hasSelection && (
-            <div className="my-1 mx-2 border-t" style={{ borderColor: 'var(--bg-overlay)' }} />
+            <div
+              className="my-1 mx-1 border-t"
+              style={{ borderColor: 'color-mix(in srgb, var(--text-main) 8%, transparent)' }}
+            />
           )}
           <MenuItem
             label={t('contextMenu.openLink')}
@@ -139,13 +145,13 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
 function MenuItem({ label, shortcut, onClick }: { label: string; shortcut?: string; onClick: () => void }) {
   return (
     <button
-      className="w-full flex items-center justify-between px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+      className="w-full flex items-center justify-between gap-4 px-2.5 py-1.5 text-xs text-left rounded-[5px] transition-colors hover:bg-[color-mix(in_srgb,var(--accent-blue)_14%,transparent)]"
       style={{ color: 'var(--text-main)' }}
       onClick={onClick}
     >
       <span>{label}</span>
       {shortcut && (
-        <span className="ml-4 text-[10px]" style={{ color: 'var(--text-subtle)' }}>
+        <span className="ml-4 text-[10px] font-mono tabular-nums" style={{ color: 'var(--text-subtle)' }}>
           {shortcut}
         </span>
       )}

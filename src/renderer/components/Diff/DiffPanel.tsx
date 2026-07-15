@@ -17,6 +17,15 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { buildDiffAskContext } from '../../../shared/diffAskContext';
 
+// gpui button recipes (theme-safe color-mix on tokens; primary/danger keep the
+// rgba sheen the DESIGN spec calls for). Reused across this panel's header.
+const BTN_RAISED =
+  'rounded-[5px] border transition-colors bg-[color-mix(in_srgb,var(--bg-surface)_72%,transparent)] border-[color-mix(in_srgb,var(--text-main)_10%,transparent)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--text-main)_6%,transparent)] hover:bg-[var(--bg-surface)] hover:border-[color-mix(in_srgb,var(--text-main)_16%,transparent)] hover:shadow-[0_1px_3px_rgba(0,0,0,0.25)]';
+const BTN_PRIMARY_WARM =
+  'rounded-[5px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors';
+const BTN_DANGER_TINTED =
+  'rounded-[5px] border transition-colors bg-[color-mix(in_srgb,var(--accent-red)_15%,transparent)] border-[color-mix(in_srgb,var(--accent-red)_32%,transparent)] text-[color-mix(in_srgb,var(--accent-red)_70%,var(--text-main))] hover:bg-[color-mix(in_srgb,var(--accent-red)_22%,transparent)]';
+
 /**
  * diff 대상 유니온 — 기존 태스크 워크트리(J2, hunk 채택·코멘트·PR 포함)와
  * 워크스페이스 repo(읽기 전용: git diff HEAD + untracked)를 한 컴포넌트가
@@ -669,7 +678,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         )}
         <div className="flex-1" />
         <button
-          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
+          className={`px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] ${BTN_RAISED}`}
           onClick={() => void load()}
         >
           Reload
@@ -677,7 +686,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         {/* 채택은 태스크 모드 전용 — 워크스페이스 모드는 repo 자신 대상이라 무의미(읽기 전용). */}
         {isTask && (
           <button
-            className="px-2 py-0.5 rounded text-[10px] bg-[var(--accent-blue,#3b82f6)] text-white disabled:opacity-40"
+            className={`px-2 py-0.5 text-[10px] ${BTN_PRIMARY_WARM} disabled:opacity-40`}
             onClick={() => void handleAdopt()}
             disabled={applying || selectedCount === 0}
             title={t('diff.adoptTitle')}
@@ -689,7 +698,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         {meta && meta.status !== 'closed' && (
           <>
             <button
-              className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)] disabled:opacity-40"
+              className={`px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] ${BTN_RAISED} disabled:opacity-40`}
               onClick={() => void handleCreatePr()}
               disabled={lifecycleBusy !== null}
               title={t('diff.prTitle')}
@@ -697,7 +706,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
               {lifecycleBusy === 'pr' ? t('diff.prBusy') : 'PR'}
             </button>
             <button
-              className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--accent-red,#f87171)] border border-[var(--bg-mantle)] disabled:opacity-40"
+              className={`px-2 py-0.5 text-[10px] ${BTN_DANGER_TINTED} disabled:opacity-40`}
               onClick={() => void handleClose()}
               disabled={lifecycleBusy !== null}
               title={t('diff.closeTitle')}

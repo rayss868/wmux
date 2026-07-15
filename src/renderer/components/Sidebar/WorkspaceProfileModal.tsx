@@ -3,6 +3,7 @@ import type { Workspace } from '../../../shared/types';
 import { isSecretLikeEnvKey, isValidEnvKey } from '../../../shared/workspaceProfile';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import Button from '../ui/Button';
 
 interface WorkspaceProfileModalProps {
   workspace: Workspace;
@@ -113,7 +114,7 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
       onMouseDown={onClose}
     >
       <div
-        className="w-[460px] max-h-[80vh] overflow-y-auto rounded-lg shadow-2xl"
+        className="w-[460px] max-h-[80vh] overflow-y-auto rounded-[7px] shadow-2xl"
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
         onMouseDown={(e) => e.stopPropagation()}
       >
@@ -137,11 +138,8 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
                 <div key={row.id}>
                   <div className="flex items-center gap-1.5">
                     <input
-                      className="flex-1 min-w-0 bg-[var(--bg-base)] text-[11px] font-mono px-2 py-1 rounded border outline-none"
-                      style={{
-                        color: 'var(--text-main)',
-                        borderColor: invalidIds.has(row.id) ? 'var(--accent-red)' : 'var(--text-muted)',
-                      }}
+                      className="ui-input flex-1 min-w-0 text-[11px] font-mono"
+                      style={invalidIds.has(row.id) ? { borderColor: 'var(--accent-red)' } : undefined}
                       placeholder={t('workspaceProfile.keyPlaceholder')}
                       value={row.key}
                       spellCheck={false}
@@ -151,8 +149,7 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
                     />
                     <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>=</span>
                     <input
-                      className="flex-1 min-w-0 bg-[var(--bg-base)] text-[11px] font-mono px-2 py-1 rounded border border-[var(--text-muted)] outline-none"
-                      style={{ color: 'var(--text-main)' }}
+                      className="ui-input flex-1 min-w-0 text-[11px] font-mono"
                       placeholder={t('workspaceProfile.valuePlaceholder')}
                       value={row.value}
                       spellCheck={false}
@@ -189,8 +186,7 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
               {t('workspaceProfile.commandHeading')}
             </div>
             <input
-              className="w-full bg-[var(--bg-base)] text-[11px] font-mono px-2 py-1 rounded border border-[var(--text-muted)] outline-none"
-              style={{ color: 'var(--text-main)' }}
+              className="ui-input text-[11px] font-mono"
               placeholder={t('workspaceProfile.commandPlaceholder')}
               value={command}
               spellCheck={false}
@@ -204,8 +200,7 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
               {t('workspaceProfile.startupCwdHeading')}
             </div>
             <input
-              className="w-full bg-[var(--bg-base)] text-[11px] font-mono px-2 py-1 rounded border border-[var(--text-muted)] outline-none"
-              style={{ color: 'var(--text-main)' }}
+              className="ui-input text-[11px] font-mono"
               placeholder={t('workspaceProfile.startupCwdPlaceholder')}
               value={startupCwd}
               spellCheck={false}
@@ -230,20 +225,12 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
           className="px-5 py-3 flex justify-end gap-2 border-t"
           style={{ borderColor: 'var(--bg-overlay)' }}
         >
-          <button
-            className="text-[11px] px-3 py-1 rounded transition-colors hover:bg-[var(--bg-overlay)]"
-            style={{ color: 'var(--text-subtle)' }}
-            onClick={onClose}
-          >
+          <Button variant="secondary" onClick={onClose}>
             {t('workspaceProfile.cancel')}
-          </button>
-          <button
-            className="text-[11px] px-3 py-1 rounded font-semibold transition-colors"
-            style={{ background: 'var(--accent-blue)', color: 'var(--bg-base)' }}
-            onClick={handleSave}
-          >
+          </Button>
+          <Button variant="primary" onClick={handleSave}>
             {t('workspaceProfile.save')}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

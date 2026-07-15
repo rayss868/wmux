@@ -73,12 +73,14 @@
   --text-sub: #A5A29C;
   --text-sub2: #CAC8C4;
   --text-main: #EFEEEC;
+  --accent: #E8A33D;
   --accent-cursor: #E8A33D;
-  --accent-blue: #E8A33D;
+  --accent-blue: #6E9BC4;
   --accent-green: #8FBF7F;
   --accent-red: #D96C6C;
   --accent-yellow: #E8A33D;
-  --accent-blue-rgb: 232, 163, 61;
+  --accent-rgb: 232, 163, 61;
+  --accent-blue-rgb: 110, 155, 196;
   --bg-surface-rgb: 32, 32, 36;
   --bg-base-rgb: 21, 21, 23;
 }
@@ -97,11 +99,13 @@
   --text-sub: #4A4540;
   --text-sub2: #3A3531;
   --text-main: #2A2522;
+  --accent: #BC002D;
   --accent-cursor: #BC002D;
   --accent-blue: #1C4D6A;
   --accent-green: #3D6750;
   --accent-red: #BC002D;
   --accent-yellow: #A06A1A;
+  --accent-rgb: 188, 0, 45;
   --accent-blue-rgb: 28, 77, 106;
   --bg-surface-rgb: 226, 221, 212;
   --bg-base-rgb: 250, 248, 245;
@@ -117,11 +121,13 @@
   --text-sub: #BAC2DE;
   --text-sub2: #A6ADC8;
   --text-main: #CDD6F4;
+  --accent: #89B4FA;
   --accent-cursor: #F5E0DC;
   --accent-blue: #89B4FA;
   --accent-green: #A6E3A1;
   --accent-red: #F38BA8;
   --accent-yellow: #F9E2AF;
+  --accent-rgb: 137, 180, 250;
   --accent-blue-rgb: 137, 180, 250;
   --bg-surface-rgb: 49, 50, 68;
   --bg-base-rgb: 30, 30, 46;
@@ -137,11 +143,13 @@
   --text-sub: #B0B0B0;
   --text-sub2: #888888;
   --text-main: #E0E0E0;
+  --accent: #A0A0A0;
   --accent-cursor: #FFFFFF;
   --accent-blue: #A0A0A0;
   --accent-green: #909090;
   --accent-red: #FF5555;
   --accent-yellow: #C0C0C0;
+  --accent-rgb: 160, 160, 160;
   --accent-blue-rgb: 160, 160, 160;
   --bg-surface-rgb: 26, 26, 26;
   --bg-base-rgb: 8, 8, 8;
@@ -157,11 +165,13 @@
   --text-sub: #A0B0C8;
   --text-sub2: #8090A8;
   --text-main: #C8D6E8;
-  --accent-cursor: #5B8DEF;
+  --accent: #5B8DEF;
+  --accent-cursor: #E89B4A;
   --accent-blue: #5B8DEF;
   --accent-green: #4EBF8B;
   --accent-red: #E8554E;
   --accent-yellow: #F2C85B;
+  --accent-rgb: 91, 141, 239;
   --accent-blue-rgb: 91, 141, 239;
   --bg-surface-rgb: 30, 46, 74;
   --bg-base-rgb: 12, 20, 40;
@@ -177,11 +187,13 @@
   --text-sub: #C0A898;
   --text-sub2: #A08878;
   --text-main: #E8D0C0;
+  --accent: #E84040;
   --accent-cursor: #E84040;
   --accent-blue: #6AA0CC;
   --accent-green: #5AAE6A;
   --accent-red: #E84040;
   --accent-yellow: #F2C744;
+  --accent-rgb: 232, 64, 64;
   --accent-blue-rgb: 106, 160, 204;
   --bg-surface-rgb: 58, 26, 26;
   --bg-base-rgb: 26, 10, 10;
@@ -197,12 +209,14 @@
   --text-sub: #9A9080;
   --text-sub2: #847A68;
   --text-main: #C8BFA8;
+  --accent: #C4A055;
   --accent-cursor: #C4A055;
-  --accent-blue: #C4A055;
+  --accent-blue: #7FA6C9;
   --accent-green: #8AAA70;
   --accent-red: #CC6B5A;
   --accent-yellow: #C89060;
-  --accent-blue-rgb: 196, 160, 85;
+  --accent-rgb: 196, 160, 85;
+  --accent-blue-rgb: 127, 166, 201;
   --bg-surface-rgb: 46, 42, 34;
   --bg-base-rgb: 30, 27, 22;
 }
@@ -217,11 +231,13 @@
   --text-sub: #909090;
   --text-sub2: #707070;
   --text-main: #C0C0C0;
+  --accent: #C0C0C0;
   --accent-cursor: #FFFFFF;
   --accent-blue: #C0C0C0;
   --accent-green: #909090;
   --accent-red: #FF4444;
   --accent-yellow: #A0A0A0;
+  --accent-rgb: 192, 192, 192;
   --accent-blue-rgb: 192, 192, 192;
   --bg-surface-rgb: 10, 10, 10;
   --bg-base-rgb: 0, 0, 0;
@@ -239,11 +255,13 @@
   --text-sub: #3A3A50;
   --text-sub2: #2A2A40;
   --text-main: #1A1A2E;
-  --accent-cursor: #003478;
+  --accent: #003478;
+  --accent-cursor: #B87500;
   --accent-blue: #003478;
   --accent-green: #1F6940;
   --accent-red: #C60C30;
   --accent-yellow: #9B6A07;
+  --accent-rgb: 0, 52, 120;
   --accent-blue-rgb: 0, 52, 120;
   --bg-surface-rgb: 221, 221, 228;
   --bg-base-rgb: 248, 248, 250;
@@ -419,8 +437,9 @@ button {
 
 /* Notification ring pulse on inactive panes with unread notifications */
 @keyframes notification-ring-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-blue-rgb), 0.4); }
-  50% { box-shadow: 0 0 0 3px rgba(var(--accent-blue-rgb), 0.2); }
+  /* Attention ring = warm accent (2-accent grammar: alive/attention is warm). */
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.4); }
+  50% { box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.2); }
 }
 
 .notification-ring {
@@ -450,7 +469,7 @@ button {
   position: absolute;
   inset: 0;
   border-radius: 2px;
-  background: var(--accent-blue);
+  background: var(--accent);
   pointer-events: none;
   animation: pane-flash 0.5s ease-out forwards;
   z-index: 100;
@@ -470,13 +489,13 @@ button {
  * (Ctrl+Shift+H flash) rules above are intentionally untouched — they're
  * independent visual channels gated by their own toggles. */
 .pane-ring-flash {
-  border-color: var(--accent-blue) !important;
-  box-shadow: 0 0 0 2px var(--accent-blue) inset;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--accent) inset;
   transition: box-shadow 500ms ease-out;
 }
 
 .pane-ring-glow {
-  border-color: var(--accent-blue) !important;
+  border-color: var(--accent) !important;
   opacity: 0.6;
 }
 

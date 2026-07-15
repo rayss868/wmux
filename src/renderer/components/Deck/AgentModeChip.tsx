@@ -118,7 +118,7 @@ export function AgentModeChip({
               data-mode-option={m}
               onClick={() => pick(m)}
               className={`w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] transition-colors ${
-                m === mode ? 'text-[var(--accent)]' : 'text-[var(--text-main)]'
+                m === mode ? 'text-[var(--accent-blue)]' : 'text-[var(--text-main)]'
               }`}
             >
               <div className="font-semibold">{modeLabel(t, m)}</div>

@@ -5,7 +5,7 @@ import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProject
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
-import { THEME_OPTIONS, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, tokenAttrs, type BuiltinThemeId, type ThemeId, type XtermPaletteId, type UIThemeTokenKey, type TokenRole } from '../../themes';
+import { THEME_OPTIONS, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, deriveBuiltinPalette, deriveFullPalette, tokenAttrs, type BuiltinThemeId, type ThemeId, type XtermPaletteId, type UIThemeTokenKey, type TokenRole, type FullCssPalette } from '../../themes';
 import {
   TAILWIND_PALETTE,
   TAILWIND_SHADES,
@@ -2546,15 +2546,50 @@ function XtermOverrideEditor() {
   );
 }
 
-// ─── Theme preview swatch ────────────────────────────────────────────────────
+// ─── Theme preview thumbnail ─────────────────────────────────────────────────
 
-function ThemeSwatch({ colors }: { colors: [string, string, string, string] }) {
+// Hover/lift for the theme cards. The lift shadow uses `filter: drop-shadow`
+// (not box-shadow) so it never collides with FOCUS_RING or the selected card's
+// box-shadow ring, and the whole thing collapses under prefers-reduced-motion.
+const THEME_CARD_STYLE = `
+.theme-card { transition: transform 140ms ease-out, filter 140ms ease-out; }
+.theme-card:hover { transform: translateY(-1px); filter: drop-shadow(0 4px 8px rgba(0,0,0,0.35)); }
+@media (prefers-reduced-motion: reduce) {
+  .theme-card { transition: none; }
+  .theme-card:hover { transform: none; }
+}
+`;
+
+/**
+ * A miniature "fake app slice" rendered from a theme's REAL derived palette —
+ * deriveBuiltinPalette(id) for built-ins, deriveFullPalette(customThemeColors)
+ * for custom — so every card previews the exact colors that theme ships instead
+ * of an abstract dot cluster or a hand-maintained tuple. Because the custom
+ * card's palette is derived on each render, it tracks the user's live edits.
+ */
+function ThemeThumbnail({ palette }: { palette: FullCssPalette }) {
   return (
-    <div className="flex gap-0.5 justify-center mb-1.5">
-      <span className="w-3 h-3 rounded-full" style={{ backgroundColor: colors[0], border: '1px solid rgba(128,128,128,0.3)' }} />
-      <span className="w-3 h-3 rounded-full" style={{ backgroundColor: colors[1] }} />
-      <span className="w-3 h-3 rounded-full" style={{ backgroundColor: colors[2] }} />
-      <span className="w-3 h-3 rounded-full" style={{ backgroundColor: colors[3] }} />
+    <div
+      className="w-full flex flex-col gap-1 p-1.5"
+      style={{ height: 52, backgroundColor: palette.bgBase, borderTopLeftRadius: 7, borderTopRightRadius: 7 }}
+      aria-hidden="true"
+    >
+      {/* Top row: an accent-glow "cursor" dot + a primary-text title bar. */}
+      <div className="flex items-center gap-1">
+        <span
+          className="rounded-full shrink-0"
+          style={{ width: 6, height: 6, backgroundColor: palette.accentCursor, boxShadow: `0 0 4px ${palette.accentCursor}` }}
+        />
+        <span className="rounded-full" style={{ height: 3, width: '55%', backgroundColor: palette.textMain }} />
+      </div>
+      {/* Elevated surface block. */}
+      <span className="rounded" style={{ height: 9, width: '100%', backgroundColor: palette.bgSurface }} />
+      {/* Bottom row: a secondary-text bar + two status dots (success / danger). */}
+      <div className="flex items-center gap-1 mt-auto">
+        <span className="rounded-full" style={{ height: 3, width: '40%', backgroundColor: palette.textSub }} />
+        <span className="rounded-full shrink-0 ml-auto" style={{ width: 5, height: 5, backgroundColor: palette.accentGreen }} />
+        <span className="rounded-full shrink-0" style={{ width: 5, height: 5, backgroundColor: palette.accentRed }} />
+      </div>
     </div>
   );
 }
@@ -2960,28 +2995,54 @@ function TabAppearance() {
 
   const currentTheme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  // Live custom-theme colors drive the `custom` card's thumbnail so it always
+  // reflects the user's real palette (not a frozen snapshot). Null before the
+  // user has ever customized → fall back to the default custom theme.
+  const customThemeColors = useStore((s) => s.customThemeColors) ?? DEFAULT_CUSTOM_THEME;
 
   return (
     <div className="flex flex-col gap-4">
       {/* Theme */}
       <div className="flex flex-col gap-2">
         <SectionLabel label="Theme" />
-        <div className="grid grid-cols-5 gap-1.5">
-          {THEME_OPTIONS.map(({ value, label, preview }) => (
-            <button
-              key={value}
-              onClick={() => setTheme(value)}
-              className={`px-2 py-2 rounded-lg text-[11px] transition-colors text-center flex flex-col items-center ${FOCUS_RING}`}
-              style={{
-                backgroundColor: currentTheme === value ? 'var(--bg-surface)' : 'transparent',
-                color: currentTheme === value ? 'var(--text-main)' : 'var(--text-subtle)',
-                border: `1px solid ${currentTheme === value ? 'var(--accent-blue)' : 'var(--bg-surface)'}`,
-              }}
-            >
-              <ThemeSwatch colors={preview} />
-              {label}
-            </button>
-          ))}
+        <style>{THEME_CARD_STYLE}</style>
+        <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="Theme">
+          {THEME_OPTIONS.map(({ value, label }) => {
+            const selected = currentTheme === value;
+            const palette = value === 'custom'
+              ? deriveFullPalette(customThemeColors)
+              : deriveBuiltinPalette(value as BuiltinThemeId);
+            return (
+              <button
+                key={value}
+                onClick={() => setTheme(value)}
+                role="radio"
+                aria-checked={selected}
+                aria-label={label}
+                className={`theme-card rounded-lg overflow-hidden text-left ${FOCUS_RING}`}
+                style={{
+                  border: `1px solid ${selected ? 'var(--accent-blue)' : 'var(--bg-surface)'}`,
+                  // Ring + a soft lift shadow on the selected card. Uses inline
+                  // box-shadow because the selected card always equals the live
+                  // theme, so its own accent-blue == var(--accent-blue).
+                  boxShadow: selected ? '0 0 0 2px var(--accent-blue), 0 4px 12px rgba(0,0,0,0.28)' : undefined,
+                }}
+              >
+                <ThemeThumbnail palette={palette} />
+                <div
+                  className="flex items-center justify-between gap-1 px-2 py-1"
+                  style={{ backgroundColor: palette.bgMantle, color: selected ? palette.textMain : palette.textSub }}
+                >
+                  <span className="text-[11px] truncate">{label}</span>
+                  {selected && (
+                    <span className="shrink-0 inline-flex" style={{ color: 'var(--accent-blue)' }} aria-hidden="true">
+                      <IconCheck size={12} />
+                    </span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
 

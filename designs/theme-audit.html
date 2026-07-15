@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>테마별 2-accent 확장 — PR #458</title>
+<style>
+  :root{--font-ui:'Inter','Segoe UI',system-ui,sans-serif;--font-mono:'Cascadia Code','JetBrains Mono',ui-monospace,monospace;--hair:rgba(255,255,255,.06);}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{background:#0e0e10;color:#EFEEEC;font-family:var(--font-ui);}
+  body{padding:36px clamp(18px,4vw,56px) 80px;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1120px;margin:0 auto;}
+  .eyebrow{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#66645F;font-weight:600;}
+  h1{font-size:21px;font-weight:600;margin:8px 0 10px;}
+  .lede{font-size:13px;line-height:1.6;color:#A5A29C;max-width:72ch;}
+  .lede b{color:#CAC8C4;font-weight:500;}
+  .seclabel{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#85827B;font-weight:600;margin:32px 0 13px;display:flex;align-items:center;gap:10px;}
+  .seclabel .pill{font-size:10px;font-weight:600;padding:2px 8px;border-radius:999px;text-transform:none;letter-spacing:0;}
+  .pill.change{background:rgba(232,163,61,.16);color:#E8A33D;border:1px solid rgba(232,163,61,.35);}
+  .pill.same{background:rgba(143,191,127,.14);color:#8FBF7F;border:1px solid rgba(143,191,127,.3);}
+  .pill.mute{background:rgba(255,255,255,.05);color:#85827B;border:1px solid var(--hair);}
+  .amberba,.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+  @media(max-width:860px){.amberba,.grid,.grid3{grid-template-columns:1fr;}}
+
+  .tc{border:1px solid var(--hair);border-radius:10px;overflow:hidden;}
+  .tc.hl{box-shadow:0 0 0 2px rgba(232,163,61,.5);border-color:transparent;}
+  .tc .head{display:flex;align-items:center;gap:9px;padding:9px 13px;background:#141416;border-bottom:1px solid var(--hair);}
+  .tc .head .nm{font-size:12.5px;font-weight:600;}
+  .tc .head .ba{font-size:10px;font-weight:600;padding:1px 7px;border-radius:5px;}
+  .ba.before{background:rgba(255,255,255,.06);color:#85827B;}
+  .ba.after{background:rgba(232,163,61,.16);color:#E8A33D;}
+  .tc .head .sws{margin-left:auto;display:flex;align-items:center;gap:9px;font-size:9.5px;color:#66645F;}
+  .tc .head .sw{width:13px;height:13px;border-radius:4px;display:inline-block;vertical-align:-2px;margin-right:3px;box-shadow:inset 0 1px 0 rgba(255,255,255,.15);}
+
+  .slice{padding:14px;display:flex;flex-direction:column;gap:11px;background:var(--bg);}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .pbtn{font:inherit;font-size:11px;font-weight:600;padding:5px 12px;border-radius:5px;border:0;background:var(--nav);color:var(--ink);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),0 1px 2px rgba(0,0,0,.3);}
+  .sbtn{font:inherit;font-size:11px;font-weight:500;padding:5px 12px;border-radius:5px;background:color-mix(in srgb,var(--surface) 75%,transparent);border:1px solid rgba(128,128,128,.25);color:var(--tsub2);}
+  .lnk{font-family:var(--font-mono);font-size:12px;color:var(--nav);}
+  .tabs{display:inline-flex;height:26px;align-items:stretch;}
+  .tab{position:relative;display:inline-flex;align-items:center;padding:0 11px;font-size:11.5px;color:var(--tsub);}
+  .tab.on{color:var(--tmain);}
+  .tab.on::after{content:'';position:absolute;bottom:0;left:6px;right:6px;height:2px;border-radius:2px;background:var(--nav);}
+  .dotlab{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--tsub);}
+  .dot{width:8px;height:8px;border-radius:50%;}
+  .dot.alive{background:var(--alive);box-shadow:0 0 6px 0 color-mix(in srgb,var(--alive) 60%,transparent);}
+  .dot.grn{background:var(--grn);}
+  .inp{font:inherit;font-size:11.5px;padding:5px 9px;border-radius:6px;width:112px;background:color-mix(in srgb,var(--bg) 70%,#000);color:var(--tmain);border:1px solid var(--nav);box-shadow:inset 0 1px 2px rgba(0,0,0,.25),0 0 0 3px color-mix(in srgb,var(--nav) 22%,transparent);outline:none;}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;padding:3px 9px 3px 7px;border-radius:999px;background:color-mix(in srgb,var(--surface) 70%,transparent);border:1px solid var(--hair);color:var(--tsub2);}
+  .chip .cd{width:5px;height:5px;border-radius:50%;background:var(--alive);}
+  .chip b{color:var(--tmain);font-weight:600;}
+  .cur{display:inline-block;width:6px;height:13px;background:var(--alive);vertical-align:-2px;box-shadow:0 0 5px 0 color-mix(in srgb,var(--alive) 55%,transparent);}
+  .mono{font-family:var(--font-mono);font-size:11px;color:var(--tsub);}
+  .note{font-size:11px;color:#66645F;margin-top:2px;line-height:1.5;}
+  .note b{color:#A5A29C;font-weight:500;}
+  code{font-family:var(--font-mono);font-size:11px;background:rgba(255,255,255,.05);padding:1px 5px;border-radius:4px;color:#CAC8C4;}
+</style></head>
+<body><div class="wrap">
+  <div class="eyebrow">wmux · PR #458 · 테마별 2-accent 확장</div>
+  <h1>테마별로 무엇이 바뀌나 (전체)</h1>
+  <p class="lede">2-accent 규칙 = <b>alive(살아있음: running dot·커서, 웜)</b> vs <b>nav(내비게이션: 링크·탭·포커스·primary, 쿨)</b>. 각 테마 <b>실제 globals.css 값</b>으로 렌더. 4테마가 이번에 웜/쿨로 갈렸고(amber·nightowl·stars·taegeuk), 3테마는 원래 2색이라 그대로, 2테마(mono·void)는 무채색이 정체성이라 제외. parity 테스트 28/28로 잠금.</p>
+
+  <div class="seclabel">amber (기본) <span class="pill change">before / after</span></div>
+  <div class="amberba">
+    <div class="tc">
+      <div class="head"><span class="nm">amber</span><span class="ba before">before</span>
+        <span class="sws"><span><span class="sw" style="background:#E8A33D"></span>alive</span><span><span class="sw" style="background:#E8A33D"></span>nav</span></span></div>
+      <div class="slice" style="--bg:#151517;--surface:#202024;--tmain:#EFEEEC;--tsub:#A5A29C;--tsub2:#CAC8C4;--ink:#1c1305;--alive:#E8A33D;--nav:#E8A33D;--grn:#8FBF7F;">
+        <div class="row"><button class="pbtn">Create</button><button class="sbtn">Cancel</button><span class="lnk">jump →</span></div>
+        <div class="row"><div class="tabs"><span class="tab on">Fleet</span><span class="tab">Orch</span></div><input class="inp" value="focus"></div>
+        <div class="row"><span class="dotlab"><span class="dot alive"></span>running</span><span class="dotlab"><span class="dot grn"></span>ok</span><span class="chip"><span class="cd"></span><b>3</b> running</span><span class="mono">$ <span class="cur"></span></span></div></div>
+    </div>
+    <div class="tc hl">
+      <div class="head"><span class="nm">amber</span><span class="ba after">after</span>
+        <span class="sws"><span><span class="sw" style="background:#E8A33D"></span>alive</span><span><span class="sw" style="background:#6E9BC4"></span>nav</span></span></div>
+      <div class="slice" style="--bg:#151517;--surface:#202024;--tmain:#EFEEEC;--tsub:#A5A29C;--tsub2:#CAC8C4;--ink:#1c1305;--alive:#E8A33D;--nav:#6E9BC4;--grn:#8FBF7F;">
+        <div class="row"><button class="pbtn">Create</button><button class="sbtn">Cancel</button><span class="lnk">jump →</span></div>
+        <div class="row"><div class="tabs"><span class="tab on">Fleet</span><span class="tab">Orch</span></div><input class="inp" value="focus"></div>
+        <div class="row"><span class="dotlab"><span class="dot alive"></span>running</span><span class="dotlab"><span class="dot grn"></span>ok</span><span class="chip"><span class="cd"></span><b>3</b> running</span><span class="mono">$ <span class="cur"></span></span></div></div>
+    </div>
+  </div>
+
+  <div class="seclabel">단색 → 2-accent 확장 <span class="pill change">이번에 추가 (nightowl · stars · taegeuk)</span></div>
+  <div class="grid3">
+    <div class="tc hl"><div class="head"><span class="nm">nightowl</span><span class="sws"><span><span class="sw" style="background:#C4A055"></span>alive</span><span><span class="sw" style="background:#7FA6C9"></span>nav</span></span></div>
+      <div class="slice" style="--bg:#1E1B16;--surface:#2E2A22;--tmain:#C8BFA8;--tsub:#9A9080;--tsub2:#847A68;--ink:#161009;--alive:#C4A055;--nav:#7FA6C9;--grn:#8AAA70;">
+        <div class="row"><button class="pbtn">Create</button><span class="lnk">jump →</span></div>
+        <div class="row"><div class="tabs"><span class="tab on">Fleet</span></div><input class="inp" value="focus"></div>
+        <div class="row"><span class="dotlab"><span class="dot alive"></span>running</span><span class="chip"><span class="cd"></span><b>3</b></span><span class="mono">$ <span class="cur"></span></span></div></div></div>
+    <div class="tc hl"><div class="head"><span class="nm">stars-and-stripes</span><span class="sws"><span><span class="sw" style="background:#F2C85B"></span>alive</span><span><span class="sw" style="background:#5B8DEF"></span>nav</span></span></div>
+      <div class="slice" style="--bg:#0C1428;--surface:#1E2E4A;--tmain:#C8D6E8;--tsub:#A0B0C8;--tsub2:#8090A8;--ink:#08101f;--alive:#F2C85B;--nav:#5B8DEF;--grn:#4EBF8B;">
+        <div class="row"><button class="pbtn">Create</button><span class="lnk">jump →</span></div>
+        <div class="row"><div class="tabs"><span class="tab on">Fleet</span></div><input class="inp" value="focus"></div>
+        <div class="row"><span class="dotlab"><span class="dot alive"></span>running</span><span class="chip"><span class="cd"></span><b>3</b></span><span class="mono">$ <span class="cur"></span></span></div></div></div>
+    <div class="tc hl"><div class="head"><span class="nm">taegeuk <span style="color:#66645F;font-weight:400">(light)</span></span><span class="sws"><span><span class="sw" style="background:#9B6A07"></span>alive</span><span><span class="sw" style="background:#003478"></span>nav</span></span></div>
+      <div class="slice" style="--bg:#F8F8FA;--surface:#DDDDE4;--tmain:#1A1A2E;--tsub:#3A3A50;--tsub2:#2A2A40;--ink:#fff;--alive:#9B6A07;--nav:#003478;--grn:#1F6940;">
+        <div class="row"><button class="pbtn">Create</button><span class="lnk">jump →</span></div>
+        <div class="row"><div class="tabs"><span class="tab on">Fleet</span></div><input class="inp" value="focus"></div>
+        <div class="row"><span class="dotlab"><span class="dot alive"></span>running</span><span class="chip"><span class="cd"></span><b>3</b></span><span class="mono">$ <span class="cur"></span></span></div></div></div>
+  </div>
+  <p class="note">nightowl: nav를 골드→쿨블루. stars·taegeuk: alive(running·커서)를 각 테마 warning색(골드/다크골드)으로, nav는 원래 파랑/네이비 유지. → 전부 웜 alive / 쿨 nav.</p>
+
+  <div class="seclabel">이미 2색 <span class="pill same">렌더 0 변화</span></div>
+  <div class="grid3">
+    <div class="tc"><div class="head"><span class="nm">catppuccin-mocha</span><span class="sws"><span><span class="sw" style="background:#F5E0DC"></span>alive</span><span><span class="sw" style="background:#89B4FA"></span>nav</span></span></div>
+      <div class="slice" style="--bg:#1E1E2E;--surface:#313244;--tmain:#CDD6F4;--tsub:#BAC2DE;--tsub2:#A6ADC8;--ink:#0b0b14;--alive:#F5E0DC;--nav:#89B4FA;--grn:#A6E3A1;">
+        <div class="row"><button class="pbtn">Create</button><span class="lnk">jump →</span></div>
+        <div class="row"><div class="tabs"><span class="tab on">Fleet</span></div><input class="inp" value="focus"></div>
+        <div class="row"><span class="dotlab"><span class="dot alive"></span>running</span><span class="chip"><span class="cd"></span><b>3</b></span><span class="mono">$ <span class="cur"></span></span></div></div></div>
+    <div class="tc"><div class="head"><span class="nm">red-dynasty</span><span class="sws"><span><span class="sw" style="background:#E84040"></span>alive</span><span><span class="sw" style="background:#6AA0CC"></span>nav</span></span></div>
+      <div class="slice" style="--bg:#1A0A0A;--surface:#3A1A1A;--tmain:#E8D0C0;--tsub:#C0A898;--tsub2:#D4BCAC;--ink:#160404;--alive:#E84040;--nav:#6AA0CC;--grn:#5AAE6A;">
+        <div class="row"><button class="pbtn">Create</button><span class="lnk">jump →</span></div>
+        <div class="row"><div class="tabs"><span class="tab on">Fleet</span></div><input class="inp" value="focus"></div>
+        <div class="row"><span class="dotlab"><span class="dot alive"></span>running</span><span class="chip"><span class="cd"></span><b>3</b></span><span class="mono">$ <span class="cur"></span></span></div></div></div>
+    <div class="tc"><div class="head"><span class="nm">hinomaru <span style="color:#66645F;font-weight:400">(light)</span></span><span class="sws"><span><span class="sw" style="background:#BC002D"></span>alive</span><span><span class="sw" style="background:#1C4D6A"></span>nav</span></span></div>
+      <div class="slice" style="--bg:#FAF8F5;--surface:#E2DDD4;--tmain:#2A2522;--tsub:#4A4540;--tsub2:#3A3531;--ink:#fff;--alive:#BC002D;--nav:#1C4D6A;--grn:#3D6750;">
+        <div class="row"><button class="pbtn">Create</button><span class="lnk">jump →</span></div>
+        <div class="row"><div class="tabs"><span class="tab on">Fleet</span></div><input class="inp" value="focus"></div>
+        <div class="row"><span class="dotlab"><span class="dot alive"></span>running</span><span class="chip"><span class="cd"></span><b>3</b></span><span class="mono">$ <span class="cur"></span></span></div></div></div>
+  </div>
+
+  <div class="seclabel">무채색 — 2-accent 제외 <span class="pill mute">색상 없음이 정체성</span></div>
+  <div class="grid">
+    <div class="tc"><div class="head"><span class="nm">monochrome</span><span class="sws"><span><span class="sw" style="background:#FFFFFF"></span>alive</span><span><span class="sw" style="background:#A0A0A0"></span>nav</span></span></div>
+      <div class="slice" style="--bg:#080808;--surface:#1A1A1A;--tmain:#E0E0E0;--tsub:#B0B0B0;--tsub2:#888888;--ink:#000;--alive:#FFFFFF;--nav:#A0A0A0;--grn:#909090;">
+        <div class="row"><button class="pbtn">Create</button><span class="lnk">jump →</span></div>
+        <div class="row"><div class="tabs"><span class="tab on">Fleet</span></div><input class="inp" value="focus"></div>
+        <div class="row"><span class="dotlab"><span class="dot alive"></span>running</span><span class="chip"><span class="cd"></span><b>3</b></span><span class="mono">$ <span class="cur"></span></span></div></div></div>
+    <div class="tc"><div class="head"><span class="nm">void</span><span class="sws"><span><span class="sw" style="background:#FFFFFF"></span>alive</span><span><span class="sw" style="background:#C0C0C0"></span>nav</span></span></div>
+      <div class="slice" style="--bg:#000000;--surface:#0A0A0A;--tmain:#C0C0C0;--tsub:#909090;--tsub2:#707070;--ink:#000;--alive:#FFFFFF;--nav:#C0C0C0;--grn:#909090;">
+        <div class="row"><button class="pbtn">Create</button><span class="lnk">jump →</span></div>
+        <div class="row"><div class="tabs"><span class="tab on">Fleet</span></div><input class="inp" value="focus"></div>
+        <div class="row"><span class="dotlab"><span class="dot alive"></span>running</span><span class="chip"><span class="cd"></span><b>3</b></span><span class="mono">$ <span class="cur"></span></span></div></div></div>
+  </div>
+
+  <p class="note" style="margin-top:18px"><b>주의</b> — 이건 토큰값 기준 프리뷰라 정확하지만, 앱 안에서 "살아있음"인데 <code>--accent-blue</code>에 잘못 묶인 소수(브라우저 로딩 pulse·알림 ring)는 못 잡아요. 그건 dev앱 띄워야 보이고 task #10에서 amber로 복구합니다.</p>
+</div></body></html>

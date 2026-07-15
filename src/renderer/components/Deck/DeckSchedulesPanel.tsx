@@ -234,7 +234,7 @@ export function DeckSchedulesPanel({
                     onClick={() => {
                       void resolvedApi.remove(s.id).then(() => refresh());
                     }}
-                    className={`px-1.5 py-0.5 rounded-md text-[11.5px] text-[var(--accent-red)] hover:opacity-80 ${FOCUS_RING}`}
+                    className={`px-1.5 py-0.5 rounded-md text-[11.5px] border transition-colors bg-[color-mix(in_srgb,var(--accent-red)_15%,transparent)] border-[color-mix(in_srgb,var(--accent-red)_32%,transparent)] text-[color-mix(in_srgb,var(--accent-red)_70%,var(--text-main))] hover:bg-[color-mix(in_srgb,var(--accent-red)_22%,transparent)] ${FOCUS_RING}`}
                     {...tokenAttrs('danger', 'text')}
                   >
                     {t('deck.scheduleDelete') || 'Delete'}
@@ -283,8 +283,8 @@ export function DeckSchedulesPanel({
                 type="button"
                 data-deck-schedule-create
                 onClick={() => void handleCreate()}
-                className={`shrink-0 whitespace-nowrap px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 ${FOCUS_RING}`}
-                {...tokenAttrs('accent', 'text')}
+                className={`shrink-0 whitespace-nowrap px-2.5 py-1 rounded-md text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
+                {...tokenAttrs('accent', 'bg')}
               >
                 {t('deck.scheduleAdd') || 'Add schedule'}
               </button>

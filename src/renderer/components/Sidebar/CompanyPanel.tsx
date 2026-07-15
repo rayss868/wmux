@@ -194,7 +194,7 @@ export default function CompanyPanel() {
         <button
           onClick={() => setCompanyViewVisible(true)}
           className="px-4 py-1.5 text-[11px] font-mono font-bold rounded transition-opacity hover:opacity-90"
-          style={{ backgroundColor: 'var(--accent-blue)', color: 'var(--bg-base)' }}
+          style={{ backgroundColor: 'var(--accent)', color: 'var(--bg-base)' }}
         >
           Create Company
         </button>

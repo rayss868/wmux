@@ -364,7 +364,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
         style={{ backgroundColor: 'var(--bg-mantle)', borderBottom: '1px solid var(--bg-base)' }}
       >
         {isLoading && (
-          <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-blue)] animate-pulse shrink-0" />
+          <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse shrink-0" />
         )}
         <span
           className="text-xs text-[var(--text-subtle)] truncate"
