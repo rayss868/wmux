@@ -94,6 +94,71 @@ async function buildMetadataPayload(ptyId: string): Promise<MetadataUpdatePayloa
   return payload;
 }
 
+// app-weight P1-2 — last-payload diff for the 5 s poll. Key = ptyId, value =
+// JSON of the last payload actually SENT (buildMetadataPayload constructs
+// fields in a fixed order and they are primitives/arrays/plain objects, so
+// plain JSON.stringify equality is stable). Skipping identical payloads stops
+// the renderer's per-pane immer store commit at idle (`shallowCopy` in
+// profiles). Scoped to the poll ONLY: METADATA_REQUEST and the event-driven
+// broadcastMetadataUpdate call sites elsewhere are never suppressed. The map
+// is rebuilt from live panes each tick, so entries for closed panes are
+// pruned automatically (leak-free without a separate cleanup hook).
+// Known, accepted duplicate: an event-driven broadcast (OSC cwd etc.) does
+// not update this cache, so the next poll tick re-sends once — self-healing
+// and still strictly better than the old every-tick broadcast.
+let lastPolledPayloads = new Map<string, string>();
+
+/** Reset the poll dedup cache. Called on (re)registration: a recreated
+ *  window's renderer starts with empty state, and a stale cache would
+ *  suppress the first poll payload it actually needs (GLM review, PR #471).
+ *  Cost: one duplicate burst per re-registration. */
+export function resetMetadataPollCache(): void {
+  lastPolledPayloads = new Map();
+}
+
+/**
+ * One tick of the metadata poll. Exported for unit tests; production calls it
+ * from the 5 s interval in registerMetadataHandlers.
+ */
+export async function runMetadataPollTick(
+  ptyManager: PTYManager,
+  win: BrowserWindow,
+  localPtyOwnership: boolean,
+): Promise<void> {
+  const nextPayloads = new Map<string, string>();
+  for (const [ptyId] of cwdMap) {
+    const instance = ptyManager.get(ptyId);
+    if (localPtyOwnership && !instance) {
+      cwdMap.delete(ptyId);
+      branchMap.delete(ptyId);
+      worktreeMap.delete(ptyId);
+      portsMap.delete(ptyId);
+      continue;
+    }
+
+    // On Linux/macOS, try reading /proc/PID/cwd for live CWD detection
+    if (instance && process.platform !== 'win32') {
+      try {
+        const liveCwd = await fs.promises.readlink(`/proc/${instance.process.pid}/cwd`);
+        if (liveCwd && liveCwd !== cwdMap.get(ptyId)) {
+          updateCwd(ptyId, liveCwd);
+        }
+      } catch { /* not available on macOS without /proc */ }
+    }
+
+    const payload = await buildMetadataPayload(ptyId);
+    if (!payload) continue;
+    const serialized = JSON.stringify(payload);
+    // First payload for a pane always sends (no cache entry); a value that
+    // reverts after a change also sends (cache holds the last SENT payload).
+    if (serialized !== lastPolledPayloads.get(ptyId)) {
+      broadcastMetadataUpdate(win, payload);
+    }
+    nextPayloads.set(ptyId, serialized);
+  }
+  lastPolledPayloads = nextPayloads;
+}
+
 export function registerMetadataHandlers(
   ptyManager: PTYManager,
   getWindow: () => BrowserWindow | null,
@@ -111,6 +176,14 @@ export function registerMetadataHandlers(
   ipcMain.handle(IPC.METADATA_REQUEST, wrapHandler(IPC.METADATA_REQUEST, async (_event: Electron.IpcMainInvokeEvent, ptyId: string) => {
     const payload = await buildMetadataPayload(ptyId);
     if (!payload) return {};
+    // Also broadcast (codex review, PR #471): the poll dedup never re-sends
+    // an unchanged payload, but the renderer applies exclusive context
+    // (cwd/git/PR) only from the surface that is ACTIVE at receipt time —
+    // so a pane switch pulls via this request and the broadcast feeds the
+    // renderer's normal METADATA_UPDATE apply path. Requests are explicitly
+    // exempt from the dedup cache.
+    const win = getWindow();
+    if (win && !win.isDestroyed()) broadcastMetadataUpdate(win, payload);
     const rest = { ...payload };
     delete rest.ptyId;
     return rest;
@@ -170,33 +243,25 @@ export function registerMetadataHandlers(
     return { ok: true };
   }));
 
-  // Periodic metadata polling (every 5 seconds)
+  // Fresh dedup cache per registration — see resetMetadataPollCache.
+  resetMetadataPollCache();
+
+  // Periodic metadata polling (every 5 seconds). Re-entrancy guard
+  // (CodeRabbit, PR #471): buildMetadataPayload awaits git/PR work that can
+  // outlast the interval under load, and an older tick's final cache swap
+  // would overwrite a newer tick's snapshot — a stale cache entry could then
+  // suppress a legitimate change. Overlapping ticks are skipped (the next
+  // 5 s tick covers), same discipline as snapshotRunner's `running` flag.
+  let pollRunning = false;
   const pollingInterval = setInterval(async () => {
+    if (pollRunning) return;
     const win = getWindow();
     if (!win || !shouldPollMetadata(win)) return;
-
-    for (const [ptyId] of cwdMap) {
-      const instance = ptyManager.get(ptyId);
-      if (localPtyOwnership && !instance) {
-        cwdMap.delete(ptyId);
-        branchMap.delete(ptyId);
-        worktreeMap.delete(ptyId);
-        portsMap.delete(ptyId);
-        continue;
-      }
-
-      // On Linux/macOS, try reading /proc/PID/cwd for live CWD detection
-      if (instance && process.platform !== 'win32') {
-        try {
-          const liveCwd = await fs.promises.readlink(`/proc/${instance.process.pid}/cwd`);
-          if (liveCwd && liveCwd !== cwdMap.get(ptyId)) {
-            updateCwd(ptyId, liveCwd);
-          }
-        } catch { /* not available on macOS without /proc */ }
-      }
-
-      const payload = await buildMetadataPayload(ptyId);
-      if (payload) broadcastMetadataUpdate(win, payload);
+    pollRunning = true;
+    try {
+      await runMetadataPollTick(ptyManager, win, localPtyOwnership);
+    } finally {
+      pollRunning = false;
     }
   }, 5000);
 
