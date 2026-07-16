@@ -26,10 +26,18 @@ vi.mock('../../wmux-client', () => ({
 }));
 
 const mockConnectOverCDP = vi.fn();
-vi.mock('playwright-core', () => ({
-  chromium: {
-    connectOverCDP: (...args: unknown[]) => mockConnectOverCDP(...args),
-  },
+// B0: the engine loads playwright through the lazyPlaywright seam (separate
+// runtime chunk in the bundle), so the mock moves to that seam — a raw
+// require() of playwright-core would bypass vi.mock entirely.
+vi.mock('../lazyPlaywright', () => ({
+  loadPlaywright: () => ({
+    chromium: {
+      connectOverCDP: (...args: unknown[]) => mockConnectOverCDP(...args),
+    },
+    // Mirror the seam's real surface: state.ts reads devices[name] for
+    // emulation, and an absent key here would greenlight a broken path.
+    devices: {},
+  }),
 }));
 
 // Import after mocks are declared.
