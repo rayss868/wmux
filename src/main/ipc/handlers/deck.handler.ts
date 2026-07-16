@@ -81,7 +81,7 @@ export interface RegisterDeckHandlerOptions {
    *  `model` is the orchestrator model override ('' → SDK default);
    *  `workspaceId` binds the commander token to the one workspace this brain
    *  serves. */
-  createAdapter?: (opts: { model?: string; workspaceId: string }) => BrainAdapter;
+  createAdapter?: (opts: { model?: string; workspaceId: string; fullPower?: boolean }) => BrainAdapter;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
    *  injected small in tests. */
@@ -102,10 +102,11 @@ export function registerDeckHandler(
 ): () => void {
   const createAdapter =
     opts.createAdapter ??
-    ((adapterOpts: { model?: string; workspaceId: string }) =>
+    ((adapterOpts: { model?: string; workspaceId: string; fullPower?: boolean }) =>
       new ClaudeSdkAdapter({
         workspaceId: adapterOpts.workspaceId,
         ...(adapterOpts.model ? { model: adapterOpts.model } : {}),
+        ...(adapterOpts.fullPower ? { fullPower: true } : {}),
       }));
 
   // One Commander session per workspace (M1.5), created lazily on that
@@ -114,8 +115,17 @@ export function registerDeckHandler(
     manager: CommanderSessionManager;
     /** The model the manager's adapter was created with ('' = SDK default). */
     model: string;
+    /** Whether the adapter was created in full-power mode (BYOB approach A). */
+    fullPower: boolean;
   }
   const managers = new Map<string, ManagedCommander>();
+
+  // Full-power toggle (BYOB approach A) — MAIN-side authority so scheduled /
+  // event-woken turns and toggle changes between typed commands all see the
+  // live value (Codex/GLM review round 1: a send-carried flag left autonomous
+  // turns on the stale mode, and a restart silently dropped a persisted ON).
+  // Synced by DECK_FULLPOWER_SET: on change and once after session hydration.
+  let fullPowerEnabled = false;
 
   // Event-push coalescer. Declared here, constructed below once
   // runTurnForWorkspace exists — the manager's onIdle closure references it
@@ -139,15 +149,22 @@ export function registerDeckHandler(
     fleetContext?: string,
     model = '',
   ): CommanderSessionManager => {
-    // Model changed in Settings: swap that workspace's brain between turns.
-    // The adapter is per-model (the SDK subprocess pins --model at spawn), but
-    // the CONVERSATION survives — the new adapter resumes the persisted
-    // session id, so this is a model switch mid-thread, not a new thread.
-    // Never swap while a turn streams: the busy manager keeps running and the
-    // send below gets the normal `busy` reject; the new model applies on the
-    // next send.
+    // Model or full-power mode changed in Settings: swap that workspace's
+    // brain between turns. The adapter pins both at spawn (--model /
+    // settingSources), but the CONVERSATION survives — the new adapter
+    // resumes the persisted session id, so this is a switch mid-thread, not a
+    // new thread. Never swap while a turn streams: the busy manager keeps
+    // running and the send below gets the normal `busy` reject; the new
+    // setting applies on the next turn. Full power is read from the MAIN-side
+    // authority (fullPowerEnabled), never from the caller — every turn path
+    // gets the same answer.
+    const fullPower = fullPowerEnabled;
     const existing = managers.get(workspaceId);
-    if (existing && model !== existing.model && existing.manager.getStatus().status !== 'busy') {
+    if (
+      existing &&
+      (model !== existing.model || fullPower !== existing.fullPower) &&
+      existing.manager.getStatus().status !== 'busy'
+    ) {
       existing.manager.dispose();
       managers.delete(workspaceId);
     }
@@ -157,7 +174,11 @@ export function registerDeckHandler(
     // app run. A dead id is soft — the adapter falls back to a fresh session.
     const persisted = loadCommanderSession(workspaceId);
     const manager = new CommanderSessionManager({
-      adapter: createAdapter({ workspaceId, ...(model ? { model } : {}) }),
+      adapter: createAdapter({
+        workspaceId,
+        ...(model ? { model } : {}),
+        ...(fullPower ? { fullPower: true } : {}),
+      }),
       sink: (event) => emit(workspaceId, event),
       startOptions: {
         // Bake the brain's REAL memory-folder paths into the write policy (M1b)
@@ -181,7 +202,7 @@ export function registerDeckHandler(
       // flush into the next one.
       onIdle: () => coalescer?.notifyIdle(workspaceId),
     });
-    managers.set(workspaceId, { manager, model });
+    managers.set(workspaceId, { manager, model, fullPower });
     return manager;
   };
 
@@ -292,6 +313,36 @@ export function registerDeckHandler(
     }),
   );
 
+  ipcMain.removeHandler(IPC.DECK_FULLPOWER_SET);
+  ipcMain.handle(
+    IPC.DECK_FULLPOWER_SET,
+    wrapHandler(IPC.DECK_FULLPOWER_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: true; enabled: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      // Fail closed: only a strict boolean true enables full power.
+      const enabled = req.enabled === true;
+      if (enabled !== fullPowerEnabled) {
+        fullPowerEnabled = enabled;
+        // Retire IDLE managers on the stale mode now, so the next turn on any
+        // path (typed, scheduled, event-woken) spawns on the new mode — the
+        // OFF direction especially must not keep running hooks. Busy managers
+        // finish their in-flight turn; ensureManager swaps them on their next
+        // turn (same never-swap-mid-turn rule as the model override).
+        for (const [workspaceId, entry] of [...managers]) {
+          if (entry.fullPower !== enabled && entry.manager.getStatus().status !== 'busy') {
+            entry.manager.dispose();
+            managers.delete(workspaceId);
+          }
+        }
+      }
+      return { ok: true, enabled };
+    }),
+  );
+
   // Fire ONE main-originated brain turn on a workspace's orchestrator. Shared
   // by the P3d scheduler AND the event-push coalescer — both need the identical
   // "announce-then-send, skip-if-busy" sequence. A main-originated turn has no
@@ -307,6 +358,10 @@ export function registerDeckHandler(
     if (!WORKSPACE_ID_RE.test(workspaceId)) {
       return { ok: false, code: 'invalid_workspace' as const };
     }
+    // Scheduled/event-woken turns reuse the live manager's model (a lazily
+    // created one starts with the default). Full power always comes from the
+    // main-side authority inside ensureManager — the live toggle applies to
+    // autonomous turns too.
     const mgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
     if (mgr.getStatus().status !== 'idle') {
       return { ok: false, code: 'busy' as const };
@@ -941,6 +996,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
     ipcMain.removeHandler(IPC.DECK_STATUS);
+    ipcMain.removeHandler(IPC.DECK_FULLPOWER_SET);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_CREATE);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_UPDATE);

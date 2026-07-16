@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Orchestrator full-power mode (opt-in): your Claude Code skills, CLAUDE.md and hooks, inside brain turns.** By default the Command Deck orchestrator runs "raw" — a fully explicit contract that deliberately loads nothing from your `~/.claude` setup, because personal hooks firing inside every brain tool call cost real latency and can feed events back into wmux itself. A new toggle in **Settings → Orchestrator** opts a workspace's brain into the full Claude Code ecosystem: skills become invocable, your CLAUDE.md applies, and your hooks run. The brain's *tool* guardrails do not widen with it — it still cannot close panes, spawn subagents, run shell commands, or edit files, a skill's embedded inline-shell syntax is replaced with a placeholder instead of executing, and while the toggle is ON the brain also cannot write its memory notes (`Write` is hard-blocked in this mode so that no personal permission rule can widen it — a conservative first cut; relaxing that is a separate decision). One thing to understand before opting in: **your hooks are your own code** — they run inside brain turns outside any wmux sandbox, exactly as they do in your own Claude Code sessions. The toggle applies from the next brain turn on any path — typed, scheduled, or event-woken — the conversation carries over, and a restart restores it.
+
 ### Changed
 
 - **Agent panes get ~50 MB lighter each — the browser engine now loads only when used.** Every agent pane (Claude Code, Codex, Gemini) runs a small wmux helper that exposes wmux's tools over MCP; it used to initialize the entire browser-automation library at startup, costing ~80 MB of private memory per pane whether or not the pane ever touched a browser tool. The library now ships as a separate lazy chunk that loads on the first `browser_*` call: an idle helper measures ~32 MB, and only panes that actually drive the browser pay the full cost. Nothing changes functionally — same tools, same behavior, pay for what you use.

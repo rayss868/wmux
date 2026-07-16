@@ -120,19 +120,28 @@ export const IPC = {
   // trust basis as channelLocal/fanout (Electron process boundary, pipe-
   // unreachable):
   //   DECK_SEND       (invoke) renderer → main: run one brain turn. Payload
-  //                   { text, fleetContext? }. Resolves with the accept/reject
-  //                   result ({ ok, code? }); the turn's content streams over
-  //                   DECK_STREAM, it is not the invoke's return value.
+  //                   { text, fleetContext?, model?, fullPower? }. Resolves
+  //                   with the accept/reject result ({ ok, code? }); the
+  //                   turn's content streams over DECK_STREAM, it is not the
+  //                   invoke's return value.
   //   DECK_STREAM     (push)   main → renderer: one normalized BrainEvent per
   //                   send (text-delta | tool-start | tool-end | turn-end |
   //                   error). Dedicated channel — a brain stream is NOT channel
   //                   semantics, so it never rides the channels plumbing.
   //   DECK_INTERRUPT  (invoke) renderer → main: abort the in-flight turn.
   //   DECK_STATUS     (invoke) renderer → main: { status, sessionId } snapshot.
+  //   DECK_FULLPOWER_SET (invoke) renderer → main: sync the full-power toggle
+  //                   (BYOB approach A). Main is the authority consulted by
+  //                   EVERY turn path (send / scheduled / event-woken), so a
+  //                   toggle change applies to autonomous turns immediately —
+  //                   not only after the next typed command. The renderer
+  //                   pushes on change and once after session hydration
+  //                   (restart restore).
   DECK_SEND: 'deck:send',
   DECK_STREAM: 'deck:stream',
   DECK_INTERRUPT: 'deck:interrupt',
   DECK_STATUS: 'deck:status',
+  DECK_FULLPOWER_SET: 'deck:fullpower:set',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.

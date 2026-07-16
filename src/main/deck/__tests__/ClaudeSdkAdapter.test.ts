@@ -206,6 +206,43 @@ describe('ClaudeSdkAdapter', () => {
     adapter.start({ systemPrompt: 'SYS' });
     await collect(adapter.send('go'));
     expect(calls[0].options.settingSources).toEqual([]);
+    // Raw mode keeps the plain string system prompt and the base allow-list.
+    expect(calls[0].options.systemPrompt).toBe('SYS');
+    expect(calls[0].options.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+  });
+
+  it('full-power mode loads user+project settings, presets the system prompt, and allows Skill (BYOB A)', async () => {
+    // The opt-in reverse of the raw-mode contract above: the user explicitly
+    // accepts hooks-in-brain-turns to get their skill ecosystem. Everything
+    // conservative stays: DISALLOWED_TOOLS, the canUseTool sandbox, and
+    // strictMcpConfig are asserted unchanged so full power can never silently
+    // widen the brain's hands beyond Skill invocation.
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => '',
+      fullPower: true,
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+    const opts = calls[0].options;
+    expect(opts.settingSources).toEqual(['user', 'project']);
+    expect(opts.systemPrompt).toEqual({ type: 'preset', preset: 'claude_code', append: 'SYS' });
+    expect(opts.allowedTools).toEqual([...DEFAULT_ALLOWED_TOOLS, 'Skill']);
+    // v1-conservative invariants — the sandbox does NOT relax with the toggle.
+    // Write is additionally HARD-disallowed under full power: the user's own
+    // settings allow-rules are decided before canUseTool, so disallowedTools
+    // is the one layer a personal Write(...) rule cannot shadow (review r1).
+    expect(opts.disallowedTools).toEqual([...DISALLOWED_TOOLS, 'Write']);
+    expect(opts.strictMcpConfig).toBe(true);
+    // Skills' inline-shell syntax executes outside the tool gates — the SDK
+    // placeholder switch must be on (Codex review r1).
+    expect(opts.disableSkillShellExecution).toBe(true);
+    expect(typeof opts.canUseTool).toBe('function');
   });
 
   it('installs a canUseTool sandbox that allows own-memory Write and denies the rest', async () => {
@@ -246,6 +283,42 @@ describe('ClaudeSdkAdapter', () => {
     // Denied: any other tool that reaches the callback.
     const deniedTool = await canUseTool('Bash', { command: 'rm -rf /' });
     expect(deniedTool.behavior).toBe('deny');
+  });
+
+  it('full-power mode keeps the exact same canUseTool sandbox matrix (GLM review)', async () => {
+    // The toggle must not change what the callback DECIDES — only Skill moves
+    // to the auto-allow list. Re-run the sandbox matrix with fullPower on so a
+    // future default-allow fallback in the callback can't hide behind the
+    // shape-only assertion in the full-power options test.
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const memoryRoot = path.join(os.tmpdir(), 'wmux-fullpower-sandbox-test');
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => '',
+      workspaceId: 'ws-1',
+      memoryRoot,
+      fullPower: true,
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+    const canUseTool = calls[0].options.canUseTool as (
+      toolName: string,
+      input: Record<string, unknown>,
+    ) => Promise<{ behavior: string }>;
+
+    expect((await canUseTool('Write', {
+      file_path: path.join(memoryRoot, 'ws-1', 'note.md'),
+    })).behavior).toBe('allow');
+    expect((await canUseTool('Write', {
+      file_path: path.join(os.tmpdir(), 'escape.md'),
+    })).behavior).toBe('deny');
+    expect((await canUseTool('Bash', { command: 'rm -rf /' })).behavior).toBe('deny');
+    // An MCP tool outside the allow-list reaching the callback stays denied.
+    expect((await canUseTool('mcp__wmux__pane_close', { paneId: 'p1' })).behavior).toBe('deny');
   });
 
   it('grounds real-pane agent launches in the system prompt (no theater)', () => {

@@ -371,6 +371,11 @@ const electronAPI = {
       }>,
     interrupt: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.DECK_INTERRUPT, { workspaceId }) as Promise<{ ok: true }>,
+    fullPowerSet: (enabled: boolean) =>
+      ipcRenderer.invoke(IPC.DECK_FULLPOWER_SET, { enabled }) as Promise<{
+        ok: true;
+        enabled: boolean;
+      }>,
     status: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.DECK_STATUS, { workspaceId }) as Promise<{
         status: 'idle' | 'busy' | 'disposed';
