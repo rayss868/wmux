@@ -179,9 +179,31 @@ const AGENT_PATTERNS: AgentPattern[] = [
   {
     agent: 'Codex CLI',
     slug: 'codex',
-    gate: /codex |OpenAI Codex/,
+    // The trust-prompt phrase is part of the gate because on a first boot in
+    // an untrusted directory Codex shows it BEFORE the "OpenAI Codex" banner
+    // — with the banner-only gate the trust pattern below could never fire.
+    // checkGates runs before pattern matching on the same line, so the one
+    // line both opens the gate and emits awaiting_input.
+    gate: /codex |OpenAI Codex|Do you trust the contents of this directory/,
     patterns: [
       { regex: /^codex>\s*$/,                    status: 'waiting',   message: 'Waiting for input' },
+      // Approval prompts — clean-room transcribed from a live Codex CLI
+      // 0.145.0 TUI session on 2026-07-17 (NOT copied from any third-party
+      // detection ruleset; see plans/notification-overhaul-2026-07-15.md
+      // Phase 2). Codex's `notify` hook only fires on turn-complete, so
+      // mid-turn approval pauses are ONLY observable by screen text — and
+      // the awaiting_input carve-out in PTYBridge/DaemonPTYBridge already
+      // exempts these from hook-authority veto for exactly that reason.
+      //
+      // Anchored to the whole line: the question occupies its own line in
+      // the TUI (two-space indent, no box-drawing frame in Codex), whereas
+      // a conversational mention would sit inside surrounding sentence text.
+      { regex: /^\s*Would you like to run the following command\?\s*$/, status: 'awaiting_input', message: 'Command approval requested' },
+      { regex: /^\s*Would you like to make the following edits\?\s*$/,  status: 'awaiting_input', message: 'Edit approval requested' },
+      // Startup trust prompt. Line continues with explanatory text after
+      // the question mark ("Working with untrusted contents comes with
+      // higher risk..."), so only the start is anchored.
+      { regex: /^\s*Do you trust the contents of this directory\?/,     status: 'awaiting_input', message: 'Directory trust prompt' },
     ],
   },
 
