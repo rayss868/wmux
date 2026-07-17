@@ -605,6 +605,12 @@ select option {
   .pane-complete-blink::after {
     animation: none;
   }
+  /* box-shadow는 forced-colors에서 제거되므로 미읽음 링은 outline으로 대체. */
+  .notification-ring::before {
+    animation: none;
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
 }
 
 /* Pane zoom (issue #182): panels off the path to the zoomed leaf are hidden
@@ -728,6 +734,18 @@ select option {
   .sidebar-dot-waiting::after {
     animation: none;
     opacity: 1;
+  }
+}
+/* Forced-colors: 상태 색(running=amber, needs-you=red 등)이 시스템 색으로
+ * 덮이면 상태 구분이 사라지므로 점의 배경색을 보존한다. 글로우(box-shadow)는
+ * 어차피 제거되니 애니메이션만 끈다. */
+@media (forced-colors: active) {
+  .sidebar-dot {
+    forced-color-adjust: none;
+  }
+  .sidebar-dot-running::after,
+  .sidebar-dot-waiting::after {
+    animation: none;
   }
 }
 

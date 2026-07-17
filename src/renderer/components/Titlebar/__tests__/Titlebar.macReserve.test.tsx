@@ -16,15 +16,15 @@ vi.mock('../../StatusBar/StatusBar', () => ({ default: () => null }));
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
-  while (cleanups.length) cleanups.pop()!();
+  for (const fn of cleanups.splice(0)) fn();
 });
 
 beforeEach(() => {
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     platform: 'darwin',
     window: {
-      isFullScreen: () => Promise.resolve(false),
-      onFullscreenChanged: () => () => {},
+      isFullScreen: vi.fn(() => Promise.resolve(false)),
+      onFullscreenChanged: vi.fn(() => vi.fn()),
     },
   };
 });
