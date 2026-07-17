@@ -39,6 +39,35 @@ export function buildNotifAriaLabel(notif: Notification, now: number = Date.now(
   return `${typeName}, ${notif.title}, ${rel}, ${state}`;
 }
 
+// ─── Scroll-position memory (cmux parity) ─────────────────────────────────────
+//
+// The panel unmounts entirely when hidden (`return null`), so its list scroll
+// offset is lost on close. Per-session, in-memory only (module-level — a store
+// slice would broadcast every scroll tick to all subscribers for no benefit):
+// remember the offset at close and restore it on reopen, UNLESS new
+// notifications arrived while the panel was closed — then snap to top so the
+// newest entries are visible (the list is newest-first).
+export interface PanelScrollMemory {
+  /** Last observed scrollTop of the list container. */
+  scrollTop: number;
+  /** id of the newest notification the panel last saw while open. */
+  newestId: string | null;
+}
+
+/** Exported for tests; reset between test cases. */
+export const panelScrollMemory: PanelScrollMemory = { scrollTop: 0, newestId: null };
+
+/**
+ * Pure resolver: restore the saved offset only if the newest notification is
+ * still the one the panel saw before closing; otherwise snap to top.
+ */
+export function resolveRestoredScrollTop(
+  memory: PanelScrollMemory,
+  currentNewestId: string | null,
+): number {
+  return memory.newestId === currentNewestId ? memory.scrollTop : 0;
+}
+
 /**
  * Emoji icon for a notification type. NOT updated as part of T10 (DESIGN D9
  * scope hygiene); kept here so the view function stays pure and renderable.
@@ -70,6 +99,8 @@ export interface NotificationPanelViewProps {
   onClear: () => void;
   firstUnreadRef?: React.Ref<HTMLDivElement>;
   markAllReadBtnRef?: React.Ref<HTMLButtonElement>;
+  listRef?: React.Ref<HTMLDivElement>;
+  onListScroll?: React.UIEventHandler<HTMLDivElement>;
 }
 
 /**
@@ -82,7 +113,7 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
     markAllReadLabel, clearLabel,
     onNotifClick, onNotifKeyDown, onClose,
     onMarkAllRead, onMarkWorkspaceRead, onClear,
-    firstUnreadRef, markAllReadBtnRef,
+    firstUnreadRef, markAllReadBtnRef, listRef, onListScroll,
   } = props;
 
   const firstUnreadIdx = notifications.findIndex((n) => !n.read);
@@ -145,7 +176,7 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
       </div>
 
       {/* List */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={listRef} onScroll={onListScroll} data-notification-list className="flex-1 overflow-y-auto">
         {notifications.length === 0 ? (
           <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm" {...tokenAttrs('textMuted', 'text')}>
             {emptyLabel}
@@ -208,6 +239,7 @@ export default function NotificationPanel() {
 
   const firstUnreadRef = useRef<HTMLDivElement>(null);
   const markAllReadBtnRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   // Track the notification id the firstUnreadRef captured at render time so
   // the rAF focus pass can detect a race (new notification arrived between
   // render and rAF firing) and degrade to the mark-all button instead of
@@ -263,7 +295,40 @@ export default function NotificationPanel() {
     return () => cancelAnimationFrame(raf);
   }, [notificationPanelVisible]);
 
+  // ─── Scroll-position restore (cmux parity) ─────────────────────────────────
+  // On open: restore the offset saved at close, unless new notifications
+  // arrived while closed — then snap to top (list is newest-first). The
+  // decision is computed synchronously at effect time (BEFORE the memory-sync
+  // effect below overwrites `newestId`), and applied in a rAF registered
+  // AFTER the focus effect above so the scrollTop write lands after any
+  // implicit scroll caused by `.focus()`.
+  useEffect(() => {
+    if (!notificationPanelVisible) return;
+    const liveNewestId =
+      sortNotificationsDesc(useStore.getState().notifications)[0]?.id ?? null;
+    const target = resolveRestoredScrollTop(panelScrollMemory, liveNewestId);
+    // Keep memory coherent with what we actually applied, so a
+    // snap-to-top open followed by a scroll-less close doesn't
+    // resurrect the pre-snap offset on the next open.
+    panelScrollMemory.scrollTop = target;
+    const raf = requestAnimationFrame(() => {
+      if (listRef.current) listRef.current.scrollTop = target;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [notificationPanelVisible]);
+
+  // While open, keep the "newest notification the panel has seen" marker in
+  // sync so the reopen comparison above only fires for arrivals-while-CLOSED.
+  useEffect(() => {
+    if (!notificationPanelVisible) return;
+    panelScrollMemory.newestId = sorted[0]?.id ?? null;
+  }, [notificationPanelVisible, sorted]);
+
   if (!notificationPanelVisible) return null;
+
+  const handleListScroll: React.UIEventHandler<HTMLDivElement> = (e) => {
+    panelScrollMemory.scrollTop = e.currentTarget.scrollTop;
+  };
 
   const handleNotifClick = (notif: Notification) => {
     // Full click-jump: workspace + pane + surface (+ zoom coherence), the
@@ -326,6 +391,8 @@ export default function NotificationPanel() {
       onClear={clearNotifications}
       firstUnreadRef={firstUnreadRef}
       markAllReadBtnRef={markAllReadBtnRef}
+      listRef={listRef}
+      onListScroll={handleListScroll}
     />
   );
 }

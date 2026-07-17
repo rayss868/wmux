@@ -67,6 +67,56 @@ describe('AgentDetector', () => {
     });
   });
 
+  describe('Codex approval prompts (Phase 2 — clean-room transcribed from Codex CLI 0.145.0)', () => {
+    const gated = () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('│ >_ OpenAI Codex (v0.145.0)\n');
+      cb.mockClear();
+      return { det, cb };
+    };
+
+    it('emits awaiting_input for the command-approval prompt', () => {
+      const { det, cb } = gated();
+      det.feed('  Would you like to run the following command?\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({
+        agent: 'Codex CLI', status: 'awaiting_input', message: 'Command approval requested',
+      });
+    });
+
+    it('emits awaiting_input for the edit-approval prompt', () => {
+      const { det, cb } = gated();
+      det.feed('  Would you like to make the following edits?\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({
+        agent: 'Codex CLI', status: 'awaiting_input', message: 'Edit approval requested',
+      });
+    });
+
+    it('trust prompt fires even on first boot BEFORE the banner (gate opens on the same line)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      // First boot in an untrusted dir: no banner yet. The line is wrapped
+      // by the TUI, so text continues after the question mark.
+      det.feed('  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt\n');
+      // gate 'running' + awaiting_input, in that order
+      const statuses = cb.mock.calls.map((c) => c[0].status);
+      expect(statuses).toContain('awaiting_input');
+      const ev = cb.mock.calls.find((c) => c[0].status === 'awaiting_input')![0];
+      expect(ev).toMatchObject({ agent: 'Codex CLI', message: 'Directory trust prompt' });
+    });
+
+    it('does NOT match conversational mentions (end-anchored whole line)', () => {
+      const { det, cb } = gated();
+      det.feed('  If Codex prints "Would you like to run the following command?" then pick no.\n');
+      det.feed('  I asked: would you like to make the following edits? and it said yes\n');
+      expect(cb).not.toHaveBeenCalled();
+    });
+  });
+
   describe('REGRESSION (R1): subscribe/unsubscribe lifecycle', () => {
     it('onEvent returns an unsubscribe function', () => {
       const det = new AgentDetector();
