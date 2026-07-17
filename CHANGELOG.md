@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **In-app "Install hooks" no longer fails with "Could not locate the bundled wmux-bridge.mjs".** The bridge locator only knew the CLI's layout; when the install button called it from the packaged app's main process, it walked right past `Resources/cli-bundle/` where the bridge actually lives. The packaged path is now a search candidate, so the one-click install works.
+
 ## [3.26.0] — 2026-07-17
 
 ### Added
