@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **macOS default launch hotkey is now Ctrl+7** (was Ctrl+F7). F7-based combos are a trap on macOS: bare F7 is consumed by the media keys, and Ctrl+F7 is the system-wide "Change the way Tab moves focus" shortcut, so the app never received either. An untouched saved F7/Ctrl+F7 default is migrated automatically on load; Windows/Linux keep F7.
+
+### Fixed
+
+- **macOS titlebar no longer shifts the WMUX segment 72px right.** The traffic-light reserve now lives inside the mantle segment, so the logo, + button, and segment seam line up with the sidebar edge below again.
+- **Idle CPU/GPU drain from perpetual UI animations.** The sidebar status-dot breathe, unread notification ring, and completed-pane blink animated `box-shadow`/`border-color`, forcing a style recalc and repaint every frame (~86 recalcs/s measured, renderer + GPU ≈ 30% CPU while idle). The glows are now static shadows on pseudo-elements with compositor-only opacity animation — same look, near-zero main-thread cost. Reduced-motion now also stills the sidebar dots.
+
 ## [3.26.0] — 2026-07-17
 
 ### Added
