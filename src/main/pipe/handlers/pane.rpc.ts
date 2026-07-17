@@ -181,18 +181,25 @@ export function registerPaneRpc(
    * pane.focus — focuses a specific pane
    * params: { id: string }
    */
-  router.register('pane.focus', (params) => {
+  router.register('pane.focus', (params, ctx) => {
     if (typeof params['id'] !== 'string') {
       return Promise.reject(new Error('pane.focus: missing required param "id"'));
     }
-    return sendToRenderer(getWindow, 'pane.focus', { id: params['id'] });
+    // BYOB P4: a validated commander caller (ctx stamped by the router from
+    // its per-spawn token — never from the wire) is confined to its own
+    // workspace. The confinement id rides to the renderer bridge, which
+    // resolves the pane's true owner and refuses a mismatch.
+    return sendToRenderer(getWindow, 'pane.focus', {
+      id: params['id'],
+      ...(ctx?.commanderWorkspace ? { confineWorkspaceId: ctx.commanderWorkspace } : {}),
+    });
   });
 
   /**
    * pane.split — splits the active pane
    * params: { direction: 'horizontal' | 'vertical' }
    */
-  router.register('pane.split', (params) => {
+  router.register('pane.split', (params, ctx) => {
     const direction = params['direction'];
     if (direction !== 'horizontal' && direction !== 'vertical') {
       return Promise.reject(
@@ -204,11 +211,23 @@ export function registerPaneRpc(
     // user is currently viewing. Omitted → the renderer falls back to the
     // active workspace (unchanged human-keybind / first-party CLI behavior).
     // Mirrors the pane.search forwarding guard above.
-    const workspaceId = params['workspaceId'];
+    let workspaceId = params['workspaceId'];
     if (workspaceId !== undefined && typeof workspaceId !== 'string') {
       return Promise.reject(
         new Error('pane.split: "workspaceId" must be a string if provided'),
       );
+    }
+    // BYOB P4: a validated commander is confined to its own workspace — the
+    // tool schema lets a (misjudging) brain pass any workspaceId, so the
+    // server pins it: explicit mismatch → refuse; omitted → the commander's
+    // own workspace, never the on-screen one (GLM review, PR #475).
+    if (ctx?.commanderWorkspace) {
+      if (workspaceId !== undefined && workspaceId !== ctx.commanderWorkspace) {
+        return Promise.reject(
+          new Error('pane.split: workspace is outside the commander\'s workspace'),
+        );
+      }
+      workspaceId = ctx.commanderWorkspace;
     }
     return sendToRenderer(getWindow, 'pane.split', {
       direction,
