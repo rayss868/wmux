@@ -62,6 +62,64 @@ function quotePathForPty(p: string): string {
  *
  * 실패·타임아웃·비파일·빈 출력은 전부 null로 반환해 붙여넣기를 절대 악화시키지 않는다.
  */
+/**
+ * Fast path: read the pasteboard's `public.file-url` slot directly via
+ * Electron — no subprocess. Finder usually writes a REAL file URL here
+ * (`file:///Users/me/%ED%8F%B4%EB%8D%94`); only some copy paths produce the
+ * opaque `file:///.file/id=` bookmark form, which we cannot resolve in JS —
+ * those return null and fall through to the osascript path below. This is
+ * what makes ordinary Finder path pastes instant instead of paying an
+ * osascript SPAWN (hundreds of ms, 2s worst case) on every Cmd+V.
+ *
+ * The decoded path is normalized to NFC: macOS hands out NFD-decomposed
+ * names, and pasting decomposed jamo into a terminal renders Korean folder
+ * names as broken syllable parts and breaks string matching against typed
+ * NFC input. (Same normalization the osascript fallback applies.)
+ */
+/** Sentinel: the pasteboard HAS a file URL, but in the opaque bookmark form
+ *  only AppleScript can resolve — the caller should take the osascript path. */
+const OPAQUE_FILE_URL = Symbol('opaque-file-url');
+
+function readFileUrlFromPasteboard(): string | typeof OPAQUE_FILE_URL | null {
+  try {
+    // Electron's string `read()` is restricted to MIME-like formats on some
+    // versions, while the pasteboard slot is a native UTI — `readBuffer` is
+    // the reliable accessor (Codex review, PR #479). Try both; a failure on
+    // either is just a fall-through, never an exception out of this helper.
+    let raw = '';
+    try {
+      raw = clipboard.readBuffer('public.file-url').toString('utf8');
+    } catch {
+      /* fall through to read() */
+    }
+    if (!raw) {
+      try {
+        raw = clipboard.read('public.file-url');
+      } catch {
+        /* not readable as string either */
+      }
+    }
+    if (!raw || typeof raw !== 'string') return null;
+    const url = raw.trim();
+    if (!url.startsWith('file://')) return null;
+    // Opaque Finder bookmark (`file:///.file/id=…`) — unresolvable in JS.
+    if (url.includes('/.file/id=')) return OPAQUE_FILE_URL;
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(url.slice('file://'.length));
+    } catch {
+      return null; // malformed percent-encoding — let readText handle it
+    }
+    // Strip a possible host segment (file://localhost/...): everything up to
+    // the first '/' is host.
+    const slash = decoded.indexOf('/');
+    const p = slash >= 0 ? decoded.slice(slash) : decoded;
+    return p.startsWith('/') ? p.normalize('NFC') : null;
+  } catch {
+    return null;
+  }
+}
+
 function resolveFinderFilePath(): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
@@ -86,7 +144,9 @@ function resolveFinderFilePath(): Promise<string | null> {
         // (디렉터리의 뒤쪽 '/'는 macOS가 준 그대로 유지; cd에 문제없다).
         const filePath = (typeof stdout === 'string' ? stdout : '').replace(/\r?\n+$/, '');
         // 절대경로가 아니면(빈 값, 비파일 furl 결과 등) 신뢰하지 않고 폴백한다.
-        resolve(filePath.startsWith('/') ? filePath : null);
+        // NFC 정규화: macOS는 NFD(자모 분해)로 경로를 돌려주므로, 그대로 pty에
+        // 붙이면 한글 폴더명이 깨져 보이고 NFC로 타이핑한 문자열과 매칭도 실패한다.
+        resolve(filePath.startsWith('/') ? filePath.normalize('NFC') : null);
       }
     );
   });
@@ -126,11 +186,31 @@ export function registerClipboardHandlers(): void {
     // 플랫폼 + 포맷 게이트: darwin이고 클립보드에 파일/폴더(text/uri-list)가 있을
     // 때만 경로 해석을 시도한다. 그 외(일반 텍스트, 타 OS)는 기존과 완전히 동일하게
     // readText()를 즉시 반환하므로 일반 붙여넣기의 지연·동작 변화는 0이다.
-    if (
-      process.platform === 'darwin' &&
-      clipboard.availableFormats().includes('text/uri-list')
-    ) {
-      const filePath = await resolveFinderFilePath();
+    if (process.platform === 'darwin') {
+      // Fast path first: try reading the `public.file-url` slot DIRECTLY —
+      // a single-format read. Deliberately NOT gated on availableFormats():
+      // format enumeration touches every pasteboard type Finder registered
+      // (icons, promises) and is itself a known macOS slow path (VS Code /
+      // Electron issue lore), so the old gate taxed every ordinary text
+      // paste too. A non-file clipboard just returns null here and falls
+      // through to readText() with no extra cost. Only the opaque
+      // `.file/id=` bookmark form still needs the osascript fallback — that
+      // keeps ordinary Finder path pastes instant instead of paying an
+      // osascript SPAWN (the reported multi-hundred-ms paste delay).
+      const fromPasteboard = readFileUrlFromPasteboard();
+      // osascript fallback fires for the opaque bookmark form AND when the
+      // native reads yielded nothing but the pasteboard demonstrably holds a
+      // file (uri-list present) — e.g. an Electron version whose clipboard
+      // APIs can't surface the UTI (Codex review: never regress a file paste
+      // to Finder's basename-only readText). The enumeration gate is only
+      // reached on that fallback path; successful native reads skip it.
+      const filePath =
+        typeof fromPasteboard === 'string'
+          ? fromPasteboard
+          : fromPasteboard === OPAQUE_FILE_URL ||
+              clipboard.availableFormats().includes('text/uri-list')
+            ? await resolveFinderFilePath()
+            : null;
       if (filePath) {
         // 이 값을 소비하는 렌더러 호출부는 전부 터미널 붙여넣기 사이트라 문자열을
         // 그대로 pty에 쓴다(Terminal.tsx handlePaste, useTerminal.ts의 Cmd+V/
@@ -140,7 +220,20 @@ export function registerClipboardHandlers(): void {
       }
       // 해석 실패(비파일 furl, 타임아웃, 빈 출력 등) → 아래 readText() 폴백.
     }
-    return clipboard.readText();
+    const text = clipboard.readText();
+    // darwin + "경로처럼 생긴 단일행 텍스트"만 NFC 정규화: Finder의 "경로명
+    // 복사"(Option+Cmd+C)가 NFD(자모 분해)를 내놓는 케이스를 잡는다. 임의
+    // 텍스트를 전부 정규화하면 의도적으로 NFD인 소스 스니펫/테스트 벡터/
+    // 정규화-민감 원격 fs의 파일명이 훼손되므로(Codex 리뷰), 절대경로 형태로
+    // 판별되는 것만 좁게 적용한다.
+    if (
+      process.platform === 'darwin' &&
+      /^(\/|~\/)/.test(text) &&
+      !text.includes('\n')
+    ) {
+      return text.normalize('NFC');
+    }
+    return text;
   }));
 
   ipcMain.handle(IPC.CLIPBOARD_READ_IMAGE, wrapHandler(IPC.CLIPBOARD_READ_IMAGE, (_event: Electron.IpcMainInvokeEvent) => {
