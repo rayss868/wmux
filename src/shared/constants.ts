@@ -179,12 +179,26 @@ export const IPC = {
   //   running loop still wakes. Same renderer-only trust boundary.
   DECK_AUTOWAKE_GET: 'deck:autowake:get',
   DECK_AUTOWAKE_SET: 'deck:autowake:set',
-  //   DECK_MODE_* — the per-workspace agent mode (off/manual/assist/
-  //   orchestrate). Mode is the single user-facing autonomy knob; the raw caps
+  //   DECK_MODE_* — the per-workspace agent mode (off/assist/auto).
+  //   Mode is the single user-facing autonomy knob; the raw caps
   //   are derived from it. `set` with mode='off' also tears down running loops
   //   + schedules. Same renderer-only trust boundary.
   DECK_MODE_GET: 'deck:mode:get',
   DECK_MODE_SET: 'deck:mode:set',
+  //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
+  //   STATUS reports whether the wmux hook entries are installed in
+  //   ~/.claude/settings.json; INSTALL performs the same idempotent install as
+  //   the CLI. Explicitly user-triggered from the install prompt — wmux never
+  //   edits Claude settings behind the operator's back (owner decision
+  //   2026-07-17). Renderer-only trust boundary.
+  HOOKS_BRIDGE_STATUS: 'hooks:bridge:status',
+  HOOKS_BRIDGE_INSTALL: 'hooks:bridge:install',
+  //   DECK_CONVERSATION_CLEAR — the operator's `/clear` for one workspace's
+  //   orchestrator: disposes the live brain (interrupting an in-flight turn)
+  //   and drops the persisted session id, so the next turn starts a FRESH SDK
+  //   conversation. The channel transcript deliberately stays — history is
+  //   the audit trail; only the brain's context resets.
+  DECK_CONVERSATION_CLEAR: 'deck:conversation:clear',
   //   DECK_DECISION_* — the brain-raised decision gate. The orchestrator brain
   //   calls the deck_ask_decision MCP tool to PAUSE its loop and ask the human
   //   a decision; GET hydrates that pending decision on mount (so it shows

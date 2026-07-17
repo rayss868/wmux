@@ -256,7 +256,7 @@ export const ko = {
   'settings.orchestratorFullPower': '풀파워 모드',
   'settings.orchestratorFullPowerDesc':
     'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고(wmux 샌드박스 밖의 본인 코드), 툴 호출이 느려질 수 있으며, 켜져 있는 동안 agent는 메모리 노트를 쓸 수 없습니다. 다음 agent 턴부터 적용됩니다.',
-  // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/manual/assist/orchestrate).
+  // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/assist/auto).
   'deck.limit.window': '사용량',
   'deck.limit.resetsSoon': '곧 초기화됨',
   'deck.limit.resetsIn': '{rel} 후 초기화',
@@ -267,13 +267,24 @@ export const ko = {
   // agent 패널에 칩으로 표시.
   'deck.mode.label': '모드',
   'deck.mode.off': 'Off',
-  'deck.mode.offDesc': '자율 동작 없음. 실행 중인 루프·예약도 정지. 직접 타이핑은 여전히 가능.',
-  'deck.mode.manual': 'Manual',
-  'deck.mode.manualDesc': '직접 물을 때만 대답. agent 이벤트로 스스로 깨어나지 않음.',
+  'deck.mode.offDesc': '자율 동작 없음(기본값). 실행 중인 루프·예약도 정지. 직접 타이핑은 여전히 가능.',
   'deck.mode.assist': 'Assist',
-  'deck.mode.assistDesc': 'pane이 입력을 기다릴 때, 또는 실행 중인 루프를 진행할 때만 깨어남. 요약 스팸 없음.',
-  'deck.mode.orchestrate': 'Orchestrate',
-  'deck.mode.orchestrateDesc': '모든 agent 이벤트에 깨어남. pane 조작·승인 押下까지 가능.',
+  'deck.mode.assistDesc': 'pane이 입력을 기다릴 때, 또는 실행 중인 루프를 진행할 때만 깨어남. 알림만, 승인은 안 누름.',
+  // `/clear` — 오케 컨텍스트 리셋(대화 기록은 유지).
+  'deck.contextCleared': '오케스트레이터 컨텍스트를 지웠습니다 — 다음 턴은 새 대화로 시작합니다.',
+  'deck.contextClearFailed': '오케스트레이터 컨텍스트를 지우지 못했습니다.',
+  // Claude Code hook 브리지 설치 유도(실행 시 + 모드 상향 시).
+  'hooks.prompt.title': '정확한 agent 신호를 위해 wmux hook을 설치하세요',
+  'hooks.prompt.body': 'hook이 없으면 wmux는 화면 텍스트를 읽어 agent 완료를 추측합니다 — 완료·승인 신호를 놓칠 수 있습니다. Claude Code 설정에 hook 브리지를 설치하면 신호가 정확해집니다.',
+  'hooks.prompt.install': 'hook 설치',
+  'hooks.prompt.installing': '설치 중…',
+  'hooks.prompt.later': '나중에',
+  'hooks.prompt.error': '설치에 실패했습니다.',
+  'hooks.prompt.doneTitle': 'hook 설치 완료',
+  'hooks.prompt.doneBody': 'pane에서 실행 중인 Claude 세션을 재시작하면 hook이 적용됩니다.',
+  'hooks.prompt.close': '닫기',
+  'deck.mode.auto': 'Auto (위험)',
+  'deck.mode.autoDesc': '모든 agent 이벤트에 깨어나 스스로 판단해 승인까지 누르며 작업을 끝까지 진행.',
   // 이벤트 자동 깨우기 킬스위치: 끄면 요청하지 않은 자동 요약 턴(토큰 소비)이
   // 멈춘다. 실행 중인 루프는 계속 깨운다.
   'settings.autoWake': 'pane 이벤트 자동 깨우기',

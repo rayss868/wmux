@@ -1,14 +1,14 @@
 // ─── Command Deck — per-workspace agent mode chip ───────────────────────────
 //
-// The single user-facing autonomy control (owner design 2026-07-13). Lives with
-// the quick-action chips so the CURRENT mode is always visible — the answer to
-// both "why is it quiet?" and "why is it talking?" is on screen. Click → a
-// dropdown of the four modes.
+// The single user-facing autonomy control (owner design 2026-07-13, revised
+// 2026-07-17). Lives with the quick-action chips so the CURRENT mode is always
+// visible — the answer to both "why is it quiet?" and "why is it talking?" is
+// on screen. Click → a dropdown of the three modes.
 //
-//   off          no autonomy; also stops running loops + schedules (kill switch)
-//   manual       replies only when you type (ambient events consumed silently)
-//   assist       wakes only when a pane needs input, or to drive a running loop
-//   orchestrate  wakes on every agent event; may drive + press approvals
+//   off     no autonomy (default); also stops running loops + schedules
+//   assist  wakes only when a pane needs input, or to drive a running loop
+//   auto    DANGER: wakes on every agent event; drives panes and presses
+//           approvals on its own judgment, running work to completion
 //
 // Self-contained (the DeckLoopPanel / DeckSchedulesPanel pattern): all IPC goes
 // through the injected `api` prop, defaulting to window.electronAPI.deck.mode in
@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
+import { requestHooksInstallPrompt } from './HooksInstallPrompt';
 
 export interface AgentModeApi {
   get: (workspaceId: string) => Promise<{ mode: AgentMode | null }>;
@@ -29,7 +30,7 @@ export interface AgentModeApi {
 }
 
 /** Order shown in the dropdown, least → most autonomous. */
-const MODE_ORDER: readonly AgentMode[] = ['off', 'manual', 'assist', 'orchestrate'];
+const MODE_ORDER: readonly AgentMode[] = ['off', 'assist', 'auto'];
 
 function modeLabel(t: (k: string) => string, mode: AgentMode): string {
   return t(`deck.mode.${mode}`) || mode;
@@ -56,8 +57,8 @@ export function AgentModeChip({
     let cancelled = false;
     api
       .get(workspaceId)
-      .then((r) => { if (!cancelled) setMode(r.mode ?? 'assist'); })
-      .catch(() => { if (!cancelled) setMode('assist'); });
+      .then((r) => { if (!cancelled) setMode(r.mode ?? 'off'); })
+      .catch(() => { if (!cancelled) setMode('off'); });
     return () => { cancelled = true; };
   }, [api, workspaceId]);
 
@@ -85,6 +86,10 @@ export function AgentModeChip({
         .set(workspaceId, next)
         .then((r) => { if (r.ok && r.mode) setMode(r.mode); else setMode(prev); })
         .catch(() => setMode(prev));
+      // Raising autonomy means the orchestrator is about to rely on lifecycle
+      // signals — if the hook bridge is missing, this is the moment to say so.
+      // The prompt re-checks install status itself (no-op when installed).
+      if (next !== 'off') requestHooksInstallPrompt();
     },
     [api, workspaceId, mode],
   );

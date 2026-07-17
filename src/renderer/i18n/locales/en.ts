@@ -324,17 +324,28 @@ export const en = {
   'deck.limit.utilSuffix': ' ({util}% used)',
   'deck.limit.rejected': '⚠ Claude {window} limit reached{on}{reset}. New turns keep using this account until you switch.',
   'deck.limit.approaching': 'Approaching the {window} limit{on}{util}{reset}.',
-  // Per-workspace agent mode — the single autonomy knob (off/manual/assist/
-  // orchestrate). Shown as a chip in the agent panel.
+  // Per-workspace agent mode — the single autonomy knob (off/assist/auto).
+  // Shown as a chip in the agent panel.
   'deck.mode.label': 'Mode',
   'deck.mode.off': 'Off',
-  'deck.mode.offDesc': 'No autonomy. Stops any running loop and schedule. You can still type.',
-  'deck.mode.manual': 'Manual',
-  'deck.mode.manualDesc': 'Replies only when you type. Never wakes itself on agent events.',
+  'deck.mode.offDesc': 'No autonomy (default). Stops any running loop and schedule. You can still type.',
   'deck.mode.assist': 'Assist',
-  'deck.mode.assistDesc': 'Wakes only when a pane needs input, or to drive a running loop. No summary spam.',
-  'deck.mode.orchestrate': 'Orchestrate',
-  'deck.mode.orchestrateDesc': 'Wakes on every agent event; may drive panes and press approvals.',
+  'deck.mode.assistDesc': 'Wakes only when a pane needs input, or to drive a running loop. Notifies, never approves.',
+  // `/clear` — orchestrator context reset (transcript stays).
+  'deck.contextCleared': 'Orchestrator context cleared — the next turn starts fresh.',
+  'deck.contextClearFailed': 'Could not clear the orchestrator context.',
+  // Claude Code hook-bridge install prompt (launch + mode-raise nudge).
+  'hooks.prompt.title': 'Install wmux hooks for accurate agent signals',
+  'hooks.prompt.body': 'Without hooks, wmux falls back to screen-reading to guess when an agent finishes — it can miss completions and approvals. Installing the hook bridge into your Claude Code settings makes these signals exact.',
+  'hooks.prompt.install': 'Install hooks',
+  'hooks.prompt.installing': 'Installing…',
+  'hooks.prompt.later': 'Later',
+  'hooks.prompt.error': 'Install failed.',
+  'hooks.prompt.doneTitle': 'Hooks installed',
+  'hooks.prompt.doneBody': 'Restart the Claude sessions in your panes to activate the hooks.',
+  'hooks.prompt.close': 'Close',
+  'deck.mode.auto': 'Auto (danger)',
+  'deck.mode.autoDesc': 'Wakes on every agent event; drives panes and presses approvals on its own judgment, running work to completion.',
   // Global event-push kill switch: OFF stops the unrequested wake-turns
   // (each one is a real token-spending SDK turn); a running loop still wakes.
   'settings.autoWake': 'Auto-wake on pane events',
