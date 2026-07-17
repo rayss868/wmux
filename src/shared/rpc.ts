@@ -21,6 +21,17 @@ export interface RpcRequest {
    */
   clientName?: string;
   clientVersion?: string;
+  /**
+   * BYOB P4 — commander-brain role claim. Set by the bundled MCP server when
+   * it runs in `--commander` mode (per-spawn token minted by the brain
+   * adapter, commanderTrust.ts). PRESENCE of this field is the role claim:
+   * the router validates it BEFORE trust/permission processing and rejects
+   * the whole request on an invalid/stale token — a claimed-but-invalid
+   * commander is never demoted to an ordinary external caller (that
+   * demotion would reopen exactly the surface the role gate exists to
+   * close). A validated token puts `commanderWorkspace` on RpcContext.
+   */
+  commanderToken?: string;
 }
 
 /**
@@ -63,6 +74,14 @@ export interface RpcContext {
   firstParty?: boolean;
   clientName?: string;
   clientVersion?: string;
+  /**
+   * BYOB P4 — the workspace a VALIDATED commander token is bound to. Set by
+   * RpcRouter only after commanderTrust validation succeeds; its presence is
+   * the enforcer's signal for the commander allow lane and the handlers'
+   * signal for workspace-ownership confinement. Never set from a raw
+   * envelope field — validation is the only writer.
+   */
+  commanderWorkspace?: string;
 }
 
 export type RpcResponse =
@@ -142,6 +161,9 @@ export type RpcMethod =
   | 'ui.decoratePane'
   | 'system.identify'
   | 'system.capabilities'
+  // Performance diagnostics (P0-5c) — aggregate reveal-mechanism counters
+  // for `wmux doctor --performance`. Read-only, no terminal content.
+  | 'perf.status'
   | 'deck.resolvePaneRoute'
   | 'deck.resolveCommanderWorkspace'
   | 'deck.requestDecision'
@@ -295,6 +317,7 @@ export const ALL_RPC_METHODS = [
   'ui.decoratePane',
   'system.identify',
   'system.capabilities',
+  'perf.status',
   'deck.resolvePaneRoute',
   'deck.resolveCommanderWorkspace',
   'deck.requestDecision',

@@ -214,6 +214,11 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalFontFamily: state.terminalFontFamily,
     defaultShell: state.defaultShell,
     deckBrainModel: state.deckBrainModel || undefined,
+    // Persisted explicitly (not `|| undefined`): an explicit false survives
+    // serialization, so a future default flip can't resurrect full power for
+    // a user who deliberately turned it off (CodeRabbit, PR #474).
+    deckBrainFullPower: state.deckBrainFullPower,
+    deckBrainVendor: state.deckBrainVendor,
     channelsTabVisible: state.channelsTabVisible,
     gitTabVisible: state.gitTabVisible,
     paneActionsVisible: state.paneActionsVisible,
@@ -811,6 +816,22 @@ export default function AppLayout() {
     window.addEventListener(FIRST_RUN_REOPEN_EVENT, handler);
     return () => window.removeEventListener(FIRST_RUN_REOPEN_EVENT, handler);
   }, []);
+
+  // Sync the orchestrator full-power toggle to MAIN, which is the authority
+  // every brain-turn path consults (typed, scheduled, event-woken). Fires on
+  // change AND once after session hydration flips the persisted value in, so
+  // a restart restores the mode for autonomous turns without a typed command.
+  // Fire-and-forget: a failed sync leaves main on the safe default (raw).
+  const deckBrainFullPowerLive = useStore((s) => s.deckBrainFullPower);
+  useEffect(() => {
+    void window.electronAPI?.deck?.fullPowerSet?.(deckBrainFullPowerLive);
+  }, [deckBrainFullPowerLive]);
+
+  // Same main-authority sync for the brain vendor (BYOB M0).
+  const deckBrainVendorLive = useStore((s) => s.deckBrainVendor);
+  useEffect(() => {
+    void window.electronAPI?.deck?.brainVendorSet?.(deckBrainVendorLive);
+  }, [deckBrainVendorLive]);
 
   // ─── First-run onboarding (spotlight) detection ─────────────────────
   // D8: spotlight stays gated behind firstRunCompleted so the wizard always

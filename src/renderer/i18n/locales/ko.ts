@@ -11,6 +11,8 @@ export const ko = {
   'sidebar.showWorkspaces': '워크스페이스 보기',
   'sidebar.expandTooltip': '사이드바 펼치기 (Ctrl+B)',
   'sidebar.unreadCount': '읽지 않음 {count}개',
+  'sidebar.agent': '에이전트',
+  'sidebar.agentTooltip': '에이전트 패널 토글',
 
   // Workspace
   'workspace.agentRunning': '에이전트 실행 중',
@@ -162,6 +164,10 @@ export const ko = {
   // Terminal
   'terminal.exited': '프로세스가 코드 {code}로 종료됨',
   'terminal.exitedBracket': '[프로세스가 코드 {code}로 종료됨]',
+  'terminal.catchingUp': '동기화 중…',
+  'terminal.staleScreen': '화면이 최신이 아닐 수 있음 — 재시도 예정',
+  'retention.migratedNotice': '이번 업데이트부터 숨겨진 패널의 렌더링을 일시정지합니다 (모든 것은 계속 실행되며, 다시 표시될 때 따라잡습니다). Settings → Terminal에서 끌 수 있습니다.',
+  'retention.migratedNoticeTurnOff': '끄기',
   'terminal.supervisedRestart': '[wmux] 감독 재시작 #{count} — 중지: 창 메뉴',
   'terminal.supervisedRestartExit': '[wmux] 감독 재시작 #{count} (종료 {code}) — 중지: 창 메뉴',
   'terminal.copied': '복사됨!',
@@ -219,6 +225,9 @@ export const ko = {
   'settings.soundOff': '끄기',
   'settings.autoUpdate': '자동 업데이트',
   'settings.autoUpdateDesc': '자동으로 업데이트를 확인하고 설치합니다',
+  'settings.startup': '시작 프로그램',
+  'settings.startOnLogin': 'Windows 시작 시 자동 실행',
+  'settings.startOnLoginDesc': 'Windows에 로그인하면 wmux를 자동으로 실행합니다',
   'settings.checkUpdate': '업데이트 확인',
   'settings.checking': '확인 중...',
   'settings.upToDate': '최신 버전',
@@ -235,10 +244,18 @@ export const ko = {
   // agent (커맨드 데크 브레인) 설정 — 명칭은 영문 "agent" 고정(번역·한글화
   // 금지, 오너 결정 2026-07-13: "오케스트레이터"는 한글 UI에서 넘침).
   'settings.orchestrator': 'agent',
+  'settings.orchestratorBrain': 'agent 브레인',
+  'settings.orchestratorBrainDesc':
+    '커맨드 데크를 구동할 에이전트 런타임. 기본은 Claude Code, Hermes(ACP)는 이 PC에 Hermes Agent CLI 설치·인증이 필요합니다(자체 setup 먼저). 다음 agent 턴부터 적용되며 브레인별로 대화 이력이 따로 유지됩니다.',
+  'settings.orchestratorBrainClaude': 'Claude Code (기본)',
+  'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — 실험적',
   'settings.orchestratorModel': 'agent 모델',
   'settings.orchestratorModelDesc':
     '커맨드 데크 agent가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',
   'settings.orchestratorModelDefault': '기본 (구독 기본 모델)',
+  'settings.orchestratorFullPower': '풀파워 모드',
+  'settings.orchestratorFullPowerDesc':
+    'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고(wmux 샌드박스 밖의 본인 코드), 툴 호출이 느려질 수 있으며, 켜져 있는 동안 agent는 메모리 노트를 쓸 수 없습니다. 다음 agent 턴부터 적용됩니다.',
   // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/manual/assist/orchestrate).
   'deck.limit.window': '사용량',
   'deck.limit.resetsSoon': '곧 초기화됨',
@@ -320,8 +337,8 @@ export const ko = {
   'settings.splitInheritsCwdDesc': '창 분할로 생긴 새 패널이 원래 패널의 현재 디렉토리에서 시작합니다.',
   'settings.imeResidueGuard': 'IME 잔여 텍스트 자동 비우기',
   'settings.imeResidueGuardDesc': '잔여 IME 텍스트를 파괴적으로 덮어쓰는 음성 입력 도구로부터 보호합니다. 해당 도구를 쓰지 않으면 꺼 두세요 — 일부 입력기와 충돌할 수 있습니다.',
-  'settings.hiddenPaneRetention': '숨겨진 패널 렌더링 생략 (실험적)',
-  'settings.hiddenPaneRetentionDesc': '숨겨진 패널의 에이전트 출력을 백그라운드에서 파싱하지 않고, 다시 표시될 때 데몬에서 재동기화합니다. 바쁜 에이전트가 많아도 보이는 패널이 부드럽게 유지됩니다. 데몬 세션 전용.',
+  'settings.hiddenPaneRetention': '숨겨진 패널 렌더링 일시정지',
+  'settings.hiddenPaneRetentionDesc': '기본 켜짐. 숨겨진 패널은 화면 렌더링만 멈추고 모든 것은 계속 실행됩니다 — 출력은 데몬이 보관하며 다시 표시될 때 따라잡습니다("동기화 중" 표시). 끄면 숨겨진 패널도 항상 렌더링하지만, 바쁜 패널마다 실제 CPU 비용이 듭니다. 데몬 세션 전용 — 로컬 모드 세션은 항상 렌더링됩니다.',
   'settings.updates': '업데이트',
   'settings.wmuxUpdates': 'wmux 업데이트',
   'settings.updateFailed': '업데이트 확인 실패',

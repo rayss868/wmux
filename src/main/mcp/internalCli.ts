@@ -41,6 +41,10 @@ export const WMUX_CLI_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // tier anyway, listed so the source-lockstep test stays exhaustive)
   'system.identify',
   'system.capabilities',
+  // performance diagnostics (`wmux doctor --performance`). Plugin callers
+  // need pane.read (the response carries a global ptyId); the CLI reaches it
+  // through this tier.
+  'perf.status',
   // workspace lifecycle/read (the CLI's `wmux workspace ...` verbs)
   'workspace.list',
   'workspace.current',

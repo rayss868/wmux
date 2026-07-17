@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
+import { markRetentionMigrationDone } from '../retentionMigration';
 import type { FleetSortMode } from '../selectors/fleet';
 import {
   generateId,
@@ -133,6 +134,20 @@ export interface UISlice {
   // id) passed to the Agent SDK. Applied between turns — see deck.handler.
   deckBrainModel: string;
   setDeckBrainModel: (model: string) => void;
+
+  // Orchestrator full-power mode (BYOB approach A): load the user's Claude
+  // Code ecosystem (skills, CLAUDE.md, hooks) into brain turns. Default OFF —
+  // raw mode is the documented safe default (hook storms, personal hooks in
+  // brain turns); this is a deliberate opt-in. Applied between turns like the
+  // model override — see deck.handler.
+  deckBrainFullPower: boolean;
+  setDeckBrainFullPower: (enabled: boolean) => void;
+
+  // Orchestrator brain vendor (BYOB M0): which runtime the Command Deck brain
+  // runs on. 'claude' (default) = Claude Agent SDK; 'hermes' = the generic
+  // ACP adapter. Main-authoritative like fullPower — AppLayout syncs it.
+  deckBrainVendor: 'claude' | 'hermes';
+  setDeckBrainVendor: (vendor: 'claude' | 'hermes') => void;
 
   // Whether the deck shows the Channels tab (the human channel UI). Default
   // OFF: the orchestrator is the single interface and channels are its
@@ -769,6 +784,18 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.deckBrainModel = model;
   }),
 
+  deckBrainFullPower: false,
+
+  setDeckBrainFullPower: (enabled) => set((state) => {
+    state.deckBrainFullPower = enabled;
+  }),
+
+  deckBrainVendor: 'claude',
+
+  setDeckBrainVendor: (vendor) => set((state) => {
+    state.deckBrainVendor = vendor;
+  }),
+
   channelsTabVisible: false,
 
   setChannelsTabVisible: (visible) => set((state) => {
@@ -808,10 +835,19 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.imeResidueGuardEnabled = enabled;
   }),
 
-  hiddenPaneRetentionEnabled: false,
+  // Default ON since the app-weight P0 (2026-07-16): hidden panes queue PTY
+  // output without parsing and re-sync from the daemon on reveal. The Settings
+  // toggle remains the escape hatch; see retentionMigration.ts for how
+  // pre-flip profiles (which persisted the old `false` default) are migrated
+  // exactly once.
+  hiddenPaneRetentionEnabled: true,
 
   setHiddenPaneRetentionEnabled: (enabled) => set((state) => {
     state.hiddenPaneRetentionEnabled = enabled;
+    // Explicit user intent — stamp the migration ledger so this choice is
+    // never overridden by the one-shot default-flip migration (covers the
+    // fresh-install case where loadSession never ran a migration).
+    markRetentionMigrationDone();
   }),
 
   startupDirectory: '',

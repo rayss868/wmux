@@ -11,6 +11,8 @@ export const en = {
   'sidebar.showWorkspaces': 'Show workspaces',
   'sidebar.expandTooltip': 'Expand sidebar (Ctrl+B)',
   'sidebar.unreadCount': '{count} unread',
+  'sidebar.agent': 'Agent',
+  'sidebar.agentTooltip': 'Toggle agent panel',
 
   // Workspace
   'workspace.agentRunning': 'Agent running',
@@ -217,6 +219,10 @@ export const en = {
   // Terminal
   'terminal.exited': 'Process exited with code {code}',
   'terminal.exitedBracket': '[Process exited with code {code}]',
+  'terminal.catchingUp': 'catching up…',
+  'terminal.staleScreen': 'screen may be stale — will retry',
+  'retention.migratedNotice': 'This update pauses rendering for hidden panes (everything keeps running; panes catch up when shown). You can turn it off in Settings → Terminal.',
+  'retention.migratedNoticeTurnOff': 'Turn off',
   // X8 — in-pane supervised-restart marker. The trailing hint is the Ctrl+C
   // escape hatch disclosure (decision ⑨): the user can stop auto-restart from
   // the pane menu. Two variants: with/without the dead process's exit code.
@@ -278,6 +284,9 @@ export const en = {
   'settings.soundOff': 'Off',
   'settings.autoUpdate': 'Auto-update',
   'settings.autoUpdateDesc': 'Automatically check for and install updates',
+  'settings.startup': 'Startup',
+  'settings.startOnLogin': 'Start on Windows startup',
+  'settings.startOnLoginDesc': 'Launch wmux automatically when you sign in to Windows',
   'settings.checkUpdate': 'Check for updates',
   'settings.checking': 'Checking...',
   'settings.upToDate': 'Up to date',
@@ -293,10 +302,18 @@ export const en = {
   'settings.tabAbout': 'About',
   // Orchestrator (command deck brain) settings
   'settings.orchestrator': 'Orchestrator',
+  'settings.orchestratorBrain': 'Orchestrator brain',
+  'settings.orchestratorBrainDesc':
+    'Which agent runtime drives the Command Deck. Claude Code is the default; Hermes (ACP) requires the Hermes Agent CLI installed and authenticated on this machine — run its own setup first. Applies from the next brain turn; each brain keeps its own conversation history.',
+  'settings.orchestratorBrainClaude': 'Claude Code (default)',
+  'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — experimental',
   'settings.orchestratorModel': 'Orchestrator model',
   'settings.orchestratorModelDesc':
     'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',
   'settings.orchestratorModelDefault': 'Default (subscription model)',
+  'settings.orchestratorFullPower': 'Full-power mode',
+  'settings.orchestratorFullPowerDesc':
+    'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks run inside brain turns (your own code, outside any wmux sandbox), tool calls may get slower, and the brain cannot write its memory notes while this is on. Applies from the next brain turn.',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
@@ -381,8 +398,8 @@ export const en = {
   'settings.splitInheritsCwdDesc': 'A pane created by splitting starts in the original pane\'s current directory.',
   'settings.imeResidueGuard': 'Clear IME residue while idle',
   'settings.imeResidueGuardDesc': 'Protects against voice-input tools that replace leftover IME text destructively. Leave off unless you use such a tool — the clearing can confuse some IMEs.',
-  'settings.hiddenPaneRetention': 'Skip hidden pane rendering (experimental)',
-  'settings.hiddenPaneRetentionDesc': 'Stops parsing background agent output in hidden panes and re-syncs from the daemon on reveal. Keeps the visible pane smooth with many busy agents. Daemon sessions only.',
+  'settings.hiddenPaneRetention': 'Pause hidden pane rendering',
+  'settings.hiddenPaneRetentionDesc': 'Default on. Hidden panes pause screen rendering while everything keeps running — output is captured by the daemon and the pane catches up when you switch back (briefly shown as "catching up"). Turn off to render every hidden pane continuously; that costs real CPU per busy hidden pane. Daemon sessions only; local-mode sessions always render.',
   'settings.updates': 'Updates',
   'settings.wmuxUpdates': 'wmux updates',
   'settings.updateFailed': 'Failed to check for updates',

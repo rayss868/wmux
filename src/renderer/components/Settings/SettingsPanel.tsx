@@ -606,6 +606,10 @@ function OrchestratorSection() {
   const t = useT();
   const deckBrainModel = useStore((s) => s.deckBrainModel);
   const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
+  const deckBrainFullPower = useStore((s) => s.deckBrainFullPower);
+  const setDeckBrainFullPower = useStore((s) => s.setDeckBrainFullPower);
+  const deckBrainVendor = useStore((s) => s.deckBrainVendor);
+  const setDeckBrainVendor = useStore((s) => s.setDeckBrainVendor);
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
   const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
   const gitTabVisible = useStore((s) => s.gitTabVisible);
@@ -639,6 +643,20 @@ function OrchestratorSection() {
     <div className="flex flex-col gap-3 mt-4" data-testid="orchestrator-section">
       <SectionLabel label={t('settings.orchestrator')} />
       <SettingRow
+        label={t('settings.orchestratorBrain')}
+        description={t('settings.orchestratorBrainDesc')}
+      >
+        <SettingSelect
+          value={deckBrainVendor}
+          onChange={(v) => setDeckBrainVendor(v === 'hermes' ? 'hermes' : 'claude')}
+          options={[
+            { value: 'claude', label: t('settings.orchestratorBrainClaude') },
+            { value: 'hermes', label: t('settings.orchestratorBrainHermes') },
+          ]}
+          label={t('settings.orchestratorBrain')}
+        />
+      </SettingRow>
+      <SettingRow
         label={t('settings.orchestratorModel')}
         description={t('settings.orchestratorModelDesc')}
       >
@@ -647,6 +665,16 @@ function OrchestratorSection() {
           onChange={setDeckBrainModel}
           options={options}
           label={t('settings.orchestratorModel')}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('settings.orchestratorFullPower')}
+        description={t('settings.orchestratorFullPowerDesc')}
+      >
+        <Toggle
+          checked={deckBrainFullPower}
+          onChange={setDeckBrainFullPower}
+          label={t('settings.orchestratorFullPower')}
         />
       </SettingRow>
       <SettingRow
@@ -1599,6 +1627,38 @@ function UpdateStatus() {
 
 // ─── Tab content components ───────────────────────────────────────────────────
 
+// Windows "start on login" toggle (issue #460). The per-user Run registry key
+// is the source of truth — read on mount, flipped optimistically with echo
+// reconciliation (mirrors OrchestratorSection's auto-wake). Rendered only on
+// win32; the backing IPC is a no-op elsewhere.
+function StartupSection() {
+  const t = useT();
+  const [enabled, setEnabled] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.autostart
+      ?.get()
+      .then((r) => { if (!cancelled) setEnabled(r.enabled); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+  const onChange = (next: boolean) => {
+    setEnabled(next); // optimistic
+    window.electronAPI.autostart
+      ?.set(next)
+      .then((r) => setEnabled(r.enabled)) // reconcile with the real registry state
+      .catch(() => setEnabled(!next));
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      <SectionLabel label={t('settings.startup')} />
+      <SettingRow label={t('settings.startOnLogin')} description={t('settings.startOnLoginDesc')}>
+        <Toggle checked={enabled} onChange={onChange} label={t('settings.startOnLogin')} />
+      </SettingRow>
+    </div>
+  );
+}
+
 function TabGeneral() {
   const t = useT();
   const locale = useStore((s) => s.locale);
@@ -1646,6 +1706,9 @@ function TabGeneral() {
         </SettingRow>
         <UpdateStatus />
       </div>
+
+      {/* Startup — Windows only (registry Run key). Hidden off-Windows. */}
+      {window.electronAPI.platform === 'win32' && <StartupSection />}
 
       {/* Tutorial */}
       <div className="flex flex-col gap-2">

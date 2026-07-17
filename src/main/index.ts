@@ -29,6 +29,8 @@ import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
+import { registerPerfRpc } from './pipe/handlers/perf.rpc';
+import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { UsagePoller } from './claude/UsagePoller';
 import { AccountUsageService } from './account/AccountUsageService';
@@ -74,6 +76,14 @@ import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
+// Static imports (NOT require('./...')) so rollup inlines these into the
+// single .vite/build/index.js bundle. A dynamic require left literal in the
+// bundle has no adjacent chunk to resolve at runtime and throws
+// MODULE_NOT_FOUND — silently swallowed by the best-effort catches below,
+// which would break autostart registration / CLI-shim install during
+// Squirrel events entirely (issue #463).
+import * as autostart from './autostart';
+import * as cliShim from './cliShim';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
@@ -129,20 +139,15 @@ if (process.platform === 'win32') {
     const target = path.basename(process.execPath);
 
     if (squirrelCmd === '--squirrel-install') {
-      // Register Windows startup entry so wmux survives reboot
-      try {
-        const { execFileSync } = require('child_process');
-        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-        const reg = path.join(systemRoot, 'System32', 'reg.exe');
-        execFileSync(reg, [
-          'add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
-          '/v', 'wmux', '/t', 'REG_SZ', '/d', `"${process.execPath}"`, '/f',
-        ], { windowsHide: true });
-      } catch { /* best-effort */ }
+      // Register Windows startup entry so wmux survives reboot. Autostart
+      // defaults ON at install time; users can turn it off in Settings →
+      // General (Settings toggle + squirrel-updated both go through
+      // ./autostart, which treats the Run key as the source of truth).
+      try { autostart.enableAutostart(process.execPath); } catch { /* best-effort */ }
 
       // X4: drop the `wmux` CLI shim into <root>\bin and register it on the
       // user PATH. Internally best-effort — never blocks the install.
-      try { require('./cliShim').installCliShim(process.execPath); } catch { /* best-effort */ }
+      try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
 
       spawn(updateExe, ['--createShortcut', target, '--shortcut-locations', 'Desktop,StartMenu'], { detached: true, windowsHide: true })
         .on('close', () => {
@@ -152,38 +157,24 @@ if (process.platform === 'win32') {
         });
       app.quit();
     } else if (squirrelCmd === '--squirrel-updated') {
-      // Re-register startup entry with current exe path (may change after update)
-      try {
-        const { execFileSync } = require('child_process');
-        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-        const reg = path.join(systemRoot, 'System32', 'reg.exe');
-        execFileSync(reg, [
-          'add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
-          '/v', 'wmux', '/t', 'REG_SZ', '/d', `"${process.execPath}"`, '/f',
-        ], { windowsHide: true });
-      } catch { /* best-effort */ }
+      // Refresh the startup entry's exe path (it changes on every update) —
+      // but ONLY if autostart is still on. Re-adding unconditionally would
+      // silently re-enable it for a user who turned it off. See ./autostart.
+      try { autostart.refreshAutostartEntry(process.execPath); } catch { /* best-effort */ }
 
       // X4: regenerate the CLI shim — it embeds the absolute app-X.Y.Z path,
       // which changes on every update.
-      try { require('./cliShim').installCliShim(process.execPath); } catch { /* best-effort */ }
+      try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
 
       spawn(updateExe, ['--createShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
       app.quit();
     } else if (squirrelCmd === '--squirrel-uninstall') {
       // Remove startup registry entry
-      try {
-        const { execFileSync } = require('child_process');
-        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-        const reg = path.join(systemRoot, 'System32', 'reg.exe');
-        execFileSync(reg, [
-          'delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
-          '/v', 'wmux', '/f',
-        ], { windowsHide: true });
-      } catch { /* best-effort */ }
+      try { autostart.disableAutostart(); } catch { /* best-effort */ }
 
       // X4: remove the CLI shim + strip <root>\bin from the user PATH.
-      try { require('./cliShim').uninstallCliShim(process.execPath); } catch { /* best-effort */ }
+      try { cliShim.uninstallCliShim(process.execPath); } catch { /* best-effort */ }
 
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
@@ -548,6 +539,7 @@ registerDeckRpc(rpcRouter, () => mainWindow);
 registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
+registerPerfRpc(rpcRouter);
 registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
@@ -832,6 +824,9 @@ app.on('ready', async () => {
     // Per-level routing preserved so warn/error keep their own bucket.
     const lvl: 'info' | 'warn' | 'error' = level === 3 ? 'error' : level === 2 ? 'warn' : 'info';
     const where = sourceId ? `${sourceId}:${line}` : 'renderer';
+    // P0-5c: feed the reveal-stats aggregator (`wmux doctor --performance`).
+    // Cheap prefix check inside — non-`[wmux:reveal]` lines return immediately.
+    revealStatsAggregator.ingest(message);
     logLine(lvl, 'renderer', `${where} — ${message}`);
   });
 
@@ -1582,7 +1577,11 @@ if (process.platform === 'win32') {
       // has no production callers; SESSION_SAVE goes through sync save()), but
       // it keeps this path correct if a debounced producer ever appears. Never
       // reload-and-resave stale state.
-      const { sessionManager } = require('./ipc/handlers/session.handler');
+      //
+      // Use the module-level `sessionManager` (imported at top) directly — the
+      // former `require('./ipc/handlers/session.handler')` here was left literal
+      // in the bundle and threw MODULE_NOT_FOUND at runtime (same bundling bug
+      // as #463), silently failing this flush on every shutdown.
       sessionManager.flushSync();
     } catch (err) {
       console.error('[Main] session-end flushSync failed:', err);

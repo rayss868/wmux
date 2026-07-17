@@ -120,19 +120,34 @@ export const IPC = {
   // trust basis as channelLocal/fanout (Electron process boundary, pipe-
   // unreachable):
   //   DECK_SEND       (invoke) renderer → main: run one brain turn. Payload
-  //                   { text, fleetContext? }. Resolves with the accept/reject
-  //                   result ({ ok, code? }); the turn's content streams over
-  //                   DECK_STREAM, it is not the invoke's return value.
+  //                   { text, fleetContext?, model?, fullPower? }. Resolves
+  //                   with the accept/reject result ({ ok, code? }); the
+  //                   turn's content streams over DECK_STREAM, it is not the
+  //                   invoke's return value.
   //   DECK_STREAM     (push)   main → renderer: one normalized BrainEvent per
   //                   send (text-delta | tool-start | tool-end | turn-end |
   //                   error). Dedicated channel — a brain stream is NOT channel
   //                   semantics, so it never rides the channels plumbing.
   //   DECK_INTERRUPT  (invoke) renderer → main: abort the in-flight turn.
   //   DECK_STATUS     (invoke) renderer → main: { status, sessionId } snapshot.
+  //   DECK_FULLPOWER_SET (invoke) renderer → main: sync the full-power toggle
+  //                   (BYOB approach A). Main is the authority consulted by
+  //                   EVERY turn path (send / scheduled / event-woken), so a
+  //                   toggle change applies to autonomous turns immediately —
+  //                   not only after the next typed command. The renderer
+  //                   pushes on change and once after session hydration
+  //                   (restart restore).
   DECK_SEND: 'deck:send',
   DECK_STREAM: 'deck:stream',
   DECK_INTERRUPT: 'deck:interrupt',
   DECK_STATUS: 'deck:status',
+  DECK_FULLPOWER_SET: 'deck:fullpower:set',
+  //   DECK_BRAIN_VENDOR_SET (invoke) renderer → main: sync the orchestrator
+  //                   brain vendor (BYOB M0 — 'claude' | 'hermes'). Same
+  //                   main-authority contract as DECK_FULLPOWER_SET: every
+  //                   turn path consults it, idle stale-vendor brains retire
+  //                   on change, renderer pushes on change + after hydration.
+  DECK_BRAIN_VENDOR_SET: 'deck:brainvendor:set',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.
@@ -297,6 +312,11 @@ export const IPC = {
   // Replaces the renderer-only performance.memory.usedJSHeapSize, which only
   // measured the renderer V8 JS heap (~10MB) and grossly under-reported usage.
   APP_MEMORY: 'app:memory',
+  // Windows "start on login" toggle. GET queries the per-user Run registry key
+  // (source of truth) and returns { enabled }. SET adds/removes it and returns
+  // the post-op state. No-op returning { enabled: false } off-Windows.
+  AUTOSTART_GET: 'autostart:get',
+  AUTOSTART_SET: 'autostart:set',
   // Window control
   WINDOW_HIDE: 'window:hide',
   // Windows taskbar attention recall. Renderer asks main to flash the
@@ -312,6 +332,13 @@ export const IPC = {
   // native min/max/close) so the controls never clash with the theme.
   // Windows-only no-op elsewhere (see registerHandlers).
   WINDOW_SET_TITLEBAR_OVERLAY: 'window:setTitleBarOverlay',
+  // macOS: native fullscreen hides the traffic lights, so the renderer's
+  // 72px titlebar reserve must collapse (and come back on exit) — the same
+  // enter/leave-full-screen → class toggle pattern VS Code/Hyper use. Push
+  // (main → renderer) on the window events + a pull (invoke) for the mount-
+  // time initial state.
+  WINDOW_FULLSCREEN_CHANGED: 'window:fullscreen-changed',
+  WINDOW_IS_FULLSCREEN: 'window:isFullScreen',
   // MCP integration status / management (Settings panel + CLI parity)
   MCP_CHECK: 'mcp:check',
   MCP_REREGISTER: 'mcp:reregister',

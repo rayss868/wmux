@@ -168,6 +168,13 @@ const electronAPI = {
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
     setAutoUpdateEnabled: (enabled: boolean) => ipcRenderer.send(IPC.AUTO_UPDATE_ENABLED, enabled),
   },
+  // Windows "start on login" toggle (issue #460). Backed by the per-user Run
+  // registry key. `get`/`set` resolve to the live state; off-Windows both
+  // report { enabled: false } so the Settings toggle simply stays hidden.
+  autostart: {
+    get: () => ipcRenderer.invoke(IPC.AUTOSTART_GET) as Promise<{ enabled: boolean }>,
+    set: (enabled: boolean) => ipcRenderer.invoke(IPC.AUTOSTART_SET, enabled) as Promise<{ enabled: boolean }>,
+  },
   notification: {
     // ptyId may be null for app-level notifications (e.g. external MCP
     // `notify` RPC, where no PTY originates the message). When null, the
@@ -364,6 +371,16 @@ const electronAPI = {
       }>,
     interrupt: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.DECK_INTERRUPT, { workspaceId }) as Promise<{ ok: true }>,
+    fullPowerSet: (enabled: boolean) =>
+      ipcRenderer.invoke(IPC.DECK_FULLPOWER_SET, { enabled }) as Promise<{
+        ok: true;
+        enabled: boolean;
+      }>,
+    brainVendorSet: (vendor: 'claude' | 'hermes') =>
+      ipcRenderer.invoke(IPC.DECK_BRAIN_VENDOR_SET, { vendor }) as Promise<{
+        ok: true;
+        vendor: 'claude' | 'hermes';
+      }>,
     status: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.DECK_STATUS, { workspaceId }) as Promise<{
         status: 'idle' | 'busy' | 'disposed';
@@ -804,6 +821,15 @@ const electronAPI = {
     // Main validates the payload and no-ops on non-Windows platforms.
     setTitleBarOverlay: (opts: { color: string; symbolColor: string }) => {
       ipcRenderer.send(IPC.WINDOW_SET_TITLEBAR_OVERLAY, opts);
+    },
+    /** macOS titlebar reserve: mount-time fullscreen state (pull). */
+    isFullScreen: () => ipcRenderer.invoke(IPC.WINDOW_IS_FULLSCREEN) as Promise<boolean>,
+    /** macOS titlebar reserve: live fullscreen transitions (push). */
+    onFullscreenChanged: (cb: (fullscreen: boolean) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { fullscreen?: boolean }) =>
+        cb(payload?.fullscreen === true);
+      ipcRenderer.on(IPC.WINDOW_FULLSCREEN_CHANGED, listener);
+      return () => ipcRenderer.removeListener(IPC.WINDOW_FULLSCREEN_CHANGED, listener);
     },
   },
   events: {
