@@ -702,7 +702,8 @@ describe('DaemonClient', () => {
       if (process.platform === 'win32') {
         expect(name).toMatch(/^\\\\.\\pipe\\wmux-daemon-/);
       } else {
-        expect(name).toMatch(/\.wmux-daemon\.sock$/);
+        // P7: Unix 소켓은 ~/.wmux{suffix}/ 하위로 이동
+        expect(name).toMatch(/\/\.wmux(-[^/]+)?\/daemon\.sock$/);
       }
     });
 

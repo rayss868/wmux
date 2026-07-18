@@ -12,7 +12,7 @@ import {
   getWmuxHomeDir,
   getDaemonAuthTokenPath,
   getLegacyDaemonAuthTokenPath,
-  dataSuffix,
+  getDaemonSocketPath,
 } from '../shared/constants';
 
 // 서버(PipeServer)와 동일한 경로 해석을 사용한다. 과거에는 '/tmp/wmux.sock'을
@@ -205,11 +205,8 @@ export async function sendRequest(
  * Used as the fallback when the `daemon-pipe` hint file is absent.
  */
 export function getDaemonPipeName(): string {
-  const username = os.userInfo().username || 'default';
-  if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
-  }
-  return path.join(os.homedir(), `.wmux-daemon${dataSuffix()}.sock`);
+  // P7: shared 헬퍼로 위임 — main/DaemonClient·daemon/config.ts와 lockstep.
+  return getDaemonSocketPath();
 }
 
 /**

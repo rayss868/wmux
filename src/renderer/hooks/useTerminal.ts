@@ -260,7 +260,7 @@ function showCopyToast() {
 }
 
 // Surfaces openPath outcomes that the user cannot otherwise see — without
-// this, Ctrl+clicking an .exe (blocked main-side) or a missing file
+// this, Ctrl+clicking (mac: Cmd+clicking) an .exe (blocked main-side) or a missing file
 // silently reveals the parent folder via showItemInFolder with no
 // explanation, which reads as "the click didn't do anything." Yellow for
 // blocked (security gate), red for generic failure (file gone, no

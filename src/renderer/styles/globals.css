@@ -373,7 +373,8 @@ html, body, #root {
   overflow: hidden;
   background-color: var(--bg-base);
   color: var(--text-main);
-  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  /* Inter는 번들되지 않아 제거 — system-ui 우선(mac=SF, win=Segoe UI 자동). */
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
 /* 네이티브 버튼 외형 제거: macOS에서 <button>이 Aqua 그라데이션·베벨·그림자를

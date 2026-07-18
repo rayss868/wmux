@@ -23,6 +23,20 @@ vi.mock('child_process', () => ({
   execFileSync: (...args: unknown[]) => execFileSync(...args),
 }));
 
+// darwin 분기용 electron app mock — 로그인 항목 상태를 in-memory로 흉내낸다.
+// win/linux 테스트에서는 호출되지 않는다(호출 시 테스트에서 검증).
+const loginItemState = { openAtLogin: false };
+const setLoginItemSettings = vi.fn((s: { openAtLogin: boolean }) => {
+  loginItemState.openAtLogin = s.openAtLogin;
+});
+const getLoginItemSettings = vi.fn(() => ({ openAtLogin: loginItemState.openAtLogin }));
+let electronAppAvailable = true;
+vi.mock('electron', () => ({
+  get app() {
+    return electronAppAvailable ? { setLoginItemSettings, getLoginItemSettings } : undefined;
+  },
+}));
+
 function setPlatform(platform: NodeJS.Platform) {
   Object.defineProperty(process, 'platform', { value: platform, configurable: true });
 }
@@ -104,13 +118,37 @@ describe('autostart (win32)', () => {
   });
 });
 
-describe('autostart (non-win32)', () => {
+describe('autostart (darwin)', () => {
   beforeEach(() => setPlatform('darwin'));
+
+  it('setAutostartEnabled는 setLoginItemSettings로 등록/해제하고 openAtLogin을 되읽는다', async () => {
+    electronAppAvailable = true;
+    loginItemState.openAtLogin = false;
+    const mod = await load();
+    expect(mod.setAutostartEnabled(true)).toBe(true);
+    expect(setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true });
+    expect(mod.setAutostartEnabled(false)).toBe(false);
+    expect(setLoginItemSettings).toHaveBeenLastCalledWith({ openAtLogin: false });
+    // darwin 경로는 reg.exe를 절대 스폰하지 않는다
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it('electron app 미가용 시 best-effort로 false를 반환한다', async () => {
+    electronAppAvailable = false;
+    const mod = await load();
+    expect(mod.isAutostartEnabled()).toBe(false);
+    expect(mod.setAutostartEnabled(true)).toBe(false);
+    electronAppAvailable = true;
+  });
+});
+
+describe('autostart (linux 등 기타 플랫폼)', () => {
+  beforeEach(() => setPlatform('linux'));
 
   it('every function is inert and reg.exe is never spawned', async () => {
     const mod = await load();
     expect(mod.isAutostartEnabled()).toBe(false);
-    mod.enableAutostart('/Applications/wmux.app');
+    mod.enableAutostart('/opt/wmux/wmux');
     mod.disableAutostart();
     expect(mod.setAutostartEnabled(true)).toBe(false);
     mod.refreshAutostartEntry();

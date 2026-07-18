@@ -271,7 +271,7 @@ export const IPC = {
   // Shell
   SHELL_OPEN_EXTERNAL: 'shell:open-external',
   // Open an absolute filesystem path in the OS default app / explorer.
-  // Triggered by Ctrl+click on a path token rendered in the terminal.
+  // Triggered by Ctrl+click (mac: Cmd+click) on a path token rendered in the terminal.
   // Path is validated main-side: must be absolute, no NUL bytes, length-capped.
   SHELL_OPEN_PATH: 'shell:open-path',
   GIT_STATUS: 'git:status',
@@ -496,6 +496,52 @@ export function getTcpPortPath(): string {
 export function getWmuxHomeDir(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
   return `${home}/.wmux${dataSuffix()}`;
+}
+
+// ─── P7: 데몬 제어/세션 소켓 경로 (macOS/Linux는 ~/.wmux{suffix}/ 하위) ──────
+//
+// 과거에는 홈 디렉터리에 직접 `~/.wmux-daemon{suffix}.sock` /
+// `~/.wmux-session-<id>.sock`을 만들어 홈을 오염시켰다. 디렉터리가 이미
+// suffix를 담으므로 파일명에서 suffix를 빼 sun_path 104바이트 한계에 여유를
+// 둔다(`~/.wmux/daemon.sock`, `~/.wmux/session-<uuid>.sock`). Windows named
+// pipe 이름은 기존 그대로 유지(경로 아님).
+//
+// FOUR-SIDED LOCKSTEP — 데몬 바인더(daemon/config.ts getDefaultPipeName,
+// daemon/SessionPipe.getPipeName)와 클라이언트(main/DaemonClient, cli/client)가
+// 전부 이 헬퍼를 쓴다. 서로 다른 경로를 계산하면 구데몬처럼 연결이 끊긴다.
+// 업그레이드 중 살아 있는 구버전 데몬과의 호환은 ① 제어 파이프: 데몬이 부팅 시
+// 실제 바인드 경로를 `~/.wmux/daemon-pipe` 힌트 파일에 쓰고 클라이언트가 이를
+// 우선하므로 유지 ② 세션 파이프: 힌트가 없으므로 클라이언트 쪽 legacy 경로
+// 재시도 폴백(main/DaemonClient.connectSessionPipe)으로 유지.
+
+/** 데몬 제어 소켓/파이프 기본 경로. */
+export function getDaemonSocketPath(): string {
+  if (process.platform === 'win32') {
+    const username = require('os').userInfo().username || 'default';
+    return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
+  }
+  return `${getWmuxHomeDir()}/daemon.sock`;
+}
+
+/** P7 이전(구버전)의 데몬 제어 소켓 경로 — 폴백/마이그레이션 판정용.
+ * 구버전 코드와 동일하게 os.homedir() 기반으로 계산해야 문자열이 일치한다. */
+export function getLegacyDaemonSocketPath(): string {
+  const home = require('os').homedir() || '';
+  return `${home}/.wmux-daemon${dataSuffix()}.sock`;
+}
+
+/** 세션 데이터 소켓/파이프 경로. */
+export function getSessionSocketPath(sessionId: string): string {
+  if (process.platform === 'win32') {
+    return `\\\\.\\pipe\\wmux-session-${sessionId}`;
+  }
+  return `${getWmuxHomeDir()}/session-${sessionId}.sock`;
+}
+
+/** P7 이전(구버전)의 세션 소켓 경로 — 구데몬 연결 폴백용(os.homedir() 기반). */
+export function getLegacySessionSocketPath(sessionId: string): string {
+  const home = require('os').homedir() || '';
+  return `${home}/.wmux-session-${sessionId}.sock`;
 }
 
 // Daemon control-pipe auth token. Unlike the main-pipe token (getAuthTokenPath,

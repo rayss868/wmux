@@ -14,13 +14,26 @@
  * registers it (autostart defaults ON, preserving historical behavior); update
  * must NOT resurrect it if the user turned it off — see `refreshAutostartEntry`.
  *
- * All operations are Windows-only and best-effort: reg.exe failures never throw
- * to callers (the IPC layer reports the post-op state instead). On non-Windows
- * platforms every function is an inert no-op returning `false`, so the renderer
- * can call them unconditionally and simply hide the toggle off-Windows.
+ * All operations are best-effort: reg.exe failures never throw to callers (the
+ * IPC layer reports the post-op state instead).
+ *
+ * macOS(darwin): 시스템 로그인 항목(app.set/getLoginItemSettings)이 동일한
+ * 단일 진실 소스 역할을 한다. refreshAutostartEntry는 darwin에서 no-op —
+ * 로그인 항목은 앱 번들 경로를 OS가 추적하므로 업데이트마다 재작성할 필요가 없다.
+ * 그 외 플랫폼(linux 등)에서는 여전히 inert no-op(`false`)이라 renderer는
+ * 무조건 호출해도 안전하다.
  */
 import { execFileSync } from 'child_process';
 import * as path from 'path';
+
+import { app } from 'electron';
+
+// darwin 분기용 electron app 접근자. 테스트에서 vi.mock('electron')으로 대체되며,
+// 어떤 이유로든 app이 없으면 null → darwin 분기는 win 경로와 동일하게
+// best-effort no-op으로 수렴한다.
+function electronApp(): Electron.App | null {
+  return app ?? null;
+}
 
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const VALUE_NAME = 'wmux';
@@ -51,6 +64,15 @@ function regExe(): string {
  * platform other than win32, or if reg.exe errors for any reason, returns false.
  */
 export function isAutostartEnabled(): boolean {
+  if (process.platform === 'darwin') {
+    // macOS: 시스템 로그인 항목이 단일 진실 소스 — 레지스트리의 Run 키와 동일한
+    // 역할. getLoginItemSettings 실패는 best-effort로 false 처리.
+    try {
+      return electronApp()?.getLoginItemSettings().openAtLogin ?? false;
+    } catch {
+      return false;
+    }
+  }
   if (process.platform !== 'win32') return false;
   try {
     // `reg query ... /v wmux` exits 0 when the value exists, non-zero (throws
@@ -68,6 +90,15 @@ export function isAutostartEnabled(): boolean {
 
 /** Write the Run value pointing at `exePath` (defaults to this process). */
 export function enableAutostart(exePath: string = process.execPath): void {
+  if (process.platform === 'darwin') {
+    // macOS: exePath 인자는 무시 — 로그인 항목은 현재 앱 번들에 자동으로 묶인다.
+    try {
+      electronApp()?.setLoginItemSettings({ openAtLogin: true });
+    } catch {
+      /* best-effort */
+    }
+    return;
+  }
   if (process.platform !== 'win32') return;
   try {
     execFileSync(
@@ -82,6 +113,14 @@ export function enableAutostart(exePath: string = process.execPath): void {
 
 /** Remove the Run value so the app no longer launches at login. */
 export function disableAutostart(): void {
+  if (process.platform === 'darwin') {
+    try {
+      electronApp()?.setLoginItemSettings({ openAtLogin: false });
+    } catch {
+      /* best-effort */
+    }
+    return;
+  }
   if (process.platform !== 'win32') return;
   try {
     execFileSync(regExe(), ['delete', RUN_KEY, '/v', VALUE_NAME, '/f'], {

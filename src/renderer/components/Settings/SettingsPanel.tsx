@@ -1629,8 +1629,8 @@ function UpdateStatus() {
 
 // Windows "start on login" toggle (issue #460). The per-user Run registry key
 // is the source of truth — read on mount, flipped optimistically with echo
-// reconciliation (mirrors OrchestratorSection's auto-wake). Rendered only on
-// win32; the backing IPC is a no-op elsewhere.
+// reconciliation (mirrors OrchestratorSection's auto-wake). Rendered on win32
+// (Run key) + darwin(로그인 항목); the backing IPC is a no-op elsewhere.
 function StartupSection() {
   const t = useT();
   const [enabled, setEnabled] = useState(true);
@@ -1707,8 +1707,10 @@ function TabGeneral() {
         <UpdateStatus />
       </div>
 
-      {/* Startup — Windows only (registry Run key). Hidden off-Windows. */}
-      {window.electronAPI.platform === 'win32' && <StartupSection />}
+      {/* Startup — win32(레지스트리 Run 키) + darwin(로그인 항목). 그 외 숨김. */}
+      {(window.electronAPI.platform === 'win32' || window.electronAPI.platform === 'darwin') && (
+        <StartupSection />
+      )}
 
       {/* Tutorial */}
       <div className="flex flex-col gap-2">

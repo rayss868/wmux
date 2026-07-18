@@ -53,23 +53,26 @@ describe('sanitizeFontFamily', () => {
   });
 });
 
+// 크로스 플랫폼 폴백 체인 락 — mac 모노(Menlo/SF Mono/Monaco), win 모노
+// (Consolas/Courier New), 한글 폴백(Apple SD Gothic Neo/Malgun Gothic), generic.
+const FALLBACK_CHAIN =
+  "'Menlo', 'SF Mono', 'Monaco', 'Consolas', 'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace";
+
 describe('terminalFontFamilyCss', () => {
   it('wraps a clean name in quotes and appends the fallback chain', () => {
-    expect(terminalFontFamilyCss('JetBrains Mono')).toBe(
-      "'JetBrains Mono', 'Consolas', 'Courier New', 'Malgun Gothic', monospace",
-    );
+    expect(terminalFontFamilyCss('JetBrains Mono')).toBe(`'JetBrains Mono', ${FALLBACK_CHAIN}`);
   });
 
   it('sanitizes a dirty name before wrapping (regression guard)', () => {
     // The injection chars are stripped, then the remainder is quoted once.
     const css = terminalFontFamilyCss(`x'; } body {`);
-    expect(css).toBe("'x body', 'Consolas', 'Courier New', 'Malgun Gothic', monospace");
-    // Exactly four quoted families × 2 quotes — no extra quotes leaked in.
-    expect((css.match(/'/g) || []).length).toBe(8);
+    expect(css).toBe(`'x body', ${FALLBACK_CHAIN}`);
+    // Exactly eight quoted families × 2 quotes — no extra quotes leaked in.
+    expect((css.match(/'/g) || []).length).toBe(16);
   });
 
   it('returns the fallback chain alone when the name is empty/unsafe', () => {
-    const chain = "'Consolas', 'Courier New', 'Malgun Gothic', monospace";
+    const chain = FALLBACK_CHAIN;
     expect(terminalFontFamilyCss('')).toBe(chain);
     expect(terminalFontFamilyCss(`'";{}`)).toBe(chain);
   });

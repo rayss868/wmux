@@ -1,5 +1,5 @@
 /**
- * Path link provider — Ctrl+click an absolute filesystem path in the
+ * Path link provider — Ctrl+click (mac: Cmd+click) an absolute filesystem path in the
  * terminal to open it in Explorer / Finder / xdg-open.
  *
  * Layered with xterm's existing WebLinksAddon (URLs). Path detection runs
