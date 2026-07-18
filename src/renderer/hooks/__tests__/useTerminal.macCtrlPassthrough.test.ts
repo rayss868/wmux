@@ -56,4 +56,10 @@ describe('useTerminal macOS Ctrl passthrough (source-level lock)', () => {
       /!isMac && e\.ctrlKey && !e\.shiftKey && \(e\.key === 'c' \|\| e\.code === 'KeyC'\)/,
     );
   });
+
+  it('Ctrl+V 붙여넣기 가로채기는 비-mac 한정 — mac은 quoted-insert로 PTY 통과', () => {
+    expect(HANDLER).toMatch(
+      /!isMac && e\.ctrlKey && !e\.shiftKey && \(e\.key === 'v' \|\| e\.code === 'KeyV'\)/,
+    );
+  });
 });

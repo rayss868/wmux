@@ -1158,7 +1158,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       // Ctrl+V: paste from clipboard (use our IPC clipboard, block event
       // so xterm doesn't also paste via browser's native paste event)
-      if (e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
+      // mac은 Cmd+V가 붙여넣기 전담(위 분기) — Ctrl+V는 readline quoted-insert
+      // (verbatim)이므로 PTY로 통과시킨다.
+      if (!isMac && e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
         e.preventDefault();
         // isMac 게이트: blockNativePaste 리스너가 비-macOS에선 등록조차 안 되므로(위 참고)
         // 스탬프도 macOS에서만 찍는다 — 안 그러면 나중에 등록 게이트를 넓힐 때 값이 이미
