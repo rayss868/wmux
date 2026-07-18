@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS: the WMUX logo no longer overlaps the traffic lights.** macOS 26 (Tahoe) draws larger window buttons, so the 72px left reserve left the logo touching the green button; the reserve is now 80px (mac only).
+
 ## [3.27.0] — 2026-07-18
 
 ### Added
