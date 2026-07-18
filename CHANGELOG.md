@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **macOS: terminal Ctrl+letter control bytes work again.** The xterm key handler swallowed Ctrl+D/K/I/N/T/,/` (and Ctrl+=/-/0, Ctrl+`) to bubble them to app shortcuts, but on macOS those shortcuts live on Cmd — so Ctrl+D (EOF), Ctrl+I (Tab), Ctrl+K (kill-line) and friends reached neither the app nor the PTY. On macOS only the literal-Ctrl bindings (Ctrl+B prefix, Ctrl+M bookmark, Ctrl+Arrow) still bubble; everything else now passes through to the shell. Windows/Linux unchanged.
+- **macOS: Ctrl+C always sends SIGINT.** With a selection present, Ctrl+C was intercepted as copy even on macOS, where Cmd+C already owns copy — so you couldn't interrupt a running process while output was selected. The copy-on-selection branch is now non-mac only.
 - **macOS: the WMUX logo no longer overlaps the traffic lights.** macOS 26 (Tahoe) draws larger window buttons, so the 72px left reserve left the logo touching the green button; the reserve is now 80px (mac only).
 
 ## [3.27.0] — 2026-07-18
