@@ -1655,10 +1655,20 @@ if (process.platform === 'win32') {
 
 app.on('activate', () => {
   if (isQuitting) return;
-  if (BrowserWindow.getAllWindows().length === 0) {
+  const windows = BrowserWindow.getAllWindows();
+  if (windows.length === 0) {
     mainWindow = createWindow();
     attachWindowRecovery(mainWindow);
+    return;
   }
+  // macOS: 창을 닫아도 hide()만 하고 파괴하지 않으므로(위 close 인터셉트)
+  // getAllWindows()는 계속 0보다 크다 — Dock 아이콘 재클릭으로 숨겨진 창을
+  // 복귀시키는 mac 표준 관례가 이 분기 없이는 무반응이었다(owner-reported
+  // 2026-07-19). Windows/Linux는 트레이 컨텍스트 메뉴가 이미 이 경로를
+  // 담당하므로 이 핸들러는 mac에서만 의미 있지만, 숨겨진 창이 있으면
+  // 어느 OS에서든 보여주는 편이 안전하다.
+  const hidden = windows.find((w) => !w.isVisible());
+  if (hidden) hidden.show();
 });
 
 } // end appInit()

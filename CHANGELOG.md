@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **macOS: clicking the Dock icon now reopens a window hidden via close-to-tray.** `activate` only created a new window when zero windows existed; a hidden-not-destroyed window still counted, so Dock reactivation was a dead click with no visible way back short of finding the menu-bar tray icon.
+- **macOS: the menu-bar tray icon is no longer oversized.** It rendered the 1024px `.icns` app icon at native size instead of a ~22pt menu-bar icon; it's now resized on macOS only.
 - **macOS: quitting during OS logout/restart no longer risks losing the latest session snapshot.** The synchronous session flush only existed on the Windows `session-end` path; `before-quit` now flushes synchronously on macOS before any awaits.
 - **macOS: Ctrl+V passes through to the shell as quoted-insert.** Paste interception is non-mac only now — Cmd+V already owns paste on macOS.
 - **macOS: terminal Ctrl+letter control bytes work again.** The xterm key handler swallowed Ctrl+D/K/I/N/T/,/` (and Ctrl+=/-/0, Ctrl+`) to bubble them to app shortcuts, but on macOS those shortcuts live on Cmd — so Ctrl+D (EOF), Ctrl+I (Tab), Ctrl+K (kill-line) and friends reached neither the app nor the PTY. On macOS only the literal-Ctrl bindings (Ctrl+B prefix, Ctrl+M bookmark, Ctrl+Arrow) still bubble; everything else now passes through to the shell. Windows/Linux unchanged.

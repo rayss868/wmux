@@ -139,7 +139,16 @@ export function createTray(mainWindow: BrowserWindow, callbacks: TrayCallbacks):
     ? path.join(process.resourcesPath, iconFile)
     : path.join(__dirname, '..', '..', 'assets', iconFile);
 
-  tray = new Tray(nativeImage.createFromPath(iconPath));
+  let trayImage = nativeImage.createFromPath(iconPath);
+  // macOS 메뉴바는 ~18~22pt 아이콘을 기대한다 — icon.icns(Dock/Finder용
+  // 1024px 기반)를 원본 그대로 넣으면 비정상적으로 크게 렌더된다
+  // (owner-reported 2026-07-19). 로고가 다색이라 setTemplateImage()는 검은
+  // 실루엣으로 뭉개질 위험이 있어(전용 모노크롬 에셋 없음) 쓰지 않고, 크기만
+  // 표준 메뉴바 치수로 맞춘다. Windows/Linux는 원본 크기 유지.
+  if (process.platform === 'darwin') {
+    trayImage = trayImage.resize({ width: 22, height: 22 });
+  }
+  tray = new Tray(trayImage);
   trayWindow = mainWindow;
   trayCallbacks = callbacks;
   tray.setToolTip('wmux');
