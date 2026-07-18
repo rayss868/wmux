@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.27.0] — 2026-07-18
+
 ### Added
 
 - **A merge conflict on a pane's PR now wakes the owning workspace too.** Completing the PR-feedback trio (red CI, review comments, and now conflicts): when a pane's pull request becomes conflicting against its base, the workspace's orchestrator wakes once — `auto` may send the pane one instruction to rebase/merge its base and resolve the conflict, `assist` reports, `off` stays silent. Edge-triggered per episode (fires once, re-arms when the conflict clears) and rides the same throttled `gh` read the review-comment router already makes, so it adds no extra polling. GitHub via `gh`'s `mergeable`, GitLab via `has_conflicts`.
