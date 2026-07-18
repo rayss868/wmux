@@ -1043,11 +1043,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Ctrl+K(kill-line) 등 readline 컨트롤 문자가 PTY에도 못 가고 죽는다
       // (owner-reported 2026-07-19). mac에서는 literal-Ctrl 바인딩만(b=프리픽스,
       // m=북마크, Ctrl+Arrow) 버블시키고 나머지는 xterm→PTY로 통과.
-      const isMacKeys = window.electronAPI?.platform === 'darwin';
-      const bubbleKeys = isMacKeys
+      const bubbleKeys = isMac
         ? ['b', 'm', 'ArrowUp', 'ArrowDown']
         : [',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'];
-      const bubbleCodes = isMacKeys
+      const bubbleCodes = isMac
         ? ['KeyB', 'KeyM', 'ArrowUp', 'ArrowDown']
         : ['KeyB', 'KeyD', 'KeyK', 'KeyI', 'KeyN', 'KeyT', 'KeyM', 'Comma', 'ArrowUp', 'ArrowDown'];
       if (e.ctrlKey && !e.shiftKey && bubbleKeys.includes(e.key)) {
@@ -1061,7 +1060,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return false;
       }
       // Ctrl+` by code (cross-layout) — mac은 Cmd+`가 액션이므로 Ctrl+`(NUL)는 PTY로.
-      if (!isMacKeys && e.ctrlKey && !e.shiftKey && e.code === 'Backquote') {
+      if (!isMac && e.ctrlKey && !e.shiftKey && e.code === 'Backquote') {
         return false;
       }
       // Terminal font zoom: Ctrl+= / Ctrl+- / Ctrl+0 (#171). Let these bubble to
@@ -1070,7 +1069,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Ctrl++ (Shift+=) and numpad variants are already covered: the Ctrl+Shift
       // catch-all below bubbles the former, and useKeyboard maps NumpadAdd etc.
       // mac 줌은 Cmd+=/-/0 — Ctrl 조합은 앱 액션이 아니므로 xterm/PTY로 통과.
-      if (!isMacKeys && e.ctrlKey && !e.shiftKey && (
+      if (!isMac && e.ctrlKey && !e.shiftKey && (
         e.key === '=' || e.key === '-' || e.key === '0' ||
         e.code === 'Equal' || e.code === 'Minus' || e.code === 'Digit0' ||
         e.code === 'NumpadAdd' || e.code === 'NumpadSubtract' || e.code === 'Numpad0'
@@ -1106,7 +1105,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // handlers below stay intact, so Ctrl+C still sends SIGINT and the
       // Windows/Linux flow is unchanged. Match physical `code` so it survives a
       // CJK IME (e.key would be a composed jamo / 'Process', not 'c'/'v').
-      const isMac = window.electronAPI?.platform === 'darwin';
       if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
         const sel = terminal.getSelection();
         if (sel) {

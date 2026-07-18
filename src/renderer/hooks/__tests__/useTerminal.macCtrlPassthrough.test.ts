@@ -33,10 +33,10 @@ describe('useTerminal macOS Ctrl passthrough (source-level lock)', () => {
 
   it('mac 버블 목록은 literal-Ctrl 바인딩(b, m, Arrow)만 담는다', () => {
     expect(HANDLER).toMatch(
-      /isMacKeys\s*\?\s*\['b', 'm', 'ArrowUp', 'ArrowDown'\]/,
+      /isMac\s*\?\s*\['b', 'm', 'ArrowUp', 'ArrowDown'\]/,
     );
     expect(HANDLER).toMatch(
-      /isMacKeys\s*\?\s*\['KeyB', 'KeyM', 'ArrowUp', 'ArrowDown'\]/,
+      /isMac\s*\?\s*\['KeyB', 'KeyM', 'ArrowUp', 'ArrowDown'\]/,
     );
   });
 
@@ -47,8 +47,8 @@ describe('useTerminal macOS Ctrl passthrough (source-level lock)', () => {
   });
 
   it('Ctrl+`와 Ctrl+=/-/0 줌 버블은 비-mac 한정이다', () => {
-    expect(HANDLER).toMatch(/!isMacKeys && e\.ctrlKey && !e\.shiftKey && e\.code === 'Backquote'/);
-    expect(HANDLER).toMatch(/!isMacKeys && e\.ctrlKey && !e\.shiftKey && \(\s*\n?\s*e\.key === '='/);
+    expect(HANDLER).toMatch(/!isMac && e\.ctrlKey && !e\.shiftKey && e\.code === 'Backquote'/);
+    expect(HANDLER).toMatch(/!isMac && e\.ctrlKey && !e\.shiftKey && \(\s*\n?\s*e\.key === '='/);
   });
 
   it('Ctrl+C 복사 가로채기는 비-mac 한정 — mac은 항상 SIGINT', () => {
