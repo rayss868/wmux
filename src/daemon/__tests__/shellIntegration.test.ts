@@ -50,3 +50,22 @@ describe('ZSH_RC — PROMPT B 마커 폭 가드', () => {
     expect(ZSH_RC).not.toMatch(/"\$\{PROMPT\}"\$'\\033\]133;B/);
   });
 });
+
+// v6: mac 기본 zsh가 cd를 보고하지 않아 사이드바 브랜치/git 컨텍스트가 생성
+// 시점 cwd에 고정되던 문제 수정(owner-reported 2026-07-19).
+describe('ZSH_RC — OSC 7 cwd 보고', () => {
+  it('OSC 7을 방출하는 __wmux_osc7 함수를 정의한다', () => {
+    expect(ZSH_RC).toContain('__wmux_osc7()');
+    // ESC]7;file://<host><PWD>BEL — parseOsc7Cwd와 맞춰 host 뒤 슬래시 없이
+    // $PWD(절대경로)를 붙인다. `%s/%s`(이중 슬래시)는 //Users/... 를 만들어 금지.
+    expect(ZSH_RC).toMatch(/__wmux_osc7\(\) \{ printf '\\033\]7;file:\/\/%s%s\\a' "\$\{HOST-localhost\}" "\$PWD"; \}/);
+    expect(ZSH_RC).not.toContain('file://%s/%s');
+  });
+
+  it('chpwd(cd 즉시)와 precmd(최초/매 프롬프트)에 모두 등록한다', () => {
+    expect(ZSH_RC).toMatch(/add-zsh-hook chpwd __wmux_osc7/);
+    expect(ZSH_RC).toMatch(/add-zsh-hook precmd __wmux_osc7/);
+    // add-zsh-hook 미존재 폴백 경로도 chpwd_functions에 등록해야 한다.
+    expect(ZSH_RC).toMatch(/chpwd_functions\+=\(__wmux_osc7\)/);
+  });
+});
