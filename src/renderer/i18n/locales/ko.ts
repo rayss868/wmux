@@ -647,10 +647,11 @@ export const ko = {
 
   // Agent toolbar
   'toolbar.attach': '첨부',
-  'toolbar.fileExplorer': '파일 탐색기',
+  'toolbar.fileExplorer': '파일',
   'toolbar.snippets': '스니펫',
   'toolbar.richInput': '리치 입력',
   'toolbar.new': '새로',
+  'toolbar.newChat': '새 대화',
   'toolbar.send': '보내기',
   'toolbar.addToPrompt': '프롬프트에 추가',
   'toolbar.close': '닫기',
@@ -907,6 +908,12 @@ export const ko = {
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — 현재 워크스페이스의 모든 터미널 페인에 같은 텍스트(격리 없음)',
   'toolbar.broadcastPrompt': 'broadcast — 현재 워크스페이스의 모든 터미널 페인에 전송',
+  'toolbar.broadcastTitle': '터미널에 브로드캐스트',
+  'toolbar.broadcastTargets': '터미널 {n}개',
+  'toolbar.broadcastPlaceholder': '한 번 입력하면 이 워크스페이스의 모든 터미널 페인에 전송됩니다…',
+  'toolbar.broadcastSend': '전송',
+  'toolbar.broadcastSending': '전송 중…',
+  'toolbar.broadcastResult': '{ok} 전송 · {fail} 실패',
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ────────────────────────
   'fanout.title': '병렬 작업 — N개 격리 태스크 동시 실행',

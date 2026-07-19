@@ -68,8 +68,36 @@ import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckDecisionCard } from './DeckDecisionCard';
 import { AgentModeChipContainer } from './AgentModeChip';
+import FanOutDialog from '../AgentToolbar/FanOutDialog';
+import { IconSparkles } from '../icons';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
+
+/** fan-out(병렬 작업) 진입 칩 — 오케스트레이터 spawn 명령이라 Mode/Loop/Schedules와
+ *  같은 컨트롤 바에 산다(툴바에서 이동). 클릭 시 FanOutDialog를 위로 연다(뷰포트
+ *  클램프·우측 정렬). 빈 함대(페인 0)에서도 렌더·동작한다. */
+function DeckFanOutChip({ t }: { t: (key: string) => string }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        data-deck-fanout-chip
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] transition-opacity hover:opacity-80 ${
+          open ? 'text-[var(--accent-blue)]' : 'text-[var(--text-sub)]'
+        } bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING}`}
+        title={t('fanout.title')}
+        {...(open ? tokenAttrs('accent', 'text') : tokenAttrs('textSub', 'text'))}
+      >
+        <IconSparkles size={12} />
+        {t('toolbar.fanOut') || 'Multi Task'}
+      </button>
+      {open && <FanOutDialog align="right" onClose={() => setOpen(false)} />}
+    </div>
+  );
+}
 
 // ─── Pure view ───────────────────────────────────────────────────────────────
 
@@ -332,6 +360,15 @@ export function CommanderViewContent({
           {/* Schedules chip + inline panel — new schedules bind to THIS
               workspace's orchestrator (M1.5). */}
           <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
+
+          {/* Hairline seam │ fan-out(병렬 작업) — 함대 생성 명령이라 오케스트레이터
+              컨트롤과 한 묶음. 툴바에서 이 자리로 이동(DESIGN.md Decisions Log). */}
+          <span
+            aria-hidden="true"
+            data-deck-control-sep
+            className="h-4 w-px mx-0.5 bg-[var(--border-soft)]"
+          />
+          <DeckFanOutChip t={t} />
 
           {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click
               recovery. Flows inline after the always-on controls (no ml-auto:
