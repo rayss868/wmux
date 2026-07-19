@@ -70,13 +70,16 @@ describe('deriveShimPaths', () => {
 
 // ─── darwin CLI shim (P3) ────────────────────────────────────────────────────
 // 실제 tmpdir에 가짜 앱 번들 구조를 만들어 심링크 설치·소유권 규칙을 검증한다.
+// Windows에서는 스킵: 이 함수는 프로덕션에서 darwin에서만 호출되며(main/index.ts
+// 게이트), Windows는 심링크 생성에 권한이 필요하고 경로 구분자도 달라 검증 대상이
+// 아니다. macOS·Linux(둘 다 POSIX 심링크)에서만 돌린다.
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach } from 'vitest';
 import { installCliShimDarwin, deriveDarwinCliTarget } from '../cliShim';
 
-describe('installCliShimDarwin', () => {
+describe.skipIf(process.platform === 'win32')('installCliShimDarwin', () => {
   let tmp: string;
   let execPath: string;
   let target: string;
