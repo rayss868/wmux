@@ -25,7 +25,7 @@ const MODEL_OPTIONS: { value: string; label: string }[] = [
   { value: 'haiku', label: 'Haiku 4.5' },
 ];
 
-export function OrchestratorModelChip(): React.ReactElement {
+export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } = {}): React.ReactElement {
   const model = useStore((s) => s.deckBrainModel);
   const setModel = useStore((s) => s.setDeckBrainModel);
   const [open, setOpen] = useState(false);
@@ -68,7 +68,8 @@ export function OrchestratorModelChip(): React.ReactElement {
         <div
           role="listbox"
           aria-label="Orchestrator model"
-          className="absolute right-0 top-full mt-1 z-50 min-w-[128px] rounded-md border py-1 shadow-lg bg-[var(--bg-surface)]"
+          // 컨트롤 바(하단)에 살 땐 위로 열어 composer를 덮지 않게 한다.
+          className={`absolute right-0 ${openUp ? 'bottom-full mb-1' : 'top-full mt-1'} z-50 min-w-[128px] rounded-md border py-1 shadow-lg bg-[var(--bg-surface)]`}
           style={{ borderColor: 'var(--border-soft)' }}
           {...tokenAttrs('bgSurface', 'bg')}
         >

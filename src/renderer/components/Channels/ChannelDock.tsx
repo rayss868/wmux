@@ -32,7 +32,6 @@ import { DeckTabs } from '../Deck/DeckTabs';
 import { CommanderView } from '../Deck/CommanderView';
 import { GitTab } from '../Deck/GitTab';
 import { ReviewTab } from '../Deck/ReviewTab';
-import { OrchestratorModelChip } from '../Deck/OrchestratorModelChip';
 import { FOCUS_RING } from '../focusRing';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
@@ -54,6 +53,13 @@ export default function ChannelDock(): React.ReactElement {
   // stale persisted 'channels' can never render either — the guard below.
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
   const gitTabVisible = useStore((s) => s.gitTabVisible);
+  // Review 탭 배지 — 변경(uncommitted)이 있는 워크스페이스 수. 사이드바 git 메타
+  // (workspace.metadata.gitSync.dirty, 15s TTL 캐시)를 재사용하므로 신규 폴링·탭
+  // 마운트 불필요 — 탭이 닫혀 있어도 값이 갱신된다. gitSync는 detached/unborn repo
+  // 에서 생략될 수 있어(그 워크스페이스는 배지에 기여하지 않음) 하한 추정이다.
+  const reviewCount = useStore(
+    (s) => s.workspaces.filter((w) => (w.metadata?.gitSync?.dirty ?? 0) > 0).length,
+  );
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const t = useT();
   const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
@@ -81,11 +87,9 @@ export default function ChannelDock(): React.ReactElement {
         channelsUnread={sumUnread(channelUnread)}
         showChannels={channelsTabVisible}
         showGit={gitTabVisible}
+        reviewCount={reviewCount}
         rightSlot={
           <>
-            {/* Orchestrator model — visible + switchable next to its name,
-                only on the Commander tab (it's the brain's setting). */}
-            {!showChannelsView && !showGitView && !showReviewView && <OrchestratorModelChip />}
             {/* Collapse the whole dock (terminals reclaim the width); reopen
                 from the StatusBar dock toggle. Arrow points toward the edge the
                 dock sits on. */}

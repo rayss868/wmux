@@ -68,6 +68,7 @@ import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckDecisionCard } from './DeckDecisionCard';
 import { AgentModeChipContainer } from './AgentModeChip';
+import { OrchestratorModelChip } from './OrchestratorModelChip';
 import FanOutDialog from '../AgentToolbar/FanOutDialog';
 import { IconSparkles } from '../icons';
 
@@ -348,6 +349,10 @@ export function CommanderViewContent({
         >
           {/* Mode = the single autonomy knob, always showing the current mode. */}
           <AgentModeChipContainer t={t} workspaceId={activeWorkspaceId} />
+          {/* Orchestrator model — moved here from the deck-tab header so the
+              brain's model sits next to its Mode. Opens upward (control bar is
+              at the bottom) so the picker never covers the composer. */}
+          <OrchestratorModelChip openUp />
           {/* Hairline seam: master switch │ the automations it governs. */}
           <span
             aria-hidden="true"

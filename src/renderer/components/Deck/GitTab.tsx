@@ -13,7 +13,7 @@
 //
 // Design contract (DESIGN.md): monochrome glyphs only, paths in mono, and at
 // most ONE amber point — the dot marking the worktree the active pane is in.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import type { StoreState } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -84,18 +84,24 @@ export function GitTab(): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [newBranch, setNewBranch] = useState('');
   const [busy, setBusy] = useState(false);
+  // Monotonic load token — 빠른 repo(pane cwd) 전환 시 늦게 도착한 이전 응답이
+  // 새 결과를 덮지 않게 한다(ReviewTab:97 패턴 복제). 최신 load()만 commit.
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
     const { worktree, resolveRepo } = getBridges();
     if (!worktree || !resolveRepo) {
+      if (seq !== loadSeq.current) return;
       setError('bridge unavailable');
       setLoading(false);
       return;
     }
     const cwd = activeCwd;
     const resolved = cwd ? await resolveRepo(cwd) : ({ ok: false } as const);
+    if (seq !== loadSeq.current) return; // superseded by a newer load
     if (!resolved.ok) {
       setRepoPath(null);
       setWorktrees([]);
@@ -104,6 +110,7 @@ export function GitTab(): React.ReactElement {
     }
     setCurrentWorktree(resolved.repoPath);
     const res = await worktree.list(resolved.repoPath);
+    if (seq !== loadSeq.current) return; // superseded by a newer load
     if (!res.ok) {
       setError(res.error);
       setRepoPath(null);
