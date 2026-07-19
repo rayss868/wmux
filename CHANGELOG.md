@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **macOS: the sidebar's git sync badge (↑/↓/●) and worktree/task-close git checks work again.** `git`-spawning code passed the Electron process's raw `PATH` to `execFile`; a GUI-launched macOS app only inherits launchd's minimal PATH, not the Homebrew PATH `~/.zshrc` sets up, so `git` resolved to nothing and every call failed silently (the existing "quiet absence" contract for these caches). All `execFile('git', …)` call sites now merge in the standard Homebrew/system locations on macOS.
 - **macOS: clicking the Dock icon now reopens a window hidden via close-to-tray.** `activate` only created a new window when zero windows existed; a hidden-not-destroyed window still counted, so Dock reactivation was a dead click with no visible way back short of finding the menu-bar tray icon.
 - **macOS: the menu-bar tray icon is no longer oversized.** It rendered the 1024px `.icns` app icon at native size instead of a ~22pt menu-bar icon; it's now resized on macOS only.
 - **macOS: quitting during OS logout/restart no longer risks losing the latest session snapshot.** The synchronous session flush only existed on the Windows `session-end` path; `before-quit` now flushes synchronously on macOS before any awaits.
