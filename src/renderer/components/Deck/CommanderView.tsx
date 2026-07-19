@@ -86,14 +86,14 @@ function DeckFanOutChip({ t }: { t: (key: string) => string }): React.ReactEleme
         data-deck-fanout-chip
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] transition-opacity hover:opacity-80 ${
+        className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] transition-opacity hover:opacity-80 ${
           open ? 'text-[var(--accent-blue)]' : 'text-[var(--text-sub)]'
         } bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING}`}
-        title={t('fanout.title')}
+        title={`${t('toolbar.fanOut') || 'Multi Task'} — ${t('fanout.title')}`}
+        aria-label={t('toolbar.fanOut') || 'Multi Task'}
         {...(open ? tokenAttrs('accent', 'text') : tokenAttrs('textSub', 'text'))}
       >
         <IconSparkles size={12} />
-        {t('toolbar.fanOut') || 'Multi Task'}
       </button>
       {open && <FanOutDialog align="right" onClose={() => setOpen(false)} />}
     </div>
@@ -343,7 +343,7 @@ export function CommanderViewContent({
       {(activeWorkspaceId || quickActions.length > 0) && (
         <div
           data-deck-control-bar
-          className="flex flex-wrap items-center gap-1.5 px-4 py-1.5 border-t border-[var(--bg-surface)] shrink-0"
+          className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-t border-[var(--bg-surface)] shrink-0"
           style={{ borderColor: 'var(--border-soft)' }}
           {...tokenAttrs('bgSurface', 'border')}
         >
@@ -353,12 +353,6 @@ export function CommanderViewContent({
               brain's model sits next to its Mode. Opens upward (control bar is
               at the bottom) so the picker never covers the composer. */}
           <OrchestratorModelChip openUp />
-          {/* Hairline seam: master switch │ the automations it governs. */}
-          <span
-            aria-hidden="true"
-            data-deck-control-sep
-            className="h-4 w-px mx-0.5 bg-[var(--border-soft)]"
-          />
           {/* The one-click loop chip + panel (loop engineering v1) — binds to
               THIS workspace. */}
           <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
@@ -366,13 +360,9 @@ export function CommanderViewContent({
               workspace's orchestrator (M1.5). */}
           <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
 
-          {/* Hairline seam │ fan-out(병렬 작업) — 함대 생성 명령이라 오케스트레이터
-              컨트롤과 한 묶음. 툴바에서 이 자리로 이동(DESIGN.md Decisions Log). */}
-          <span
-            aria-hidden="true"
-            data-deck-control-sep
-            className="h-4 w-px mx-0.5 bg-[var(--border-soft)]"
-          />
+          {/* fan-out(병렬 작업) — 함대 생성 명령이라 오케스트레이터 컨트롤과 한 묶음.
+              툴바에서 이 자리로 이동(DESIGN.md Decisions Log). 구분자 없이 Schedules
+              뒤에 바로 붙어 좁은 덱에서도 한 줄을 유지한다. */}
           <DeckFanOutChip t={t} />
 
           {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click

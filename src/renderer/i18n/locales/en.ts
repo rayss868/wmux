@@ -915,7 +915,7 @@ export const en = {
   'deck.scheduleAdoptHere': 'Adopt here',
   // Loop engineering v1 — the one-click loop.
   'deck.loop': 'Loop',
-  'deck.loopStartChip': 'Start a loop',
+  'deck.loopStartChip': 'Loop',
   'deck.loopPaused': 'paused',
   'deck.loopObjectivePlaceholder': 'Objective — what should this loop accomplish?',
   'deck.loopDoneWhenPlaceholder': 'Done when… (optional, one item per line)',

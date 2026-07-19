@@ -831,7 +831,7 @@ export const ko = {
   'deck.scheduleAdoptHere': '이 워크스페이스로',
   // Loop engineering v1 — 원클릭 루프.
   'deck.loop': '루프',
-  'deck.loopStartChip': '루프 시작',
+  'deck.loopStartChip': '루프',
   'deck.loopPaused': '일시정지',
   'deck.loopObjectivePlaceholder': '목표 — 이 루프가 달성할 것',
   'deck.loopDoneWhenPlaceholder': '완료 조건… (선택, 한 줄에 하나)',

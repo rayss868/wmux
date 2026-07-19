@@ -127,7 +127,7 @@ export function AgentModeChip({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] hover:opacity-80 transition-opacity ${MODE_SKIN[mode].btn} ${FOCUS_RING}`}
+        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] hover:opacity-80 transition-opacity ${MODE_SKIN[mode].btn} ${FOCUS_RING}`}
         title={modeDesc(t, mode)}
       >
         <span
