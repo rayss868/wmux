@@ -136,6 +136,114 @@ export function installCliShim(execPath: string): void {
   }
 }
 
+// ─── macOS (darwin) CLI shim ─────────────────────────────────────────────────
+//
+// DMG/ZIP 설치에는 Squirrel 같은 설치 훅이 없으므로 첫 실행 시 1회,
+// `/usr/local/bin/wmux` → <앱 번들>/Contents/Resources/cli-bundle/index.js
+// 심링크를 시도한다(권한 실패 시 `~/.local/bin/wmux` 폴백). cli-bundle 진입점은
+// `#!/usr/bin/env node` shebang을 가진 esbuild 번들이라 심링크 + exec bit만으로
+// 셸에서 직접 실행된다(chmod는 내용 해시를 바꾸지 않아 codesign seal에 안전).
+//
+// 소유권 규칙: 기존 파일이 "우리 것"(wmux 앱 번들 내 cli-bundle 진입점을 가리키는
+// 심링크)이 아니면 절대 건드리지 않는다 — Homebrew cask 등 다른 설치 경로와의
+// 충돌 방지. 우리 것이지만 타깃이 옛 번들 경로면 현재 타깃으로 갱신한다.
+
+/** installCliShimDarwin의 결과. guidance는 사용자에게 보여줄 안내(없으면 null). */
+export interface DarwinShimInstallResult {
+  status: 'installed' | 'already' | 'foreign' | 'failed';
+  linkPath: string | null;
+  guidance: string | null;
+}
+
+/** darwin 실행 파일 경로에서 번들 내 CLI 진입점을 유도한다. */
+export function deriveDarwinCliTarget(execPath: string): string {
+  // <bundle>/Contents/MacOS/wmux → <bundle>/Contents/Resources/cli-bundle/index.js
+  const contentsDir = path.posix.resolve(path.posix.dirname(execPath), '..');
+  return path.posix.join(contentsDir, 'Resources', 'cli-bundle', 'index.js');
+}
+
+/** 심링크 타깃이 wmux 앱 번들 내 cli-bundle 진입점인지("우리 것") 판정. */
+export function isOwnedWmuxTarget(linkTarget: string): boolean {
+  return linkTarget.endsWith('/Contents/Resources/cli-bundle/index.js');
+}
+
+/**
+ * darwin CLI 심링크 설치. 후보 경로를 순서대로 시도하고, 권한류 실패
+ * (EACCES/EPERM/EROFS/ENOENT)는 다음 후보로 폴백한다. 순수 fs 조작만 하며
+ * throw하지 않는다 — 결과는 DarwinShimInstallResult로 보고.
+ */
+export function installCliShimDarwin(
+  execPath: string = process.execPath,
+  opts: { homeDir?: string; envPath?: string; candidates?: string[] } = {},
+): DarwinShimInstallResult {
+  const homeDir = opts.homeDir ?? (process.env.HOME || '');
+  const envPath = opts.envPath ?? (process.env.PATH || '');
+  const target = deriveDarwinCliTarget(execPath);
+
+  if (!fs.existsSync(target)) {
+    console.warn(`[cliShim] cli-bundle missing at ${target} — skipping darwin shim install`);
+    return { status: 'failed', linkPath: null, guidance: null };
+  }
+  // shebang 실행에 필요한 exec bit 보장(패키징이 bit를 떨굴 수 있음). best-effort.
+  try {
+    fs.chmodSync(target, 0o755);
+  } catch { /* best-effort */ }
+
+  const fallbackDir = path.posix.join(homeDir, '.local', 'bin');
+  const candidates = opts.candidates ?? ['/usr/local/bin/wmux', path.posix.join(fallbackDir, 'wmux')];
+
+  for (const linkPath of candidates) {
+    // 기존 항목 검사 — 우리 것이 아니면 어떤 후보든 즉시 손을 뗀다
+    // (Homebrew cask 등 기존 설치가 이미 `wmux`를 제공 중).
+    let existing: fs.Stats | null = null;
+    try {
+      existing = fs.lstatSync(linkPath);
+    } catch { /* 없음 — 새로 생성 */ }
+
+    if (existing) {
+      if (!existing.isSymbolicLink()) {
+        return { status: 'foreign', linkPath, guidance: null };
+      }
+      let linkTarget = '';
+      try {
+        linkTarget = fs.readlinkSync(linkPath);
+      } catch { /* 읽기 실패 → foreign 취급 */ }
+      if (linkTarget === target) {
+        return { status: 'already', linkPath, guidance: null };
+      }
+      if (!isOwnedWmuxTarget(linkTarget)) {
+        return { status: 'foreign', linkPath, guidance: null };
+      }
+      // 우리 것이지만 옛 번들을 가리킴 — 현재 타깃으로 갱신 시도.
+      try {
+        fs.unlinkSync(linkPath);
+      } catch {
+        continue; // 권한 없음 → 다음 후보로 폴백
+      }
+    }
+
+    try {
+      fs.mkdirSync(path.posix.dirname(linkPath), { recursive: true });
+      fs.symlinkSync(target, linkPath);
+    } catch {
+      continue; // EACCES/EPERM/EROFS 등 → 다음 후보로 폴백
+    }
+
+    // 폴백 디렉토리가 PATH에 없으면 안내 문자열을 돌려준다.
+    const linkDir = path.posix.dirname(linkPath);
+    const onPath = envPath
+      .split(':')
+      .some((p) => p.replace(/\/+$/, '') === linkDir);
+    const guidance = onPath
+      ? null
+      : `wmux CLI installed at ${linkPath}, but ${linkDir} is not on your PATH. ` +
+        `Add it with: echo 'export PATH="${linkDir}:$PATH"' >> ~/.zshrc`;
+    return { status: 'installed', linkPath, guidance };
+  }
+
+  return { status: 'failed', linkPath: null, guidance: null };
+}
+
 /** Remove the shim and strip the bin dir from the user PATH. Best-effort. */
 export function uninstallCliShim(execPath: string): void {
   try {

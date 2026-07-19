@@ -1,7 +1,8 @@
 import net from 'node:net';
 import fs from 'node:fs';
-import os from 'node:os';
+import path from 'node:path';
 import crypto from 'node:crypto';
+import { getSessionSocketPath } from '../shared/constants';
 import type { RingBuffer } from './RingBuffer';
 
 /** Marker sent after Ring Buffer flush to signal transition to real-time mode. */
@@ -46,12 +47,11 @@ export class SessionPipe {
     private readonly authToken: string,
   ) {}
 
-  /** Get the platform-specific pipe name for this session. */
+  /** Get the platform-specific pipe name for this session.
+   * P7: Unix 소켓은 ~/.wmux{suffix}/ 하위 — shared 헬퍼가 클라이언트
+   * (main/DaemonClient.getSessionPipeName)와 lockstep의 단일 진실 소스. */
   getPipeName(): string {
-    if (process.platform === 'win32') {
-      return `\\\\.\\pipe\\wmux-session-${this.sessionId}`;
-    }
-    return `${os.homedir()}/.wmux-session-${this.sessionId}.sock`;
+    return getSessionSocketPath(this.sessionId);
   }
 
   /** Start listening for a single client connection. */
@@ -60,8 +60,14 @@ export class SessionPipe {
 
     const pipeName = this.getPipeName();
 
-    // On Unix, remove a stale socket file left by a prior run.
+    // On Unix, ensure the parent dir (~/.wmux{suffix}) exists — P7 moved the
+    // socket under it — then remove a stale socket file left by a prior run.
     if (process.platform !== 'win32') {
+      try {
+        fs.mkdirSync(path.dirname(pipeName), { recursive: true });
+      } catch {
+        // best-effort — bind가 곧 실패를 드러낸다
+      }
       try {
         const stat = fs.lstatSync(pipeName);
         if (stat.isSocket()) {

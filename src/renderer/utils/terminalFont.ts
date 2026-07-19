@@ -47,12 +47,12 @@ export function sanitizeFontFamily(input: string): string {
     .slice(0, MAX_FONT_NAME_LENGTH);
 }
 
-// Fallback chain appended after the user's font. Matches the previously
-// inlined chain at the three former call sites: a Latin mono fallback, a
-// classic mono, a Korean fallback (Malgun Gothic ships with Windows and has
-// fixed-width Hangul), and finally the generic `monospace` so the terminal
-// always renders something monospaced.
-const FONT_FALLBACK_CHAIN = "'Consolas', 'Courier New', 'Malgun Gothic', monospace";
+// Fallback chain appended after the user's font. Cross-platform:
+// mac 모노스페이스(Menlo/SF Mono/Monaco) → win 모노스페이스(Consolas/Courier New)
+// → 한글 폴백(mac: Apple SD Gothic Neo, win: Malgun Gothic — 고정폭 한글) →
+// generic `monospace`. 각 플랫폼에 없는 폰트는 CSS가 그냥 건너뛰므로 무해하다.
+const FONT_FALLBACK_CHAIN =
+  "'Menlo', 'SF Mono', 'Monaco', 'Consolas', 'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace";
 
 /**
  * Build the xterm/CSS `font-family` string for a user-chosen font, sanitized

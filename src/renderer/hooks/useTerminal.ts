@@ -260,7 +260,7 @@ function showCopyToast() {
 }
 
 // Surfaces openPath outcomes that the user cannot otherwise see — without
-// this, Ctrl+clicking an .exe (blocked main-side) or a missing file
+// this, Ctrl+clicking (mac: Cmd+clicking) an .exe (blocked main-side) or a missing file
 // silently reveals the parent folder via showItemInFolder with no
 // explanation, which reads as "the click didn't do anything." Yellow for
 // blocked (security gate), red for generic failure (file gone, no
@@ -1037,18 +1037,30 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Pass app shortcuts through to useKeyboard (don't let xterm consume them).
       // 'd' is the Ctrl+D split-right shortcut — without it xterm sends EOT (0x04)
       // to the PTY and PowerShell echoes it back as `^D` instead of triggering split.
-      if (e.ctrlKey && !e.shiftKey && [',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'].includes(e.key)) {
+      //
+      // macOS: useKeyboard가 cmdOrCtrl=metaKey로 매칭하므로 Cmd 계열 액션(,/d/k/i/
+      // n/t/`)의 Ctrl 조합은 앱 액션이 아니다 — 삼키면 Ctrl+D(EOF)·Ctrl+I(Tab)·
+      // Ctrl+K(kill-line) 등 readline 컨트롤 문자가 PTY에도 못 가고 죽는다
+      // (owner-reported 2026-07-19). mac에서는 literal-Ctrl 바인딩만(b=프리픽스,
+      // m=북마크, Ctrl+Arrow) 버블시키고 나머지는 xterm→PTY로 통과.
+      const bubbleKeys = isMac
+        ? ['b', 'm', 'ArrowUp', 'ArrowDown']
+        : [',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'];
+      const bubbleCodes = isMac
+        ? ['KeyB', 'KeyM', 'ArrowUp', 'ArrowDown']
+        : ['KeyB', 'KeyD', 'KeyK', 'KeyI', 'KeyN', 'KeyT', 'KeyM', 'Comma', 'ArrowUp', 'ArrowDown'];
+      if (e.ctrlKey && !e.shiftKey && bubbleKeys.includes(e.key)) {
         return false; // let DOM bubble to useKeyboard
       }
       // Cross-layout / IME-safe fallback: when a Hangul or other non-Latin layout
       // is active, e.key is the composed letter (e.g. 'ㅇ') or 'Process', and the
       // allowlist above misses. Match by physical key code so the split shortcut
       // still works under any layout/IME state.
-      if (e.ctrlKey && !e.shiftKey && ['KeyB', 'KeyD', 'KeyK', 'KeyI', 'KeyN', 'KeyT', 'KeyM', 'Comma', 'ArrowUp', 'ArrowDown'].includes(e.code)) {
+      if (e.ctrlKey && !e.shiftKey && bubbleCodes.includes(e.code)) {
         return false;
       }
-      // Ctrl+` by code (cross-layout)
-      if (e.ctrlKey && !e.shiftKey && e.code === 'Backquote') {
+      // Ctrl+` by code (cross-layout) — mac은 Cmd+`가 액션이므로 Ctrl+`(NUL)는 PTY로.
+      if (!isMac && e.ctrlKey && !e.shiftKey && e.code === 'Backquote') {
         return false;
       }
       // Terminal font zoom: Ctrl+= / Ctrl+- / Ctrl+0 (#171). Let these bubble to
@@ -1056,7 +1068,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // physical code as well so zoom survives a Hangul / non-Latin IME. The
       // Ctrl++ (Shift+=) and numpad variants are already covered: the Ctrl+Shift
       // catch-all below bubbles the former, and useKeyboard maps NumpadAdd etc.
-      if (e.ctrlKey && !e.shiftKey && (
+      // mac 줌은 Cmd+=/-/0 — Ctrl 조합은 앱 액션이 아니므로 xterm/PTY로 통과.
+      if (!isMac && e.ctrlKey && !e.shiftKey && (
         e.key === '=' || e.key === '-' || e.key === '0' ||
         e.code === 'Equal' || e.code === 'Minus' || e.code === 'Digit0' ||
         e.code === 'NumpadAdd' || e.code === 'NumpadSubtract' || e.code === 'Numpad0'
@@ -1092,7 +1105,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // handlers below stay intact, so Ctrl+C still sends SIGINT and the
       // Windows/Linux flow is unchanged. Match physical `code` so it survives a
       // CJK IME (e.key would be a composed jamo / 'Process', not 'c'/'v').
-      const isMac = window.electronAPI?.platform === 'darwin';
       if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
         const sel = terminal.getSelection();
         if (sel) {
@@ -1129,7 +1141,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // fallback the copy silently falls through to SIGINT (the reported "Ctrl+C
       // copy broken in Hangul mode" bug). Same IME class as the Ctrl+J / Escape
       // handlers above.
-      if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
+      // macOS는 복사가 Cmd+C 전담(위 분기)이므로 Ctrl+C는 항상 SIGINT — 선택영역이
+      // 남아 있어도 인터럽트를 가로채지 않는다(owner-reported 2026-07-19).
+      if (!isMac && e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
         const sel = terminal.getSelection();
         if (sel) {
           // main now throws on clipboard failure — await + catch so the
@@ -1142,7 +1156,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       // Ctrl+V: paste from clipboard (use our IPC clipboard, block event
       // so xterm doesn't also paste via browser's native paste event)
-      if (e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
+      // mac은 Cmd+V가 붙여넣기 전담(위 분기) — Ctrl+V는 readline quoted-insert
+      // (verbatim)이므로 PTY로 통과시킨다.
+      if (!isMac && e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
         e.preventDefault();
         // isMac 게이트: blockNativePaste 리스너가 비-macOS에선 등록조차 안 되므로(위 참고)
         // 스탬프도 macOS에서만 찍는다 — 안 그러면 나중에 등록 게이트를 넓힐 때 값이 이미

@@ -10,7 +10,7 @@ vi.mock('node:child_process', () => ({
   }),
 }));
 
-import { parseFontList, listInstalledFonts } from '../fonts/installedFonts';
+import { parseFontList, parseMacFontProfile, listInstalledFonts } from '../fonts/installedFonts';
 
 const ORIGINAL_PLATFORM = process.platform;
 function setPlatform(p: NodeJS.Platform): void {
@@ -40,11 +40,49 @@ describe('parseFontList', () => {
   });
 });
 
+describe('parseMacFontProfile', () => {
+  it('extracts, dedups, and locale-sorts typeface family names', () => {
+    // system_profiler SPFontsDataType -json 축약 형태 — 폰트당 typefaces 배열
+    const stdout = JSON.stringify({
+      SPFontsDataType: [
+        { typefaces: [{ family: 'Menlo' }, { family: 'Menlo' }] },
+        { typefaces: [{ family: ' Apple SD Gothic Neo ' }, { family: '' }, { family: 42 }] },
+        { typefaces: [{ family: 'D2Coding' }] },
+        {}, // typefaces 없는 항목도 무해해야 한다
+      ],
+    });
+    expect(parseMacFontProfile(stdout)).toEqual(['Apple SD Gothic Neo', 'D2Coding', 'Menlo']);
+  });
+
+  it('returns [] on broken JSON or missing top-level key', () => {
+    expect(parseMacFontProfile('not json')).toEqual([]);
+    expect(parseMacFontProfile('{}')).toEqual([]);
+  });
+});
+
 describe('listInstalledFonts', () => {
-  it('returns [] on a non-Windows platform without spawning', async () => {
-    setPlatform('darwin');
+  it('returns [] on Linux without spawning', async () => {
+    setPlatform('linux');
     await expect(listInstalledFonts()).resolves.toEqual([]);
     expect(mockExecFileAsync).not.toHaveBeenCalled();
+  });
+
+  it('enumerates via system_profiler on darwin', async () => {
+    setPlatform('darwin');
+    mockExecFileAsync.mockResolvedValue({
+      stdout: JSON.stringify({ SPFontsDataType: [{ typefaces: [{ family: 'Menlo' }, { family: 'SF Mono' }] }] }),
+      stderr: '',
+    });
+    await expect(listInstalledFonts()).resolves.toEqual(['Menlo', 'SF Mono']);
+    const [exe, args] = mockExecFileAsync.mock.calls[0] as [string, string[]];
+    expect(exe).toBe('/usr/sbin/system_profiler');
+    expect(args).toEqual(['SPFontsDataType', '-json']);
+  });
+
+  it('returns [] (never throws) when system_profiler fails on darwin', async () => {
+    setPlatform('darwin');
+    mockExecFileAsync.mockRejectedValue(new Error('spawn ENOENT'));
+    await expect(listInstalledFonts()).resolves.toEqual([]);
   });
 
   it('returns the parsed font list on Windows success', async () => {

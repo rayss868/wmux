@@ -17,9 +17,11 @@ import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { SessionPipeStreamScanner } from './daemon/sessionPipeStreamScanner';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 import {
-  dataSuffix,
   getDaemonAuthTokenPath,
+  getDaemonSocketPath,
   getLegacyDaemonAuthTokenPath,
+  getLegacySessionSocketPath,
+  getSessionSocketPath,
 } from '../shared/constants';
 import { connectWithRetry, type ConnectAttemptResult } from './daemonConnectRetry';
 
@@ -241,6 +243,23 @@ export class DaemonClient extends EventEmitter {
 
     const pipeName = this.getSessionPipeName(sessionId);
 
+    try {
+      await this.connectSessionPipeOnce(sessionId, pipeName);
+    } catch (err) {
+      // P7 legacy 폴백: 업그레이드를 관통해 살아 있는 구버전 데몬은 세션 소켓을
+      // 구경로(`~/.wmux-session-<id>.sock`)에 바인드한다. 새 경로가 ENOENT면
+      // 구경로를 1회 재시도한다(Unix 전용 — win 파이프 이름은 불변).
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (process.platform !== 'win32' && code === 'ENOENT') {
+        await this.connectSessionPipeOnce(sessionId, getLegacySessionSocketPath(sessionId));
+        return;
+      }
+      throw err;
+    }
+  }
+
+  /** 세션 파이프 단일 연결 시도 — 성공 시 소켓 등록까지 수행. */
+  private connectSessionPipeOnce(sessionId: string, pipeName: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         socket.destroy();
@@ -442,12 +461,10 @@ export class DaemonClient extends EventEmitter {
 
   // --- Private helpers ---
 
+  // P7: shared 헬퍼가 데몬 바인더(daemon/SessionPipe.getPipeName)와 lockstep의
+  // 단일 진실 소스. 구경로는 connectSessionPipe의 legacy 폴백에서만 쓴다.
   private getSessionPipeName(sessionId: string): string {
-    if (process.platform === 'win32') {
-      return `\\\\.\\pipe\\wmux-session-${sessionId}`;
-    }
-    const os = require('os');
-    return `${os.homedir()}/.wmux-session-${sessionId}.sock`;
+    return getSessionSocketPath(sessionId);
   }
 
   private setupControlPipe(socket: net.Socket): void {
@@ -737,15 +754,11 @@ export class DaemonClient extends EventEmitter {
   }
 }
 
-/** Get the daemon control pipe name for the current platform/user. */
+/** Get the daemon control pipe name for the current platform/user.
+ * P7: shared 헬퍼로 위임 — 데몬(daemon/config.ts)·CLI(cli/client.ts)와 lockstep.
+ * 실행 중인 데몬의 실제 경로는 daemon-pipe 힌트 파일이 우선한다(launcher). */
 export function getDaemonPipeName(): string {
-  const os = require('os');
-  const path = require('path');
-  const username = os.userInfo().username || 'default';
-  if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
-  }
-  return path.join(os.homedir(), `.wmux-daemon${dataSuffix()}.sock`);
+  return getDaemonSocketPath();
 }
 
 /**

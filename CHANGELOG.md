@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **macOS: the `wmux` CLI now installs itself from DMG/ZIP installs.** On first launch the packaged app symlinks the bundled CLI to `/usr/local/bin/wmux`, falling back to `~/.local/bin/wmux` (with a PATH hint) when permissions deny it. Homebrew-owned or any foreign file at that path is never touched; only wmux-owned stale symlinks are refreshed. Attempted once, off the boot path.
+- **macOS: "Start at login" works now.** The autostart toggle was a Windows-registry-only no-op on macOS; it now drives `app.setLoginItemSettings`, and the Startup section is visible in Settings on macOS.
+- **macOS: the Settings font picker now lists installed fonts** via `system_profiler`, instead of always coming up empty (the enumeration was PowerShell-only).
+
+### Changed
+
+- **Daemon/session sockets moved from `~/.wmux-*.sock` into `~/.wmux/`.** One shared path helper now feeds the daemon, main, and CLI (they each computed the path separately before), keeps `sun_path` under the macOS 104-byte limit, and stops littering the home directory. A live pre-upgrade daemon keeps working: the control pipe rides the existing hint file, session connects fall back to the legacy path once on ENOENT, and a stored legacy default pipe name migrates in config load.
+- **Terminal font fallback chain now covers macOS** (Menlo, SF Mono, Monaco, Apple SD Gothic Neo) ahead of the generic monospace it used to fall straight to; UI font stack leads with `system-ui` instead of unbundled Inter/Segoe UI.
+
+### Fixed
+
+- **macOS: the sidebar workspace context line (branch, ports, PR) now tracks the pane's real directory.** The zsh shell integration emitted OSC 133 (command markers) but never OSC 7 (working directory), so on macOS's default shell wmux never learned about a `cd` — the branch/git badge stayed pinned to the directory the pane was created in (usually home, where nothing shows) even after you moved into a repo. The zsh integration now emits OSC 7 on `chpwd` (immediately on any `cd`, even before a long-running command) and `precmd` (initial + every prompt). bash/PowerShell were unaffected because the daemon's prompt-scrape reads their default prompts (`user@host:…$`, `PS C:\…>`), but zsh's `host%` prompt carries no path.
+- **macOS: the sidebar workspace context line is also restored after an app restart.** Reconnecting to a persisted daemon session dropped the session's working directory — and since the metadata poll skips any pane with no cwd, the whole context line collapsed to just the workspace name. The daemon already returns each session's cwd from `listSessions`; reconnect now seeds it.
+- **Defensive: `git` resolves under the minimal GUI PATH on macOS.** A GUI-launched macOS app inherits only launchd's minimal PATH, not the Homebrew PATH `~/.zshrc` sets up; `execFile('git', …)` now merges in the standard Homebrew/system locations so a machine with git installed *only* via Homebrew (no Xcode Command Line Tools) can still run the sidebar sync badge and worktree/task-close git checks. (Machines with Xcode CLT already have `/usr/bin/git`, which the minimal PATH finds — so this is hardening, not the fix for the context-line bug above.)
+- **macOS: clicking the Dock icon now reopens a window hidden via close-to-tray.** `activate` only created a new window when zero windows existed; a hidden-not-destroyed window still counted, so Dock reactivation was a dead click with no visible way back short of finding the menu-bar tray icon.
+- **macOS: the menu-bar tray icon is no longer oversized.** It rendered the 1024px `.icns` app icon at native size instead of a ~22pt menu-bar icon; it's now resized on macOS only.
+- **macOS: quitting during OS logout/restart no longer risks losing the latest session snapshot.** The synchronous session flush only existed on the Windows `session-end` path; `before-quit` now flushes synchronously on macOS before any awaits.
+- **macOS: Ctrl+V passes through to the shell as quoted-insert.** Paste interception is non-mac only now — Cmd+V already owns paste on macOS.
+- **macOS: terminal Ctrl+letter control bytes work again.** The xterm key handler swallowed Ctrl+D/K/I/N/T/,/` (and Ctrl+=/-/0, Ctrl+`) to bubble them to app shortcuts, but on macOS those shortcuts live on Cmd — so Ctrl+D (EOF), Ctrl+I (Tab), Ctrl+K (kill-line) and friends reached neither the app nor the PTY. On macOS only the literal-Ctrl bindings (Ctrl+B prefix, Ctrl+M bookmark, Ctrl+Arrow) still bubble; everything else now passes through to the shell. Windows/Linux unchanged.
+- **macOS: Ctrl+C always sends SIGINT.** With a selection present, Ctrl+C was intercepted as copy even on macOS, where Cmd+C already owns copy — so you couldn't interrupt a running process while output was selected. The copy-on-selection branch is now non-mac only.
+- **macOS: the WMUX logo no longer overlaps the traffic lights.** macOS 26 (Tahoe) draws larger window buttons, so the 72px left reserve left the logo touching the green button; the reserve is now 80px (mac only).
+
 ## [3.27.0] — 2026-07-18
 
 ### Added

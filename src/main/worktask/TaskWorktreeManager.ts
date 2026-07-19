@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
 import { getWmuxHomeDir } from '../../shared/constants';
+import { getGitExecEnv } from '../../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -154,7 +155,7 @@ export class TaskWorktreeManager {
     this.runGit =
       opts?.runGit ??
       (async (args, cwd) => {
-        const { stdout, stderr } = await execFileAsync('git', args, { cwd, timeout: 30000 });
+        const { stdout, stderr } = await execFileAsync('git', args, { cwd, timeout: 30000, env: getGitExecEnv() });
         return { stdout, stderr };
       });
   }

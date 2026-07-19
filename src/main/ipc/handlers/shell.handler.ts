@@ -42,7 +42,7 @@ export function registerShellHandlers(): () => void {
     return shell.openExternal(url);
   }));
 
-  // Open an absolute filesystem path. Invoked by Ctrl+click on path tokens
+  // Open an absolute filesystem path. Invoked by Ctrl+click (mac: Cmd+click) on path tokens
   // surfaced via the terminal link provider. Validation is intentionally
   // strict — the renderer can match arbitrary text, so main treats every
   // payload as untrusted:

@@ -813,7 +813,7 @@ export function registerPTYHandlers(
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       try {
-        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string; pid?: number }>;
+        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string; pid?: number; cwd?: string }>;
         const session = sessions.find(s => s.id === id);
         if (!session || session.state === 'dead') {
           // RCA A1 — permanent failure: the daemon authoritatively reports the
@@ -822,6 +822,18 @@ export function registerPTYHandlers(
           console.log(`[lifecycle] pty.reconnect id=${id} result=fail code=session-dead (transient=false)`);
           return { success: false, error: 'Session not found or dead', code: 'session-dead', transient: false };
         }
+
+        // 재접속 시 cwd를 즉시 복원한다(owner-reported: 앱 재시작 후 워크스페이스
+        // 사이드바에 이름만 뜨고 브랜치/포트/PR이 안 뜸). 메타데이터 폴은 cwdMap에
+        // 들어온 pane만 처리하고 buildMetadataPayload도 cwd 없으면 즉시 null이라,
+        // cwd가 없으면 그 pane의 컨텍스트 라인 전체가 사라진다. create 경로는 cwd를
+        // seed하지만 reconnect는 안 했다 — 데몬은 meta.cwd를 listSessions 응답에
+        // 이미 실어 보내는데 여기서 버려졌다. 프롬프트 스크레이프(detectPromptCwd)로
+        // 사후 복구되는 경우가 있으나 그 정규식은 PowerShell(`PS C:\…>`)·
+        // bash(`user@host:…$`)만 잡고 macOS 기본 zsh 프롬프트(`host%`)는 못 잡으며
+        // zsh는 OSC 7도 안 쏘므로, mac에서는 영영 복구되지 않는다("win에선 되는데
+        // mac만 안 됨"의 정체). 여기서 seed하면 전 플랫폼에서 즉시 복원된다.
+        if (session.cwd) updateCwd(id, session.cwd);
 
         // Reconnect is an explicit fresh-attach intent — pass forceFresh
         // so a stale sessionPipes entry (left over from a prior daemon

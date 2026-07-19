@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
 import type { WorktreeInfo } from '../../shared/types';
+import { getGitExecEnv } from '../../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -75,6 +76,7 @@ export class WorktreeManager {
     await execFileAsync('git', ['worktree', 'add', safePath, '-b', safeBranch], {
       cwd: this.cwd,
       timeout: 30000,
+      env: getGitExecEnv(),
     });
   }
 
@@ -87,6 +89,7 @@ export class WorktreeManager {
     await execFileAsync('git', ['worktree', 'remove', safePath], {
       cwd: this.cwd,
       timeout: 30000,
+      env: getGitExecEnv(),
     });
   }
 
@@ -98,7 +101,7 @@ export class WorktreeManager {
     const { stdout } = await execFileAsync(
       'git',
       ['worktree', 'list', '--porcelain'],
-      { cwd: this.cwd, timeout: 15000 },
+      { cwd: this.cwd, timeout: 15000, env: getGitExecEnv() },
     );
 
     const results: WorktreeInfo[] = [];
@@ -144,12 +147,12 @@ export class WorktreeManager {
     if (targetBranch) {
       const safeTarget = validateGitRef(targetBranch, 'targetBranch');
       // targetBranch로 먼저 전환한 뒤 merge
-      await execFileAsync('git', ['checkout', safeTarget], { cwd: this.cwd, timeout: 30000 });
+      await execFileAsync('git', ['checkout', safeTarget], { cwd: this.cwd, timeout: 30000, env: getGitExecEnv() });
     }
     const { stdout, stderr } = await execFileAsync(
       'git',
       ['merge', safeBranch],
-      { cwd: this.cwd, timeout: 60000 },
+      { cwd: this.cwd, timeout: 60000, env: getGitExecEnv() },
     );
     return (stdout + stderr).trim();
   }

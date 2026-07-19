@@ -19,7 +19,10 @@ import { getWmuxDir } from './config';
  *   - fish                 (v3 roadmap)
  */
 
-const INTEGRATION_VERSION = 5;
+// v6: zsh stub에 OSC 7(cwd) 방출 추가 — mac 기본 zsh가 cd를 보고하지 않아
+// 사이드바 브랜치/git 컨텍스트가 생성 시점 cwd에 고정되던 문제 수정
+// (owner-reported 2026-07-19).
+const INTEGRATION_VERSION = 6;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
@@ -211,14 +214,26 @@ __wmux_preexec() { printf '\\033]133;C\\a'; }
 # precmd: 프롬프트 출력 직전 → D;<exit> (이전 명령 종료) + A (프롬프트 시작)
 __wmux_precmd() { local __ec=$?; printf '\\033]133;D;%d\\a\\033]133;A\\a' "$__ec"; }
 
+# OSC 7: cwd 보고 — wmux 사이드바가 브랜치/포트/PR을 pane의 실제 디렉토리로
+# 추적하려면 cd를 감지해야 한다. mac 기본 zsh는 OSC 7을 안 쏘고 daemon의
+# 프롬프트 스크레이프도 zsh 프롬프트(host%)를 못 잡아, 이 hook 없이는 생성
+# 시점 cwd에 고정된다. chpwd로 cd 즉시(뒤에 장기 실행 명령이 붙어도) 보고 +
+# precmd로 최초/매 프롬프트 보고. parseOsc7Cwd와 맞춰 host 뒤 슬래시 없이
+# \$PWD(절대경로, / 로 시작)를 붙여 file://host/abs/path 형태로 낸다.
+__wmux_osc7() { printf '\\033]7;file://%s%s\\a' "\${HOST-localhost}" "$PWD"; }
+
 autoload -Uz add-zsh-hook 2>/dev/null
 if (( \${+functions[add-zsh-hook]} )); then
   add-zsh-hook preexec __wmux_preexec
   add-zsh-hook precmd __wmux_precmd
+  add-zsh-hook chpwd __wmux_osc7
+  add-zsh-hook precmd __wmux_osc7
 else
-  typeset -ga preexec_functions precmd_functions
+  typeset -ga preexec_functions precmd_functions chpwd_functions
   preexec_functions+=(__wmux_preexec)
   precmd_functions+=(__wmux_precmd)
+  chpwd_functions+=(__wmux_osc7)
+  precmd_functions+=(__wmux_osc7)
 fi
 
 # B (프롬프트 끝 / 사용자 입력 시작)을 PROMPT 끝에 한 번만 추가.

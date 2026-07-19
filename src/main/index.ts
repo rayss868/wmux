@@ -35,7 +35,7 @@ import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { UsagePoller } from './claude/UsagePoller';
 import { AccountUsageService } from './account/AccountUsageService';
 import { getAccountStore } from './account/accountStore';
-import { IPC } from '../shared/constants';
+import { IPC, getWmuxHomeDir } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
@@ -749,6 +749,32 @@ app.on('ready', async () => {
   logLine('info', 'main', 'app.on(ready) fired');
   console.log('[Main] App ready, creating window...');
 
+  // P3 — macOS CLI shim: DMG/ZIP 설치엔 Squirrel 훅이 없으므로 첫 실행 시 1회만
+  // `/usr/local/bin/wmux`(폴백 `~/.local/bin/wmux`) 심링크 설치를 시도한다.
+  // 마커 파일로 1회 게이트(이미 올바른 심링크면 installCliShimDarwin이 skip).
+  // 부팅 경로를 막지 않게 지연 실행, 전체 best-effort.
+  if (process.platform === 'darwin' && app.isPackaged) {
+    const shimTimer = setTimeout(() => {
+      try {
+        const fs = require('fs') as typeof import('fs');
+        const markerPath = `${getWmuxHomeDir()}/cli-shim-darwin-attempted`;
+        if (fs.existsSync(markerPath)) return;
+        const result = cliShim.installCliShimDarwin(process.execPath);
+        logLine('info', 'main', `darwin CLI shim: ${result.status}${result.linkPath ? ` (${result.linkPath})` : ''}`);
+        if (result.guidance) {
+          console.log(`[cliShim] ${result.guidance}`);
+          logLine('info', 'main', `darwin CLI shim guidance: ${result.guidance}`);
+        }
+        // foreign(다른 설치가 제공 중)·성공·실패 모두 재시도하지 않는다 — 1회 시도.
+        fs.mkdirSync(getWmuxHomeDir(), { recursive: true });
+        fs.writeFileSync(markerPath, new Date().toISOString(), 'utf8');
+      } catch (err) {
+        console.warn('[cliShim] darwin shim install failed (non-fatal):', err);
+      }
+    }, 3000);
+    shimTimer.unref();
+  }
+
   // Dev Dock 아이콘: dev에선 패키징 안 된 제네릭 Electron 바이너리로 실행돼
   // macOS Dock에 기본 원자 아이콘이 뜬다. 패키지 빌드는 packagerConfig.icon으로
   // 실제 아이콘이 박히지만 dev는 그게 없으므로, 개발 편의상 실제 아이콘으로 교체.
@@ -1372,6 +1398,20 @@ app.on('before-quit', async (e) => {
   e.preventDefault();
   isQuitting = true;
 
+  // macOS 로그아웃/재시작/종료 대응(P4): win32의 'session-end' flushSync와 동등한
+  // 동기 세션 flush. macOS는 WM_ENDSESSION 대신 Apple Event로 quit을 보내고
+  // 이 async 핸들러가 끝까지 못 돌 수 있으므로, 어떤 await보다도 먼저 pending
+  // debounced write를 동기로 밀어 넣는다(디스크는 이벤트 기반 sync save로 이미
+  // 최신 — 이 flush는 session-end 경로와 동일한 안전망). 이중 실행 가드는 위의
+  // `isQuitting` 게이트가 담당한다: 두 번째 pass는 이 지점에 도달하지 않는다.
+  if (process.platform === 'darwin') {
+    try {
+      sessionManager.flushSync();
+    } catch (err) {
+      console.error('[Main] before-quit flushSync failed:', err);
+    }
+  }
+
   // Attempt session save from renderer
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isCrashed()) {
     try {
@@ -1615,10 +1655,20 @@ if (process.platform === 'win32') {
 
 app.on('activate', () => {
   if (isQuitting) return;
-  if (BrowserWindow.getAllWindows().length === 0) {
+  const windows = BrowserWindow.getAllWindows();
+  if (windows.length === 0) {
     mainWindow = createWindow();
     attachWindowRecovery(mainWindow);
+    return;
   }
+  // macOS: 창을 닫아도 hide()만 하고 파괴하지 않으므로(위 close 인터셉트)
+  // getAllWindows()는 계속 0보다 크다 — Dock 아이콘 재클릭으로 숨겨진 창을
+  // 복귀시키는 mac 표준 관례가 이 분기 없이는 무반응이었다(owner-reported
+  // 2026-07-19). Windows/Linux는 트레이 컨텍스트 메뉴가 이미 이 경로를
+  // 담당하므로 이 핸들러는 mac에서만 의미 있지만, 숨겨진 창이 있으면
+  // 어느 OS에서든 보여주는 편이 안전하다.
+  const hidden = windows.find((w) => !w.isVisible());
+  if (hidden) hidden.show();
 });
 
 } // end appInit()

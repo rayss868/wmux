@@ -54,26 +54,35 @@ afterEach(() => {
   else process.env.WMUX_DATA_SUFFIX = ORIGINAL_SUFFIX;
 });
 
+// P7: 파이프 이름 파생은 shared/constants의 getDaemonSocketPath로 위임됐다.
+// shared 헬퍼는 `require('os')`/env 기반이라 이 파일의 os mock이 닿지 않으므로
+// 정확한 username 대신 형태(shape)를 고정한다. unix 경로는 ~/.wmux{suffix}/
+// 하위로 이동(구경로 `~/.wmux-daemon.sock` 회귀 방지 역-assertion 포함).
 describe('getDaemonPipeName', () => {
-  it('derives the win32 daemon pipe name (suffix + username)', () => {
+  it('derives the win32 daemon pipe name (username 포함)', () => {
     setPlatform('win32');
-    expect(getDaemonPipeName()).toBe('\\\\.\\pipe\\wmux-daemon-tester');
+    expect(getDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\wmux-daemon-.+$/);
   });
 
   it('applies WMUX_DATA_SUFFIX to the win32 daemon pipe name', () => {
     setPlatform('win32');
     process.env.WMUX_DATA_SUFFIX = '-dev';
-    expect(getDaemonPipeName()).toBe('\\\\.\\pipe\\wmux-daemon-dev-tester');
+    expect(getDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\wmux-daemon-dev-.+$/);
   });
 
-  it('derives the unix daemon socket path under the home dir', () => {
+  it('derives the unix daemon socket path under ~/.wmux (P7)', () => {
     setPlatform('linux');
-    // path.join uses the host separator (the test host is Windows), so assert
-    // the segments rather than a hardcoded forward-slash literal. The real code
-    // mirrors src/main/DaemonClient.ts getDaemonPipeName (path.join on unix).
-    const result = getDaemonPipeName();
-    expect(result).toContain('home');
-    expect(result).toContain('.wmux-daemon.sock');
+    const ORIGINAL_HOME = process.env.HOME;
+    const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
+    process.env.HOME = '/home/u';
+    delete process.env.USERPROFILE;
+    try {
+      expect(getDaemonPipeName()).toBe('/home/u/.wmux/daemon.sock');
+    } finally {
+      if (ORIGINAL_HOME === undefined) delete process.env.HOME;
+      else process.env.HOME = ORIGINAL_HOME;
+      if (ORIGINAL_USERPROFILE !== undefined) process.env.USERPROFILE = ORIGINAL_USERPROFILE;
+    }
   });
 });
 
@@ -95,13 +104,13 @@ describe('resolveDaemonPipeName', () => {
     readFileSyncMock.mockImplementation(() => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     });
-    expect(resolveDaemonPipeName()).toBe('\\\\.\\pipe\\wmux-daemon-tester');
+    expect(resolveDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\wmux-daemon-.+$/);
   });
 
   it('falls back to the derived name when the hint file is empty/whitespace', () => {
     setPlatform('win32');
     readFileSyncMock.mockReturnValue('   \n');
-    expect(resolveDaemonPipeName()).toBe('\\\\.\\pipe\\wmux-daemon-tester');
+    expect(resolveDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\wmux-daemon-.+$/);
   });
 });
 

@@ -88,3 +88,33 @@ describe('daemon auth token path (suffix-aware, 3-way lockstep)', () => {
     expect(getLegacyDaemonAuthTokenPath()).not.toContain('.wmux-dev');
   });
 });
+
+// P7 — 데몬/세션 소켓을 ~/.wmux{suffix}/ 하위로 이동. 바인더(daemon)와
+// 클라이언트(main/cli)가 전부 이 헬퍼를 쓰므로 여기서 경로 형태를 고정한다.
+describe('P7 소켓 경로 (~/.wmux 하위 + sun_path 한계)', () => {
+  const orig = process.env.WMUX_DATA_SUFFIX;
+  afterEach(() => {
+    if (orig === undefined) delete process.env.WMUX_DATA_SUFFIX;
+    else process.env.WMUX_DATA_SUFFIX = orig;
+  });
+
+  it('신규 소켓은 ~/.wmux{suffix}/ 하위, legacy는 홈 직하 형태를 유지한다', async () => {
+    if (process.platform === 'win32') return; // named pipe는 경로 규칙 대상 아님
+    delete process.env.WMUX_DATA_SUFFIX;
+    const {
+      getDaemonSocketPath, getLegacyDaemonSocketPath,
+      getSessionSocketPath, getLegacySessionSocketPath, getWmuxHomeDir,
+    } = await import('../constants');
+    const sessionId = '123e4567-e89b-42d3-a456-426614174000'; // uuid 36자
+    expect(getDaemonSocketPath()).toBe(`${getWmuxHomeDir()}/daemon.sock`);
+    expect(getSessionSocketPath(sessionId)).toBe(`${getWmuxHomeDir()}/session-${sessionId}.sock`);
+    // legacy 경로는 구버전 코드와 byte-동일해야 폴백/마이그레이션 판정이 맞는다
+    expect(getLegacyDaemonSocketPath()).toMatch(/\/\.wmux-daemon\.sock$/);
+    expect(getLegacySessionSocketPath(sessionId)).toMatch(/\/\.wmux-session-.*\.sock$/);
+    // sun_path 104바이트 한계(macOS) — uuid 세션 id 기준으로 여유 확인
+    expect(Buffer.byteLength(getSessionSocketPath(sessionId))).toBeLessThanOrEqual(104);
+    // suffix는 디렉토리에만 반영(파일명 중복 없음 → 경로 단축)
+    process.env.WMUX_DATA_SUFFIX = '-dev';
+    expect(getDaemonSocketPath()).toMatch(/\/\.wmux-dev\/daemon\.sock$/);
+  });
+});
