@@ -37,8 +37,14 @@ describe('surfaceSlice.addSurface — workspace targeting (#236)', () => {
 
     const ws2Pane = state.workspaces.find((w) => w.id === ws2.id)!.rootPane;
     if (ws2Pane.type !== 'leaf') throw new Error('expected leaf');
-    expect(ws2Pane.surfaces).toHaveLength(1);
+    // 터미널 + 자동 세트(Git·Review) = 3 (시안 A — 워크스페이스 첫 터미널에 세트 동반)
+    expect(ws2Pane.surfaces).toHaveLength(3);
     expect(ws2Pane.surfaces[0].ptyId).toBe('pty-bg');
+    expect(ws2Pane.surfaces.map((s) => s.surfaceType)).toEqual(
+      expect.arrayContaining(['git', 'review']),
+    );
+    // 터미널이 활성 유지(세트는 배경 탭)
+    expect(ws2Pane.activeSurfaceId).toBe(ws2Pane.surfaces[0].id);
 
     // ws1 (the active ws) must NOT receive the surface.
     const ws1Pane = ws1.rootPane;
@@ -52,8 +58,11 @@ describe('surfaceSlice.addSurface — workspace targeting (#236)', () => {
     slice.addSurface(state.workspaces[0].rootPane.id, 'pty-1', 'pwsh', 'C:\\a');
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf');
-    expect(pane.surfaces).toHaveLength(1);
+    // 터미널 + 자동 Git·Review 세트
+    expect(pane.surfaces).toHaveLength(3);
     expect(pane.surfaces[0].ptyId).toBe('pty-1');
+    // git surface는 터미널 시작 cwd를 repo base로 캡처
+    expect(pane.surfaces.find((s) => s.surfaceType === 'git')?.cwd).toBe('C:\\a');
   });
 });
 
@@ -324,7 +333,8 @@ describe('surfaceSlice.closeSurface', () => {
 
     slice.closeSurface(paneId, firstId);
 
-    expect(pane.surfaces).toHaveLength(1);
+    // pty-2 터미널 + 자동 Git·Review 세트(첫 addSurface에서 동반 생성)
+    expect(pane.surfaces).toHaveLength(3);
     expect(pane.surfaces.find((s) => s.id === firstId)).toBeUndefined();
   });
 

@@ -102,6 +102,26 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       const surface = createSurface(ptyId, shell, cwd);
       pane.surfaces.push(surface);
       pane.activeSurfaceId = surface.id;
+      // 터미널과 세트: 워크스페이스에 Git·Review 유틸 surface가 하나도 없으면 같은
+      // 페인에 자동 추가한다(시안 A — 탭 스트립에 [터미널|Git|Review] 기본 세트).
+      // 워크스페이스 전체를 검사하므로 분할로 터미널이 늘어나도 세트는 1개만 유지,
+      // 사용자가 닫은 kind는 다음 터미널 생성 때 다시 채워진다. 터미널이 활성 유지.
+      const hasKind = (pane_: Pane, kind: 'git' | 'review'): boolean => {
+        if (pane_.type === 'leaf') return pane_.surfaces.some((s) => s.surfaceType === kind);
+        return pane_.children.some((child) => hasKind(child, kind));
+      };
+      for (const kind of ['git', 'review'] as const) {
+        if (hasKind(ws.rootPane, kind)) continue;
+        pane.surfaces.push({
+          id: generateId('surface'),
+          ptyId: '',
+          title: kind === 'git' ? 'Git' : 'Review',
+          shell: '',
+          // git surface는 터미널의 시작 cwd를 repo base로 캡처한다.
+          cwd: kind === 'git' ? cwd : '',
+          surfaceType: kind,
+        });
+      }
     });
     persistBindingNow(get);
   },
