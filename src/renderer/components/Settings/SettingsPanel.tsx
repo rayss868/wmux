@@ -612,8 +612,6 @@ function OrchestratorSection() {
   const setDeckBrainVendor = useStore((s) => s.setDeckBrainVendor);
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
   const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
-  const gitTabVisible = useStore((s) => s.gitTabVisible);
-  const setGitTabVisible = useStore((s) => s.setGitTabVisible);
   // Global auto-wake switch — persisted in MAIN (deck-autowake.json) because
   // the event-push coalescer that spends the tokens lives there. Read on
   // mount; optimistic toggle with echo reconciliation.
@@ -695,16 +693,6 @@ function OrchestratorSection() {
           checked={channelsTabVisible}
           onChange={setChannelsTabVisible}
           label={t('settings.channelsTabVisible')}
-        />
-      </SettingRow>
-      <SettingRow
-        label={t('settings.gitTabVisible')}
-        description={t('settings.gitTabVisibleDesc')}
-      >
-        <Toggle
-          checked={gitTabVisible}
-          onChange={setGitTabVisible}
-          label={t('settings.gitTabVisible')}
         />
       </SettingRow>
     </div>

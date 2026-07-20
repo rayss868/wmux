@@ -548,10 +548,6 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.channelsTabVisible === 'boolean') {
         state.channelsTabVisible = data.channelsTabVisible;
       }
-      // Git 탭은 기본 ON — 명시적 false만 숨긴다(정보성 표면, fail-closed 불요).
-      if (typeof data.gitTabVisible === 'boolean') {
-        state.gitTabVisible = data.gitTabVisible;
-      }
       // Pane action cluster — default ON; only an explicit false hides it.
       if (typeof data.paneActionsVisible === 'boolean') {
         state.paneActionsVisible = data.paneActionsVisible;
@@ -711,7 +707,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const walk = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
-            if (s.ptyId === ptyId && s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff') {
+            // 유틸 surface(git·review)는 pty 없음 — 명시적으로 제외해 방어.
+            if (s.ptyId === ptyId && s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff' && s.surfaceType !== 'git' && s.surfaceType !== 'review') {
               s.ptyId = '';
             }
           }
@@ -727,7 +724,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const walkAndClearPtyIds = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
-            if (s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff') {
+            // 유틸 surface(git·review)는 pty 없음 — 명시적으로 제외해 방어.
+            if (s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff' && s.surfaceType !== 'git' && s.surfaceType !== 'review') {
               s.ptyId = '';
             }
           }

@@ -20,7 +20,6 @@ function mount(props: {
   onSelect?: (t: DeckTab) => void;
   channelsUnread?: number;
   showChannels?: boolean;
-  reviewCount?: number;
   rightSlot?: React.ReactNode;
 }): void {
   act(() => {
@@ -30,7 +29,6 @@ function mount(props: {
         onSelect: props.onSelect ?? vi.fn(),
         channelsUnread: props.channelsUnread,
         ...(props.showChannels !== undefined ? { showChannels: props.showChannels } : {}),
-        ...(props.reviewCount !== undefined ? { reviewCount: props.reviewCount } : {}),
         ...(props.rightSlot !== undefined ? { rightSlot: props.rightSlot } : {}),
         t: (k: string) => k,
       }),
@@ -89,19 +87,14 @@ describe('DeckTabs', () => {
     expect(badge?.textContent).toContain('3');
   });
 
-  it('shows a Review changes badge only when reviewCount > 0', () => {
-    mount({ active: 'commander', reviewCount: 0 });
-    expect(container.querySelector('[data-deck-tab-review-count]')).toBeNull();
-    mount({ active: 'commander', reviewCount: 4 });
-    const badge = container.querySelector('[data-deck-tab-review-count]');
-    expect(badge?.textContent).toContain('4');
-    // Lives on the Review tab, not another.
-    expect(tab('review').contains(badge)).toBe(true);
-  });
-
-  it('caps the Review badge at 99+', () => {
-    mount({ active: 'commander', reviewCount: 250 });
-    expect(container.querySelector('[data-deck-tab-review-count]')?.textContent).toContain('99+');
+  it('renders only the Orchestrator and Channels tabs (Git·Review moved to center surface tabs)', () => {
+    mount({ active: 'commander' });
+    const ids = Array.from(container.querySelectorAll('[data-deck-tab]')).map((el) =>
+      el.getAttribute('data-deck-tab'),
+    );
+    expect(ids).toEqual(['commander', 'channels']);
+    expect(container.querySelector('[data-deck-tab="git"]')).toBeNull();
+    expect(container.querySelector('[data-deck-tab="review"]')).toBeNull();
   });
 
   it('hides the Channels tab (and its badge) when showChannels is false', () => {

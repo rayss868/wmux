@@ -777,9 +777,6 @@ export const ko = {
   'git.justNow': '방금',
   'git.diff': 'Diff',
   'git.diffDesc': '이 워크트리의 diff 뷰 열기',
-  'settings.gitTabVisible': 'Git 탭 표시',
-  'settings.gitTabVisibleDesc':
-    '우측 도크에 Git 탭(워크트리)을 표시합니다. 정보성 표면 — 최소 크롬을 원하면 숨기세요.',
   'deck.collapseDock': '도크 접기',
   'deck.commanderPlaceholder': 'agent에 지시하거나 @로 pane을 멘션…',
   'deck.commanderEmpty':

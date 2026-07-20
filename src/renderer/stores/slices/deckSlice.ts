@@ -28,10 +28,9 @@ import {
 import { generateId } from '../../../shared/types';
 
 /** Which dock tab is showing. `commander` is the default (the LLM-less
- *  command composer); `channels` is the classic channel list + conversation;
- *  `git` is the workspace's git surface (worktrees + PRs); `review` is the
- *  diff-first review roster across ALL workspaces (P1, 2026-07-18). */
-export type DeckTab = 'commander' | 'channels' | 'git' | 'review';
+ *  command composer); `channels` is the classic channel list + conversation.
+ *  Git·Review는 시안 A(2026-07-20)로 덱에서 중앙 페인 surface 탭으로 이관됐다. */
+export type DeckTab = 'commander' | 'channels';
 
 /** One workspace orchestrator's turn state. Distinct from the Phase 1 fan-out
  *  threads (which live in the `#commander` channel): the brain stream is an

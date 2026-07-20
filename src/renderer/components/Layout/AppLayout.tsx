@@ -221,7 +221,6 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     deckBrainFullPower: state.deckBrainFullPower,
     deckBrainVendor: state.deckBrainVendor,
     channelsTabVisible: state.channelsTabVisible,
-    gitTabVisible: state.gitTabVisible,
     paneActionsVisible: state.paneActionsVisible,
     splitInheritsCwd: state.splitInheritsCwd,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,

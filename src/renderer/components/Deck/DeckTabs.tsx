@@ -1,12 +1,12 @@
 // ─── Command Deck — dock tab bar (Phase 1 P1a) ───────────────────────────────
 //
-// Tab header at the top of the right dock: [Orchestrator] [Git] [Review]
-// [Channels]. `commander` (Orchestrator) is the default (the LLM-less command
-// composer); Git/Review are informational rosters; Channels holds the classic
-// list + conversation. Git and Channels are hideable via Settings, so the
-// visible set is 2–4 tabs. Warm rounded count badges: Channels = unread,
-// Review = workspaces with changes. Pure + props-driven so the tab-switch
-// behavior is unit-testable under jsdom without the store-connected dock body.
+// Tab header at the top of the right dock: [Orchestrator] [Channels].
+// `commander` (Orchestrator) is the default (the LLM-less command composer);
+// Channels holds the classic list + conversation and is hideable via Settings,
+// so the visible set is 1–2 tabs. Git·Review는 시안 A(2026-07-20)로 중앙 페인
+// surface 탭으로 이관됐다. Warm rounded count badge: Channels = unread. Pure +
+// props-driven so the tab-switch behavior is unit-testable under jsdom without
+// the store-connected dock body.
 
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
@@ -23,14 +23,6 @@ export interface DeckTabsProps {
    *  it hidden the strip shows the single Orchestrator tab, doubling as the
    *  deck's header. */
   showChannels?: boolean;
-  /** Whether the Git tab renders. Default true (store default is also true —
-   *  informational surface; hideable in Settings). */
-  showGit?: boolean;
-  /** Number of workspaces with uncommitted changes (gitSync.dirty > 0) — a warm
-   *  count badge on the Review tab so pending review work is glanceable without
-   *  opening it. Omit / 0 → no badge. Note: gitSync metadata can be absent on
-   *  detached-HEAD / unborn repos, so those workspaces simply don't contribute. */
-  reviewCount?: number;
   /** Right-aligned header controls (model chip + collapse button). Rendered
    *  after the tabs, pinned to the trailing edge — the deck's one header row,
    *  so orchestrator settings live next to its name instead of buried in
@@ -40,16 +32,14 @@ export interface DeckTabsProps {
   t?: (key: string) => string;
 }
 
-// Warm rounded count badge (Channels unread · Review changes) — a solid warm
-// fill is reserved for tiny count badges (DESIGN.md two-accent grammar). Tabular
-// figures + full-round per the geometry rules.
+// Warm rounded count badge (Channels unread) — a solid warm fill is reserved for
+// tiny count badges (DESIGN.md two-accent grammar). Tabular figures + full-round
+// per the geometry rules.
 const WARM_BADGE =
   'inline-flex items-center justify-center shrink-0 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-semibold tabular-nums leading-none bg-[var(--accent)] text-[var(--bg-base)]';
 
 const TABS: { id: DeckTab; labelKey: string; fallback: string }[] = [
   { id: 'commander', labelKey: 'deck.tabCommander', fallback: 'Orchestrator' },
-  { id: 'git', labelKey: 'deck.tabGit', fallback: 'Git' },
-  { id: 'review', labelKey: 'deck.tabReview', fallback: 'Review' },
   { id: 'channels', labelKey: 'deck.tabChannels', fallback: 'Channels' },
 ];
 
@@ -58,15 +48,11 @@ export function DeckTabs({
   onSelect,
   channelsUnread = 0,
   showChannels = true,
-  showGit = true,
-  reviewCount = 0,
   rightSlot,
   t: tProp,
 }: DeckTabsProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
-  const tabs = TABS.filter(
-    (tab) => (tab.id !== 'channels' || showChannels) && (tab.id !== 'git' || showGit),
-  );
+  const tabs = TABS.filter((tab) => tab.id !== 'channels' || showChannels);
   return (
     <div
       data-deck-tabs
@@ -98,11 +84,6 @@ export function DeckTabs({
             {tab.id === 'channels' && channelsUnread > 0 && (
               <span data-deck-tab-unread className={WARM_BADGE} {...tokenAttrs('accent', 'bg')}>
                 {channelsUnread > 99 ? '99+' : channelsUnread}
-              </span>
-            )}
-            {tab.id === 'review' && reviewCount > 0 && (
-              <span data-deck-tab-review-count className={WARM_BADGE} {...tokenAttrs('accent', 'bg')}>
-                {reviewCount > 99 ? '99+' : reviewCount}
               </span>
             )}
             {isActive && (

@@ -861,9 +861,6 @@ export const en = {
   'git.justNow': 'now',
   'git.diff': 'Diff',
   'git.diffDesc': 'Open the diff view for this worktree',
-  'settings.gitTabVisible': 'Show Git tab',
-  'settings.gitTabVisibleDesc':
-    'Show the Git tab (worktrees) in the right dock. Informational surface — hide it for a minimal chrome.',
   'deck.collapseDock': 'Collapse dock',
   'deck.commanderPlaceholder': 'Tell the orchestrator, or @mention panes…',
   'deck.commanderEmpty':
