@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createWorkspace, type Workspace } from '../../../../shared/types';
+import { createWorkspace, type PaneLeaf, type Workspace } from '../../../../shared/types';
 import { createSurfaceSlice } from '../surfaceSlice';
 
 type TestState = {
@@ -432,5 +432,61 @@ describe('surfaceSlice.closeSurface — surfaceActivity cleanup (Fleet activity 
 
     expect(state.surfaceActivity['pty-1']).toBeUndefined();
     expect(state.surfaceActivity['pty-2']).toBe('✎ keep.ts');
+  });
+});
+
+describe('surfaceSlice.addUtilitySurface — 시안 A Git·Review 중앙 surface', () => {
+  it('신규 git surface를 생성하고 인자 cwd를 surface.cwd에 캡처한다', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+
+    slice.addUtilitySurface('git', paneId, '/repo/base');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(pane.surfaces).toHaveLength(1);
+    expect(pane.surfaces[0].surfaceType).toBe('git');
+    expect(pane.surfaces[0].cwd).toBe('/repo/base');
+    expect(pane.surfaces[0].ptyId).toBe('');
+    expect(pane.activeSurfaceId).toBe(pane.surfaces[0].id);
+  });
+
+  it('같은 kind가 이미 열려 있으면 중복 생성하지 않고 그 탭으로 전환(같은 페인)', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+
+    slice.addUtilitySurface('review', paneId);
+    slice.addUtilitySurface('review', paneId);
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(pane.surfaces.filter((s) => s.surfaceType === 'review')).toHaveLength(1);
+  });
+
+  it('워크스페이스 전체 leaf를 순회해 dedupe — 다른 페인에 열려 있으면 그 페인+서피스로 전환', () => {
+    const { state, slice } = createHarness();
+    const ws = state.workspaces[0];
+    // rootPane을 두 leaf를 가진 branch로 재구성한다.
+    const leftLeaf: PaneLeaf = { id: 'pane-left', type: 'leaf', surfaces: [], activeSurfaceId: '' };
+    const rightLeaf: PaneLeaf = { id: 'pane-right', type: 'leaf', surfaces: [], activeSurfaceId: '' };
+    ws.rootPane = {
+      id: 'branch-root',
+      type: 'branch',
+      direction: 'horizontal',
+      children: [leftLeaf, rightLeaf],
+    };
+    ws.activePaneId = 'pane-right';
+
+    // 먼저 왼쪽 페인에 git을 연다.
+    slice.addUtilitySurface('git', 'pane-left', '/repo/a');
+    const existingSurfaceId = leftLeaf.surfaces[0].id;
+
+    // 오른쪽 페인에서 다시 git 진입 → 신규 생성 대신 왼쪽 페인+서피스로 전환.
+    slice.addUtilitySurface('git', 'pane-right', '/repo/b');
+
+    expect(leftLeaf.surfaces).toHaveLength(1);
+    expect(rightLeaf.surfaces).toHaveLength(0);
+    expect(ws.activePaneId).toBe('pane-left');
+    expect(leftLeaf.activeSurfaceId).toBe(existingSurfaceId);
   });
 });

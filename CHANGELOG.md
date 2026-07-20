@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Command deck: a Review tab badge shows how many workspaces have uncommitted changes** — a warm count badge that only appears when nonzero, so pending review work is glanceable without opening the tab. It reuses the sidebar's existing git-sync metadata (no new polling), so it stays current even while the tab is closed.
+- **Git·Review를 중앙 페인 탭으로 이관 (메뉴 IA 시안 A).** Git(워크트리·PR)과 Review(전-워크스페이스 diff 로스터)를 우측 덱에서 각 페인의 탭 스트립 액션 버튼으로 옮겼습니다. 이제 작업 중인 터미널의 cwd를 기준으로 그 자리에서 Git·Review 화면을 열 수 있고, 워크스페이스당 하나만 열리도록 중복 방지됩니다. 우측 덱은 Orchestrator·Channels 2탭으로 단순해졌고, 관련 설정(Git 탭 표시 토글)과 이전 Review 뱃지는 제거됐습니다.
 - **Agent toolbar: Broadcast is back and works.** The old Broadcast prompt relied on a browser dialog that never existed in the packaged app; it now opens an inline popover that shows how many terminals it will hit, sends to every terminal pane in the current workspace, and reports how many succeeded or failed.
 - **macOS: the `wmux` CLI now installs itself from DMG/ZIP installs.** On first launch the packaged app symlinks the bundled CLI to `/usr/local/bin/wmux`, falling back to `~/.local/bin/wmux` (with a PATH hint) when permissions deny it. Homebrew-owned or any foreign file at that path is never touched; only wmux-owned stale symlinks are refreshed. Attempted once, off the boot path.
 - **macOS: "Start at login" works now.** The autostart toggle was a Windows-registry-only no-op on macOS; it now drives `app.setLoginItemSettings`, and the Startup section is visible in Settings on macOS.

@@ -106,4 +106,14 @@ describe('pickOverlaySurfaces — F6 mixed-split diff/editor routing', () => {
     ];
     expect(pickOverlaySurfaces(surfaces)).toEqual([]);
   });
+
+  it('시안 A — git·review 유틸 surface도 오버레이 집합에 포함(혼합 페인 빈화면 방지)', () => {
+    const surfaces = [
+      { id: 't', surfaceType: 'terminal' },
+      { id: 'b', surfaceType: 'browser' },
+      { id: 'g', surfaceType: 'git' },
+      { id: 'r', surfaceType: 'review' },
+    ];
+    expect(pickOverlaySurfaces(surfaces).map((s) => s.id)).toEqual(['g', 'r']);
+  });
 });
