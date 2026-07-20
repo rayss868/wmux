@@ -4,7 +4,7 @@
 // exit-code verdict, and the clean-merge→Land / conflict→Discard round-trips.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,6 +21,7 @@ import {
   abortIntegrationMerge,
   readMergeState,
   isIntegrationPath,
+  linkNodeModules,
 } from '../mergeSession';
 
 function g(cwd: string, args: string[]): string {
@@ -164,6 +165,63 @@ describe('resolveBaseFromGit — fallback chain (no gh)', () => {
   it('uses master when only master exists (no main)', async () => {
     g(scn.repo, ['branch', '-m', 'main', 'master']);
     expect(await resolveBaseFromGit(scn.repo)).toBe('master');
+  });
+});
+
+describe('linkNodeModules — dep link into the integration worktree', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-nm-')));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('symlinks node_modules from the base dir when the integration worktree lacks it', () => {
+    const base = join(dir, 'base');
+    const integ = join(dir, 'integ');
+    mkdirSync(join(base, 'node_modules'), { recursive: true });
+    writeFileSync(join(base, 'node_modules', 'marker.txt'), 'dep\n');
+    mkdirSync(integ);
+
+    linkNodeModules(integ, [base]);
+
+    const dest = join(integ, 'node_modules');
+    expect(existsSync(dest)).toBe(true);
+    expect(lstatSync(dest).isSymbolicLink()).toBe(true);
+    // Resolves through to the real dependency file.
+    expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('dep\n');
+  });
+
+  it('uses the first candidate base dir that actually has node_modules', () => {
+    const empty = join(dir, 'empty');
+    const real = join(dir, 'real');
+    const integ = join(dir, 'integ');
+    mkdirSync(empty);
+    mkdirSync(join(real, 'node_modules'), { recursive: true });
+    mkdirSync(integ);
+
+    linkNodeModules(integ, [empty, real]);
+    expect(lstatSync(join(integ, 'node_modules')).isSymbolicLink()).toBe(true);
+  });
+
+  it('skips when the integration worktree already has node_modules', () => {
+    const base = join(dir, 'base');
+    const integ = join(dir, 'integ');
+    mkdirSync(join(base, 'node_modules'), { recursive: true });
+    mkdirSync(join(integ, 'node_modules'), { recursive: true }); // pre-existing real dir
+
+    linkNodeModules(integ, [base]);
+    // Left as a real dir (not replaced by a link).
+    expect(lstatSync(join(integ, 'node_modules')).isSymbolicLink()).toBe(false);
+  });
+
+  it('is a no-op (no throw, no link) when no base dir has node_modules', () => {
+    const base = join(dir, 'base');
+    const integ = join(dir, 'integ');
+    mkdirSync(base);
+    mkdirSync(integ);
+
+    expect(() => linkNodeModules(integ, [base])).not.toThrow();
+    expect(existsSync(join(integ, 'node_modules'))).toBe(false);
   });
 });
 

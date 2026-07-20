@@ -35,6 +35,8 @@ import {
   abortIntegrationMerge,
   readMergeState,
   detectConflicts,
+  countStaged,
+  linkNodeModules,
   isIntegrationPath,
   type MergePhase,
   type MergeSessionStatus,
@@ -228,6 +230,8 @@ interface MergeSessionState {
   changedFiles: number;
   verify?: VerifyResult;
   abort?: AbortController;
+  /** In-flight verify run (kickVerify) — awaited before we delete the integration worktree. */
+  verifyPromise?: Promise<void>;
 }
 
 // repoKey(normPath(mainWt)) → 세션. add/remove와 같은 base 키를 공유한다.
@@ -251,9 +255,15 @@ function toStatus(s: MergeSessionState): MergeSessionStatus {
 // clean 머지 후 verify를 락 밖에서 비동기 실행 — 세션 phase를 갱신한다. 세션이
 // 그 사이 Discard로 교체/삭제됐으면 결과를 버린다(stale 방지).
 function kickVerify(s: MergeSessionState): void {
+  // The integration worktree is a fresh checkout with no node_modules (gitignored),
+  // so link deps from the base checkout first or `npm test`/`npm run lint` can't
+  // resolve anything and verify fails in every real repo.
+  linkNodeModules(s.integrationPath, [s.baseCheckoutPath, s.mainWt]);
   s.abort = new AbortController();
   s.phase = 'verifying';
-  void runVerify(s.integrationPath, { signal: s.abort.signal })
+  // Keep the promise on the session so Discard/Land can await the child process
+  // unwinding before deleting the integration worktree it may still be touching.
+  s.verifyPromise = runVerify(s.integrationPath, { signal: s.abort.signal })
     .then((res) => {
       if (mergeSessions.get(s.repoKey) !== s) return;
       s.verify = res;
@@ -303,8 +313,18 @@ async function mergeStart(repoPath: string, sourcePath: string): Promise<MergeSt
     // source 워크트리 → 캡처 OID(움직이는 브랜치명 아님) + 브랜치명(있으면).
     const sourceTop = await resolveToplevel(sourcePath);
     if (!sourceTop) return { ok: false, error: 'source가 git 워크트리가 아닙니다' };
+    // Re-validate against this repo's worktree list (like removeWorktree) — the
+    // renderer must not be able to inject an arbitrary git repo path as source.
     const srcEntry = entries.find((e) => normPath(e.path) === normPath(sourceTop));
-    const sourceBranch = srcEntry?.branch ?? null;
+    if (!srcEntry) return { ok: false, error: 'source가 이 repo의 워크트리가 아닙니다' };
+    const sourceBranch = srcEntry.branch ?? null;
+    // Refuse a dirty source: only the committed HEAD is merged, so uncommitted or
+    // untracked work would be silently dropped (especially risky in AI worktrees).
+    const srcStatus = await git(['status', '--porcelain'], sourceTop);
+    if (srcStatus.code !== 0) return { ok: false, error: srcStatus.stderr.slice(0, 300) };
+    if (srcStatus.stdout.trim() !== '') {
+      return { ok: false, error: 'source 워크트리에 커밋되지 않은 변경이 있습니다 — 먼저 커밋하세요' };
+    }
     const srcHead = await git(['rev-parse', 'HEAD'], sourceTop);
     if (srcHead.code !== 0) return { ok: false, error: 'source HEAD 확인 실패' };
     const sourceOid = srcHead.stdout.trim();
@@ -321,6 +341,13 @@ async function mergeStart(repoPath: string, sourcePath: string): Promise<MergeSt
       return { ok: false, error: merged.error };
     }
     const { outcome } = merged;
+    // No-op merge (source already in base): git leaves no MERGE_HEAD and 0 changed
+    // files. Creating a session/worktree here would orphan the integration worktree
+    // (recoverSession skips a non-merging one), so reject and clean it up instead.
+    if (outcome.phase === 'clean' && outcome.changedFiles === 0) {
+      await removeIntegrationWorktree(mainWt, created.path);
+      return { ok: false, error: '이미 최신입니다 — 머지할 변경이 없습니다' };
+    }
     const session: MergeSessionState = {
       sessionId: randomUUID(),
       repoKey,
@@ -331,9 +358,9 @@ async function mergeStart(repoPath: string, sourcePath: string): Promise<MergeSt
       sourceBranch,
       sourceOid,
       integrationPath: created.path,
-      // 충돌이면 conflicted에서 정지(B-MVP: 수동 진입). clean이면 verify로,
-      // 단 변경 0건(이미 최신)은 검증할 것이 없어 곧장 verified.
-      phase: outcome.phase === 'conflicted' ? 'conflicted' : outcome.changedFiles === 0 ? 'verified' : 'verifying',
+      // 충돌이면 conflicted에서 정지(B-MVP: 수동 진입). clean(변경 있음)이면 verify로.
+      // (변경 0건 clean = no-op은 위에서 이미 거부됐다.)
+      phase: outcome.phase === 'conflicted' ? 'conflicted' : 'verifying',
       conflicts: outcome.conflicts,
       changedFiles: outcome.changedFiles,
     };
@@ -355,15 +382,20 @@ async function recoverSession(ctx: MergeCtx): Promise<MergeSessionState | null> 
   const headR = await git(['rev-parse', 'HEAD'], intEntry.path); // 커밋 전이라 base OID.
   const mhR = await git(['rev-parse', 'MERGE_HEAD'], intEntry.path); // source OID.
   if (headR.code !== 0 || mhR.code !== 0) return null;
+  // Don't degrade into a corrupt session: without a resolved base + its checkout,
+  // a later Land would call landMerge with an empty baseCheckoutPath and fail
+  // confusingly. Same clear failure contract as mergeStart — bail instead.
   const base = await resolveBaseBranch(mainWt);
-  const baseEntry = base ? entries.find((e) => e.branch === base) : undefined;
+  if (!base) return null;
+  const baseEntry = entries.find((e) => e.branch === base);
+  if (!baseEntry) return null;
   const conflicts = ms.conflicts > 0 ? await detectConflicts(intEntry.path) : [];
   const session: MergeSessionState = {
     sessionId: randomUUID(),
     repoKey,
     mainWt,
-    base: base ?? '',
-    baseCheckoutPath: baseEntry?.path ?? '',
+    base,
+    baseCheckoutPath: baseEntry.path,
     baseOid: headR.stdout.trim(),
     sourceBranch: null,
     sourceOid: mhR.stdout.trim(),
@@ -381,7 +413,25 @@ async function mergeStatus(repoPath: string): Promise<MergeStatusResult> {
   const ctx = await resolveMergeContext(repoPath);
   if ('error' in ctx) return { ok: false, error: ctx.error };
   const existing = mergeSessions.get(ctx.repoKey);
-  if (existing) return { ok: true, status: toStatus(existing) };
+  if (existing) {
+    // A conflicted session must re-check disk: the user resolves & stages the
+    // conflict in the integration worktree, so we can't stay pinned to the cached
+    // 'conflicted' snapshot or verify never starts and Land never unlocks.
+    if (existing.phase === 'conflicted') {
+      const ms = await readMergeState(existing.integrationPath);
+      if (ms.merging && ms.conflicts === 0) {
+        // Resolved & staged on disk → advance to the verify gate. Guarded against a
+        // double kick: phase leaves 'conflicted', so a repeat status call won't re-enter.
+        existing.conflicts = [];
+        existing.changedFiles = await countStaged(existing.integrationPath);
+        kickVerify(existing);
+      } else {
+        // Still conflicting (or the merge is no longer in progress) — refresh the list.
+        existing.conflicts = await detectConflicts(existing.integrationPath);
+      }
+    }
+    return { ok: true, status: toStatus(existing) };
+  }
   const recovered = await recoverSession(ctx);
   return { ok: true, status: recovered ? toStatus(recovered) : null };
 }
@@ -402,6 +452,9 @@ async function mergeLand(repoPath: string): Promise<MergeActionResult> {
       sourceOid: s.sourceOid,
     });
     if (!res.ok) return { ok: false, error: res.error };
+    // Land only runs from 'verified', so verify has already settled — but join its
+    // promise defensively before removing the worktree it ran in.
+    await s.verifyPromise?.catch(() => undefined);
     await removeIntegrationWorktree(s.mainWt, s.integrationPath);
     mergeSessions.delete(repoKey);
     return { ok: true };
@@ -412,9 +465,13 @@ async function mergeDiscard(repoPath: string): Promise<MergeActionResult> {
   const ctx = await resolveMergeContext(repoPath);
   if ('error' in ctx) return { ok: false, error: ctx.error };
   const { mainWt, repoKey, entries } = ctx;
-  // verify가 돌고 있으면 먼저 취소(락 밖 — abort는 즉시 반영). 그 뒤 락 안에서 정리.
+  // Cancel an in-flight verify first (abort reflects immediately), then WAIT for its
+  // child process to unwind before we delete the integration worktree it may still
+  // be touching — abort only SIGTERMs npm (not the child tree), and kickVerify is
+  // fire-and-forget, so we join its promise here to close the race.
   const pre = mergeSessions.get(repoKey);
   pre?.abort?.abort();
+  await pre?.verifyPromise?.catch(() => undefined);
   return withRepoLock(repoKey, async () => {
     const s = mergeSessions.get(repoKey);
     // 세션이 없어도 디스크의 integration 워크트리를 정리(재시작 후 Discard 등).

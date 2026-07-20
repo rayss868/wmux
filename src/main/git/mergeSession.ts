@@ -12,7 +12,7 @@
 //  - Never trust "done" text — verify is judged solely by the process exit code.
 //  - The session's source of truth is derived from git's on-disk state
 //    (MERGE_HEAD), so it recovers even after an app restart.
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, symlinkSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -77,9 +77,40 @@ export async function detectConflicts(cwd: string): Promise<string[]> {
 }
 
 /** Number of staged changed files (index vs HEAD after the merge). */
-async function countStaged(cwd: string): Promise<number> {
+export async function countStaged(cwd: string): Promise<number> {
   const r = await git(['diff', '--cached', '--name-only', '-z'], cwd);
   return parseNulList(r.stdout).length;
+}
+
+/**
+ * Link node_modules from a base checkout into a fresh integration worktree so the
+ * verify gate (`npm test` / `npm run lint`) can resolve dependencies.
+ *
+ * The integration worktree is a bare `git worktree add`, and node_modules is
+ * gitignored, so it starts with no dependencies — in a real repo (unlike the
+ * trivial dogfood scripts) verify would then always fail with "module not found".
+ * We symlink (not copy) the first candidate base dir that has node_modules; on
+ * Windows a junction is used since directory symlinks need elevation.
+ *
+ * Best-effort: if the link can't be created the verify still runs (that repo may
+ * not need deps). Only the top-level node_modules is linked — nested workspaces
+ * (monorepos) are out of B-MVP scope.
+ */
+export function linkNodeModules(integrationPath: string, baseDirs: readonly string[]): void {
+  try {
+    const dest = join(integrationPath, 'node_modules');
+    if (existsSync(dest)) return; // already present (link or real dir) — skip
+    for (const baseDir of baseDirs) {
+      if (!baseDir) continue;
+      const src = join(baseDir, 'node_modules');
+      if (existsSync(src)) {
+        symlinkSync(src, dest, process.platform === 'win32' ? 'junction' : 'dir');
+        return;
+      }
+    }
+  } catch {
+    // Best-effort: leave verify to run without the link (deps may be unneeded).
+  }
 }
 
 /**

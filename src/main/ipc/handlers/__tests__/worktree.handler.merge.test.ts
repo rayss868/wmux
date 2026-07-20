@@ -53,6 +53,25 @@ function makeConflictScenario(): { base: string; repo: string; featWt: string; c
   return { base, repo, featWt, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
+// main + a feat branch pointing at the SAME commit (already in base) as a worktree.
+// Merging it is a no-op: git leaves no MERGE_HEAD and 0 changed files.
+function makeNoopScenario(): { base: string; repo: string; featWt: string; cleanup: () => void } {
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-noop-')));
+  const repo = join(base, 'repo');
+  mkdirSync(repo);
+  g(repo, ['init', '-q', '-b', 'main']);
+  g(repo, ['config', 'user.email', 't@t']);
+  g(repo, ['config', 'user.name', 't']);
+  writeFileSync(join(repo, 'f.txt'), 'a\n');
+  g(repo, ['add', '-A']);
+  g(repo, ['commit', '-q', '-m', 'base']);
+  // feat = main HEAD (no new commits), checked out as a linked worktree.
+  g(repo, ['branch', 'feat']);
+  const featWt = join(base, 'feat-wt');
+  g(repo, ['worktree', 'add', '-q', featWt, 'feat']);
+  return { base, repo, featWt, cleanup: () => rmSync(base, { recursive: true, force: true }) };
+}
+
 describe('worktree.handler — merge session (conflict path) start/status/discard', () => {
   let scn: ReturnType<typeof makeConflictScenario>;
   beforeEach(() => {
@@ -100,5 +119,86 @@ describe('worktree.handler — merge session (conflict path) start/status/discar
     const start = captured.get(IPC.WORKTREE_MERGE_START)!;
     const s = (await start({}, scn.repo, scn.featWt)) as MergeStartResult;
     expect(s.ok).toBe(false);
+  });
+
+  it('start — rejects a dirty source worktree (uncommitted work would be dropped)', async () => {
+    // Untracked file in the source (feat) worktree — the committed HEAD is what
+    // gets merged, so this change would be silently lost.
+    writeFileSync(join(scn.featWt, 'wip.txt'), 'uncommitted\n');
+    const start = captured.get(IPC.WORKTREE_MERGE_START)!;
+    const s = (await start({}, scn.repo, scn.featWt)) as MergeStartResult;
+    expect(s.ok).toBe(false);
+    if (!s.ok) expect(s.error).toContain('source 워크트리에 커밋되지 않은');
+  });
+
+  it('start — rejects a sourcePath that is not a worktree of this repo', async () => {
+    // A separate, unrelated git repo (arbitrary path injection from the renderer).
+    const other = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-other-')));
+    g(other, ['init', '-q', '-b', 'main']);
+    g(other, ['config', 'user.email', 't@t']);
+    g(other, ['config', 'user.name', 't']);
+    writeFileSync(join(other, 'x.txt'), 'x\n');
+    g(other, ['add', '-A']);
+    g(other, ['commit', '-q', '-m', 'x']);
+    try {
+      const start = captured.get(IPC.WORKTREE_MERGE_START)!;
+      const s = (await start({}, scn.repo, other)) as MergeStartResult;
+      expect(s.ok).toBe(false);
+      if (!s.ok) expect(s.error).toContain('이 repo의 워크트리가 아닙니다');
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('status — a conflicted session advances to verify once the conflict is resolved & staged on disk', async () => {
+    const start = captured.get(IPC.WORKTREE_MERGE_START)!;
+    const status = captured.get(IPC.WORKTREE_MERGE_STATUS)!;
+    const discard = captured.get(IPC.WORKTREE_MERGE_DISCARD)!;
+
+    const s = (await start({}, scn.repo, scn.featWt)) as MergeStartResult;
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    expect(s.status.phase).toBe('conflicted');
+    const integrationPath = s.status.integrationPath;
+
+    // Resolve + stage the conflict in the integration worktree (MERGE_HEAD stays until commit).
+    writeFileSync(join(integrationPath, 'f.txt'), 'RESOLVED\n');
+    g(integrationPath, ['add', 'f.txt']);
+
+    // status re-checks disk → no unresolved conflicts → transitions to the verify gate.
+    const st = (await status({}, scn.repo)) as MergeStatusResult;
+    expect(st.ok).toBe(true);
+    if (!st.ok) return;
+    expect(st.status?.conflicts).toEqual([]);
+    expect(st.status?.phase).toBe('verifying');
+
+    // Clean up: discard aborts the in-flight verify and removes the integration worktree.
+    await discard({}, scn.repo);
+  });
+});
+
+describe('worktree.handler — merge session (no-op merge)', () => {
+  let scn: ReturnType<typeof makeNoopScenario>;
+  beforeEach(() => {
+    captured.clear();
+    registerWorktreeHandlers();
+    scn = makeNoopScenario();
+  });
+  afterEach(() => scn.cleanup());
+
+  it('start — rejects an already-up-to-date source and leaves no orphan integration worktree', async () => {
+    const start = captured.get(IPC.WORKTREE_MERGE_START)!;
+    const status = captured.get(IPC.WORKTREE_MERGE_STATUS)!;
+
+    const s = (await start({}, scn.repo, scn.featWt)) as MergeStartResult;
+    expect(s.ok).toBe(false);
+    if (!s.ok) expect(s.error).toContain('이미 최신');
+
+    // No session was created …
+    const st = (await status({}, scn.repo)) as MergeStatusResult;
+    expect(st.ok).toBe(true);
+    if (st.ok) expect(st.status).toBeNull();
+    // … and no integration worktree was left behind.
+    expect(g(scn.repo, ['worktree', 'list'])).not.toContain('.wmux-merge');
   });
 });
