@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS: panes get the shell environment you actually have.** zsh was started interactive but not as a login shell, and on macOS the standard `PATH` is assembled by `/etc/zprofile` — a **login** file that runs `path_helper`. So a pane inherited whatever `PATH` the app was launched with (launchd's minimal one for a GUI launch) and lost `/opt/homebrew/bin`, `/usr/sbin`, `/sbin`, `/Library/Apple/usr/bin` and every `/etc/paths.d` entry. `.zshrc` still ran, which is why the shell looked fine right up until an unqualified Homebrew command failed. Panes now start a login shell on macOS, matching Terminal.app, iTerm2 and VS Code. The `.zprofile`/`.zlogin` stubs that delegate to your real files already existed — they were simply never read. (#519, reported by u/DauntingPrawn)
+- **`~/…` works wherever you can pass a directory.** Tilde expansion is a shell feature, so a working directory arriving through the CLI, an MCP tool or the RPC layer was never expanded by anything — `~/projects/foo` stayed literal — so the pane either opened silently in your home directory (where the code checks the path first) or came up dead and blank with no error at all (where it doesn't: the shell exits 1 immediately on an unreadable cwd). It now resolves at both spawn paths. `~otheruser` is left alone rather than silently mapped to your own home. (#520, reported by u/DauntingPrawn)
+
 ## [3.28.1] — 2026-07-21
 
 ### Fixed

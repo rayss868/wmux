@@ -26,6 +26,18 @@ describe('buildSpawnInjection — zsh', () => {
     expect(inj?.env.ZDOTDIR).toMatch(/shell-integration[\\/]zsh$/);
     expect(inj?.env.WMUX_SHELL_INTEGRATION).toBe('1');
     expect(inj?.args).toContain('-i');
+    // #519 — macOS builds its standard PATH in /etc/zprofile via path_helper,
+    // and zprofile is a LOGIN file. Interactive-only left panes without
+    // /opt/homebrew/bin, /usr/sbin, /sbin and every /etc/paths.d entry, so an
+    // unqualified Homebrew command failed even though .zshrc had run.
+    // Linux terminals default to non-login; adding -l there would newly source
+    // /etc/profile for existing users with no bug behind it.
+    if (process.platform === 'darwin') {
+      expect(inj?.args).toContain('-l');
+      expect(inj?.args).toEqual(['-l', '-i']);
+    } else {
+      expect(inj?.args).not.toContain('-l');
+    }
   });
 
   it('알 수 없는 셸은 injection이 없다(일반 spawn)', () => {

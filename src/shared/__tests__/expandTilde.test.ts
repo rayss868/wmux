@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expandTilde } from '../expandTilde';
@@ -15,6 +16,20 @@ describe('expandTilde', () => {
 
   it.skipIf(onWindows)('expands a leading ~/', () => {
     expect(expandTilde('~/projects/foo')).toBe(path.join(home, 'projects/foo'));
+  });
+
+  // The behaviour this guards, measured on macOS with a real PTY:
+  //   fs.existsSync('~/Desktop')                     -> false
+  //   pty.spawn(zsh, { cwd: '~/Desktop' })           -> exitCode 1, no output
+  // So an unexpanded tilde either lands the user in $HOME (where the caller
+  // guards with existsSync) or produces a pane that is simply dead and blank
+  // with nothing to report. The expanded form has to be a real, usable path.
+  it.skipIf(onWindows)('produces a path that actually exists', () => {
+    const expanded = expandTilde('~');
+    expect(path.isAbsolute(expanded)).toBe(true);
+    expect(fs.existsSync(expanded)).toBe(true);
+    // The literal form is what breaks — assert the premise, not just the fix.
+    expect(fs.existsSync('~')).toBe(false);
   });
 
   it('leaves absolute and relative paths alone', () => {
