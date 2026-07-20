@@ -100,21 +100,36 @@ describe('P7 소켓 경로 (~/.wmux 하위 + sun_path 한계)', () => {
 
   it('신규 소켓은 ~/.wmux{suffix}/ 하위, legacy는 홈 직하 형태를 유지한다', async () => {
     if (process.platform === 'win32') return; // named pipe는 경로 규칙 대상 아님
+    // Mock HOME to a deterministic short value so the socket-path length assert
+    // below doesn't depend on the real $HOME (flaky on CI with long profile
+    // names). getWmuxHomeDir prefers USERPROFILE over HOME, so drop USERPROFILE
+    // to make HOME authoritative. Both are restored in the finally.
+    const origHome = process.env.HOME;
+    const origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = '/tmp/wmux-test-home';
+    delete process.env.USERPROFILE;
     delete process.env.WMUX_DATA_SUFFIX;
-    const {
-      getDaemonSocketPath, getLegacyDaemonSocketPath,
-      getSessionSocketPath, getLegacySessionSocketPath, getWmuxHomeDir,
-    } = await import('../constants');
-    const sessionId = '123e4567-e89b-42d3-a456-426614174000'; // uuid 36자
-    expect(getDaemonSocketPath()).toBe(`${getWmuxHomeDir()}/daemon.sock`);
-    expect(getSessionSocketPath(sessionId)).toBe(`${getWmuxHomeDir()}/session-${sessionId}.sock`);
-    // legacy 경로는 구버전 코드와 byte-동일해야 폴백/마이그레이션 판정이 맞는다
-    expect(getLegacyDaemonSocketPath()).toMatch(/\/\.wmux-daemon\.sock$/);
-    expect(getLegacySessionSocketPath(sessionId)).toMatch(/\/\.wmux-session-.*\.sock$/);
-    // sun_path 104바이트 한계(macOS) — uuid 세션 id 기준으로 여유 확인
-    expect(Buffer.byteLength(getSessionSocketPath(sessionId))).toBeLessThanOrEqual(104);
-    // suffix는 디렉토리에만 반영(파일명 중복 없음 → 경로 단축)
-    process.env.WMUX_DATA_SUFFIX = '-dev';
-    expect(getDaemonSocketPath()).toMatch(/\/\.wmux-dev\/daemon\.sock$/);
+    try {
+      const {
+        getDaemonSocketPath, getLegacyDaemonSocketPath,
+        getSessionSocketPath, getLegacySessionSocketPath, getWmuxHomeDir,
+      } = await import('../constants');
+      const sessionId = '123e4567-e89b-42d3-a456-426614174000'; // uuid 36자
+      expect(getDaemonSocketPath()).toBe(`${getWmuxHomeDir()}/daemon.sock`);
+      expect(getSessionSocketPath(sessionId)).toBe(`${getWmuxHomeDir()}/session-${sessionId}.sock`);
+      // legacy 경로는 구버전 코드와 byte-동일해야 폴백/마이그레이션 판정이 맞는다
+      expect(getLegacyDaemonSocketPath()).toMatch(/\/\.wmux-daemon\.sock$/);
+      expect(getLegacySessionSocketPath(sessionId)).toMatch(/\/\.wmux-session-.*\.sock$/);
+      // sun_path 104바이트 한계(macOS) — uuid 세션 id 기준으로 여유 확인
+      expect(Buffer.byteLength(getSessionSocketPath(sessionId))).toBeLessThanOrEqual(104);
+      // suffix는 디렉토리에만 반영(파일명 중복 없음 → 경로 단축)
+      process.env.WMUX_DATA_SUFFIX = '-dev';
+      expect(getDaemonSocketPath()).toMatch(/\/\.wmux-dev\/daemon\.sock$/);
+    } finally {
+      if (origHome === undefined) delete process.env.HOME;
+      else process.env.HOME = origHome;
+      if (origUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = origUserProfile;
+    }
   });
 });
