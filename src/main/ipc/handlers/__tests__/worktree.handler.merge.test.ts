@@ -22,6 +22,10 @@ import { registerWorktreeHandlers } from '../worktree.handler';
 import { IPC } from '../../../../shared/constants';
 import type { MergeStartResult, MergeStatusResult, MergeActionResult } from '../worktree.handler';
 
+// These tests drive REAL git (worktree add, merge, status). Process spawning is
+// much slower on Windows CI, so the default 5s per-test timeout is too tight.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 function g(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
 }
@@ -50,7 +54,7 @@ function makeConflictScenario(): { base: string; repo: string; featWt: string; c
   // Check out feat as a linked worktree (source).
   const featWt = join(base, 'feat-wt');
   g(repo, ['worktree', 'add', '-q', featWt, 'feat']);
-  return { base, repo, featWt, cleanup: () => rmSync(base, { recursive: true, force: true }) };
+  return { base, repo, featWt, cleanup: () => rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }) };
 }
 
 // main + a feat branch pointing at the SAME commit (already in base) as a worktree.
@@ -69,7 +73,7 @@ function makeNoopScenario(): { base: string; repo: string; featWt: string; clean
   g(repo, ['branch', 'feat']);
   const featWt = join(base, 'feat-wt');
   g(repo, ['worktree', 'add', '-q', featWt, 'feat']);
-  return { base, repo, featWt, cleanup: () => rmSync(base, { recursive: true, force: true }) };
+  return { base, repo, featWt, cleanup: () => rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }) };
 }
 
 describe('worktree.handler — merge session (conflict path) start/status/discard', () => {

@@ -151,9 +151,23 @@ async function ghDefaultBranch(cwd: string): Promise<string | null> {
   }
 }
 
-/** Explicitly resolve the base branch: gh default → git symbolic-ref → main/master. */
+/** Whether origin is a GitHub remote — gates the gh call so a local or non-GitHub
+ *  repo never pays for a (sometimes slow) `gh` subprocess. */
+async function hasGithubOrigin(cwd: string): Promise<boolean> {
+  const r = await git(['remote', 'get-url', 'origin'], cwd);
+  if (r.code !== 0) return false;
+  return /(?:@|\/\/)(?:[^/]*\.)?github\.com[:/]/i.test(r.stdout.trim());
+}
+
+/** Explicitly resolve the base branch: gh default (GitHub origin only) →
+ *  git symbolic-ref → main/master. gh is skipped for local/non-GitHub repos so
+ *  `start` never blocks on a needless gh call (the cause of Windows CI timeouts). */
 export async function resolveBaseBranch(cwd: string): Promise<string | null> {
-  return (await ghDefaultBranch(cwd)) ?? (await resolveBaseFromGit(cwd));
+  if (await hasGithubOrigin(cwd)) {
+    const viaGh = await ghDefaultBranch(cwd);
+    if (viaGh) return viaGh;
+  }
+  return resolveBaseFromGit(cwd);
 }
 
 /**
