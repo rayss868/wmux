@@ -742,4 +742,3 @@ describe('surfacePendingQuestion lifecycle', () => {
     expect(store.getState().surfacePendingQuestion['pty-1']).toBe('Shall I merge?');
   });
 });
-

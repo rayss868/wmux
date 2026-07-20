@@ -652,7 +652,14 @@ export class PTYBridge {
         // Clear agentStatus so the sidebar dot stops claiming the agent is
         // still running/waiting after the process is gone. 'idle' is the
         // explicit absence-of-agent state — MiniSidebar hides the dot.
-        broadcastMetadataUpdate(win, { ptyId, agentStatus: 'idle', agentName: '' });
+        //
+        // pendingQuestion goes with it: the process is GONE, so nothing is
+        // waiting for an answer. A terminal exit only prints a marker and does
+        // not close the surface, so without this the pane keeps advertising a
+        // question on `pane_list` forever. Cleared here — on the explicit
+        // process-end — and NOT on generic idle transitions, where a genuinely
+        // blocked pane may simply have gone quiet.
+        broadcastMetadataUpdate(win, { ptyId, agentStatus: 'idle', agentName: '', pendingQuestion: '' });
 
         if (exitCode !== 0) {
           const elapsed = Date.now() - (this.ptyCreatedAt.get(ptyId) ?? Date.now());

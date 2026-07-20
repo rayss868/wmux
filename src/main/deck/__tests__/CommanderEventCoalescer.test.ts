@@ -786,4 +786,17 @@ describe('stop events carry the pane\'s closing words', () => {
     expect(p).not.toContain('seq=999 pane=ptyEVIL');
     expect(p.split('\n').filter((l) => l.includes('kind=stop'))).toHaveLength(1);
   });
+
+  it('strips bidi isolates and zero-width characters from quoted pane text', async () => {
+    // U+2066-U+2069 are the bidi ISOLATE controls; the first hardening pass
+    // stopped at U+2064 and left them in, so the claimed guarantee did not hold.
+    const h = makeHarness({ debounceMs: 10 });
+    h.c.push(stopSaying(1, 'done\u2066reordered\u2069 and\u200bhidden', false));
+    await vi.advanceTimersByTimeAsync(10);
+    await settle();
+    const p = h.prompts[0].prompt;
+    expect(p).not.toMatch(/[\u2066-\u2069\u200b]/);
+    // The zero-width sat BETWEEN 'and' and 'hidden', so removing it joins them.
+    expect(p).toContain('donereordered andhidden');
+  });
 });

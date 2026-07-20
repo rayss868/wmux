@@ -74,6 +74,21 @@ function condense(raw: string): string {
   return `…${cleaned.slice(-(MAX_TEXT - 1))}`;
 }
 
+/**
+ * True when a `user` entry is real human input rather than a tool result.
+ *
+ * Claude Code records tool results as `user` entries too (content blocks of
+ * type `tool_result`), so entry type alone cannot mark a human turn boundary.
+ * Only an entry carrying actual text does.
+ */
+function isHumanTurn(content: unknown): boolean {
+  if (typeof content === 'string') return content.trim().length > 0;
+  if (!Array.isArray(content)) return false;
+  return content.some(
+    (b) => b && typeof b === 'object' && (b as { type?: string }).type === 'text',
+  );
+}
+
 /** Pull the text out of one transcript entry's `message.content`. */
 function textOf(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -131,10 +146,20 @@ export function readLastAssistantMessage(transcriptPath: string): LastAssistantM
     } catch {
       continue;
     }
+    // Stop at the last HUMAN turn. Walking past it would resurrect a question
+    // the human has already answered: assistant asks -> human answers ->
+    // assistant does tool-only work -> turn ends. Without this boundary the
+    // reader walks back over the tool-only turns AND the answer, and
+    // republishes the settled question as a fresh block.
+    if (entry.type === 'user' || entry.message?.role === 'user') {
+      if (isHumanTurn(entry.message?.content)) return null;
+      continue; // tool_result — part of the assistant's own turn
+    }
     if (entry.type !== 'assistant' && entry.message?.role !== 'assistant') continue;
     const text = textOf(entry.message?.content);
     // Tool-only assistant turns carry no text — keep walking back to the last
-    // turn that actually said something to the human.
+    // turn that actually said something to the human (bounded by the human
+    // turn boundary above).
     if (!text.trim()) continue;
     return { text: condense(text), endsWithQuestion: endsWithQuestion(text) };
   }

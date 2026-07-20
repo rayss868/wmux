@@ -548,7 +548,8 @@ const MAX_QUOTED = 400;
 function sanitizeSnippet(raw: string): string {
   // Stripping control characters IS the point here: they are what would let
   // pane text forge block structure. C1 (U+0080-U+009F), bidi overrides and
-  // zero-width/format characters go too: they render as nothing (or reorder
+  // zero-width/format characters go too (including the U+2066-U+2069
+  // isolates): they render as nothing (or reorder
   // what follows) and exist mainly to make text read differently than it is.
   //
   // Scope note: this is presentation hardening, NOT an authorization boundary.
@@ -559,7 +560,7 @@ function sanitizeSnippet(raw: string): string {
   const flat = raw
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
-    .replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]+/g, '')
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]+/g, '')
     .replace(/\s+/g, ' ')
     .trim();
   // Defence in depth. Flattening newlines already stops a forged event LINE —

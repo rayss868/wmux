@@ -90,14 +90,41 @@ describe('readLastAssistantMessage', () => {
     expect(readLastAssistantMessage(file)?.text).toBe('Shall I merge?');
   });
 
-  it('ignores user entries', () => {
+  // The subtlest bug in this file: assistant asks -> human answers -> assistant
+  // does tool-only work -> turn ends. Walking back past the human's answer
+  // resurrects a settled question and republishes it as a fresh block.
+  it('never returns a question the human already answered', () => {
+    const humanTurn = line({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: '응 머지해' }] },
+    });
+    const toolOnly = line({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }] },
+    });
+    fs.writeFileSync(file, assistantText('머지할까요') + humanTurn + toolOnly);
+    expect(readLastAssistantMessage(file)).toBeNull();
+  });
+
+  it('does not treat a tool_result as a human turn', () => {
+    // Claude Code records tool results as `user` entries too — stopping on
+    // those would blind the reader to the turn's actual closing message.
+    const toolResult = line({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'ok' }] },
+    });
+    fs.writeFileSync(file, assistantText('머지할까요') + toolResult);
+    expect(readLastAssistantMessage(file)?.text).toBe('머지할까요');
+  });
+
+  it('returns null when the human spoke last — nothing is awaiting an answer', () => {
+    // The human's turn is the boundary: anything the assistant said before it
+    // has been responded to, so there is no open question to report.
     fs.writeFileSync(
       file,
-      assistantText('All done.') + line({ type: 'user', message: { role: 'user', content: 'ok?' } }),
+      assistantText('All done.') + line({ type: 'user', message: { role: 'user', content: 'thanks' } }),
     );
-    const got = readLastAssistantMessage(file);
-    expect(got?.text).toBe('All done.');
-    expect(got?.endsWithQuestion).toBe(false);
+    expect(readLastAssistantMessage(file)).toBeNull();
   });
 
   it('survives a partial leading line from the bounded tail read', () => {
