@@ -99,6 +99,16 @@ describe('peers — per-peer store', () => {
     expect(store().get('u1')).toBeNull(); // HMAC failed -> fresh empty store
   });
 
+  // Both cap-loop tests below drive PEER_CAP (64) real pairings, and every
+  // upsertPaired persists the whole store: an atomic temp-write + rename with
+  // rotation, followed by an fsync. That is ~64 forced disk flushes per test —
+  // legitimately slow I/O, not a hang. They run in ~0.3-0.4s on a warm dev box
+  // but have timed out at vitest's 5s default on loaded CI runners (three times
+  // in one day, on Windows where AV scanning taxes every write). Raised here,
+  // per-test, rather than globally: the other nine tests in this file finish in
+  // under 30ms and should keep the strict default.
+  const CAP_LOOP_TIMEOUT_MS = 30_000;
+
   it('rejects a new pairing when the store is full and nothing is evictable (fail-closed)', () => {
     const live = new Set<string>();
     const s = new PeerStore(dir, { ...seam, isLive: (u) => live.has(u) });
@@ -107,7 +117,7 @@ describe('peers — per-peer store', () => {
       live.add('u' + i); // every paired peer holds a live connection
     }
     expect(() => s.upsertPaired(mkResult('uNEW'))).toThrow(/full/i);
-  });
+  }, CAP_LOOP_TIMEOUT_MS);
 
   it('LRU eviction at cap never drops a burned peer', () => {
     const s = store();
@@ -115,7 +125,7 @@ describe('peers — per-peer store', () => {
     for (let i = 0; i < PEER_BURN_THRESHOLD; i++) s.noteSteadyStateAuthFail('u0');
     for (let i = 1; i <= PEER_CAP + 5; i++) s.upsertPaired(mkResult('u' + i, (i % 250) + 1));
     expect(store().list().some((p) => p.peerUuid === 'u0')).toBe(true);
-  });
+  }, CAP_LOOP_TIMEOUT_MS);
 
   it('list() never leaks the long-term secret', () => {
     const s = store();
