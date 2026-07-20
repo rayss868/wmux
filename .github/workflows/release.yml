@@ -310,8 +310,20 @@ jobs:
         timeout-minutes: 60
 
       # Append the .zip/.dmg to the release the `build` job already created.
-      # continue-on-error: a macOS upload hiccup must not fail the whole release.
+      #
+      # `if: always()` is load-bearing, not defensive dressing. Forge builds the
+      # makers in order and `make` exits non-zero on the FIRST one that fails —
+      # so a flaky DMG step (v3.28.1 hit `hdiutil detach: No such file or
+      # directory`) skips this step entirely and the runner is discarded with a
+      # perfectly good .zip still on it. That zip backs the
+      # update.electronjs.org feed, so one maker hiccup silently took out both
+      # the download AND auto-update for macOS. The find below already handles
+      # "nothing was built", so running unconditionally costs nothing and
+      # salvages whatever did get made.
+      #
+      # continue-on-error: an upload hiccup must not fail the whole release.
       - name: Upload macOS artifacts to the release
+        if: always()
         continue-on-error: true
         shell: bash
         env:
@@ -373,7 +385,10 @@ jobs:
         run: npm run make
         timeout-minutes: 30
 
+      # Same reasoning as the macOS upload: deb/rpm/AppImage are made in
+      # sequence, so one failing maker must not discard the ones that succeeded.
       - name: Upload Linux artifacts to the release
+        if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
