@@ -22,6 +22,7 @@ import { FOCUS_RING } from '../focusRing';
 import type { Pane, PaneLeaf } from '../../../shared/types';
 import type { WorktreeEntry } from '../../../shared/worktreeParse';
 import { PrSection } from './PrSection';
+import { isPlausibleCwd } from '../../../shared/cwdShape';
 
 // 활성 워크스페이스의 활성 pane → 활성 surface cwd (팔레트 Show Git Diff와 동일 규칙).
 // 셀렉터로도 재사용(store 상태에서 원시 문자열로 수렴 — 리렌더 최소화).
@@ -38,7 +39,9 @@ function selectActivePaneCwd(state: StoreState): string {
   };
   const leaf = findLeaf(ws.rootPane);
   const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-  return surface?.cwd || ws.profile?.startupCwd || state.startupDirectory || '';
+  // 오염된 cwd(스크래핑 오탐으로 저장된 불가능한 모양)는 건너뛰고 폴백 사용.
+  const cwd = surface?.cwd && isPlausibleCwd(surface.cwd) ? surface.cwd : '';
+  return cwd || ws.profile?.startupCwd || state.startupDirectory || '';
 }
 
 function pathLeaf(p: string): string {

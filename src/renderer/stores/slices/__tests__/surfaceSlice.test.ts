@@ -150,11 +150,13 @@ describe('surfaceSlice.updateSurfaceCwd', () => {
     const paneId = state.workspaces[0].rootPane.id;
     slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\start');
 
-    slice.updateSurfaceCwd('pty-1', 'D:\\proj\\api');
+    // POSIX 경로 사용 — updateSurfaceCwd는 실행 플랫폼에서 불가능한 모양(테스트
+    // 러너는 POSIX이므로 Windows 경로)을 거부한다(cwdShape 가드).
+    slice.updateSurfaceCwd('pty-1', '/proj/api');
 
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf pane');
-    expect(pane.surfaces[0].cwd).toBe('D:\\proj\\api');
+    expect(pane.surfaces[0].cwd).toBe('/proj/api');
   });
 
   it('only touches the surface that owns the ptyId', () => {
@@ -163,12 +165,12 @@ describe('surfaceSlice.updateSurfaceCwd', () => {
     slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
     slice.addSurface(paneId, 'pty-2', 'pwsh', 'C:\\b');
 
-    slice.updateSurfaceCwd('pty-2', 'D:\\moved');
+    slice.updateSurfaceCwd('pty-2', '/moved');
 
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf pane');
     expect(pane.surfaces.find((s) => s.ptyId === 'pty-1')?.cwd).toBe('C:\\a');
-    expect(pane.surfaces.find((s) => s.ptyId === 'pty-2')?.cwd).toBe('D:\\moved');
+    expect(pane.surfaces.find((s) => s.ptyId === 'pty-2')?.cwd).toBe('/moved');
   });
 
   it('is a no-op for an empty or unknown ptyId', () => {

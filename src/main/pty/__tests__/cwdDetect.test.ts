@@ -45,18 +45,18 @@ describe('detectPromptCwd', () => {
   });
 
   it('reads the PowerShell cwd from a single prompt', () => {
-    expect(detectPromptCwd('PS C:\\Users\\me>')).toBe('C:\\Users\\me');
+    expect(detectPromptCwd('PS C:\\Users\\me>', 'win32')).toBe('C:\\Users\\me');
   });
 
   it('reads the LAST prompt, not the first — the core stuck-at-home fix', () => {
     // The echoed command line carries the OLD prompt before the new one.
     const buf = 'PS C:\\Users\\me> cd D:\\proj\r\nPS D:\\proj>';
-    expect(detectPromptCwd(buf)).toBe('D:\\proj');
+    expect(detectPromptCwd(buf, 'win32')).toBe('D:\\proj');
   });
 
   it('handles several prompts and returns the final cwd', () => {
     const buf = 'PS C:\\a> cd b\r\nPS C:\\a\\b> cd c\r\nPS C:\\a\\b\\c>';
-    expect(detectPromptCwd(buf)).toBe('C:\\a\\b\\c');
+    expect(detectPromptCwd(buf, 'win32')).toBe('C:\\a\\b\\c');
   });
 
   it('reads a bash-style prompt cwd', () => {
@@ -65,6 +65,17 @@ describe('detectPromptCwd', () => {
 
   it('prefers the last prompt across mixed content', () => {
     const buf = 'PS C:\\start> npm run build\r\n...output...\r\nPS C:\\start\\dist>';
-    expect(detectPromptCwd(buf)).toBe('C:\\start\\dist');
+    expect(detectPromptCwd(buf, 'win32')).toBe('C:\\start\\dist');
+  });
+
+  // 오탐 방어(2026-07-20): 화면에 표시된 Windows 프롬프트 텍스트가 POSIX
+  // 페인의 cwd를 덮지 않는다 — "C:\…" 사고 회귀 테스트.
+  it('rejects a Windows-shaped prompt cwd on a POSIX platform', () => {
+    expect(detectPromptCwd('PS C:\\Users\\me>', 'darwin')).toBeNull();
+    expect(detectPromptCwd('PS C:\\\u2026>', 'darwin')).toBeNull();
+  });
+
+  it('still reads POSIX bash prompts on darwin', () => {
+    expect(detectPromptCwd('me@host:/home/me/work$', 'darwin')).toBe('/home/me/work');
   });
 });
