@@ -12,6 +12,8 @@ export const ko = {
   'sidebar.expandTooltip': '사이드바 펼치기 (Ctrl+B)',
   'sidebar.unreadCount': '읽지 않음 {count}개',
   'sidebar.agent': '에이전트',
+  'sidebar.git': 'Git',
+  'sidebar.gitTooltip': 'Git 패널 열기/닫기',
   'sidebar.screenOff': '화면 끄기',
   'sidebar.screenOn': '화면 켜기',
   'sidebar.screenOffTooltip': '내장 화면만 끕니다 (외장 모니터는 유지)',

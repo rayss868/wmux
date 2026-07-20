@@ -12,6 +12,8 @@ export const en = {
   'sidebar.expandTooltip': 'Expand sidebar (Ctrl+B)',
   'sidebar.unreadCount': '{count} unread',
   'sidebar.agent': 'Agent',
+  'sidebar.git': 'Git',
+  'sidebar.gitTooltip': 'Toggle the Git panel',
   'sidebar.screenOff': 'Screen off',
   'sidebar.screenOn': 'Screen on',
   'sidebar.screenOffTooltip': 'Turn the built-in display off (external monitors stay on)',
