@@ -3,6 +3,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
+import { expandTilde } from '../../shared/expandTilde';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
 import { getAccountStore } from '../account/accountStore';
@@ -145,7 +146,9 @@ export class PTYManager {
     }
     const id = `pty-${++this.nextId}`;
     const shell = options?.shell || this.getDefaultShell();
-    const cwd = options?.cwd || os.homedir();
+    // Same reason as the daemon spawn path: a caller-supplied cwd may carry a
+    // leading `~` that no shell expanded.
+    const cwd = options?.cwd ? expandTilde(options.cwd) : os.homedir();
 
     // Filter out sensitive and build-only variables to prevent leaking
     // internal state to child processes. Shared with DaemonSessionManager

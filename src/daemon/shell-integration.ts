@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getWmuxDir } from './config';
+import { isMac } from '../shared/platform';
 
 /**
  * Shell integration installer: materializes OSC 133 init scripts into
@@ -355,8 +356,24 @@ export function buildSpawnInjection(shellPath: string): SpawnInjection | null {
     // zsh: ZDOTDIR을 wmux zsh 디렉토리로 바꿔 OSC 133 stub들이 로드되게 한다.
     // 원래 ZDOTDIR(사용자 .zshrc 위치)은 DaemonSessionManager가 spawn 직전에
     // WMUX_USER_ZDOTDIR로 보존하므로, stub들이 사용자 설정을 먼저 source한다.
+    //
+    // `-l` on macOS (#519). The standard macOS PATH is assembled by
+    // /etc/zprofile, which runs /usr/libexec/path_helper — and zprofile is a
+    // LOGIN file. Interactive-only meant it never ran, so a pane inherited
+    // whatever PATH the daemon had (launchd's minimal one for a GUI launch)
+    // and lost /opt/homebrew/bin, /usr/sbin, /sbin, /Library/Apple/usr/bin and
+    // every /etc/paths.d entry. .zshrc still ran, which is why the shell looked
+    // fine until an unqualified Homebrew command failed.
+    //
+    // The .zprofile/.zlogin stubs this enables were already written and already
+    // delegate to the user's real files — they were simply never read.
+    //
+    // macOS only: Terminal.app, iTerm2 and VS Code all spawn login shells there,
+    // so this matches the platform convention. Linux terminals default to
+    // non-login and adding -l would newly source /etc/profile + ~/.zprofile for
+    // existing users — a behavior change with no bug behind it.
     return {
-      args: ['-i'],
+      args: isMac ? ['-l', '-i'] : ['-i'],
       env: { WMUX_SHELL_INTEGRATION: '1', ZDOTDIR: paths.zshDir },
     };
   }

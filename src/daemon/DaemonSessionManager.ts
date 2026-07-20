@@ -9,6 +9,7 @@ import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection, classifyShell } from './shell-integration';
+import { expandTilde } from '../shared/expandTilde';
 import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
@@ -246,7 +247,11 @@ export class DaemonSessionManager extends EventEmitter {
     // a <=6-col PTY hits the same zle.so SIGBUS as resizing into one.
     const cols = clampCols(params.cols ?? DEFAULT_COLS);
     const rows = clampRows(params.rows ?? DEFAULT_ROWS);
-    const cwd = params.cwd || os.homedir();
+    // Expand a leading `~`: this cwd can arrive straight off an RPC/CLI/MCP
+    // argument that no shell ever touched, so `~/projects/foo` would otherwise
+    // stay literal and silently fall back to $HOME (or throw as an unreadable
+    // cwd). Single choke point — every caller-supplied cwd converges here.
+    const cwd = params.cwd ? expandTilde(params.cwd) : os.homedir();
     let cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
 
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
