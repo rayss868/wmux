@@ -163,6 +163,13 @@ const electronAPI = {
      * V8 JS heap (~10MB) and under-reported real usage by ~10x.
      */
     getMemoryUsage: () => ipcRenderer.invoke(IPC.APP_MEMORY) as Promise<number>,
+    // macOS 내장 화면 백라이트 토글(외장 모니터 유지) — 사이드바 버튼용.
+    builtinDisplay: (mode: 'off' | 'on') =>
+      ipcRenderer.invoke(IPC.SYSTEM_BUILTIN_DISPLAY, mode) as Promise<{
+        ok: boolean;
+        code?: string;
+        error?: string;
+      }>,
   },
   settings: {
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),

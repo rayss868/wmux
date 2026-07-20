@@ -18,6 +18,7 @@ import { registerFontHandlers } from './handlers/fonts.handler';
 import { registerMetadataHandlers } from './handlers/metadata.handler';
 import { startLocalContextWatch } from '../metadata/localContextWatch';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
+import { registerSystemHandlers } from './handlers/system.handler';
 import { registerHooksBridgeHandlers } from './handlers/hooksBridge.handler';
 import { registerFsHandlers } from './handlers/fs.handler';
 import { registerToolbarHandlers } from './handlers/toolbar.handler';
@@ -155,6 +156,8 @@ export function registerAllHandlers(
     localPtyOwnership: !daemonClient,
   });
   registerClipboardHandlers();
+  // macOS 내장 화면 끄기(외장 유지) — 사이드바 버튼용.
+  registerSystemHandlers();
   registerHooksBridgeHandlers();
   const cleanupFs = registerFsHandlers();
   const cleanupToolbar = registerToolbarHandlers();

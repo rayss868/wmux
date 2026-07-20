@@ -12,6 +12,11 @@ export const en = {
   'sidebar.expandTooltip': 'Expand sidebar (Ctrl+B)',
   'sidebar.unreadCount': '{count} unread',
   'sidebar.agent': 'Agent',
+  'sidebar.screenOff': 'Screen off',
+  'sidebar.screenOn': 'Screen on',
+  'sidebar.screenOffTooltip': 'Turn the built-in display off (external monitors stay on)',
+  'sidebar.screenOffAccessibility': 'Grant Accessibility permission to wmux (System Settings → Privacy & Security → Accessibility).',
+  'sidebar.screenOffFailed': 'Could not toggle the built-in display.',
   'sidebar.agentTooltip': 'Toggle agent panel',
 
   // Workspace

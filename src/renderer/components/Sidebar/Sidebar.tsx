@@ -10,7 +10,7 @@ import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
-import { IconPlus, IconChevronDir, IconRobot, IconGitBranch, IconReview } from '../icons';
+import { IconPlus, IconChevronDir, IconRobot, IconGitBranch, IconReview, IconMoon } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
@@ -76,6 +76,29 @@ export default function Sidebar() {
   const dirtyWsCount = useStore(
     (s) => s.workspaces.filter((w) => (w.metadata?.gitSync?.dirty ?? 0) > 0).length,
   );
+
+  // 내장 화면 끄기(외장 모니터 유지) — 밝기 키 이벤트를 IPC로 전송. macOS 전용.
+  // screenDark는 낙관적 로컬 상태(실제 밝기를 읽는 API가 없음) — 실패 시 원복.
+  const [screenDark, setScreenDark] = useState(false);
+  const toggleBuiltinDisplay = useCallback(async () => {
+    const next = !screenDark;
+    setScreenDark(next);
+    const api = (window.electronAPI as unknown as {
+      system?: { builtinDisplay: (m: 'off' | 'on') => Promise<{ ok: boolean; code?: string }> };
+    })?.system;
+    const res = await api?.builtinDisplay(next ? 'off' : 'on');
+    if (!res?.ok) {
+      setScreenDark(!next);
+      pushToast({
+        level: 'warn',
+        message:
+          res?.code === 'accessibility'
+            ? t('sidebar.screenOffAccessibility') ||
+              'Grant Accessibility permission to wmux (System Settings → Privacy & Security → Accessibility).'
+            : t('sidebar.screenOffFailed') || 'Could not toggle the built-in display.',
+      });
+    }
+  }, [screenDark, pushToast, t]);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
@@ -198,6 +221,31 @@ export default function Sidebar() {
           </button>
         );
       })}
+
+      {/* 내장 화면 끄기(외장 모니터 유지) — 밝기 키는 내장 디스플레이에만 적용된다.
+          꺼짐 상태 동안은 warm(주의: 화면이 어두운 이유를 알린다). macOS 전용. */}
+      {window.electronAPI?.platform === 'darwin' && (
+        <button
+          type="button"
+          onClick={toggleBuiltinDisplay}
+          aria-pressed={screenDark}
+          title={t('sidebar.screenOffTooltip') || 'Turn the built-in display off (external monitors stay on)'}
+          data-sidebar-screen-off
+          className={`flex items-center gap-2 shrink-0 h-9 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono transition-colors ${FOCUS_RING} ${
+            screenDark
+              ? 'text-[var(--accent)]'
+              : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
+          }`}
+          style={{ borderColor: 'var(--border-soft)' }}
+        >
+          <IconMoon size={14} />
+          <span>
+            {screenDark
+              ? t('sidebar.screenOn') || 'Screen on'
+              : t('sidebar.screenOff') || 'Screen off'}
+          </span>
+        </button>
+      )}
 
       {/* Agent toggle — the reopen affordance for the right-side ChannelDock
           (agents + their channels), moved here from the status bar so it lives at
