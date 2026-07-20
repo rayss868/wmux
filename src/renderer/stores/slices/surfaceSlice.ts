@@ -20,6 +20,11 @@ export interface SurfaceSlice {
   /** 워크스페이스 diff 서피스 — repoPath(worktree toplevel)만 영속(diff 내용은 파생).
    * 같은 repoPath가 이미 열려 있으면 그 탭으로 전환. diff/editor처럼 ptyId 없음. */
   addWorkspaceDiffSurface: (paneId: string, repoPath: string, title?: string, workspaceId?: string) => void;
+  /** 유틸리티 서피스(git·review) 추가 — 중앙 페인 surface 탭으로 여는 진입점.
+   *  dedupe는 워크스페이스 전체 leaf를 순회한다: 같은 kind surface가 어디든 열려
+   *  있으면 그 페인을 activePaneId로, 그 서피스를 activeSurfaceId로 전환한다.
+   *  신규 생성 시 surface.cwd에 인자 cwd를 캡처(git repo 바인딩용). ptyId 없음. */
+  addUtilitySurface: (kind: 'git' | 'review', paneId: string, cwd?: string, workspaceId?: string) => void;
   /** Close a surface tab. `workspaceId` lets RPC/CLI callers target a
    * non-active workspace (defaults to the active one — existing callers are
    * unchanged). */
@@ -200,6 +205,46 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       cwd: '',
       surfaceType: 'diff',
       diffRepoPath: repoPath,
+    };
+    pane.surfaces.push(surface);
+    pane.activeSurfaceId = surface.id;
+  }),
+
+  addUtilitySurface: (kind, paneId, cwd, workspaceId) => set((state: StoreState) => {
+    const targetWsId = workspaceId || state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
+    if (!ws) return;
+    // dedupe: 워크스페이스 전체 leaf를 순회 — 같은 kind surface가 어디든 열려 있으면
+    // 그 페인+서피스로 전환한다(diff처럼 페인 안만 보지 않는다). 유틸 surface는
+    // 워크스페이스당 하나면 충분하므로 중복 생성을 막는다.
+    const findExisting = (pane: Pane): { paneId: string; surfaceId: string } | null => {
+      if (pane.type === 'leaf') {
+        const surface = pane.surfaces.find((s) => s.surfaceType === kind);
+        return surface ? { paneId: pane.id, surfaceId: surface.id } : null;
+      }
+      for (const child of pane.children) {
+        const found = findExisting(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const existing = findExisting(ws.rootPane);
+    if (existing) {
+      ws.activePaneId = existing.paneId;
+      const existingPane = findLeafPane(ws.rootPane, existing.paneId);
+      if (existingPane) existingPane.activeSurfaceId = existing.surfaceId;
+      return;
+    }
+    const pane = findLeafPane(ws.rootPane, paneId);
+    if (!pane) return;
+    const surface: Surface = {
+      id: generateId('surface'),
+      ptyId: '',
+      title: kind === 'git' ? 'Git' : 'Review',
+      shell: '',
+      // git surface는 자기 repo base를 이 cwd에서 읽는다(생성 시 캡처).
+      cwd: cwd || '',
+      surfaceType: kind,
     };
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;

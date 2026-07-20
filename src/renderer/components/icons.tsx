@@ -255,6 +255,34 @@ export function IconBrowser({ size = 14 }: { size?: number }) {
   );
 }
 
+/** Git branch — two nodes on a trunk with a branch line. Opens the Git surface
+ *  (worktrees + PRs) in the center pane. */
+export function IconGitBranch({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <circle cx="4" cy="3.4" r="1.5" />
+      <circle cx="4" cy="10.6" r="1.5" />
+      <circle cx="10" cy="5.2" r="1.5" />
+      <line x1="4" y1="4.9" x2="4" y2="9.1" />
+      <path d="M10 6.7 V7.2 a2.4 2.4 0 0 1 -2.4 2.4 H4" />
+    </Icon>
+  );
+}
+
+/** Review — a checklist / diff roster. Opens the Review surface (cross-workspace
+ *  diff roster) in the center pane. */
+export function IconReview({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="2.4" y="2" width="9.2" height="10" rx="1" />
+      <polyline points="4.4,5 5.3,5.9 7,4.2" />
+      <line x1="8.4" y1="5" x2="10" y2="5" />
+      <polyline points="4.4,9 5.3,9.9 7,8.2" />
+      <line x1="8.4" y1="9" x2="10" y2="9" />
+    </Icon>
+  );
+}
+
 /** Sparkles — start a new (AI) conversation. Replaces the ⊕ glyph. */
 export function IconSparkles({ size = 14 }: { size?: number }) {
   return (

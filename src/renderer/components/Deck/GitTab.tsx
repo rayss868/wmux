@@ -67,12 +67,16 @@ function getBridges(): { worktree: WorktreeBridge | null; resolveRepo: ((cwd: st
   return { worktree: api?.worktree ?? null, resolveRepo: api?.diff?.resolveRepo ?? null };
 }
 
-export function GitTab(): React.ReactElement {
+export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
   const t = useT();
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // 활성 pane cwd를 reactive 구독 — 같은 워크스페이스에서 다른 repo pane으로
-  // 포커스가 옮겨가도 재조회되도록 load의 dep으로 쓴다(Codex P2).
-  const activeCwd = useStore(selectActivePaneCwd);
+  // 포커스가 옮겨가도 재조회되도록 load의 dep으로 쓴다(Codex P2). 단 중앙 surface로
+  // 렌더될 땐 prop cwd(생성 시 캡처된 surface.cwd)가 repo base로 우선한다 — 자기
+  // 빈 cwd를 활성 pane에서 읽어 repo가 틀어지는 문제를 막는다. prop 미제공(덱 하위
+  // 호환) 시에만 selectActivePaneCwd 폴백.
+  const activePaneCwd = useStore(selectActivePaneCwd);
+  const activeCwd = cwd ?? activePaneCwd;
   const pushToast = useStore((s) => s.pushToast);
   const [repoPath, setRepoPath] = useState<string | null>(null);
   // 본(main) 워크트리 경로 — "main" 배지·Remove 숨김 기준. 현재 워크트리

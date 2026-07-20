@@ -49,7 +49,7 @@ export interface Surface {
   title: string;
   shell: string;
   cwd: string;
-  surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff';
+  surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review';
   browserUrl?: string;
   browserPartition?: string;
   editorFilePath?: string;

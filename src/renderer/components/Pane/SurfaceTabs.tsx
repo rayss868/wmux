@@ -10,25 +10,25 @@ import { tokenAttrs } from '../../themes';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import { FOCUS_RING } from '../focusRing';
-import { IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconGitBranch, IconReview } from '../icons';
 import { displayPath } from '../../utils/displayPath';
 
 /** Rendered width (px) of the pane action cluster when `paneActionsVisible`.
  *  Deterministic because every child is fixed-size. Tracing the markup below
- *  (4 buttons after the new-terminal button was removed — split-right,
- *  split-down, new-browser, zoom):
+ *  (6 flex children — split-right, split-down, new-browser, open-git,
+ *  open-review, then the zoom wrapper):
  *    outer div  border-l 1 + pl-1 4 ................................. 5
- *    4 × w-6 buttons (24 each) ...................................... 96
- *    3 × gap-0.5 (2 each, between the 4 flex children) ............... 6
+ *    5 × w-6 buttons (24 each) ..................................... 120
+ *    5 × gap-0.5 (2 each, between the 6 flex children) .............. 10
  *    zoom wrapper  ml-0.5 2 + border-l 1 + pl-1 4 ................... 7
  *    outer div  pr-0.5 2 ............................................. 2
- *                                                             total = 116
- *  (The button gaps + the wrapper's own ml-0.5 both apply between the browser
+ *                                                             total = 144
+ *  (The button gaps + the wrapper's own ml-0.5 both apply between the review
  *  button and the divider — flex `gap` and `margin` stack.) Exported so
  *  Pane.tsx can offset the absolute supervision badge just left of the cluster
  *  instead of hardcoding a magic pixel guess. Keep in sync with the cluster
  *  markup below if the button count, padding, or divider spacing changes. */
-export const PANE_ACTIONS_CLUSTER_WIDTH = 116;
+export const PANE_ACTIONS_CLUSTER_WIDTH = 144;
 
 /** Ctrl on Windows/Linux, ⌘ on macOS — mirrors the OS-aware mapping in
  *  useKeyboard.ts so a tooltip advertises the shortcut the user can actually
@@ -95,6 +95,8 @@ export default function SurfaceTabs({
   // Right-aligned pane action cluster (new terminal / split / new browser).
   // Gated by a Settings toggle (default ON) for minimal-chrome setups.
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
+  // 시안 A — Git·Review를 중앙 페인 surface 탭으로 여는 진입점. 덱에서 이관됐다.
+  const addUtilitySurface = useStore((s) => s.addUtilitySurface);
   // Zoom/maximize state for this pane — the cluster's fifth button toggles it
   // and reflects the current state (pressed when zoomed). Subscribing here (same
   // pattern as Pane.tsx) keeps the button in sync without prop threading.
@@ -374,6 +376,26 @@ export default function SurfaceTabs({
             data-pane-action="new-browser"
           >
             <IconBrowser size={14} />
+          </button>
+          {/* Git·Review 진입 — 중앙 페인에 유틸 surface 탭을 연다(시안 A). git은
+              활성 터미널의 cwd를 repo base로 캡처; review는 전-워크스페이스라 cwd 불요. */}
+          <button
+            className={`ui-icon-btn ${FOCUS_RING} w-6 h-6`}
+            onClick={(e) => { e.stopPropagation(); addUtilitySurface('git', paneId, activeSurface?.cwd || undefined); }}
+            title={t('deck.tabGit')}
+            aria-label={t('deck.tabGit')}
+            data-pane-action="open-git"
+          >
+            <IconGitBranch size={14} />
+          </button>
+          <button
+            className={`ui-icon-btn ${FOCUS_RING} w-6 h-6`}
+            onClick={(e) => { e.stopPropagation(); addUtilitySurface('review', paneId); }}
+            title={t('deck.tabReview')}
+            aria-label={t('deck.tabReview')}
+            data-pane-action="open-review"
+          >
+            <IconReview size={14} />
           </button>
           {/* Zoom/maximize — fifth action, visually separated from the surface
               actions by the same border-l divider the cluster uses against the
