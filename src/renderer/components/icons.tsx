@@ -283,15 +283,6 @@ export function IconReview({ size = 14 }: { size?: number }) {
   );
 }
 
-/** Moon — 내장 화면 끄기(외장 모니터 유지) 토글. 사이드바 푸터. */
-export function IconMoon({ size = 14 }: { size?: number }) {
-  return (
-    <Icon size={size}>
-      <path d="M11.5 8.6 A5 5 0 1 1 5.4 2.5 A4 4 0 0 0 11.5 8.6 Z" />
-    </Icon>
-  );
-}
-
 /** Sparkles — start a new (AI) conversation. Replaces the ⊕ glyph. */
 export function IconSparkles({ size = 14 }: { size?: number }) {
   return (
