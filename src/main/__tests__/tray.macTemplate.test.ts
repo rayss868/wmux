@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// icon.icns(1024px 기반)를 원본 그대로 메뉴바에 넣으면 비정상적으로 크게
-// 렌더된다(owner-reported 2026-07-19) — mac에서만 22x22로 리사이즈하는지
-// 고정한다. 다색 로고라 setTemplateImage()는 쓰지 않는다(전용 모노크롬
-// 에셋 없이 강제하면 검은 실루엣으로 뭉개질 위험).
+// Putting icon.icns (based on 1024px) into the menu bar as-is renders it
+// abnormally large (owner-reported 2026-07-19) — this locks that it's resized to
+// 22x22 on mac only. It's a multi-color logo, so we don't use setTemplateImage()
+// (forcing it without a dedicated monochrome asset risks it collapsing into a black
+// silhouette).
 
 const resizeMock = vi.fn().mockReturnThis();
 const trayImageMock = { resize: resizeMock };

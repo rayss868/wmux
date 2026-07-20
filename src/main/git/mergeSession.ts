@@ -1,15 +1,17 @@
-// 격리 integration 워크트리 기반 stateful merge session 헬퍼 (B-MVP).
+// Stateful merge-session helper built on an isolated integration worktree (B-MVP).
 //
-// 프리미티브: 사용자의 base 체크아웃(로컬 main 등)을 절대 직접 건드리지 않고,
-// base ref에서 분기한 **격리 integration 워크트리**에서 git-native 머지 →
-// verify 게이트(exit code) → 성공 시에만 Land로 base를 fast-forward.
+// Primitive: never touch the user's base checkout (local main, etc.) directly.
+// Run a git-native merge in an **isolated integration worktree** branched off the
+// base ref → verify gate (exit code) → fast-forward base via Land only on success.
 //
-// 안전 계약(3-모델 리뷰 확정):
-//  - 충돌 판정은 merge exit code나 stderr(로케일 종속)가 아니라
-//    `git diff --name-only --diff-filter=U -z`의 비어있음 여부로 한다.
-//  - 머지 대상은 움직이는 브랜치명이 아니라 캡처된 source OID.
-//  - "done" 텍스트는 신뢰하지 않는다 — verify는 오직 프로세스 exit code로 판정.
-//  - 세션 정본은 git 디스크 상태(MERGE_HEAD)에서 파생 → 앱 재시작 후에도 복구.
+// Safety contract (locked by the 3-model review):
+//  - Conflict detection is based on whether
+//    `git diff --name-only --diff-filter=U -z` is empty, not on the merge exit
+//    code or stderr (which is locale-dependent).
+//  - The merge target is a captured source OID, not a moving branch name.
+//  - Never trust "done" text — verify is judged solely by the process exit code.
+//  - The session's source of truth is derived from git's on-disk state
+//    (MERGE_HEAD), so it recovers even after an app restart.
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -20,22 +22,22 @@ import { branchToDirName } from '../../shared/worktreeParse';
 
 const execFileAsync = promisify(execFile);
 
-/** integration 워크트리 디렉토리 leaf 접두 — 재시작 복구 시 인식 마커. */
+/** Leaf prefix of the integration worktree directory — recognition marker for restart recovery. */
 export const INTEGRATION_PREFIX = '.wmux-merge-';
 
 export type MergePhase = 'merging' | 'conflicted' | 'clean' | 'verifying' | 'verified' | 'failed';
 
 export interface VerifyResult {
   readonly ok: boolean;
-  /** 실패한 단계(있으면). */
+  /** The step that failed (if any). */
   readonly failedStep?: 'test' | 'lint';
   readonly timedOut?: boolean;
   readonly aborted?: boolean;
-  /** 마지막 출력 tail(진단용, cap 적용). */
+  /** Tail of the last output (for diagnostics, capped). */
   readonly output: string;
 }
 
-/** 렌더러로 내려가는 세션 공개 스냅샷(내부 OID 등은 handler가 별도 보관). */
+/** Public session snapshot sent down to the renderer (internal OIDs etc. are kept separately by the handler). */
 export interface MergeSessionStatus {
   readonly sessionId: string;
   readonly baseBranch: string;
@@ -44,51 +46,51 @@ export interface MergeSessionStatus {
   readonly sourceOid: string;
   readonly integrationPath: string;
   readonly phase: MergePhase;
-  /** 미해결 충돌 파일(상대경로). */
+  /** Unresolved conflict files (relative paths). */
   readonly conflicts: string[];
-  /** 스테이징된 변경 파일 수(요약용). */
+  /** Number of staged changed files (for the summary). */
   readonly changedFiles: number;
   readonly verify?: VerifyResult;
 }
 
 type OkErr = { ok: true } | { ok: false; error: string };
 
-// ── 순수/저수준 헬퍼 (단위 테스트 대상) ─────────────────────────────────────
+// ── Pure / low-level helpers (unit-tested) ─────────────────────────────────────
 
-/** NUL(-z) 구분 리스트 파서. 빈 문자열·후행 NUL은 버린다. */
+/** Parser for a NUL(-z)-separated list. Drops empty strings and trailing NULs. */
 export function parseNulList(raw: string): string[] {
   return raw.split('\0').filter((s) => s.length > 0);
 }
 
-/** integration 워크트리 여부(경로 leaf 접두로 인식). */
+/** Whether this is an integration worktree (recognized by the path's leaf prefix). */
 export function isIntegrationPath(p: string): boolean {
   return basename(p.replace(/[/\\]+$/, '')).startsWith(INTEGRATION_PREFIX);
 }
 
 /**
- * 미해결(unmerged) 경로 목록. 충돌 판정은 이 결과가 비어있는지로만 한다
- * (exit code·stderr 아님 — Codex correctness finding).
+ * List of unmerged paths. Conflict detection is based solely on whether this
+ * result is empty (not the exit code or stderr — a Codex correctness finding).
  */
 export async function detectConflicts(cwd: string): Promise<string[]> {
   const r = await git(['diff', '--name-only', '--diff-filter=U', '-z'], cwd);
   return parseNulList(r.stdout);
 }
 
-/** 스테이징된 변경 파일 수(머지 후 index vs HEAD). */
+/** Number of staged changed files (index vs HEAD after the merge). */
 async function countStaged(cwd: string): Promise<number> {
   const r = await git(['diff', '--cached', '--name-only', '-z'], cwd);
   return parseNulList(r.stdout).length;
 }
 
 /**
- * gh 없이 순수 git으로 base 브랜치 해결 — `symbolic-ref origin/HEAD` →
- * main/master 폴백. 해결 실패면 null. (resolveBaseBranch의 폴백 경로이자
- * gh 미설치 환경의 정본.)
+ * Resolve the base branch with plain git (no gh) — `symbolic-ref origin/HEAD`
+ * → main/master fallback. Returns null if it can't be resolved. (The fallback
+ * path of resolveBaseBranch, and the source of truth where gh isn't installed.)
  */
 export async function resolveBaseFromGit(cwd: string): Promise<string | null> {
   const sym = await git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd);
   if (sym.code === 0) {
-    // --short는 refs/remotes/origin/main → 'origin/main'으로 축약. remote 접두 제거.
+    // --short abbreviates refs/remotes/origin/main → 'origin/main'. Strip the remote prefix.
     const name = sym.stdout.trim().replace(/^origin\//, '');
     if (name) return name;
   }
@@ -99,12 +101,12 @@ export async function resolveBaseFromGit(cwd: string): Promise<string | null> {
   return null;
 }
 
-/** gh 대화형 봉쇄 env(로그인 프롬프트·pager). mac GUI PATH 보정 포함. */
+/** Env that blocks gh interactivity (login prompt, pager). Includes the mac GUI PATH fix. */
 function ghEnv(): NodeJS.ProcessEnv {
   return { ...getGitExecEnv(), GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' };
 }
 
-/** `gh repo view` default 브랜치(TaskPrService와 동일 패턴). 실패·부재면 null. */
+/** Default branch via `gh repo view` (same pattern as TaskPrService). null on failure/absence. */
 async function ghDefaultBranch(cwd: string): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync(
@@ -118,15 +120,15 @@ async function ghDefaultBranch(cwd: string): Promise<string | null> {
   }
 }
 
-/** base 브랜치 명시 해결: gh default → git symbolic-ref → main/master. */
+/** Explicitly resolve the base branch: gh default → git symbolic-ref → main/master. */
 export async function resolveBaseBranch(cwd: string): Promise<string | null> {
   return (await ghDefaultBranch(cwd)) ?? (await resolveBaseFromGit(cwd));
 }
 
 /**
- * 타겟(base 체크아웃) 전제조건: MERGE_HEAD 없음 · 비detached & HEAD==base ·
- * 완전 clean(status --porcelain 비어있음). base 체크아웃은 여기로 fast-forward
- * 되므로 이 셋이 깨지면 Land가 불일치를 만든다.
+ * Target (base checkout) preconditions: no MERGE_HEAD · not detached & HEAD==base ·
+ * fully clean (status --porcelain empty). The base checkout is fast-forwarded
+ * here, so if any of these break, Land would create an inconsistency.
  */
 export async function checkTargetPreconditions(baseCheckoutPath: string, base: string): Promise<OkErr> {
   const mh = await git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], baseCheckoutPath);
@@ -142,8 +144,8 @@ export async function checkTargetPreconditions(baseCheckoutPath: string, base: s
 }
 
 /**
- * 워크트리의 MERGING 상태를 디스크에서 파생(재시작 복구·list 표면화용).
- * MERGE_HEAD 존재 → merging, 있으면 미해결 충돌 수도 함께.
+ * Derive the worktree's MERGING state from disk (for restart recovery and list
+ * surfacing). MERGE_HEAD present → merging, along with the unresolved conflict count.
  */
 export async function readMergeState(worktreePath: string): Promise<{ merging: boolean; conflicts: number }> {
   const mh = await git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], worktreePath);
@@ -152,9 +154,9 @@ export async function readMergeState(worktreePath: string): Promise<{ merging: b
   return { merging: true, conflicts: conflicts.length };
 }
 
-// ── verify 러너 ─────────────────────────────────────────────────────────────
+// ── verify runner─────────────────────────────────────────────────────────────
 
-/** Windows는 npm.cmd. mac GUI는 getGitExecEnv PATH로 node/npm(Homebrew) 해결. */
+/** npm.cmd on Windows. On the mac GUI, node/npm (Homebrew) are resolved via getGitExecEnv PATH. */
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 export interface VerifyStep {
@@ -163,7 +165,7 @@ export interface VerifyStep {
   readonly args: string[];
 }
 
-/** B-MVP 하드코딩 게이트: `npm test` && `npm run lint`(플랜 §4). */
+/** B-MVP hardcoded gate: `npm test` && `npm run lint` (plan §4). */
 export const DEFAULT_VERIFY_STEPS: readonly VerifyStep[] = [
   { step: 'test', cmd: NPM, args: ['test'] },
   { step: 'lint', cmd: NPM, args: ['run', 'lint'] },
@@ -177,8 +179,9 @@ function tail(s: string, cap = OUTPUT_TAIL_CAP): string {
 }
 
 /**
- * verify 게이트 실행 — 각 단계를 순차 실행, **하나라도 비0 exit면 즉시 실패**.
- * 판정은 오직 exit code. steps는 테스트 주입 가능(기본 npm test/lint).
+ * Run the verify gate — each step runs sequentially, **failing immediately if any
+ * step exits non-zero**. Judged solely by exit code. steps can be injected for tests
+ * (defaults to npm test/lint).
  */
 export async function runVerify(
   cwd: string,
@@ -209,11 +212,12 @@ export async function runVerify(
   return { ok: true, output: tail(combined) };
 }
 
-// ── 워크트리·머지·Land/Discard 오케스트레이션 ───────────────────────────────
+// ── Worktree / merge / Land / Discard orchestration───────────────────────────────
 
 /**
- * 격리 integration 워크트리 생성 — base OID에서 detached로. 관례 위치는
- * addWorktree와 동형(<main부모>/<main이름>-worktrees/<접두+source>).
+ * Create the isolated integration worktree — detached at the base OID. The
+ * conventional location mirrors addWorktree
+ * (<main-parent>/<main-name>-worktrees/<prefix+source>).
  */
 export async function createIntegrationWorktree(
   mainWt: string,
@@ -230,7 +234,7 @@ export async function createIntegrationWorktree(
   return { ok: true, path };
 }
 
-/** integration 워크트리 제거 — 우리 소유의 일회용 표면이라 --force 안전. */
+/** Remove the integration worktree — a throwaway surface we own, so --force is safe. */
 export async function removeIntegrationWorktree(mainWt: string, integrationPath: string): Promise<OkErr> {
   const r = await git(['worktree', 'remove', '--force', integrationPath], mainWt);
   if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };
@@ -244,8 +248,9 @@ export interface MergeOutcome {
 }
 
 /**
- * `git merge --no-commit --no-ff <source-OID>`(캡처 OID) 실행 후 충돌 판정.
- * unmerged>0 → conflicted. unmerged==0 && 비0 exit → 운영 실패(구분). 그 외 clean.
+ * Run `git merge --no-commit --no-ff <source-OID>` (captured OID), then detect
+ * conflicts. unmerged>0 → conflicted. unmerged==0 && non-zero exit → operational
+ * failure (distinguished). Otherwise clean.
  */
 export async function runMergeNoCommit(
   integrationPath: string,
@@ -257,7 +262,7 @@ export async function runMergeNoCommit(
     return { ok: true, outcome: { phase: 'conflicted', conflicts, changedFiles: await countStaged(integrationPath) } };
   }
   if (m.code !== 0) {
-    // unmerged 0 + 비0 exit = 운영 실패(충돌 아님). "Already up to date"는 exit 0이라 여기 안 옴.
+    // unmerged 0 + non-zero exit = operational failure (not a conflict). "Already up to date" exits 0, so it never reaches here.
     return { ok: false, error: (m.stderr || m.stdout).slice(0, 300) };
   }
   return { ok: true, outcome: { phase: 'clean', conflicts: [], changedFiles: await countStaged(integrationPath) } };
@@ -272,13 +277,13 @@ export interface LandParams {
 }
 
 /**
- * Land — base OID 재검증 후 integration 결과를 커밋하고 base를 그 결과로
- * fast-forward. base가 이동했거나 미해결 충돌이 남았으면 거부.
+ * Land — re-verify the base OID, commit the integration result, and fast-forward
+ * base to that result. Rejected if base moved or unresolved conflicts remain.
  */
 export async function landMerge(
   p: LandParams,
 ): Promise<{ ok: true; landedOid: string; alreadyUpToDate?: boolean } | { ok: false; error: string }> {
-  // 1) base 재검증 — 시작 이후 이동/오염되지 않았나.
+  // 1) Re-verify base — hasn't it moved or been dirtied since we started?
   const head = await git(['rev-parse', 'HEAD'], p.baseCheckoutPath);
   if (head.code !== 0) return { ok: false, error: 'base 워크트리 HEAD 확인 실패' };
   if (head.stdout.trim() !== p.baseOid) {
@@ -287,7 +292,7 @@ export async function landMerge(
   const pre = await checkTargetPreconditions(p.baseCheckoutPath, p.base);
   if (!pre.ok) return { ok: false, error: pre.error };
 
-  // 2) integration 상태 재검증 후 커밋.
+  // 2) Re-verify the integration state, then commit.
   const mh = await git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], p.integrationPath);
   if (mh.code === 0) {
     if (mh.stdout.trim() !== p.sourceOid) return { ok: false, error: 'integration MERGE_HEAD가 예상 source와 다릅니다' };
@@ -299,17 +304,17 @@ export async function landMerge(
   const landed = await git(['rev-parse', 'HEAD'], p.integrationPath);
   const landedOid = landed.stdout.trim();
   if (landedOid === p.baseOid) {
-    // 전진할 것 없음(already up to date).
+    // Nothing to advance (already up to date).
     return { ok: true, landedOid, alreadyUpToDate: true };
   }
 
-  // 3) base를 integration 결과로 fast-forward(index·워킹트리 일관 갱신).
+  // 3) Fast-forward base to the integration result (consistently updates index and working tree).
   const ff = await git(['merge', '--ff-only', landedOid], p.baseCheckoutPath);
   if (ff.code !== 0) return { ok: false, error: `base fast-forward 실패: ${ff.stderr.slice(0, 300)}` };
   return { ok: true, landedOid };
 }
 
-/** Discard — integration의 진행 중 머지를 abort(있을 때만). 워크트리 제거는 호출부. */
+/** Discard — abort the integration's in-progress merge (only if present). Worktree removal is the caller's job. */
 export async function abortIntegrationMerge(integrationPath: string): Promise<void> {
   const mh = await git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], integrationPath);
   if (mh.code === 0) await git(['merge', '--abort'], integrationPath);

@@ -1,7 +1,8 @@
-// ─── WorkspaceCenter — 중앙 영역(페인 그리드) ────────────────────────────────
+// ─── WorkspaceCenter — central area (pane grid)────────────────────────────────
 //
-// IA 결정(2026-07-20, 오너 원복): Git·Review 중앙 표면 시안을 걷어내고 우측
-// 덱(ChannelDock)의 탭으로 복귀 — 중앙은 페인 그리드 전용으로 돌아간다.
+// IA decision (2026-07-20, owner revert): drop the central Git/Review surface variant
+// and move back to tabs in the right-hand deck (ChannelDock) — the center returns to
+// being pane-grid-only.
 
 import { WorkspaceViewport } from './WorkspaceViewport';
 

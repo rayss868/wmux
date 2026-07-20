@@ -1,13 +1,15 @@
-// ─── Broadcast 팝오버 ────────────────────────────────────────────────────────
+// ─── Broadcast popover────────────────────────────────────────────────────────
 //
-// 활성 워크스페이스의 모든 terminal surface(에이전트가 아닌 일반 셸 포함)에 같은
-// 텍스트를 동시에 주입한다. 예전엔 window.prompt로 받았으나 preload에 prompt
-// 폴리필이 없어 실질적으로 사망 상태였다(Electron) — 인라인 recessed 팝오버로 복구.
+// Injects the same text simultaneously into every terminal surface in the active
+// workspace (including plain, non-agent shells). It used to prompt via window.prompt,
+// but there's no prompt polyfill in preload, so it was effectively dead (Electron) —
+// restored as an inline recessed popover.
 //
-// 스코프는 현행 유지: "현재 워크스페이스의 모든 터미널 페인"(fan-out 같은 격리·
-// worktree 생성 없음). 대상 개수를 "N terminals"로 미리 표기해 "함대만 대상"으로
-// 오독되지 않게 한다(Codex 리뷰). 전송은 Promise.allSettled로 감싸 한 페인이 실패해도
-// 나머지가 진행되고, 성공/실패 카운트를 표시한다.
+// Scope stays as-is: "every terminal pane in the current workspace" (no isolation or
+// worktree creation like fan-out). The target count is shown up front as
+// "N terminals" so it isn't misread as "fleet only" (Codex review). Sends are wrapped
+// in Promise.allSettled so that one pane failing doesn't stop the rest, and a
+// success/failure count is displayed.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../stores';
@@ -21,7 +23,7 @@ interface BroadcastPopoverProps {
   onClose: () => void;
 }
 
-/** 활성 워크스페이스의 모든 terminal surface ptyId를 중복 없이 수집(순수 — 테스트용). */
+/** Collect every terminal surface ptyId in the active workspace without duplicates (pure — for tests). */
 export function collectBroadcastPtyIds(workspace: Workspace): string[] {
   const seen = new Set<string>();
   for (const leaf of findLeafPanes(workspace.rootPane)) {
@@ -40,8 +42,8 @@ export default function BroadcastPopover({ onClose }: BroadcastPopoverProps): Re
   const [result, setResult] = useState<{ ok: number; fail: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // 더블 서밋 방지: React state는 비동기라 같은 틱의 두 번째 클릭이 stale sending을
-  // 보고 통과한다 — 동기 ref로 잠근다.
+  // Prevent double submit: React state is async, so a second click in the same tick
+  // sees a stale `sending` and slips through — lock it with a synchronous ref.
   const sendingRef = useRef(false);
 
   const ptyIds = useMemo(
@@ -49,12 +51,12 @@ export default function BroadcastPopover({ onClose }: BroadcastPopoverProps): Re
     [activeWorkspace],
   );
 
-  // 열릴 때 textarea 포커스.
+  // Focus the textarea on open.
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
 
-  // Esc·외부 클릭 닫기.
+  // Close on Esc / outside click.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -111,7 +113,7 @@ export default function BroadcastPopover({ onClose }: BroadcastPopoverProps): Re
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          // ⌘/Ctrl+Enter로 전송(일반 Enter는 줄바꿈).
+          // Send with ⌘/Ctrl+Enter (plain Enter inserts a newline).
           if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
             e.preventDefault();
             void handleSend();

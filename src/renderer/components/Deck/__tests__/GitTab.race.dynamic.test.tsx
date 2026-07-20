@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 //
-// GitTab load() 경쟁 가드 회귀 테스트(loadSeq 모노토닉 토큰). 빠른 repo(pane cwd)
-// 전환 시 늦게 도착한 이전 응답이 새 결과를 덮으면 안 된다 — 늦은 repo-A 응답이
-// 먼저 커밋된 repo-B 워크트리를 덮지 않는지 확인한다. 패키징 UI는 자동화 불가라
-// 이 jsdom 하네스가 검증면이다.
+// Regression test for GitTab's load() race guard (loadSeq monotonic token). On a fast
+// repo (pane cwd) switch, a late-arriving earlier response must not overwrite the newer
+// result — checks that a late repo-A response doesn't overwrite the already-committed
+// repo-B worktree. The packaged UI can't be automated, so this jsdom harness is the
+// verification surface.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
@@ -93,19 +94,19 @@ describe('GitTab load() race guard', () => {
     act(() => root.render(createElement(GitTab)));
     await flush(); // load(A) → list('/repoA') pending
 
-    // pane cwd 전환 → load(B) 재실행.
+    // pane cwd switch → re-run load(B).
     act(() => useStore.setState({ workspaces: [makeWs('/repoB')] }));
     await flush(); // load(B) → list('/repoB') pending
 
     expect(listDeferreds.has('/repoA')).toBe(true);
     expect(listDeferreds.has('/repoB')).toBe(true);
 
-    // 새 것(B) 먼저 커밋.
+    // Commit the newer one (B) first.
     act(() => listDeferreds.get('/repoB')!.resolve(wtResult('/repoB', 'branch-B')));
     await flush();
     expect(container.querySelector('[data-git-worktree-list]')?.textContent).toContain('branch-B');
 
-    // 늦은 A 응답 — 가드가 막아 B를 덮지 않아야 한다.
+    // Late A response — the guard should block it and not overwrite B.
     act(() => listDeferreds.get('/repoA')!.resolve(wtResult('/repoA', 'branch-A')));
     await flush();
     const list = container.querySelector('[data-git-worktree-list]')?.textContent ?? '';
