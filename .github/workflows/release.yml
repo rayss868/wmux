@@ -300,9 +300,14 @@ jobs:
 
       # Forge signs + notarizes inside `make` only when Apple creds are present
       # (see macSignConfig in forge.config.ts); otherwise it builds unsigned.
+      #
+      # 60 minutes, not 30: this step waits on TWO notarytool submissions — the
+      # .app in postPackage and the .dmg in postMake. Each is usually 2-15
+      # minutes but can sit in Apple's queue much longer, and a timeout here
+      # skips the upload step below, discarding the .zip along with the .dmg.
       - name: Build & Make
         run: npm run make
-        timeout-minutes: 30
+        timeout-minutes: 60
 
       # Append the .zip/.dmg to the release the `build` job already created.
       # continue-on-error: a macOS upload hiccup must not fail the whole release.
