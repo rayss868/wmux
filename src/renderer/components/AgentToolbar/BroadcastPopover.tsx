@@ -21,6 +21,8 @@ import { injectText } from './inject';
 
 interface BroadcastPopoverProps {
   onClose: () => void;
+  /** The trigger button — excluded from the outside-click test so its own click can toggle (not double-toggle). */
+  triggerRef?: React.RefObject<HTMLElement | null>;
 }
 
 /** Collect every terminal surface ptyId in the active workspace without duplicates (pure — for tests). */
@@ -34,7 +36,7 @@ export function collectBroadcastPtyIds(workspace: Workspace): string[] {
   return [...seen];
 }
 
-export default function BroadcastPopover({ onClose }: BroadcastPopoverProps): React.ReactElement {
+export default function BroadcastPopover({ onClose, triggerRef }: BroadcastPopoverProps): React.ReactElement {
   const t = useT();
   const activeWorkspace = useStore(selectActiveWorkspace);
   const [text, setText] = useState('');
@@ -65,7 +67,13 @@ export default function BroadcastPopover({ onClose }: BroadcastPopoverProps): Re
       }
     };
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) onClose();
+      const target = e.target as Node;
+      if (rootRef.current?.contains(target)) return;
+      // The trigger button lives outside this popover; if we treated a click on it
+      // as "outside" we'd close here on mousedown and the button's own onClick would
+      // immediately re-toggle it back open. Exclude it and let onClick own the toggle.
+      if (triggerRef?.current?.contains(target)) return;
+      onClose();
     };
     document.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onDown);
@@ -73,7 +81,7 @@ export default function BroadcastPopover({ onClose }: BroadcastPopoverProps): Re
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onDown);
     };
-  }, [onClose]);
+  }, [onClose, triggerRef]);
 
   const handleSend = useCallback(async () => {
     if (sendingRef.current) return;

@@ -20,6 +20,7 @@ export default function AgentToolbar() {
   const newCommand = useStore((s) => s.newConversationCommand);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const broadcastBtnRef = useRef<HTMLButtonElement>(null);
   const [showBroadcast, setShowBroadcast] = useState(false);
   const [showFanOut, setShowFanOut] = useState(false);
 
@@ -116,8 +117,11 @@ export default function AgentToolbar() {
         <kbd className="wmux-toolbar-label ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[9px] leading-tight opacity-60 font-sans">{window.electronAPI?.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
       </button>
       <button
+        ref={broadcastBtnRef}
         className={`${btn} ${showBroadcast ? active : idle}`}
-        onClick={() => setShowBroadcast((v) => !v)}
+        // Opening a local popover clears the global one (explorer/snippets/rich)
+        // so the two can't render on top of each other.
+        onClick={() => { setPopover(null); setShowBroadcast((v) => !v); }}
         title={t('toolbar.broadcastTooltip')}
         data-testid="broadcast-button"
       >
@@ -130,7 +134,8 @@ export default function AgentToolbar() {
           FanOutDialog를 툴바 위(bottom-full)로 연다. */}
       <button
         className={`${btn} ${showFanOut ? active : idle}`}
-        onClick={() => setShowFanOut((v) => !v)}
+        // Opening a local popover clears the global one (explorer/snippets/rich).
+        onClick={() => { setPopover(null); setShowFanOut((v) => !v); }}
         title={t('fanout.title')}
         data-testid="fanout-button"
       >
@@ -143,7 +148,7 @@ export default function AgentToolbar() {
       {popover === 'explorer' && <FileExplorerPopover />}
       {popover === 'snippets' && ptyId && <SnippetsMenu ptyId={ptyId} />}
       {popover === 'rich' && ptyId && <RichInput ptyId={ptyId} />}
-      {showBroadcast && <BroadcastPopover onClose={() => setShowBroadcast(false)} />}
+      {showBroadcast && <BroadcastPopover onClose={() => setShowBroadcast(false)} triggerRef={broadcastBtnRef} />}
       {showFanOut && <FanOutDialog onClose={() => setShowFanOut(false)} />}
     </div>
   );

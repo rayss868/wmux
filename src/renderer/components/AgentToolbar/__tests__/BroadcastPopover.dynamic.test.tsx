@@ -142,4 +142,22 @@ describe('BroadcastPopover', () => {
     // 3 targets × 1 send — not 6.
     expect(injectText).toHaveBeenCalledTimes(3);
   });
+
+  it('a mousedown on the trigger button does not close (its own onClick owns the toggle)', () => {
+    const onClose = vi.fn();
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    const triggerRef: { current: HTMLElement | null } = { current: trigger };
+    act(() => root.render(createElement(BroadcastPopover, { onClose, triggerRef })));
+
+    // Clicking the trigger is excluded from the outside-click test → stays open.
+    act(() => { trigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // A mousedown truly outside (neither popover nor trigger) still closes.
+    act(() => { document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); });
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    trigger.remove();
+  });
 });
