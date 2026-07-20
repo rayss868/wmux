@@ -188,6 +188,20 @@ async function callRpc(
 }
 
 /**
+ * Append an advisory line to a tool result.
+ *
+ * Used where a bare success would be read as a stronger guarantee than the RPC
+ * actually makes — delivery vs. effect. The note rides as its own content block
+ * so the primary JSON payload stays machine-parseable.
+ */
+function withNote(
+  result: { content: { type: 'text'; text: string }[] },
+  note: string,
+): { content: { type: 'text'; text: string }[] } {
+  return { content: [...result.content, { type: 'text', text: `NOTE: ${note}` }] };
+}
+
+/**
  * Drop the cached workspace identity so the next resolve re-queries the live
  * owner. Called when an RPC reports our cached id is stale (the workspace was
  * re-minted mid-session) so the server self-heals without a restart.
@@ -692,7 +706,7 @@ server.tool(
 
 server.tool(
   'terminal_send_key',
-  'Send a named key to a terminal. Omit ptyId to target the active terminal. Use surface_list() to discover available PTY IDs.',
+  'Send a named key to a terminal. Omit ptyId to target the active terminal. Use surface_list() to discover available PTY IDs. NOT A SUBMIT MECHANISM: `key:"enter"` presses Enter on whatever the terminal actually holds, which is usually NOTHING — a question or suggestion an agent PRINTED is rendered text, not text sitting in its input box, so Enter submits nothing and the pane stays blocked on the same prompt. This call returns ok as long as the key was delivered; ok does NOT mean anything was submitted or that the agent started working. To answer an agent that is waiting on you, send the answer explicitly with terminal_send({ text, submit: true }) and confirm the pane moved (agentStatus, or a fresh terminal_read) before reporting progress. Reserve this tool for real key presses: ctrl+c, escape, arrow keys, and y/N approval prompts the agent genuinely rendered.',
   {
     key: z.string().describe(
       'Key name: enter, tab, ctrl+c, ctrl+d, ctrl+z, ctrl+l, escape, up, down, right, left',
@@ -708,7 +722,23 @@ server.tool(
     // agent (self-loop / sibling misroute).
     const senderPtyId = getTaskSenderPtyId();
     if (senderPtyId) params.senderPtyId = senderPtyId;
-    return callRpc('input.sendKey', params);
+    const result = await callRpc('input.sendKey', params);
+    // Say plainly what `ok` covers. The RPC confirms DELIVERY of a keystroke and
+    // nothing more, but callers read a bare `{ok:true}` from an Enter press as
+    // "submitted, the agent is running now" — orchestrators have reported panes
+    // as working while they sat blocked on an unanswered question. There is no
+    // reliable signal here to promote delivery into submission, so the honest
+    // answer is to name the gap rather than imply a guarantee.
+    if (key.toLowerCase() === 'enter') {
+      return withNote(
+        result,
+        'Enter was delivered. This does NOT confirm anything was submitted: if the pane was '
+        + 'showing a question the agent printed (rather than text typed into its input box), '
+        + 'nothing happened and it is still waiting. Verify with terminal_read or pane_list '
+        + 'before reporting progress; to answer an agent, use terminal_send({text, submit:true}).',
+      );
+    }
+    return result;
   },
 );
 

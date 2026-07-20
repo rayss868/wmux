@@ -595,6 +595,9 @@ export function registerDeckHandler(
       agent: ev.agent,
       seq: ev.seq,
       ts: ev.ts,
+      // Carries the pane's closing words on a hook-sourced stop so the wake
+      // prompt can say whether the pane is blocked on a question.
+      ...(ev.lastMessage ? { lastMessage: ev.lastMessage } : {}),
     });
   });
 

@@ -126,6 +126,15 @@ export interface PaneSlice {
   // (buildSessionData is an allowlist and deliberately omits it).
   surfaceActivity: Record<string, string>;
   setSurfaceActivity: (ptyId: string, activity: string | null) => void;
+  // Per-surface "this agent ended its turn asking something" text, keyed by
+  // ptyId. Populated from METADATA_UPDATE.pendingQuestion, which main derives
+  // from the Stop hook's transcript — not from the rendered terminal, where a
+  // printed question is indistinguishable from a line pending in the input box.
+  // Every stop writes it, so a stop that asks nothing clears a stale question.
+  // Read by pane.list so an orchestrator can tell "finished" from "blocked".
+  // Transient — never persisted (buildSessionData allowlist excludes it).
+  surfacePendingQuestion: Record<string, string>;
+  setSurfacePendingQuestion: (ptyId: string, question: string | null) => void;
   // Stamp the "running" freshness clock for a pane WITHOUT an activity string —
   // the byte-based per-PTY 'running' broadcast has no tool name. Same 120s-TTL
   // decay as setSurfaceActivity's stamp; lights background dots from bytes.
@@ -299,6 +308,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
   surfaceActivity: {},
   surfaceActivityAt: {},
+  surfacePendingQuestion: {},
   agentClockMs: Date.now(),
 
   bumpAgentClock: () => set((state: StoreState) => {
@@ -312,6 +322,12 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // keeps the existing reference (immer), so React shallow-compares it away.
     if (activity) {
       state.surfaceActivity[ptyId] = activity;
+      // The agent is demonstrably working again, so any question it was
+      // blocked on has been answered. Without this the two fields disagree
+      // exactly when a cross-pane orchestrator is most likely to read them:
+      // "running" and "blocked on a question" at the same time, until the
+      // NEXT stop finally clears it.
+      delete state.surfacePendingQuestion[ptyId];
       // Stamp the arrival time for the hook-driven 'running' derivation. Always
       // updated (even on a same-string tool repeat) so the freshness window
       // tracks the LATEST tool, not the first.
@@ -322,11 +338,23 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     }
   }),
 
+  setSurfacePendingQuestion: (ptyId, question) => set((state: StoreState) => {
+    if (!ptyId) return;
+    // Main already truncated the text. Empty/null clears — every stop writes
+    // this field, so an answered pane drops its question on its next turn end.
+    if (question) state.surfacePendingQuestion[ptyId] = question;
+    else delete state.surfacePendingQuestion[ptyId];
+  }),
+
   markSurfaceRunning: (ptyId) => set((state: StoreState) => {
     if (!ptyId) return;
     // Byte-based 'running' with no tool name: stamp only the freshness clock,
     // NOT the activity string (leave the card's raw-tail fallback in place).
     state.surfaceActivityAt[ptyId] = Date.now();
+    // Bytes are moving in this pane — it is not sitting on an unanswered
+    // question. Same reasoning as setSurfaceActivity; this is the path that
+    // covers agents with no tool hooks at all.
+    delete state.surfacePendingQuestion[ptyId];
   }),
 
   surfaceOutputAt: {},
@@ -526,6 +554,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
           if (s.ptyId) {
             delete state.surfaceAgent[s.ptyId];
             delete state.surfaceActivity[s.ptyId];
+            delete state.surfacePendingQuestion[s.ptyId];
             delete state.surfaceActivityAt[s.ptyId];
             delete state.surfaceOutputAt[s.ptyId];
             clearNudgesFor(s.ptyId); // A5: don't let a reused ptyId inherit this pane's nudge cap

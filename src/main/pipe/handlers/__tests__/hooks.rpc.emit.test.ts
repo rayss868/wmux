@@ -9,6 +9,9 @@ import { RpcRouter } from '../../RpcRouter';
 import { eventBus } from '../../../events/EventBus';
 import type { HookSignalRouter } from '../../../hooks/HookSignalRouter';
 import type { AgentSignal } from '../../../../../integrations/shared/signal-types';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const { sendToRendererMock, sendNotificationMock, broadcastMetadataUpdateMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
@@ -463,6 +466,91 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
     // session_start is not an emit-kind — no notification, no lifecycle tee.
     expect(sendNotificationMock).not.toHaveBeenCalled();
     expect(pollLifecycle()).toHaveLength(0);
+  });
+
+  // A stop used to reach observers as bare "pane stopped", so "finished" and
+  // "blocked on a question" were indistinguishable without scraping the
+  // terminal — where a printed question looks exactly like pending input.
+  it('a stop whose transcript ends in a question publishes it as pendingQuestion + tees it on the event', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-hooks-'));
+    const transcript = path.join(dir, 't.jsonl');
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '머지할까?' }] } })}\n`,
+    );
+    try {
+      const stub = stubHookRouter();
+      stub.setDecision('emit');
+      const router = new RpcRouter();
+      registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+      await router.dispatch({
+        id: 'rq',
+        method: 'hooks.signal',
+        params: signal({ payload: { transcript_path: transcript } }) as unknown as Record<string, unknown>,
+      });
+
+      // Both fields ride ONE broadcast — a stop is a single state transition.
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ activity: '', pendingQuestion: '머지할까?' }),
+      );
+      expect(pollLifecycle()[0]).toMatchObject({
+        lastMessage: { text: '머지할까?', endsWithQuestion: true },
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a stop that asks nothing CLEARS a question left by an earlier turn', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-hooks-'));
+    const transcript = path.join(dir, 't.jsonl');
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Merged as 08be43f.' }] } })}\n`,
+    );
+    try {
+      const stub = stubHookRouter();
+      stub.setDecision('emit');
+      const router = new RpcRouter();
+      registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+      await router.dispatch({
+        id: 'rq2',
+        method: 'hooks.signal',
+        params: signal({ payload: { transcript_path: transcript } }) as unknown as Record<string, unknown>,
+      });
+
+      // Empty string is the clear signal; without it a pane that once asked
+      // something would read as blocked forever.
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ pendingQuestion: '' }),
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('an unreadable transcript degrades to the old contentless stop', async () => {
+    const stub = stubHookRouter();
+    stub.setDecision('emit');
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'rq3',
+      method: 'hooks.signal',
+      params: signal({ payload: { transcript_path: '/nope/missing.jsonl' } }) as unknown as Record<string, unknown>,
+    });
+
+    expect(pollLifecycle()[0]).not.toHaveProperty('lastMessage');
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ pendingQuestion: '' }),
+    );
   });
 
   it('[regression] agent.subagent_stop does NOT clear activity (a Task-tool subagent finishing is mid-parent-turn, not turn-end)', async () => {

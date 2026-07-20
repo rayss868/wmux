@@ -723,6 +723,10 @@ export class DaemonNotificationRouter {
           ptyId: payload.sessionId,
           agentStatus: 'idle',
           agentName: '',
+          // The session is over — nothing is waiting on an answer. Same reason
+          // agentStatus is cleared here: a dead pane must not keep advertising
+          // a pending question on `pane_list`.
+          pendingQuestion: '',
         });
         this.lastAgentEventAt.delete(payload.sessionId);
         this.lastAgentNameByPty.delete(payload.sessionId);

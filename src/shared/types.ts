@@ -315,6 +315,20 @@ export interface MetadataUpdatePayload {
   listeningPorts?: number[];
   agentStatus?: AgentStatus;
   agentName?: string;
+  /**
+   * The question this pane's agent ended its turn on, when it ended on one.
+   *
+   * Deliberately NOT a new AgentStatus member: 'waiting' already means "turn
+   * ended, ready for next instruction" and fifteen consumers switch on that
+   * union. What was missing is not a new status but the CONTENT — "waiting"
+   * and "waiting, blocked on this specific question" are the same status with
+   * different follow-ups. Carried alongside so nothing that reads AgentStatus
+   * has to change, and so `pane_list` can answer "is this pane blocked?"
+   * without an orchestrator scraping the terminal for it.
+   *
+   * Empty string clears (same convention as `activity`).
+   */
+  pendingQuestion?: string;
   // External RPC channels (meta.setStatus / meta.setProgress) write through
   // the same payload. Renderer applies these to the active workspace when no
   // ptyId/workspaceId is provided.

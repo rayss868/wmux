@@ -704,3 +704,41 @@ describe('PaneSlice', () => {
     });
   });
 });
+
+// A pane blocked on a question must stop reading as blocked the moment it is
+// demonstrably working again. Both review models flagged the original version,
+// where the flag survived until the NEXT stop: a cross-pane orchestrator
+// polling mid-turn would see one pane reported as running AND blocked.
+describe('surfacePendingQuestion lifecycle', () => {
+  it('is cleared when tool activity shows the agent resumed', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', '머지할까요');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBe('머지할까요');
+
+    store.getState().setSurfaceActivity('pty-1', '✎ fleet.ts');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBeUndefined();
+  });
+
+  it('is cleared by the byte-based running signal (agents with no tool hooks)', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().markSurfaceRunning('pty-1');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBeUndefined();
+  });
+
+  it('an empty write clears it (every stop writes the field)', () => {
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().setSurfacePendingQuestion('pty-1', '');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBeUndefined();
+  });
+
+  it('clearing activity does NOT clear it — a finished turn can still be asking', () => {
+    // `activity: ''` is the turn-end clear; the question set by that same stop
+    // must survive it.
+    const store = createTestStore();
+    store.getState().setSurfacePendingQuestion('pty-1', 'Shall I merge?');
+    store.getState().setSurfaceActivity('pty-1', '');
+    expect(store.getState().surfacePendingQuestion['pty-1']).toBe('Shall I merge?');
+  });
+});

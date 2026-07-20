@@ -578,7 +578,7 @@ export function useNotificationListener() {
       // workspace metadata — pull it OUT here, alongside ptyId, so it can never
       // flow into `...rest` and get written into updateWorkspaceMetadata by
       // applyToWorkspace's spread.
-      const { ptyId, workspaceId: payloadWsId, activity, paneId, paneLabel, paneRole, agentSlug, ...rest } = payload;
+      const { ptyId, workspaceId: payloadWsId, activity, pendingQuestion, paneId, paneLabel, paneRole, agentSlug, ...rest } = payload;
 
       // P2 (checklist D): a paneId-only payload is the pane-label relay from
       // MetadataStore. Route it to the per-pane label + role mirrors and return
@@ -664,6 +664,12 @@ export function useNotificationListener() {
         // only sets `activity` on its own; an empty string clears the entry.
         if (typeof activity === 'string') {
           state.setSurfaceActivity(ptyId, activity);
+        }
+        // Same shape as `activity`: main derives + truncates it, the renderer
+        // only stores. Written on EVERY stop, so an empty string is the clear
+        // signal for a pane whose previous turn ended on a question.
+        if (typeof pendingQuestion === 'string') {
+          state.setSurfacePendingQuestion(ptyId, pendingQuestion);
         }
         for (const ws of state.workspaces) {
           const found = findSurfaceByPtyId(ws.rootPane, ptyId);
