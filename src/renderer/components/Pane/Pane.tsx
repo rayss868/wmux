@@ -7,8 +7,6 @@ import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
-import { GitTab } from '../Deck/GitTab';
-import { ReviewTab } from '../Deck/ReviewTab';
 import SurfaceTabs, { PANE_ACTIONS_CLUSTER_WIDTH } from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
@@ -104,11 +102,7 @@ export function pickOverlaySurfaces<T extends { surfaceType?: string }>(
   surfaces: ReadonlyArray<T>,
 ): T[] {
   return surfaces.filter(
-    (s) =>
-      s.surfaceType === 'diff' ||
-      s.surfaceType === 'editor' ||
-      s.surfaceType === 'git' ||
-      s.surfaceType === 'review',
+    (s) => s.surfaceType === 'diff' || s.surfaceType === 'editor',
   );
 }
 
@@ -656,20 +650,6 @@ function SplitSurfaceView({
               surfaceId={surface.id}
               verifiedWorkspaceId={surface.diffOwnerWorkspaceId || workspaceId}
             />
-          ) : surface.surfaceType === 'git' ? (
-            // 유틸 surface(git) — 세로 리스트라 중앙 폭을 720px로 제한(과도한 가로
-            // 확장 방지). cwd는 생성 시 캡처된 surface.cwd(repo 바인딩).
-            <div key={surface.id} className="h-full overflow-auto" style={{ display: surface.id === activeSurfaceId ? undefined : 'none' }}>
-              <div className="max-w-[720px] mx-auto h-full flex flex-col">
-                <GitTab cwd={surface.cwd || undefined} />
-              </div>
-            </div>
-          ) : surface.surfaceType === 'review' ? (
-            <div key={surface.id} className="h-full overflow-auto" style={{ display: surface.id === activeSurfaceId ? undefined : 'none' }}>
-              <div className="max-w-[720px] mx-auto h-full flex flex-col">
-                <ReviewTab />
-              </div>
-            </div>
           ) : (
             <TerminalComponent
               key={surface.id}
@@ -750,18 +730,6 @@ function SplitSurfaceView({
             surfaceId={surface.id}
             verifiedWorkspaceId={surface.diffOwnerWorkspaceId || workspaceId}
           />
-        ) : surface.surfaceType === 'git' ? (
-          <div key={surface.id} className="absolute inset-0 overflow-auto" style={{ display: surface.id === activeSurfaceId ? undefined : 'none' }}>
-            <div className="max-w-[720px] mx-auto h-full flex flex-col">
-              <GitTab cwd={surface.cwd || undefined} />
-            </div>
-          </div>
-        ) : surface.surfaceType === 'review' ? (
-          <div key={surface.id} className="absolute inset-0 overflow-auto" style={{ display: surface.id === activeSurfaceId ? undefined : 'none' }}>
-            <div className="max-w-[720px] mx-auto h-full flex flex-col">
-              <ReviewTab />
-            </div>
-          </div>
         ) : (
           <EditorPanel
             key={surface.id}

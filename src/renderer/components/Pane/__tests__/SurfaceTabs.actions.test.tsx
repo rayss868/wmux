@@ -101,8 +101,6 @@ describe('SurfaceTabs pane action cluster', () => {
       'split-right',
       'split-down',
       'new-browser',
-      'open-git',
-      'open-review',
       'zoom',
     ]);
     // The removed "new terminal" button must not reappear.
@@ -140,31 +138,6 @@ describe('SurfaceTabs pane action cluster', () => {
     const browsers = leaf.surfaces.filter((s) => s.surfaceType === 'browser');
     expect(browsers).toHaveLength(1);
     expect(leaf.activeSurfaceId).toBe(browsers[0].id);
-  });
-
-  it('Open Git adds a git utility surface to this pane (시안 A)', () => {
-    const paneId = rootLeafId();
-    mount(paneId);
-
-    click('open-git');
-
-    const leaf = getLeafPanes(activeWs().rootPane).find((l) => l.id === paneId)!;
-    const git = leaf.surfaces.filter((s) => s.surfaceType === 'git');
-    expect(git).toHaveLength(1);
-    expect(git[0].ptyId).toBe('');
-    expect(leaf.activeSurfaceId).toBe(git[0].id);
-  });
-
-  it('Open Review adds a review utility surface to this pane (시안 A)', () => {
-    const paneId = rootLeafId();
-    mount(paneId);
-
-    click('open-review');
-
-    const leaf = getLeafPanes(activeWs().rootPane).find((l) => l.id === paneId)!;
-    const review = leaf.surfaces.filter((s) => s.surfaceType === 'review');
-    expect(review).toHaveLength(1);
-    expect(leaf.activeSurfaceId).toBe(review[0].id);
   });
 
   it('Zoom toggles this pane in zoomedPaneId (maximize ⇄ restore)', () => {

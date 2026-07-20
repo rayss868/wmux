@@ -101,6 +101,13 @@ export interface UISlice {
   fleetSortMode: FleetSortMode;
   setFleetSortMode: (mode: FleetSortMode) => void;
 
+  // ─── 워크스페이스 유틸 뷰(Git·Review 중앙 표면) ──────────────────────────────
+  // 워크스페이스 헤더 탭(WorkspaceUtilityBar)이 여는 중앙 표면 상태. set이면 페인
+  // 그리드를 덮는 GitTab/ReviewTab을 렌더한다. 단일 값이면 충분(워크스페이스 전환과
+  // 무관) — 전이 UI 상태라 세션에 영속하지 않는다(buildSessionData allowlist 제외).
+  workspaceUtilityView: 'git' | 'review' | null;
+  setWorkspaceUtilityView: (view: 'git' | 'review' | null) => void;
+
   settingsPanelVisible: boolean;
   toggleSettingsPanel: () => void;
   setSettingsPanelVisible: (visible: boolean) => void;
@@ -683,6 +690,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setFleetSortMode: (mode) => set((state) => {
     state.fleetSortMode = mode;
+  }),
+
+  // ─── 워크스페이스 유틸 뷰(Git·Review 중앙 표면) ──────────────────────────────
+  workspaceUtilityView: null,
+
+  setWorkspaceUtilityView: (view) => set((state) => {
+    state.workspaceUtilityView = view;
   }),
 
   // ─── Settings panel ──────────────────────────────────────────────────────
