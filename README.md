@@ -4,11 +4,12 @@
 
 ### The agent fleet that survives a reboot.
 
-Fan out one prompt into **N isolated agents** in separate git worktrees, review their diffs **hunk by hunk**, and walk away — after a crash or **full OS reboot**, they come back mid-conversation. Native Windows, for **Claude Code · Codex · Gemini**, with approval gates and a real browser your agents can drive.
+Fan out one prompt into **N isolated agents** in separate git worktrees, review their diffs **hunk by hunk**, and walk away — after a crash or **full OS reboot**, they come back mid-conversation. Native on **Windows & macOS**, for **Claude Code · Codex · Gemini**, with approval gates and a real browser your agents can drive.
 
 <img width="924" alt="wmux" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
 
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
+[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
 [![Latest release](https://img.shields.io/github/v/release/openwong2kim/wmux?color=2ea44f&label=release)](https://github.com/openwong2kim/wmux/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/openwong2kim/wmux/total?color=blue&label=downloads)](https://github.com/openwong2kim/wmux/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -16,7 +17,7 @@ Fan out one prompt into **N isolated agents** in separate git worktrees, review 
 
 </div>
 
-> **Windows has no native tmux.** wmux is the native fix — a terminal multiplexer + browser automation + MCP server that runs your agents **in parallel, in one window.**
+> **Windows has no native tmux.** wmux is the native fix — a terminal multiplexer + browser automation + MCP server that runs your agents **in parallel, in one window.** And now it runs natively on **macOS** too.
 
 ---
 
@@ -71,11 +72,19 @@ Fan out one prompt into **N isolated agents** in separate git worktrees, review 
 
 ## ⚡ Install in 30 seconds
 
+**Windows**
+
 ```powershell
 winget install openwong2kim.wmux
 ```
 
 <sub>or `choco install wmux` &nbsp;·&nbsp; or [**download Setup.exe**](https://github.com/openwong2kim/wmux/releases/latest) &nbsp;·&nbsp; winget/choco avoid the SmartScreen prompt ([why?](#install-help))</sub>
+
+**macOS** (Apple Silicon)
+
+<sub>[**Download the .dmg**](https://github.com/openwong2kim/wmux/releases/latest) and drag wmux to Applications. On first launch the `wmux` CLI installs itself onto your PATH. If Gatekeeper warns, right-click the app → **Open** ([more](#install-help)).</sub>
+
+**Linux** — experimental AppImage / .deb / .rpm builds are on the [releases page](https://github.com/openwong2kim/wmux/releases/latest).
 
 ---
 
@@ -103,7 +112,7 @@ winget install openwong2kim.wmux
 - 🤝 **A2A multi-agent** — agents message + delegate tasks by pane, gated by a per-pane execute approval, with a pollable task inbox + symmetric reply
 - 💬 **Channels** — Slack-style rooms agents read, post, and get @-mentioned into · server-verified sender · durable per-agent inbox · `wmux channel` CLI · operators can self-join private agent rooms (audited)
 - 🤖 **Agent supervision** — declare a pane in `wmux.json` (trust-gated) and the daemon keeps it alive: restart policy, backoff, reboot survival
-- 🖥️ **ConPTY + xterm.js WebGL** rendering · 999K-line scrollback · Unicode 11 (correct CJK / emoji)
+- 🖥️ **Native PTY (ConPTY on Windows, forkpty on macOS) + xterm.js WebGL** rendering · 999K-line scrollback · Unicode 11 (correct CJK / emoji)
 - ⌨️ **Tmux-style prefix** (`Ctrl+B` + key, 13 actions) · **floating pane** (`` Ctrl+` ``) · scroll bookmarks
 - 🔀 **Multiview** — several workspaces side by side · layout templates · drag-to-reorder sidebar
 - 🧩 **Plugin host** — sandboxed iframe plugins with an explicit permission model
@@ -131,6 +140,8 @@ winget install openwong2kim.wmux
 | `Ctrl+Shift+X` | Vi copy mode | `Ctrl+,` | Settings |
 | Right-click | Smart copy / paste / link menu | `F12` | Browser DevTools |
 
+<sub>On **macOS**, app shortcuts live on `⌘` instead of `Ctrl` (so `Ctrl+C`, `Ctrl+D`, and friends pass through to the shell as you'd expect).</sub>
+
 </details>
 
 <details>
@@ -138,7 +149,7 @@ winget install openwong2kim.wmux
 
 <br>
 
-**Terminal** — xterm.js + WebGL, ConPTY native PTY, Unicode 11 width tables, split panes, tabs, floating pane, smart right-click (selection→copy / empty→paste / link menu), scroll bookmarks, Vi copy mode, regex search, 999K scrollback with disk persistence, shell integration (OSC 133) for semantic command boundaries (Constrained Language Mode safe).
+**Terminal** — xterm.js + WebGL, native PTY (ConPTY on Windows, forkpty on macOS), Unicode 11 width tables, split panes, tabs, floating pane, smart right-click (selection→copy / empty→paste / link menu), scroll bookmarks, Vi copy mode, regex search, 999K scrollback with disk persistence, shell integration (OSC 133) for semantic command boundaries (Constrained Language Mode safe).
 
 **Keybindings** — Tmux-style prefix mode (`Ctrl+B`, 13 default actions), fully customizable, reset-to-defaults.
 
@@ -146,7 +157,7 @@ winget install openwong2kim.wmux
 
 **Browser + CDP** — built-in panel (`Ctrl+Shift+L`), nav bar / DevTools / back-forward, element Inspector (hover-highlight, click-to-copy LLM context), full automation: click / fill / type / screenshot / JS eval / key press.
 
-**Notifications** — output-throughput activity detection (not pattern matching, works with any agent), taskbar flash + Windows toasts, process-exit alerts, notification panel (`Ctrl+I`), Web Audio cues.
+**Notifications** — output-throughput activity detection (not pattern matching, works with any agent), native OS toasts + taskbar flash (Windows) / Dock & menu-bar tray (macOS), process-exit alerts, notification panel (`Ctrl+I`), Web Audio cues.
 
 **Agent detection** — Claude Code, Codex CLI, Gemini CLI, Aider, OpenCode, GitHub Copilot CLI. Detects start → activates monitoring, warns on critical actions.
 
@@ -160,7 +171,7 @@ winget install openwong2kim.wmux
 
 **Plugins** — sandboxed iframe plugin host with a bridge + explicit permission model and pane decorations.
 
-**Daemon** — background session management (survives app restart), scrollback dump + auto-recovery, Windows startup registration (relaunches at login after reboot), dead-session TTL reaping.
+**Daemon** — background session management (survives app restart), scrollback dump + auto-recovery, start-at-login registration on Windows and macOS (relaunches after reboot), dead-session TTL reaping.
 
 **MCP tools** — `browser_*` (open / navigate / screenshot / snapshot / click / fill / type / evaluate / press_key), `terminal_read` / `terminal_read_events` (OSC 133) / `terminal_send` / `terminal_send_key`, `workspace_list` / `surface_list` / `surface_new` / `pane_list` / `pane_split` / `pane_close` / `pane_focus`, `channel_*` (create / post / read / ack / invite / join / list), `a2a_*` agent-to-agent + task delegation, `company_a2a_*`, `wmux_events_poll` / `wmux_search_panes`. Every browser tool takes a `surfaceId` so each session drives its own browser.
 
@@ -195,7 +206,9 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 <br>
 
-**Is wmux a tmux port?** No — it's a native Windows multiplexer on ConPTY + Electron with tmux-*style* split panes, prefix keys, and session persistence. No WSL / Cygwin / MSYS2.
+**Is wmux a tmux port?** No — it's a native multiplexer on Electron (ConPTY on Windows, forkpty on macOS) with tmux-*style* split panes, prefix keys, and session persistence. No WSL / Cygwin / MSYS2.
+
+**Which Macs are supported?** Apple Silicon (arm64) — download the `.dmg` from [releases](https://github.com/openwong2kim/wmux/releases/latest). Intel builds aren't produced right now; open an issue if you need one. If Gatekeeper warns on first launch, right-click the app → **Open**.
 
 **Works with Claude Code / Codex / Gemini?** Yes. wmux auto-detects them and registers an MCP server so they can drive the browser and read terminal output.
 
@@ -226,7 +239,7 @@ npm start          # dev mode
 npm run make       # build installer
 ```
 
-Requires Node 18+, Python 3.x, and VS Build Tools (C++ workload). `WMUX_FROM_SOURCE=1 irm …/install.ps1 | iex` auto-installs them.
+Requires Node 18+ and Python 3.x, plus a native toolchain: VS Build Tools (C++ workload) on Windows — `WMUX_FROM_SOURCE=1 irm …/install.ps1 | iex` auto-installs them — or the Xcode Command Line Tools on macOS (`xcode-select --install`).
 
 ---
 
@@ -244,7 +257,7 @@ Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microso
 
 [MIT](LICENSE)
 
-<sub>**Keywords:** Windows tmux · tmux for Windows · terminal multiplexer · AI agent terminal · agent fleet · git worktree fan-out · cmux alternative · Claude Code Windows · Codex CLI · Gemini CLI · MCP server · Chrome DevTools Protocol · split terminal · multi-agent · browser automation · ConPTY · xterm.js · Electron terminal</sub>
+<sub>**Keywords:** Windows tmux · tmux for Windows · macOS terminal multiplexer · tmux alternative · terminal multiplexer · AI agent terminal · agent fleet · git worktree fan-out · cmux alternative · Claude Code Windows · Codex CLI · Gemini CLI · MCP server · Chrome DevTools Protocol · split terminal · multi-agent · browser automation · ConPTY · xterm.js · Electron terminal</sub>
 
 <div align="center"><sub>⭐ Star history</sub><br>
 
