@@ -10,7 +10,7 @@ import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
-import { IconPlus, IconChevronDir, IconRobot } from '../icons';
+import { IconPlus, IconChevronDir, IconRobot, IconGitBranch, IconReview } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
@@ -64,6 +64,18 @@ export default function Sidebar() {
   const channelDockVisible = useStore((s) => s.channelDockVisible);
   const toggleChannelDock = useStore((s) => s.toggleChannelDock);
   const channelUnreadTotal = useMemo(() => sumUnread(channelUnread), [channelUnread]);
+
+  // Git·Review 유틸 표면(중앙) 토글 — 2026-07-20 IA: 상단 헤더 행(36px, 이름 중복)을
+  // 없애고 사이드바 푸터로 이동. 글씨 색으로 상태 표시: 열림=steel(내비게이션),
+  // dirty=warm(주의), 그 외 muted. dirty는 기존 gitSync 메타(5s 폴) 재사용 — 신규 폴링 0.
+  const utilityView = useStore((s) => s.workspaceUtilityView);
+  const setUtilityView = useStore((s) => s.setWorkspaceUtilityView);
+  const activeWsDirty = useStore(
+    (s) => s.workspaces.find((w) => w.id === s.activeWorkspaceId)?.metadata?.gitSync?.dirty ?? 0,
+  );
+  const dirtyWsCount = useStore(
+    (s) => s.workspaces.filter((w) => (w.metadata?.gitSync?.dirty ?? 0) > 0).length,
+  );
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
@@ -149,6 +161,43 @@ export default function Sidebar() {
 
       {/* Plugin sidebar panels (B-1 ui.sidebar contribution point) */}
       <PluginPanels />
+
+      {/* Git·Review 유틸 표면 토글(2026-07-20) — Agent 행과 같은 푸터 문법.
+          글씨 색 = 상태: 열림 steel · dirty warm(카운트 동반) · 그 외 muted. */}
+      {(
+        [
+          { id: 'git' as const, icon: <IconGitBranch size={14} />, labelKey: 'deck.tabGit', fallback: 'Git', count: activeWsDirty },
+          { id: 'review' as const, icon: <IconReview size={14} />, labelKey: 'deck.tabReview', fallback: 'Review', count: dirtyWsCount },
+        ]
+      ).map((row) => {
+        const isOpen = utilityView === row.id;
+        const isDirty = row.count > 0;
+        return (
+          <button
+            key={row.id}
+            type="button"
+            onClick={() => setUtilityView(isOpen ? null : row.id)}
+            aria-pressed={isOpen}
+            data-sidebar-utility={row.id}
+            className={`flex items-center gap-2 shrink-0 h-9 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono transition-colors ${FOCUS_RING} ${
+              isOpen
+                ? 'text-[var(--accent-blue)]'
+                : isDirty
+                  ? 'text-[var(--accent)] hover:opacity-80'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
+            }`}
+            style={{ borderColor: 'var(--border-soft)' }}
+          >
+            {row.icon}
+            <span>{t(row.labelKey) || row.fallback}</span>
+            {isDirty && (
+              <span className="ml-auto" data-sidebar-utility-count>
+                {row.count > 99 ? '99+' : row.count}
+              </span>
+            )}
+          </button>
+        );
+      })}
 
       {/* Agent toggle — the reopen affordance for the right-side ChannelDock
           (agents + their channels), moved here from the status bar so it lives at

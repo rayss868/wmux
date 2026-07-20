@@ -1,6 +1,6 @@
-// ─── WorkspaceCenter — 중앙 영역(헤더 탭 + 페인 그리드 + 유틸 표면) ─────────────
+// ─── WorkspaceCenter — 중앙 영역(페인 그리드 + 유틸 표면) ───────────────────────
 //
-// IA 결정(2026-07-20): Git·Review는 워크스페이스 헤더 탭(WorkspaceUtilityBar)이
+// IA 결정(2026-07-20): Git·Review는 좌측 사이드바 푸터 버튼(Sidebar)이
 // 여는 중앙 전체 표면으로 산다. workspaceUtilityView가 set이면 페인 그리드를 덮는
 // GitTab/ReviewTab을 렌더한다. 페인 그리드는 언마운트하지 않고 display:none으로만
 // 숨긴다 — xterm/PTY를 살려두기 위한 필수 조건. activePaneId·surface.cwd는 숨겨진
@@ -10,7 +10,6 @@
 import { useEffect } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
-import { WorkspaceUtilityBar } from './WorkspaceUtilityBar';
 import { WorkspaceViewport } from './WorkspaceViewport';
 import { GitTab } from '../Deck/GitTab';
 import { ReviewTab } from '../Deck/ReviewTab';
@@ -68,7 +67,6 @@ export function WorkspaceCenter() {
 
   return (
     <>
-      <WorkspaceUtilityBar />
       <div className="flex-1 min-h-0 relative">
         {/* 페인 그리드 — 유틸 표면이 열려 있으면 display:none으로 숨긴다(언마운트
             금지 — 터미널 PTY 유지). 숨겨져도 activePaneId·surface.cwd는 살아 있다. */}
