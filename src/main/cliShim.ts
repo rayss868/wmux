@@ -244,6 +244,48 @@ export function installCliShimDarwin(
   return { status: 'failed', linkPath: null, guidance: null };
 }
 
+/**
+ * Whether a wmux-OWNED darwin shim exists but no longer targets the current
+ * bundle — a stale target (app moved) or a target that no longer exists on disk
+ * (DMG ejected). Used so the one-time install marker does not gate out repair:
+ * the first packaged launch can happen from a DMG/ZIP temp path, and once that
+ * volume is gone the owned symlink points at a dead file forever otherwise.
+ *
+ * Returns false for a correct link (no repair), for foreign links/files (never
+ * touch a Homebrew cask etc.), and when no candidate link exists (respect the
+ * one-time-attempt intent for failed/absent installs). Pure fs, no throw.
+ */
+export function darwinShimNeedsRepair(
+  execPath: string = process.execPath,
+  opts: { homeDir?: string; candidates?: string[] } = {},
+): boolean {
+  const homeDir = opts.homeDir ?? (process.env.HOME || '');
+  const target = deriveDarwinCliTarget(execPath);
+  const fallbackDir = path.posix.join(homeDir, '.local', 'bin');
+  const candidates = opts.candidates ?? ['/usr/local/bin/wmux', path.posix.join(fallbackDir, 'wmux')];
+
+  for (const linkPath of candidates) {
+    let st: fs.Stats | null = null;
+    try {
+      st = fs.lstatSync(linkPath);
+    } catch {
+      continue; // absent — respect one-time-attempt intent, no repair
+    }
+    if (!st.isSymbolicLink()) continue; // foreign real file — leave it
+    let linkTarget = '';
+    try {
+      linkTarget = fs.readlinkSync(linkPath);
+    } catch {
+      continue;
+    }
+    if (!isOwnedWmuxTarget(linkTarget)) continue; // foreign symlink — leave it
+    // Owned link: repair if it points somewhere other than the current bundle,
+    // or if its target no longer exists on disk.
+    if (linkTarget !== target || !fs.existsSync(linkTarget)) return true;
+  }
+  return false;
+}
+
 /** Remove the shim and strip the bin dir from the user PATH. Best-effort. */
 export function uninstallCliShim(execPath: string): void {
   try {
