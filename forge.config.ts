@@ -131,6 +131,59 @@ async function signMacAppIfConfigured(appPath: string): Promise<void> {
   console.log('[postPackage] macOS 서명 + 노타라이즈 + 스테이플 완료.');
 }
 
+// Sign + notarize + staple the .dmg container itself, from the postMake hook.
+//
+// The .app inside is already signed and stapled by signMacAppIfConfigured, which
+// is what Gatekeeper checks on launch — so an unsigned .dmg still installs fine.
+// Signing the container additionally makes the disk image itself verifiable at
+// mount time (`spctl -a -t open --context context:primary-signature`) instead of
+// reporting "no usable signature".
+//
+// Must run in postMake, not postPackage: MakerDMG builds the image after the
+// package step, so there is no .dmg to sign yet when the app is signed.
+async function signMacDmgIfConfigured(dmgPath: string): Promise<void> {
+  const { APPLE_TEAM_ID, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD } = process.env;
+  if (process.platform !== 'darwin') return;
+  if (!APPLE_TEAM_ID || !APPLE_ID || !APPLE_APP_SPECIFIC_PASSWORD) {
+    console.log('[postMake] No Apple credentials — leaving the DMG unsigned.');
+    return;
+  }
+
+  const { execFileSync } = require('child_process');
+  const { notarize } = require('@electron/notarize');
+
+  // Resolve the Developer ID Application identity explicitly. Passing a partial
+  // name to `codesign --sign` silently picks whichever identity matches first;
+  // failing loudly here is better than shipping a differently-signed image.
+  const identities: string = execFileSync('security', ['find-identity', '-v', '-p', 'codesigning'], {
+    encoding: 'utf8',
+  });
+  const identity = identities.match(/"(Developer ID Application: [^"]+)"/)?.[1];
+  if (!identity) {
+    throw new Error('[postMake] No "Developer ID Application" identity in the keychain — cannot sign the DMG.');
+  }
+
+  // 1) Sign the disk image. --timestamp is required for notarization.
+  console.log(`[postMake] Signing DMG (${identity})...`);
+  execFileSync('codesign', ['--sign', identity, '--timestamp', '--force', dmgPath], { stdio: 'inherit' });
+
+  // 2) Notarize the image (a few minutes). This is a separate submission from
+  //    the .app's — the ticket is issued per artifact.
+  console.log('[postMake] Notarizing DMG (notarytool, takes a few minutes)...');
+  await notarize({
+    appPath: dmgPath,
+    appleId: APPLE_ID,
+    appleIdPassword: APPLE_APP_SPECIFIC_PASSWORD,
+    teamId: APPLE_TEAM_ID,
+  });
+
+  // 3) Staple so the image verifies offline too.
+  console.log('[postMake] Stapling DMG (xcrun stapler)...');
+  execFileSync('xcrun', ['stapler', 'staple', dmgPath], { stdio: 'inherit' });
+
+  console.log('[postMake] DMG sign + notarize + staple done.');
+}
+
 const config: ForgeConfig = {
   // node-pty is copied from its shipped prebuilds in postPackage; rebuilding it
   // here only adds a local Visual Studio toolchain dependency.
@@ -294,6 +347,20 @@ const config: ForgeConfig = {
       if (appBundle) {
         await signMacAppIfConfigured(path.join(outputPath, appBundle));
       }
+    },
+
+    // Sign the DMG containers once the makers have produced them. ZIP artifacts
+    // are skipped: they are not signable, and the .app they carry is already
+    // signed and stapled from postPackage.
+    postMake: async (_config, makeResults) => {
+      for (const result of makeResults) {
+        for (const artifact of result.artifacts) {
+          if (artifact.endsWith('.dmg')) {
+            await signMacDmgIfConfigured(artifact);
+          }
+        }
+      }
+      return makeResults;
     },
   },
   // Makers are filtered by host OS — electron-forge only invokes makers whose
