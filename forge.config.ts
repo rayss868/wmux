@@ -152,23 +152,34 @@ async function signMacDmgIfConfigured(dmgPath: string): Promise<void> {
   const { execFileSync } = require('child_process');
   const { notarize } = require('@electron/notarize');
 
-  // Resolve the Developer ID Application identity explicitly. Passing a partial
-  // name to `codesign --sign` silently picks whichever identity matches first;
-  // failing loudly here is better than shipping a differently-signed image.
+  // Resolve the signing identity by its SHA-1 fingerprint, not by name.
+  // `find-identity` searches every keychain in the default list — in CI that is
+  // the temporary build keychain AND login.keychain-db (release.yml) — so a
+  // name match can pick up a stale or foreign-team certificate, and two
+  // renewals sharing one common name make `codesign --sign <name>` ambiguous.
+  // Require exactly one identity carrying this build's team suffix.
   const identities: string = execFileSync('security', ['find-identity', '-v', '-p', 'codesigning'], {
     encoding: 'utf8',
   });
-  const identity = identities.match(/"(Developer ID Application: [^"]+)"/)?.[1];
-  if (!identity) {
-    throw new Error('[postMake] No "Developer ID Application" identity in the keychain — cannot sign the DMG.');
+  const matches = [...identities.matchAll(/\b([0-9A-F]{40})\s+"(Developer ID Application: [^"]+)"/gi)]
+    .filter(([, , name]) => name.includes(`(${APPLE_TEAM_ID})`));
+  const fingerprints = new Set(matches.map(([, sha1]) => sha1));
+  if (fingerprints.size !== 1) {
+    throw new Error(
+      `[postMake] Expected exactly one "Developer ID Application" identity for team ${APPLE_TEAM_ID}, found ${fingerprints.size}.`,
+    );
   }
+  const [sha1] = fingerprints;
+  const identityName = matches[0][2];
 
-  // 1) Sign the disk image. --timestamp is required for notarization.
-  console.log(`[postMake] Signing DMG (${identity})...`);
-  execFileSync('codesign', ['--sign', identity, '--timestamp', '--force', dmgPath], { stdio: 'inherit' });
+  // 1) Sign the disk image. --timestamp is required for notarization; --force
+  //    lets a re-run re-sign an image left behind by a previous attempt.
+  console.log(`[postMake] Signing DMG (${identityName})...`);
+  execFileSync('codesign', ['--sign', sha1, '--timestamp', '--force', dmgPath], { stdio: 'inherit' });
 
   // 2) Notarize the image (a few minutes). This is a separate submission from
-  //    the .app's — the ticket is issued per artifact.
+  //    the .app's — the ticket is issued per artifact. notarize() staples on
+  //    success itself (with retries), so no explicit `xcrun stapler` call.
   console.log('[postMake] Notarizing DMG (notarytool, takes a few minutes)...');
   await notarize({
     appPath: dmgPath,
@@ -176,10 +187,6 @@ async function signMacDmgIfConfigured(dmgPath: string): Promise<void> {
     appleIdPassword: APPLE_APP_SPECIFIC_PASSWORD,
     teamId: APPLE_TEAM_ID,
   });
-
-  // 3) Staple so the image verifies offline too.
-  console.log('[postMake] Stapling DMG (xcrun stapler)...');
-  execFileSync('xcrun', ['stapler', 'staple', dmgPath], { stdio: 'inherit' });
 
   console.log('[postMake] DMG sign + notarize + staple done.');
 }
@@ -352,11 +359,23 @@ const config: ForgeConfig = {
     // Sign the DMG containers once the makers have produced them. ZIP artifacts
     // are skipped: they are not signable, and the .app they carry is already
     // signed and stapled from postPackage.
+    //
+    // Never throw. Forge builds every artifact before awaiting this hook, but a
+    // rejected `make` fails the release job's build step, so the upload step
+    // never runs and the ephemeral runner is discarded with the .dmg AND the
+    // perfectly good .zip still on it. A transient Apple outage must not cost
+    // the whole macOS release. Downgrade to a loud warning instead: the result
+    // is an unsigned container, which is exactly what shipped before this hook
+    // existed, and the .app inside is still signed, notarized, and stapled.
     postMake: async (_config, makeResults) => {
       for (const result of makeResults) {
         for (const artifact of result.artifacts) {
-          if (artifact.endsWith('.dmg')) {
+          if (!artifact.endsWith('.dmg')) continue;
+          try {
             await signMacDmgIfConfigured(artifact);
+          } catch (err) {
+            console.warn(`[postMake] WARNING: DMG signing failed for ${path.basename(artifact)} — shipping it unsigned.`);
+            console.warn(`[postMake] ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }
