@@ -22,7 +22,10 @@ import { getWmuxDir } from './config';
 // v6: zsh stub에 OSC 7(cwd) 방출 추가 — mac 기본 zsh가 cd를 보고하지 않아
 // 사이드바 브랜치/git 컨텍스트가 생성 시점 cwd에 고정되던 문제 수정
 // (owner-reported 2026-07-19).
-const INTEGRATION_VERSION = 6;
+// v7: 번호만 재승격 — 릴리즈 데몬이 OSC 7 없는 스크립트를 ".version=6"으로
+// 이미 설치해 둔 기기에서 v6 게이트가 "최신"으로 오판, OSC 7 스텁이 영영
+// 설치되지 않던 문제(dogfood 실측 2026-07-20). 내용 변경 없음.
+const INTEGRATION_VERSION = 7;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
