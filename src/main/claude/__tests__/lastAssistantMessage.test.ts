@@ -36,6 +36,23 @@ describe('endsWithQuestion', () => {
     expect(endsWithQuestion('CI 6/6 통과했다.')).toBe(false);
     expect(endsWithQuestion('')).toBe(false);
   });
+
+  // Both review models flagged these independently: `가요` and `니` end ordinary
+  // declaratives constantly, and a false positive is worse than a miss — it
+  // makes the orchestrator announce a block that does not exist.
+  it('does not mistake polite declaratives for questions', () => {
+    expect(endsWithQuestion('이제 커밋 메시지를 작성하러 가요')).toBe(false);
+    expect(endsWithQuestion('결과는 저장소에 들어가요.')).toBe(false);
+    expect(endsWithQuestion('로그를 살펴보니')).toBe(false);
+    expect(endsWithQuestion('테스트를 고쳤으니.')).toBe(false);
+  });
+
+  it('catches the polite proposal form that plain 까 misses', () => {
+    // `진행할까요` ends in 요, not 까 — the most common way an agent asks
+    // permission in Korean, and the exact bug class this function exists for.
+    expect(endsWithQuestion('이대로 진행할까요')).toBe(true);
+    expect(endsWithQuestion('머지할까.')).toBe(true);
+  });
 });
 
 describe('readLastAssistantMessage', () => {
@@ -96,6 +113,35 @@ describe('readLastAssistantMessage', () => {
     expect(got?.text.length).toBeLessThanOrEqual(601);
     expect(got?.text.endsWith('Shall I proceed?')).toBe(true);
     expect(got?.endsWithQuestion).toBe(true);
+  });
+
+  // The bounded tail read only seeks when the file exceeds TAIL_BYTES, so a
+  // small-file test never exercises the mid-file seek at all. Korean
+  // transcripts are full of multi-byte characters; slicing into one must not
+  // take down the stop hook.
+  it('seeks past a multi-byte boundary on a >256KB transcript without throwing', () => {
+    const filler = assistantText(`${'한'.repeat(4000)}`);
+    let bulk = '';
+    while (Buffer.byteLength(bulk, 'utf8') < 300 * 1024) bulk += filler;
+    fs.writeFileSync(file, bulk + assistantText('이대로 진행할까요'));
+    const got = readLastAssistantMessage(file);
+    expect(got?.text).toBe('이대로 진행할까요');
+    expect(got?.endsWithQuestion).toBe(true);
+  });
+
+  it('decodes only the bytes actually read', () => {
+    // A short read (concurrent truncation) must not leave zero-fill that
+    // corrupts the final record.
+    fs.writeFileSync(file, assistantText('Done.'));
+    expect(readLastAssistantMessage(file)?.text).toBe('Done.');
+  });
+
+  it('refuses a non-regular file rather than blocking on it', () => {
+    // openSync on a FIFO blocks the main process forever; the hook budget
+    // cannot cancel a blocked syscall.
+    const fifo = path.join(dir, 'fifo');
+    fs.mkdirSync(fifo);
+    expect(readLastAssistantMessage(fifo)).toBeNull();
   });
 
   it('returns null rather than throwing on a missing or garbage file', () => {

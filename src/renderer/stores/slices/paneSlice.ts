@@ -322,6 +322,12 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // keeps the existing reference (immer), so React shallow-compares it away.
     if (activity) {
       state.surfaceActivity[ptyId] = activity;
+      // The agent is demonstrably working again, so any question it was
+      // blocked on has been answered. Without this the two fields disagree
+      // exactly when a cross-pane orchestrator is most likely to read them:
+      // "running" and "blocked on a question" at the same time, until the
+      // NEXT stop finally clears it.
+      delete state.surfacePendingQuestion[ptyId];
       // Stamp the arrival time for the hook-driven 'running' derivation. Always
       // updated (even on a same-string tool repeat) so the freshness window
       // tracks the LATEST tool, not the first.
@@ -345,6 +351,10 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // Byte-based 'running' with no tool name: stamp only the freshness clock,
     // NOT the activity string (leave the card's raw-tail fallback in place).
     state.surfaceActivityAt[ptyId] = Date.now();
+    // Bytes are moving in this pane — it is not sitting on an unanswered
+    // question. Same reasoning as setSurfaceActivity; this is the path that
+    // covers agents with no tool hooks at all.
+    delete state.surfacePendingQuestion[ptyId];
   }),
 
   surfaceOutputAt: {},
@@ -544,6 +554,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
           if (s.ptyId) {
             delete state.surfaceAgent[s.ptyId];
             delete state.surfaceActivity[s.ptyId];
+            delete state.surfacePendingQuestion[s.ptyId];
             delete state.surfaceActivityAt[s.ptyId];
             delete state.surfaceOutputAt[s.ptyId];
             clearNudgesFor(s.ptyId); // A5: don't let a reused ptyId inherit this pane's nudge cap

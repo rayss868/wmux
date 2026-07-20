@@ -50,8 +50,18 @@ export function endsWithQuestion(text: string): boolean {
   // Strip trailing markdown emphasis/quotes so `**...할까?**` still matches.
   const tail = last.replace(/[*_`"')\]]+$/, '').trim();
   if (tail.endsWith('?') || tail.endsWith('？')) return true;
-  // Korean interrogative endings, with or without a final period.
-  return /(까|나요|가요|는지|을지|ㄹ지|랴|니)[.!]?$/.test(tail);
+  // A Korean question may still be punctuated with a period; strip it before
+  // testing the ending so `진행할까.` matches the same as `진행할까`.
+  const bare = tail.replace(/[.!。]+$/, '');
+  // Korean interrogative endings, which routinely carry no '?' at all.
+  //
+  // Deliberately narrow. `가요` and `니` were removed after review: ordinary
+  // declaratives end in them constantly ("저장소에 들어가요.", "고쳤으니.") and a
+  // false positive is worse than a miss — it makes the orchestrator announce a
+  // block that does not exist and "answer" a statement. `까요` is listed
+  // explicitly because `까` alone misses the most common polite proposal form
+  // ("진행할까요"), which was the exact bug class this function exists to catch.
+  return /(까|까요|나요|는지|을지|ㄹ지)$/.test(bare);
 }
 
 /** Collapse runs of blank lines and trim to MAX_TEXT from the END (the tail of
@@ -59,7 +69,9 @@ export function endsWithQuestion(text: string): boolean {
 function condense(raw: string): string {
   const cleaned = raw.replace(/\n{3,}/g, '\n\n').trim();
   if (cleaned.length <= MAX_TEXT) return cleaned;
-  return `…${cleaned.slice(-MAX_TEXT)}`;
+  // The ellipsis counts against the cap — `text` is documented as <= MAX_TEXT
+  // and a consumer sizing a buffer off that number should not be surprised.
+  return `…${cleaned.slice(-(MAX_TEXT - 1))}`;
 }
 
 /** Pull the text out of one transcript entry's `message.content`. */
@@ -85,13 +97,21 @@ function textOf(content: unknown): string {
 export function readLastAssistantMessage(transcriptPath: string): LastAssistantMessage | null {
   let raw: string;
   try {
-    const { size } = fs.statSync(transcriptPath);
-    const start = Math.max(0, size - TAIL_BYTES);
+    // lstat, and only a regular file: `transcript_path` arrives from a hook
+    // payload, and openSync on a FIFO blocks the MAIN process indefinitely —
+    // there is no timeout to save us, the hook's budget cannot cancel a blocked
+    // syscall, and the whole app stalls with it.
+    const st = fs.lstatSync(transcriptPath);
+    if (!st.isFile()) return null;
+    const start = Math.max(0, st.size - TAIL_BYTES);
     const fd = fs.openSync(transcriptPath, 'r');
     try {
-      const buf = Buffer.alloc(size - start);
-      fs.readSync(fd, buf, 0, buf.length, start);
-      raw = buf.toString('utf8');
+      const buf = Buffer.alloc(st.size - start);
+      // Decode ONLY what was actually read. A transcript being truncated or
+      // rotated concurrently would otherwise leave zero-fill in the tail and
+      // corrupt the very last record — the one we came here for.
+      const read = fs.readSync(fd, buf, 0, buf.length, start);
+      raw = buf.subarray(0, read).toString('utf8');
     } finally {
       fs.closeSync(fd);
     }

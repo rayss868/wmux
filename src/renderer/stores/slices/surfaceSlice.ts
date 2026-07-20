@@ -225,6 +225,9 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     const closedPtyId = pane.surfaces[idx].ptyId;
     if (closedPtyId && state.surfaceAgent) delete state.surfaceAgent[closedPtyId];
     if (closedPtyId && state.surfaceActivity) delete state.surfaceActivity[closedPtyId];
+    // Drop the pending question too: a leaked entry would let a REUSED ptyId
+    // inherit a dead pane's question and read as blocked from birth.
+    if (closedPtyId && state.surfacePendingQuestion) delete state.surfacePendingQuestion[closedPtyId];
     if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
     // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict(무한 성장·재사용 ptyId 오염 방지).
     if (closedPtyId && state.taskPtyRegistry) delete state.taskPtyRegistry[closedPtyId];

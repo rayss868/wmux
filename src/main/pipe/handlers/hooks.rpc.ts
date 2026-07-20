@@ -393,7 +393,10 @@ export function registerHooksRpc(
     //
     // The transcript tail is read ONCE here and reused for the EventBus tee
     // below — it is real file I/O inside the hook's 2s budget.
-    const stopMessage = signal.kind === 'agent.stop'
+    // Claude only: the reader parses Claude Code's transcript JSONL. Another
+    // agent's transcript_path would be a different format at best, and reading
+    // it is pointless main-thread I/O at worst.
+    const stopMessage = signal.kind === 'agent.stop' && signal.agent === 'claude'
       ? readLastAssistantMessageSafely(signal.payload)
       : null;
     if (signal.kind === 'agent.stop' || signal.kind === 'agent.session_start') {

@@ -547,9 +547,21 @@ const MAX_QUOTED = 400;
  */
 function sanitizeSnippet(raw: string): string {
   // Stripping control characters IS the point here: they are what would let
-  // pane text forge block structure.
-  // eslint-disable-next-line no-control-regex
-  const flat = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  // pane text forge block structure. C1 (U+0080-U+009F), bidi overrides and
+  // zero-width/format characters go too: they render as nothing (or reorder
+  // what follows) and exist mainly to make text read differently than it is.
+  //
+  // Scope note: this is presentation hardening, NOT an authorization boundary.
+  // Agent-authored prose that merely ASKS the brain to do something survives
+  // verbatim, exactly as reviewer text does on the pr.* kinds — which is why
+  // the block is fenced as untrusted and permission verdicts are computed here
+  // from autonomy, never taken from pane text.
+  const flat = raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
   // Defence in depth. Flattening newlines already stops a forged event LINE —
   // the structural boundary. This additionally defangs the block's grammar
   // tokens so quoted text can't even LOOK like a field of a real event to a
