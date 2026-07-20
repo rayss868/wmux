@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.28.1] — 2026-07-21
+
 ### Fixed
 
 - **The Git tab (worktrees + review roster) now finds the repo an agent is working in, even when the shell it runs in sits elsewhere.** Repo context used to come only from the pane's shell working directory — but for an agent pane (Claude / Codex TUI) that is typically the directory the shell was *started* in (often the home dir), while the agent works in a repo somewhere else. Result: the sidebar showed the branch just fine, yet the Git tab said "not a git repository". Repo resolution now falls back to the hook-reported agent directory (the same value the sidebar branch badge already trusts) when the shell's own directory doesn't resolve to a repo.
