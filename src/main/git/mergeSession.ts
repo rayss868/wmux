@@ -244,6 +244,13 @@ export async function runVerify(
         maxBuffer: 32 * 1024 * 1024,
         env: getGitExecEnv(),
         signal: opts?.signal,
+        // Windows: npm is `npm.cmd`, and Node refuses to spawn a `.cmd`/`.bat` via
+        // execFile without a shell (CVE-2024-27980 mitigation → `spawn EINVAL`). Without
+        // this the verify gate always failed on Windows, so no clean merge could ever
+        // reach 'verified' and Land was unreachable. Scope the shell to batch files only
+        // (the default npm step on Windows) so real executables — `npm` on macOS/Linux,
+        // and node.exe in the injected unit-test steps — keep their exact argv semantics.
+        shell: /\.(cmd|bat)$/i.test(s.cmd),
       });
       combined += header + stdout + stderr;
     } catch (e) {
