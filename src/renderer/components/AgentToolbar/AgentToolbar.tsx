@@ -8,7 +8,8 @@ import RichInput from './RichInput';
 import SnippetsMenu from './SnippetsMenu';
 import FileExplorerPopover from './FileExplorerPopover';
 import BroadcastPopover from './BroadcastPopover';
-import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconPlus, IconUsers } from '../icons';
+import FanOutDialog from './FanOutDialog';
+import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconPlus, IconUsers, IconSparkles } from '../icons';
 
 export default function AgentToolbar() {
   const t = useT();
@@ -20,6 +21,7 @@ export default function AgentToolbar() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [showBroadcast, setShowBroadcast] = useState(false);
+  const [showFanOut, setShowFanOut] = useState(false);
 
   const ptyId = focusedTerminalPtyId(activeWorkspace);
   const disabled = !ptyId;
@@ -123,6 +125,17 @@ export default function AgentToolbar() {
       </button>
       <div className="flex-1" />
       {disabled && <span className="text-[10px] text-[var(--text-muted)]">{t('toolbar.noTerminal')}</span>}
+      {/* Multi Task(fan-out) — 함대 스폰 명령이라 에이전트 툴바로 복귀(DESIGN.md
+          Decisions Log 2026-07-20). 우측 그룹에서 New chat 왼쪽에 산다. 클릭 시
+          FanOutDialog를 툴바 위(bottom-full)로 연다. */}
+      <button
+        className={`${btn} ${showFanOut ? active : idle}`}
+        onClick={() => setShowFanOut((v) => !v)}
+        title={t('fanout.title')}
+        data-testid="fanout-button"
+      >
+        <IconSparkles size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.fanOut')}</span>
+      </button>
       <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleNew} title={t('toolbar.newChat')}>
         <IconPlus size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.newChat')}</span>
       </button>
@@ -131,6 +144,7 @@ export default function AgentToolbar() {
       {popover === 'snippets' && ptyId && <SnippetsMenu ptyId={ptyId} />}
       {popover === 'rich' && ptyId && <RichInput ptyId={ptyId} />}
       {showBroadcast && <BroadcastPopover onClose={() => setShowBroadcast(false)} />}
+      {showFanOut && <FanOutDialog onClose={() => setShowFanOut(false)} />}
     </div>
   );
 }

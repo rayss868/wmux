@@ -18,7 +18,8 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 
 // Display names track the shipped model ids (Opus 4.8 / Sonnet 5 / Haiku 4.5).
-const MODEL_OPTIONS: { value: string; label: string }[] = [
+// Exported so the Agent 탭 인라인 드롭다운(DeckTabs)이 같은 목록·라벨을 재사용한다.
+export const MODEL_OPTIONS: { value: string; label: string }[] = [
   { value: '', label: 'Default' },
   { value: 'opus', label: 'Opus 4.8' },
   { value: 'sonnet', label: 'Sonnet 5' },

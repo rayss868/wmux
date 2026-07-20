@@ -68,37 +68,8 @@ import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckDecisionCard } from './DeckDecisionCard';
 import { AgentModeChipContainer } from './AgentModeChip';
-import { OrchestratorModelChip } from './OrchestratorModelChip';
-import FanOutDialog from '../AgentToolbar/FanOutDialog';
-import { IconSparkles } from '../icons';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
-
-/** fan-out(병렬 작업) 진입 칩 — 오케스트레이터 spawn 명령이라 Mode/Loop/Schedules와
- *  같은 컨트롤 바에 산다(툴바에서 이동). 클릭 시 FanOutDialog를 위로 연다(뷰포트
- *  클램프·우측 정렬). 빈 함대(페인 0)에서도 렌더·동작한다. */
-function DeckFanOutChip({ t }: { t: (key: string) => string }): React.ReactElement {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        data-deck-fanout-chip
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] transition-opacity hover:opacity-80 ${
-          open ? 'text-[var(--accent-blue)]' : 'text-[var(--text-sub)]'
-        } bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING}`}
-        title={`${t('toolbar.fanOut') || 'Multi Task'} — ${t('fanout.title')}`}
-        aria-label={t('toolbar.fanOut') || 'Multi Task'}
-        {...(open ? tokenAttrs('accent', 'text') : tokenAttrs('textSub', 'text'))}
-      >
-        <IconSparkles size={12} />
-      </button>
-      {open && <FanOutDialog align="right" onClose={() => setOpen(false)} />}
-    </div>
-  );
-}
 
 // ─── Pure view ───────────────────────────────────────────────────────────────
 
@@ -347,23 +318,16 @@ export function CommanderViewContent({
           style={{ borderColor: 'var(--border-soft)' }}
           {...tokenAttrs('bgSurface', 'border')}
         >
-          {/* Mode = the single autonomy knob, always showing the current mode. */}
+          {/* Mode = the single autonomy knob, always showing the current mode.
+              모델 선택은 Agent 탭 인라인 드롭다운으로 이동(DESIGN.md Decisions
+              Log 2026-07-20)했고, fan-out은 에이전트 툴바로 복귀했다. */}
           <AgentModeChipContainer t={t} workspaceId={activeWorkspaceId} />
-          {/* Orchestrator model — moved here from the deck-tab header so the
-              brain's model sits next to its Mode. Opens upward (control bar is
-              at the bottom) so the picker never covers the composer. */}
-          <OrchestratorModelChip openUp />
           {/* The one-click loop chip + panel (loop engineering v1) — binds to
               THIS workspace. */}
           <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
           {/* Schedules chip + inline panel — new schedules bind to THIS
               workspace's orchestrator (M1.5). */}
           <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
-
-          {/* fan-out(병렬 작업) — 함대 생성 명령이라 오케스트레이터 컨트롤과 한 묶음.
-              툴바에서 이 자리로 이동(DESIGN.md Decisions Log). 구분자 없이 Schedules
-              뒤에 바로 붙어 좁은 덱에서도 한 줄을 유지한다. */}
-          <DeckFanOutChip t={t} />
 
           {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click
               recovery. Flows inline after the always-on controls (no ml-auto:

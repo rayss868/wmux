@@ -15,12 +15,23 @@ import type { DeckTab } from '../../../stores/slices/deckSlice';
 let container: HTMLDivElement;
 let root: Root;
 
+const MODEL_OPTIONS = [
+  { value: '', label: 'Default' },
+  { value: 'opus', label: 'Opus 4.8' },
+  { value: 'sonnet', label: 'Sonnet 5' },
+  { value: 'haiku', label: 'Haiku 4.5' },
+];
+
 function mount(props: {
   active: DeckTab;
   onSelect?: (t: DeckTab) => void;
   channelsUnread?: number;
   showChannels?: boolean;
   rightSlot?: React.ReactNode;
+  commanderModelLabel?: string;
+  commanderModelOptions?: { value: string; label: string }[];
+  commanderModelValue?: string;
+  onCommanderModelSelect?: (v: string) => void;
 }): void {
   act(() => {
     root.render(
@@ -30,6 +41,10 @@ function mount(props: {
         channelsUnread: props.channelsUnread,
         ...(props.showChannels !== undefined ? { showChannels: props.showChannels } : {}),
         ...(props.rightSlot !== undefined ? { rightSlot: props.rightSlot } : {}),
+        ...(props.commanderModelLabel !== undefined ? { commanderModelLabel: props.commanderModelLabel } : {}),
+        ...(props.commanderModelOptions !== undefined ? { commanderModelOptions: props.commanderModelOptions } : {}),
+        ...(props.commanderModelValue !== undefined ? { commanderModelValue: props.commanderModelValue } : {}),
+        ...(props.onCommanderModelSelect !== undefined ? { onCommanderModelSelect: props.onCommanderModelSelect } : {}),
         t: (k: string) => k,
       }),
     );
@@ -117,5 +132,65 @@ describe('DeckTabs', () => {
   it('renders no header-controls container when rightSlot is omitted', () => {
     mount({ active: 'commander' });
     expect(container.querySelector('[data-deck-header-controls]')).toBeNull();
+  });
+
+  it('renders the Agent tab label with the current model in parentheses', () => {
+    mount({
+      active: 'commander',
+      commanderModelLabel: 'Sonnet 5',
+      commanderModelOptions: MODEL_OPTIONS,
+      commanderModelValue: 'sonnet',
+      onCommanderModelSelect: vi.fn(),
+    });
+    // deck.tabCommander (identity translator returns the key) + ` (Sonnet 5)`.
+    expect(tab('commander').textContent).toContain('deck.tabCommander (Sonnet 5)');
+  });
+
+  it('opens the model menu on active-tab re-click and fires the select callback', () => {
+    const onSelect = vi.fn();
+    const onCommanderModelSelect = vi.fn();
+    mount({
+      active: 'commander',
+      onSelect,
+      commanderModelLabel: 'Default',
+      commanderModelOptions: MODEL_OPTIONS,
+      commanderModelValue: '',
+      onCommanderModelSelect,
+    });
+    // Active Agent tab: no menu yet.
+    expect(container.querySelector('[data-commander-model-menu]')).toBeNull();
+    // Re-clicking the ACTIVE tab toggles the model menu (not a tab select).
+    act(() => {
+      tab('commander').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onSelect).not.toHaveBeenCalled();
+    const menu = container.querySelector('[data-commander-model-menu]');
+    expect(menu).not.toBeNull();
+    // Selecting a model fires the callback with the option value and closes the menu.
+    const opts = Array.from(container.querySelectorAll('[data-commander-model-option]')) as HTMLButtonElement[];
+    const opus = opts.find((o) => o.getAttribute('data-value') === 'opus');
+    expect(opus).toBeTruthy();
+    act(() => {
+      (opus as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onCommanderModelSelect).toHaveBeenCalledWith('opus');
+    expect(container.querySelector('[data-commander-model-menu]')).toBeNull();
+  });
+
+  it('selects the tab (not the model menu) when the Agent tab is inactive', () => {
+    const onSelect = vi.fn();
+    mount({
+      active: 'channels',
+      onSelect,
+      commanderModelLabel: 'Default',
+      commanderModelOptions: MODEL_OPTIONS,
+      commanderModelValue: '',
+      onCommanderModelSelect: vi.fn(),
+    });
+    act(() => {
+      tab('commander').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onSelect).toHaveBeenCalledWith('commander');
+    expect(container.querySelector('[data-commander-model-menu]')).toBeNull();
   });
 });

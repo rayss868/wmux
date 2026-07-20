@@ -30,6 +30,7 @@ import { ChannelsPanel, sumUnread } from './ChannelsPanel';
 import { ChannelView } from './ChannelView';
 import { DeckTabs } from '../Deck/DeckTabs';
 import { CommanderView } from '../Deck/CommanderView';
+import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import { FOCUS_RING } from '../focusRing';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
@@ -51,6 +52,11 @@ export default function ChannelDock(): React.ReactElement {
   // stale persisted 'channels' can never render either — the guard below.
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
+  // Orchestrator 모델 — 컨트롤 바 칩에서 Agent 탭 인라인 드롭다운으로 이동.
+  // DeckTabs는 순수 컴포넌트이므로 라벨·옵션·선택 콜백을 여기서 store와 잇는다.
+  const deckBrainModel = useStore((s) => s.deckBrainModel);
+  const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
+  const commanderModelLabel = (MODEL_OPTIONS.find((o) => o.value === deckBrainModel) ?? MODEL_OPTIONS[0]).label;
   const t = useT();
   const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
 
@@ -72,6 +78,10 @@ export default function ChannelDock(): React.ReactElement {
         onSelect={setActiveDeckTab}
         channelsUnread={sumUnread(channelUnread)}
         showChannels={channelsTabVisible}
+        commanderModelLabel={commanderModelLabel}
+        commanderModelOptions={MODEL_OPTIONS}
+        commanderModelValue={deckBrainModel}
+        onCommanderModelSelect={setDeckBrainModel}
         rightSlot={
           <>
             {/* Collapse the whole dock (terminals reclaim the width); reopen

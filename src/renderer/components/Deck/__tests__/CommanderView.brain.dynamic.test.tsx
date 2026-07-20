@@ -203,11 +203,11 @@ describe('CommanderViewContent — brain surface', () => {
     expect(container.querySelector('[data-deck-quick-actions]')).toBeNull();
   });
 
-  it('renders the fan-out chip in the control bar even on an empty fleet', () => {
-    // fan-out moved toolbar → control bar; it must survive an empty fleet
-    // (no panes, no recovery) so a fleet can be spawned from zero.
+  it('no longer renders the fan-out chip in the control bar (moved to the agent toolbar)', () => {
+    // fan-out returned control bar → agent toolbar (DESIGN.md Decisions Log
+    // 2026-07-20); the control bar must not carry the chip anymore.
     mount({ activeWorkspaceId: 'ws-1', quickActions: [], threads: [], brainMessages: [] });
-    expect(container.querySelector('[data-deck-fanout-chip]')).not.toBeNull();
+    expect(container.querySelector('[data-deck-fanout-chip]')).toBeNull();
   });
 
   it('renders no control bar when there is no workspace and nothing to recover', () => {

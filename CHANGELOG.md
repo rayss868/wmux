@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Command deck cleanup.** The agent toolbar drops to five buttons (the Multi Task/fan-out button moves to the orchestrator control bar, next to Mode/Loop/Schedules); the orchestrator model picker moves from the deck-tab header down to that same control bar, next to Mode; and the deck tabs get a lighter look (truncating labels that survive a narrow deck, rounded count badges, a steel active underline).
+- **Command deck cleanup.** The orchestrator tab is now labelled **Agent (model)** — e.g. `Agent (Sonnet 5)` — and clicking it while it's already active opens an inline model picker right there, so switching the orchestrator's model no longer needs a separate chip. The Multi Task/fan-out button lives on the agent toolbar (left of New chat), next to Broadcast, so a fleet can be spawned from the terminal chrome. The deck tabs also get a lighter look (truncating labels that survive a narrow deck, rounded count badges, a steel active underline).
 - **Daemon/session sockets moved from `~/.wmux-*.sock` into `~/.wmux/`.** One shared path helper now feeds the daemon, main, and CLI (they each computed the path separately before), keeps `sun_path` under the macOS 104-byte limit, and stops littering the home directory. A live pre-upgrade daemon keeps working: the control pipe rides the existing hint file, session connects fall back to the legacy path once on ENOENT, and a stored legacy default pipe name migrates in config load.
 - **Terminal font fallback chain now covers macOS** (Menlo, SF Mono, Monaco, Apple SD Gothic Neo) ahead of the generic monospace it used to fall straight to; UI font stack leads with `system-ui` instead of unbundled Inter/Segoe UI.
 

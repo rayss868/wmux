@@ -812,7 +812,7 @@ export const en = {
   // "Orchestrator"; the pane collective is "agents". No "fleet" wording on
   // user surfaces.
   'deck.tabsAriaLabel': 'Command deck tabs',
-  'deck.tabCommander': 'Orchestrator',
+  'deck.tabCommander': 'Agent',
   'deck.tabChannels': 'Channels',
   'deck.tabGit': 'Git',
   'deck.tabReview': 'Review',

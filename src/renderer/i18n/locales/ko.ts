@@ -728,7 +728,7 @@ export const ko = {
   // 안 함 — "오케스트레이터"는 한글 UI에서 넘침), pane 집합 = "에이전트".
   // "함대(fleet)" 어휘는 사용자 표면에서 쓰지 않는다.
   'deck.tabsAriaLabel': '커맨드 데크 탭',
-  'deck.tabCommander': 'agent',
+  'deck.tabCommander': '에이전트',
   'deck.tabChannels': '채널',
   'deck.tabGit': 'Git',
   'deck.tabReview': '리뷰',
