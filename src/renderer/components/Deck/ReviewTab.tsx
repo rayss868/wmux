@@ -1,11 +1,14 @@
-// ─── Deck Review tab — diff-first review across ALL workspaces (P1) ──────────
+// ─── Deck Review tab — diff-first review of THIS repo's workspaces ───────────
 //
-// Conductor-style review surface (owner decision 2026-07-18): one place that
-// answers "which of my parallel agents changed what, and where do I review it?"
-// One row per open workspace: name, branch, PR badge, and the workspace's
-// uncommitted diff stat (files / +adds / −dels) — with one-click entry into the
-// EXISTING DiffPanel surface for that workspace's repo. This tab aggregates and
-// routes; the hunk-level review/adopt machinery stays in DiffPanel (J2).
+// Conductor-style review surface (owner decision 2026-07-18). Scope 교정
+// (owner 2026-07-20): 전체 워크스페이스가 아니라 **현재 컨텍스트 repo와 같은
+// repo**(그 repo의 워크트리 위에 있는) 워크스페이스만 보여준다 — Git 탭 상단의
+// 워크트리·머지 워크플로우와 스코프를 일치시켜 "지금 이 repo" 맥락을 지킨다.
+// 같은 repo 판정 = 활성 pane cwd로 해결한 repo의 `worktree.list`가 주는 워크트리
+// 경로 집합에 그 워크스페이스의 resolved 토플레벨이 들어있는가(추가 git 호출 1번).
+// One row per in-scope workspace: name, branch, PR badge, uncommitted diff stat
+// (files / +adds / −dels) — one-click entry into the EXISTING DiffPanel surface.
+// 이 탭은 집계·라우팅만; hunk 단위 review/adopt는 DiffPanel(J2)에 남는다.
 //
 // Pull-only, like GitTab: stats load on mount / tab focus / manual refresh —
 // no polling, no daemon involvement. Each row resolves its repo from the
@@ -76,6 +79,23 @@ function getDiffBridge(): DiffBridge | null {
   return api?.diff ?? null;
 }
 
+type WorktreeListFn = (
+  repoPath: string,
+) => Promise<{ ok: true; worktrees: { path: string }[] } | { ok: false }>;
+
+function getWorktreeList(): WorktreeListFn | null {
+  const api = (window as unknown as { electronAPI?: { worktree?: { list?: WorktreeListFn } } })
+    .electronAPI;
+  return api?.worktree?.list ?? null;
+}
+
+/** repo 경로 정규화 — 대소문자 정책은 파일시스템에 맞춘다(win/mac 무시). */
+function normRepo(p: string): string {
+  const s = p.replace(/[/\\]+$/, '');
+  const plat = (window as unknown as { electronAPI?: { platform?: string } }).electronAPI?.platform;
+  return plat === 'win32' || plat === 'darwin' ? s.toLowerCase() : s;
+}
+
 /** PR badge colors — same grammar as the sidebar's PrBadge (WorkspaceItem). */
 function prColor(pr: PrStatus): string {
   return pr.state === 'open' ? 'var(--accent-green)'
@@ -100,7 +120,31 @@ export function ReviewTab(): React.ReactElement {
     const seq = ++loadSeq.current;
     setLoading(true);
     const bridge = getDiffBridge();
+    const wtList = getWorktreeList();
     const state = useStore.getState();
+
+    // 현재 컨텍스트 repo의 워크트리 경로 집합 = Review 스코프. 활성 워크스페이스의
+    // 활성 pane cwd로 repo를 해결한 뒤 그 repo의 worktree.list를 읽는다(추가 git 1번).
+    // 해결 실패(현재 repo 없음)면 scope=null → 폴백으로 전체 표시(기존 동작).
+    let scope: Set<string> | null = null;
+    const active = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+    if (bridge && wtList && active) {
+      const leaf = findActiveLeaf(active.rootPane, active.activePaneId) ?? findFirstLeaf(active.rootPane);
+      const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+      const cwd = surface?.cwd || active.profile?.startupCwd || state.startupDirectory || '';
+      if (cwd) {
+        try {
+          const r = await bridge.resolveRepo(cwd);
+          if (r.ok) {
+            const wl = await wtList(r.repoPath);
+            if (wl.ok) scope = new Set(wl.worktrees.map((w) => normRepo(w.path)));
+          }
+        } catch {
+          // 스코프 해결 실패 → null 유지(전체 폴백).
+        }
+      }
+    }
+
     const out: ReviewRow[] = [];
     for (const ws of state.workspaces) {
       const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId) ?? findFirstLeaf(ws.rootPane);
@@ -138,16 +182,23 @@ export function ReviewTab(): React.ReactElement {
           row.error = e instanceof Error ? e.message : String(e);
         }
       }
-      out.push(row);
+      // 스코프가 있으면 같은 repo(그 repo의 워크트리 위)만 통과. 스코프 null이면
+      // 전체(현재 repo를 못 잡은 폴백). repo 미해결 행은 스코프 있을 때 제외.
+      if (scope) {
+        if (row.repoPath && scope.has(normRepo(row.repoPath))) out.push(row);
+      } else {
+        out.push(row);
+      }
     }
     if (seq !== loadSeq.current) return; // superseded by a newer load
     setRows(out);
     setLoading(false);
   }, []);
 
+  // 활성 워크스페이스가 바뀌면 스코프(현재 repo)도 바뀌므로 재조회한다.
   useEffect(() => {
     void load();
-  }, [load, workspaceIds]);
+  }, [load, workspaceIds, activeWorkspaceId]);
 
   // Jump into the review: activate the workspace and open the existing
   // DiffPanel surface on its active leaf (same dedup as the palette command —

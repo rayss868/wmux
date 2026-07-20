@@ -3,13 +3,13 @@ import { useStore } from '../../stores';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { useT } from '../../hooks/useT';
 import { focusedTerminalPtyId } from '../../utils/focusedSurface';
-import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { injectText, quotePathsForPrompt } from './inject';
 import RichInput from './RichInput';
 import SnippetsMenu from './SnippetsMenu';
 import FileExplorerPopover from './FileExplorerPopover';
+import BroadcastPopover from './BroadcastPopover';
 import FanOutDialog from './FanOutDialog';
-import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconSparkles, IconUsers } from '../icons';
+import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconPlus, IconUsers, IconSparkles } from '../icons';
 
 export default function AgentToolbar() {
   const t = useT();
@@ -20,29 +20,12 @@ export default function AgentToolbar() {
   const newCommand = useStore((s) => s.newConversationCommand);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const broadcastBtnRef = useRef<HTMLButtonElement>(null);
+  const [showBroadcast, setShowBroadcast] = useState(false);
   const [showFanOut, setShowFanOut] = useState(false);
 
   const ptyId = focusedTerminalPtyId(activeWorkspace);
   const disabled = !ptyId;
-
-  // §6 broadcast-only(별개 동작 — WorkTask·worktree·채널 0). 현재 워크스페이스의
-  // 모든 터미널 페인(terminal surface)에 같은 텍스트를 inject한다 — 에이전트 페인
-  // 선별은 하지 않으므로(F5 라벨 정직화) 라벨도 "모든 터미널 페인"으로 표기한다.
-  // C10의 격리 해제 옵션을 fan-out에 두지 않고 별도 진입으로 봉쇄한다. 최소 구현(§6 재량).
-  const handleBroadcast = useCallback(async () => {
-    if (!activeWorkspace) return;
-    const text = window.prompt(t('toolbar.broadcastPrompt'));
-    if (!text || text.trim().length === 0) return;
-    const ptyIds: string[] = [];
-    for (const leaf of findLeafPanes(activeWorkspace.rootPane)) {
-      for (const s of leaf.surfaces) {
-        if (s.ptyId && (s.surfaceType ?? 'terminal') === 'terminal') ptyIds.push(s.ptyId);
-      }
-    }
-    for (const id of ptyIds) {
-      await injectText(id, text, true);
-    }
-  }, [activeWorkspace, t]);
 
   const handleAttach = useCallback(async () => {
     if (!ptyId) return;
@@ -121,43 +104,51 @@ export default function AgentToolbar() {
       data-testid="agent-toolbar"
     >
       <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleAttach} title={t('toolbar.attach')}>
-        <IconPaperclip size={13} /> <span className="wmux-toolbar-label">{t('toolbar.attach')}</span>
+        <IconPaperclip size={13} /> <span className="wmux-toolbar-label wmux-toolbar-label-secondary whitespace-nowrap">{t('toolbar.attach')}</span>
       </button>
       <button className={`${btn} ${popover === 'explorer' ? active : idle}`} onClick={() => togglePopover('explorer')} title={t('toolbar.fileExplorer')}>
-        <IconFolder size={13} /> <span className="wmux-toolbar-label">{t('toolbar.fileExplorer')}</span>
+        <IconFolder size={13} /> <span className="wmux-toolbar-label wmux-toolbar-label-secondary whitespace-nowrap">{t('toolbar.fileExplorer')}</span>
       </button>
       <button className={`${btn} ${popover === 'snippets' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('snippets')} title={t('toolbar.snippets')}>
-        <IconStar size={13} /> <span className="wmux-toolbar-label">{t('toolbar.snippets')}</span>
+        <IconStar size={13} /> <span className="wmux-toolbar-label wmux-toolbar-label-secondary whitespace-nowrap">{t('toolbar.snippets')}</span>
       </button>
       <button className={`${btn} ${popover === 'rich' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('rich')} title={t('toolbar.richInput')}>
-        <IconKeyboard size={13} /> <span className="wmux-toolbar-label">{t('toolbar.richInput')}</span>
+        <IconKeyboard size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.richInput')}</span>
         <kbd className="wmux-toolbar-label ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[9px] leading-tight opacity-60 font-sans">{window.electronAPI?.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
       </button>
       <button
-        className={`${btn} ${showFanOut ? active : idle}`}
-        onClick={() => setShowFanOut((v) => !v)}
-        title={t('fanout.title')}
-        data-testid="fanout-button"
-      >
-        <IconSparkles size={13} /> <span className="wmux-toolbar-label">{t('toolbar.fanOut')}</span>
-      </button>
-      <button
-        className={`${btn} ${idle}`}
-        onClick={handleBroadcast}
+        ref={broadcastBtnRef}
+        className={`${btn} ${showBroadcast ? active : idle}`}
+        // Opening a local popover clears the global one (explorer/snippets/rich)
+        // so the two can't render on top of each other.
+        onClick={() => { setPopover(null); setShowBroadcast((v) => !v); }}
         title={t('toolbar.broadcastTooltip')}
         data-testid="broadcast-button"
       >
-        <IconUsers size={13} /> <span className="wmux-toolbar-label">{t('toolbar.broadcast')}</span>
+        <IconUsers size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.broadcast')}</span>
       </button>
       <div className="flex-1" />
       {disabled && <span className="text-[10px] text-[var(--text-muted)]">{t('toolbar.noTerminal')}</span>}
-      <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleNew} title={t('toolbar.new')}>
-        <IconSparkles size={13} /> <span className="wmux-toolbar-label">{t('toolbar.new')}</span>
+      {/* Multi Task(fan-out) — 함대 스폰 명령이라 에이전트 툴바로 복귀(DESIGN.md
+          Decisions Log 2026-07-20). 우측 그룹에서 New chat 왼쪽에 산다. 클릭 시
+          FanOutDialog를 툴바 위(bottom-full)로 연다. */}
+      <button
+        className={`${btn} ${showFanOut ? active : idle}`}
+        // Opening a local popover clears the global one (explorer/snippets/rich).
+        onClick={() => { setPopover(null); setShowFanOut((v) => !v); }}
+        title={t('fanout.title')}
+        data-testid="fanout-button"
+      >
+        <IconSparkles size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.fanOut')}</span>
+      </button>
+      <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleNew} title={t('toolbar.newChat')}>
+        <IconPlus size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.newChat')}</span>
       </button>
 
       {popover === 'explorer' && <FileExplorerPopover />}
       {popover === 'snippets' && ptyId && <SnippetsMenu ptyId={ptyId} />}
       {popover === 'rich' && ptyId && <RichInput ptyId={ptyId} />}
+      {showBroadcast && <BroadcastPopover onClose={() => setShowBroadcast(false)} triggerRef={broadcastBtnRef} />}
       {showFanOut && <FanOutDialog onClose={() => setShowFanOut(false)} />}
     </div>
   );

@@ -116,7 +116,7 @@ export function DeckLoopPanel({
           if (loop) setOpen((v) => !v);
           else setModalOpen(true);
         }}
-        className={`px-2.5 py-1 rounded-md text-[12px] transition-opacity hover:opacity-80 ${
+        className={`px-1.5 py-0.5 rounded-md text-[11px] transition-opacity hover:opacity-80 ${
           open ? 'text-[var(--accent-blue)]' : 'text-[var(--text-sub)]'
         } bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING}`}
         {...(open ? tokenAttrs('accent', 'text') : tokenAttrs('textSub', 'text'))}

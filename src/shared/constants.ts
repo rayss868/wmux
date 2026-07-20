@@ -230,6 +230,7 @@ export const IPC = {
   CLIPBOARD_READ: 'clipboard:read',
   CLIPBOARD_READ_IMAGE: 'clipboard:read-image',
   CLIPBOARD_HAS_IMAGE: 'clipboard:has-image',
+  SYSTEM_BUILTIN_DISPLAY: 'system:builtin-display',
   // Phase 4: Auto updater
   UPDATE_CHECK: 'update:check',
   UPDATE_AVAILABLE: 'update:available',
@@ -286,6 +287,11 @@ export const IPC = {
   WORKTREE_LIST: 'worktree:list',
   WORKTREE_ADD: 'worktree:add',
   WORKTREE_REMOVE: 'worktree:remove',
+  // Git 탭 머지 세션 — 격리 integration 워크트리 기반(start/status/land/discard)
+  WORKTREE_MERGE_START: 'worktree:mergeStart',
+  WORKTREE_MERGE_STATUS: 'worktree:mergeStatus',
+  WORKTREE_MERGE_LAND: 'worktree:mergeLand',
+  WORKTREE_MERGE_DISCARD: 'worktree:mergeDiscard',
   // Git 탭 PR 섹션 — gh CLI 기반 PR 목록·코멘트(성긴 pull, 30s TTL)
   GITHUB_PR_LIST: 'github:prList',
   GITHUB_PR_DETAIL: 'github:prDetail',

@@ -432,6 +432,21 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const BLOCKED_URL_SCHEMES = ['javascript:', 'data:', 'vbscript:', 'file:'];
       const sanitizePanes = (pane: Pane) => {
         if (pane.type === 'leaf') {
+          // 2026-07-20 워크스페이스 헤더 승격으로 페인 surface 폐지, 구 세션 정리:
+          // git·review는 이제 페인 탭이 아니라 워크스페이스 헤더 탭+중앙 표면으로
+          // 산다(surfaceType 유니온은 하위호환 위해 유지). 이미 저장된 세션에 남은
+          // git/review surface를 여기서 걸러낸다 — 안 그러면 폐지된 렌더 분기가 없어
+          // 빈 탭으로 남는다. activeSurfaceId가 걸러진 surface를 가리키면 재조정한다.
+          const before = pane.surfaces;
+          const filtered = before.filter(
+            (s) => s.surfaceType !== 'git' && s.surfaceType !== 'review',
+          );
+          if (filtered.length !== before.length) {
+            pane.surfaces = filtered;
+            if (!filtered.some((s) => s.id === pane.activeSurfaceId)) {
+              pane.activeSurfaceId = filtered[0]?.id ?? '';
+            }
+          }
           for (const s of pane.surfaces) {
             // Strip dangerous browserUrl schemes that could execute code on load
             if (s.browserUrl) {
@@ -547,10 +562,6 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // human channel UI.
       if (typeof data.channelsTabVisible === 'boolean') {
         state.channelsTabVisible = data.channelsTabVisible;
-      }
-      // Git 탭은 기본 ON — 명시적 false만 숨긴다(정보성 표면, fail-closed 불요).
-      if (typeof data.gitTabVisible === 'boolean') {
-        state.gitTabVisible = data.gitTabVisible;
       }
       // Pane action cluster — default ON; only an explicit false hides it.
       if (typeof data.paneActionsVisible === 'boolean') {
@@ -711,7 +722,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const walk = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
-            if (s.ptyId === ptyId && s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff') {
+            // 유틸 surface(git·review)는 pty 없음 — 명시적으로 제외해 방어.
+            if (s.ptyId === ptyId && s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff' && s.surfaceType !== 'git' && s.surfaceType !== 'review') {
               s.ptyId = '';
             }
           }
@@ -727,7 +739,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const walkAndClearPtyIds = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
-            if (s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff') {
+            // 유틸 surface(git·review)는 pty 없음 — 명시적으로 제외해 방어.
+            if (s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff' && s.surfaceType !== 'git' && s.surfaceType !== 'review') {
               s.ptyId = '';
             }
           }

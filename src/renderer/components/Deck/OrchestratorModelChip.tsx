@@ -18,14 +18,15 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 
 // Display names track the shipped model ids (Opus 4.8 / Sonnet 5 / Haiku 4.5).
-const MODEL_OPTIONS: { value: string; label: string }[] = [
+// Exported so the Agent 탭 인라인 드롭다운(DeckTabs)이 같은 목록·라벨을 재사용한다.
+export const MODEL_OPTIONS: { value: string; label: string }[] = [
   { value: '', label: 'Default' },
   { value: 'opus', label: 'Opus 4.8' },
   { value: 'sonnet', label: 'Sonnet 5' },
   { value: 'haiku', label: 'Haiku 4.5' },
 ];
 
-export function OrchestratorModelChip(): React.ReactElement {
+export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } = {}): React.ReactElement {
   const model = useStore((s) => s.deckBrainModel);
   const setModel = useStore((s) => s.setDeckBrainModel);
   const [open, setOpen] = useState(false);
@@ -68,7 +69,8 @@ export function OrchestratorModelChip(): React.ReactElement {
         <div
           role="listbox"
           aria-label="Orchestrator model"
-          className="absolute right-0 top-full mt-1 z-50 min-w-[128px] rounded-md border py-1 shadow-lg bg-[var(--bg-surface)]"
+          // 컨트롤 바(하단)에 살 땐 위로 열어 composer를 덮지 않게 한다.
+          className={`absolute right-0 ${openUp ? 'bottom-full mb-1' : 'top-full mt-1'} z-50 min-w-[128px] rounded-md border py-1 shadow-lg bg-[var(--bg-surface)]`}
           style={{ borderColor: 'var(--border-soft)' }}
           {...tokenAttrs('bgSurface', 'bg')}
         >

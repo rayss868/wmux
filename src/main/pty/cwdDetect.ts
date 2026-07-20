@@ -8,6 +8,8 @@
  * tooltip and the workspace "Working directories" menu.
  */
 
+import { isPlausibleCwd } from '../../shared/cwdShape';
+
 const PROMPT_CWD_RE = /(?:PS\s+([A-Za-z]:\\[^>]*?)>)|(?:\w+@[\w.-]+:([^$]+?)\$)/g;
 
 /**
@@ -64,7 +66,10 @@ export function parseOsc7Cwd(data: string): string {
  * the new prompt was discarded, freezing the reported cwd at the shell's
  * startup directory. The last prompt in the buffer is always the live one.
  */
-export function detectPromptCwd(clean: string): string | null {
+export function detectPromptCwd(
+  clean: string,
+  platform: NodeJS.Platform | string = process.platform,
+): string | null {
   PROMPT_CWD_RE.lastIndex = 0;
   let last: RegExpExecArray | null = null;
   let m: RegExpExecArray | null;
@@ -76,5 +81,10 @@ export function detectPromptCwd(clean: string): string | null {
   }
   if (!last) return null;
   const cwd = (last[1] || last[2] || '').trim();
-  return cwd || null;
+  if (!cwd) return null;
+  // 오탐 방어(2026-07-20): 화면에 출력된 "PS C:\…>" 같은 텍스트를 프롬프트로
+  // 오인해 POSIX 페인의 cwd를 Windows 경로로 덮어쓰던 사고 — 플랫폼에서
+  // 존재할 수 없는 모양이면 버린다.
+  if (!isPlausibleCwd(cwd, platform)) return null;
+  return cwd;
 }

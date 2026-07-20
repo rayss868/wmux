@@ -779,14 +779,16 @@ app.on('ready', async () => {
 
   // P3 — macOS CLI shim: DMG/ZIP 설치엔 Squirrel 훅이 없으므로 첫 실행 시 1회만
   // `/usr/local/bin/wmux`(폴백 `~/.local/bin/wmux`) 심링크 설치를 시도한다.
-  // 마커 파일로 1회 게이트(이미 올바른 심링크면 installCliShimDarwin이 skip).
-  // 부팅 경로를 막지 않게 지연 실행, 전체 best-effort.
+  // 마커 파일로 1회 게이트하되, 마커가 있어도 "우리 소유 심링크가 현재 번들을
+  // 안 가리키면"(DMG/ZIP 임시 경로에서 첫 설치 후 볼륨 제거·앱 이동으로 죽은
+  // 링크가 됨, issue #505) 복구를 위해 재실행한다. 부팅 경로를 막지 않게 지연
+  // 실행, 전체 best-effort.
   if (process.platform === 'darwin' && app.isPackaged) {
     const shimTimer = setTimeout(() => {
       try {
         const fs = require('fs') as typeof import('fs');
         const markerPath = `${getWmuxHomeDir()}/cli-shim-darwin-attempted`;
-        if (fs.existsSync(markerPath)) return;
+        if (fs.existsSync(markerPath) && !cliShim.darwinShimNeedsRepair(process.execPath)) return;
         const result = cliShim.installCliShimDarwin(process.execPath);
         logLine('info', 'main', `darwin CLI shim: ${result.status}${result.linkPath ? ` (${result.linkPath})` : ''}`);
         if (result.guidance) {

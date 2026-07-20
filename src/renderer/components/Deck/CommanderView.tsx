@@ -314,18 +314,14 @@ export function CommanderViewContent({
       {(activeWorkspaceId || quickActions.length > 0) && (
         <div
           data-deck-control-bar
-          className="flex flex-wrap items-center gap-1.5 px-4 py-1.5 border-t border-[var(--bg-surface)] shrink-0"
+          className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-t border-[var(--bg-surface)] shrink-0"
           style={{ borderColor: 'var(--border-soft)' }}
           {...tokenAttrs('bgSurface', 'border')}
         >
-          {/* Mode = the single autonomy knob, always showing the current mode. */}
+          {/* Mode = the single autonomy knob, always showing the current mode.
+              모델 선택은 Agent 탭 인라인 드롭다운으로 이동(DESIGN.md Decisions
+              Log 2026-07-20)했고, fan-out은 에이전트 툴바로 복귀했다. */}
           <AgentModeChipContainer t={t} workspaceId={activeWorkspaceId} />
-          {/* Hairline seam: master switch │ the automations it governs. */}
-          <span
-            aria-hidden="true"
-            data-deck-control-sep
-            className="h-4 w-px mx-0.5 bg-[var(--border-soft)]"
-          />
           {/* The one-click loop chip + panel (loop engineering v1) — binds to
               THIS workspace. */}
           <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />

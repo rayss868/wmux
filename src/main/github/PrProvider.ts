@@ -31,6 +31,18 @@ export interface PrProvider {
   prDetail(repoPath: string, number: number, updatedAt: string): Promise<PrDetailResult>;
 }
 
+/** CLI(gh/glab) 실행용 PATH — macOS GUI 실행은 launchd PATH를 상속해
+ *  Homebrew 경로(/opt/homebrew/bin, /usr/local/bin)가 빠진다. execFile이
+ *  바이너리를 못 찾아 cli-missing으로 강등되는 것을 막기 위해 보강한다. */
+export function cliPath(): string {
+  const base = process.env.PATH ?? '';
+  if (process.platform !== 'darwin') return base;
+  const extras = ['/opt/homebrew/bin', '/usr/local/bin'].filter(
+    (p) => !base.split(':').includes(p),
+  );
+  return extras.length ? `${base}:${extras.join(':')}` : base;
+}
+
 /** origin remote URL → hostname. 원격 없음/파싱 불가는 null. 순수(테스트용). */
 export function parseRemoteHost(url: string): string | null {
   const trimmed = url.trim();

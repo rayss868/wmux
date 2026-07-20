@@ -1,3 +1,12 @@
+## Language (owner decision, 2026-07-20)
+
+This is a public open-source repo: **all repo artifacts are English, always** —
+commit messages, CHANGELOG entries, PR titles/bodies, code comments, and docs.
+This OVERRIDES the global `~/.claude/CLAUDE.md` Korean-commit/comment convention
+for this repository. New code comments are written in English; do not mass-rewrite
+existing Korean comments (respect the "don't improve adjacent code" rule), just
+stop adding new Korean ones. Chat/reports with the owner may stay Korean.
+
 ## Skill routing
 
 When the user's request matches an available skill, ALWAYS invoke it using the Skill

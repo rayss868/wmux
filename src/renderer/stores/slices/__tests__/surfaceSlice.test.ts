@@ -37,8 +37,10 @@ describe('surfaceSlice.addSurface — workspace targeting (#236)', () => {
 
     const ws2Pane = state.workspaces.find((w) => w.id === ws2.id)!.rootPane;
     if (ws2Pane.type !== 'leaf') throw new Error('expected leaf');
+    // 터미널만 push(2026-07-20 원형 복귀 — Git·Review는 워크스페이스 헤더 탭으로 이관).
     expect(ws2Pane.surfaces).toHaveLength(1);
     expect(ws2Pane.surfaces[0].ptyId).toBe('pty-bg');
+    expect(ws2Pane.activeSurfaceId).toBe(ws2Pane.surfaces[0].id);
 
     // ws1 (the active ws) must NOT receive the surface.
     const ws1Pane = ws1.rootPane;
@@ -52,6 +54,7 @@ describe('surfaceSlice.addSurface — workspace targeting (#236)', () => {
     slice.addSurface(state.workspaces[0].rootPane.id, 'pty-1', 'pwsh', 'C:\\a');
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf');
+    // 터미널만 push(원형).
     expect(pane.surfaces).toHaveLength(1);
     expect(pane.surfaces[0].ptyId).toBe('pty-1');
   });
@@ -147,11 +150,13 @@ describe('surfaceSlice.updateSurfaceCwd', () => {
     const paneId = state.workspaces[0].rootPane.id;
     slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\start');
 
-    slice.updateSurfaceCwd('pty-1', 'D:\\proj\\api');
+    // POSIX 경로 사용 — updateSurfaceCwd는 실행 플랫폼에서 불가능한 모양(테스트
+    // 러너는 POSIX이므로 Windows 경로)을 거부한다(cwdShape 가드).
+    slice.updateSurfaceCwd('pty-1', '/proj/api');
 
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf pane');
-    expect(pane.surfaces[0].cwd).toBe('D:\\proj\\api');
+    expect(pane.surfaces[0].cwd).toBe('/proj/api');
   });
 
   it('only touches the surface that owns the ptyId', () => {
@@ -160,12 +165,12 @@ describe('surfaceSlice.updateSurfaceCwd', () => {
     slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
     slice.addSurface(paneId, 'pty-2', 'pwsh', 'C:\\b');
 
-    slice.updateSurfaceCwd('pty-2', 'D:\\moved');
+    slice.updateSurfaceCwd('pty-2', '/moved');
 
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf pane');
     expect(pane.surfaces.find((s) => s.ptyId === 'pty-1')?.cwd).toBe('C:\\a');
-    expect(pane.surfaces.find((s) => s.ptyId === 'pty-2')?.cwd).toBe('D:\\moved');
+    expect(pane.surfaces.find((s) => s.ptyId === 'pty-2')?.cwd).toBe('/moved');
   });
 
   it('is a no-op for an empty or unknown ptyId', () => {
@@ -324,6 +329,7 @@ describe('surfaceSlice.closeSurface', () => {
 
     slice.closeSurface(paneId, firstId);
 
+    // pty-2 터미널만 남는다(자동 세트 없음 — 원형 복귀).
     expect(pane.surfaces).toHaveLength(1);
     expect(pane.surfaces.find((s) => s.id === firstId)).toBeUndefined();
   });

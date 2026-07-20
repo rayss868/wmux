@@ -72,25 +72,26 @@ function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
 }
 
 /**
- * Git sync badge next to the branch name: `↑N ↓N ●N` (ahead / behind /
- * uncommitted paths). Decay rule (DESIGN.md amber budget): a clean, synced
- * checkout renders NOTHING — only non-zero counts appear, all in the muted
- * context-line color. Arrows always carry their number (bare arrows are
- * ambiguous — GitHub Desktop #9282).
+ * Git 신호등(owner 2026-07-20) — 워크스페이스 이름 아래 전용 행에서 색으로
+ * 상태를 즉독: clean=green ●, dirty=amber ●N, ahead=blue ↑N, behind=red ↓N.
+ * 브랜치가 잡힌 워크스페이스는 항상 최소 1개의 불이 켜진다(clean이면 green).
+ * 숫자는 항상 동반(맨 화살표는 모호 — GitHub Desktop #9282).
  */
 function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElement | null {
   const t = useT();
   const ahead = sync.hasUpstream ? sync.ahead : 0;
   const behind = sync.hasUpstream ? sync.behind : 0;
-  if (ahead === 0 && behind === 0 && sync.dirty === 0) return null;
+  const clean = ahead === 0 && behind === 0 && sync.dirty === 0;
   return (
     <span
-      className="flex items-center gap-1 flex-shrink-0"
+      className="flex items-center gap-1.5 flex-shrink-0"
       title={t('workspace.gitSyncTooltip', { ahead, behind, dirty: sync.dirty })}
+      data-git-signal
     >
-      {ahead > 0 && <span>↑{ahead}</span>}
-      {behind > 0 && <span>↓{behind}</span>}
-      {sync.dirty > 0 && <span>●{sync.dirty}</span>}
+      {clean && <span style={{ color: 'var(--accent-green)' }}>●</span>}
+      {sync.dirty > 0 && <span style={{ color: 'var(--accent)' }}>●{sync.dirty}</span>}
+      {ahead > 0 && <span style={{ color: 'var(--accent-blue)' }}>↑{ahead}</span>}
+      {behind > 0 && <span style={{ color: 'var(--accent-red)' }}>↓{behind}</span>}
     </span>
   );
 }
@@ -108,24 +109,28 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
 }): React.ReactElement | null {
   const t = useT();
   const ports = metadata.listeningPorts ?? [];
-  const hasContext = Boolean(metadata.gitBranch) || Boolean(metadata.pr) || ports.length > 0;
+  const hasContext = ports.length > 0;
   const note = metadata.lastNotificationText;
-  if (!hasContext && !note) return null;
+  if (!metadata.gitBranch && !hasContext && !note) return null;
   return (
     <>
+      {/* Git 신호등 행 — 이름 바로 아래 전용 줄(owner 2026-07-20: 행이 위아래로
+          두꺼워져도 OK). 브랜치·신호등·PR을 한 줄에, 포트·알림은 다음 줄로. */}
+      {metadata.gitBranch && (
+        <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-[var(--text-muted)] min-w-0" data-git-signal-line>
+          <span
+            className="truncate max-w-[130px]"
+            title={`${t('workspace.gitBranch')}: ${metadata.gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
+          >
+            ⎇ {metadata.gitBranch}
+            {metadata.gitIsWorktree ? <span className="text-[var(--accent-blue)]">⊕</span> : null}
+          </span>
+          {metadata.gitSync && <GitSyncBadge sync={metadata.gitSync} />}
+          {metadata.pr && <PrBadge pr={metadata.pr} />}
+        </div>
+      )}
       {hasContext && (
         <div className="flex items-center gap-1.5 mt-0.5 text-[9px] font-mono text-[var(--text-muted)] min-w-0">
-          {metadata.gitBranch && (
-            <span
-              className="truncate max-w-[120px]"
-              title={`${t('workspace.gitBranch')}: ${metadata.gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
-            >
-              ⎇ {metadata.gitBranch}
-              {metadata.gitIsWorktree ? <span className="text-[var(--accent-blue)]">⊕</span> : null}
-            </span>
-          )}
-          {metadata.gitBranch && metadata.gitSync && <GitSyncBadge sync={metadata.gitSync} />}
-          {metadata.pr && <PrBadge pr={metadata.pr} />}
           {ports.length > 0 && (
             <span className="flex items-center gap-1 flex-shrink-0">
               {ports.slice(0, 3).map((p) => (

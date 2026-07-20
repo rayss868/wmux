@@ -13,7 +13,7 @@
 //
 // Design contract (DESIGN.md): monochrome glyphs only, paths in mono, and at
 // most ONE amber point — the dot marking the worktree the active pane is in.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import type { StoreState } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -21,7 +21,16 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import type { Pane, PaneLeaf } from '../../../shared/types';
 import type { WorktreeEntry } from '../../../shared/worktreeParse';
+import type { MergeSessionStatus } from '../../../main/git/mergeSession';
 import { PrSection } from './PrSection';
+import { isPlausibleCwd } from '../../../shared/cwdShape';
+
+// worktree list 행 — main이 붙여 내려주는 재시작-복구용 MERGING 파생 필드(선택).
+type WorktreeRowUI = WorktreeEntry & { merging?: boolean; integration?: boolean; conflicts?: number };
+
+type MergeStart = { ok: true; status: MergeSessionStatus } | { ok: false; error: string };
+type MergeStatus = { ok: true; status: MergeSessionStatus | null } | { ok: false; error: string };
+type MergeAction = { ok: true } | { ok: false; error: string };
 
 // 활성 워크스페이스의 활성 pane → 활성 surface cwd (팔레트 Show Git Diff와 동일 규칙).
 // 셀렉터로도 재사용(store 상태에서 원시 문자열로 수렴 — 리렌더 최소화).
@@ -38,7 +47,9 @@ function selectActivePaneCwd(state: StoreState): string {
   };
   const leaf = findLeaf(ws.rootPane);
   const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-  return surface?.cwd || ws.profile?.startupCwd || state.startupDirectory || '';
+  // 오염된 cwd(스크래핑 오탐으로 저장된 불가능한 모양)는 건너뛰고 폴백 사용.
+  const cwd = surface?.cwd && isPlausibleCwd(surface.cwd) ? surface.cwd : '';
+  return cwd || ws.profile?.startupCwd || state.startupDirectory || '';
 }
 
 function pathLeaf(p: string): string {
@@ -47,7 +58,7 @@ function pathLeaf(p: string): string {
 
 interface WorktreeBridge {
   list: (repoPath: string) => Promise<
-    | { ok: true; repoPath: string; mainPath: string; worktrees: WorktreeEntry[] }
+    | { ok: true; repoPath: string; mainPath: string; worktrees: WorktreeRowUI[] }
     | { ok: false; error: string }
   >;
   add: (repoPath: string, branch: string) => Promise<
@@ -56,6 +67,11 @@ interface WorktreeBridge {
   remove: (repoPath: string, worktreePath: string) => Promise<
     { ok: true; worktreePath: string } | { ok: false; error: string }
   >;
+  // 머지 세션(격리 integration 워크트리). 구 preload에는 없을 수 있어 optional.
+  mergeStart?: (repoPath: string, sourcePath: string) => Promise<MergeStart>;
+  mergeStatus?: (repoPath: string) => Promise<MergeStatus>;
+  mergeLand?: (repoPath: string) => Promise<MergeAction>;
+  mergeDiscard?: (repoPath: string) => Promise<MergeAction>;
 }
 
 function getBridges(): { worktree: WorktreeBridge | null; resolveRepo: ((cwd: string) => Promise<{ ok: true; repoPath: string } | { ok: false }>) | null } {
@@ -67,35 +83,48 @@ function getBridges(): { worktree: WorktreeBridge | null; resolveRepo: ((cwd: st
   return { worktree: api?.worktree ?? null, resolveRepo: api?.diff?.resolveRepo ?? null };
 }
 
-export function GitTab(): React.ReactElement {
+export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
   const t = useT();
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // 활성 pane cwd를 reactive 구독 — 같은 워크스페이스에서 다른 repo pane으로
-  // 포커스가 옮겨가도 재조회되도록 load의 dep으로 쓴다(Codex P2).
-  const activeCwd = useStore(selectActivePaneCwd);
+  // 포커스가 옮겨가도 재조회되도록 load의 dep으로 쓴다(Codex P2). 단 중앙 surface로
+  // 렌더될 땐 prop cwd(생성 시 캡처된 surface.cwd)가 repo base로 우선한다 — 자기
+  // 빈 cwd를 활성 pane에서 읽어 repo가 틀어지는 문제를 막는다. prop 미제공(덱 하위
+  // 호환) 시에만 selectActivePaneCwd 폴백.
+  const activePaneCwd = useStore(selectActivePaneCwd);
+  const activeCwd = cwd ?? activePaneCwd;
   const pushToast = useStore((s) => s.pushToast);
   const [repoPath, setRepoPath] = useState<string | null>(null);
   // 본(main) 워크트리 경로 — "main" 배지·Remove 숨김 기준. 현재 워크트리
   // (dot 기준)와 별개다: linked worktree에서 열면 둘이 다르다(dogfood 실측).
   const [mainPath, setMainPath] = useState<string>('');
   const [currentWorktree, setCurrentWorktree] = useState<string>('');
-  const [worktrees, setWorktrees] = useState<WorktreeEntry[]>([]);
+  const [worktrees, setWorktrees] = useState<WorktreeRowUI[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newBranch, setNewBranch] = useState('');
   const [busy, setBusy] = useState(false);
+  // 활성 머지 세션(격리 integration 워크트리). null = 세션 없음. 정본은 main이라
+  // load마다 mergeStatus로 재수화(재시작 후 복구 포함), transient 단계는 폴링.
+  const [session, setSession] = useState<MergeSessionStatus | null>(null);
+  // Monotonic load token — 빠른 repo(pane cwd) 전환 시 늦게 도착한 이전 응답이
+  // 새 결과를 덮지 않게 한다(ReviewTab:97 패턴 복제). 최신 load()만 commit.
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
     const { worktree, resolveRepo } = getBridges();
     if (!worktree || !resolveRepo) {
+      if (seq !== loadSeq.current) return;
       setError('bridge unavailable');
       setLoading(false);
       return;
     }
     const cwd = activeCwd;
     const resolved = cwd ? await resolveRepo(cwd) : ({ ok: false } as const);
+    if (seq !== loadSeq.current) return; // superseded by a newer load
     if (!resolved.ok) {
       setRepoPath(null);
       setWorktrees([]);
@@ -104,6 +133,7 @@ export function GitTab(): React.ReactElement {
     }
     setCurrentWorktree(resolved.repoPath);
     const res = await worktree.list(resolved.repoPath);
+    if (seq !== loadSeq.current) return; // superseded by a newer load
     if (!res.ok) {
       setError(res.error);
       setRepoPath(null);
@@ -114,6 +144,13 @@ export function GitTab(): React.ReactElement {
       setWorktrees(res.worktrees);
     }
     setLoading(false);
+    // 머지 세션 재수화 — main이 정본(디스크 MERGE_HEAD 파생)이라 앱 재시작 후에도
+    // 진행 중 세션을 복구해 Land/Discard를 제시한다. 구 preload면 mergeStatus 부재.
+    if (res.ok && worktree.mergeStatus) {
+      const ms = await worktree.mergeStatus(res.repoPath);
+      if (seq !== loadSeq.current) return; // superseded by a newer load
+      if (ms.ok) setSession(ms.status);
+    }
   }, [activeCwd]);
 
   // 탭 마운트 시 + 활성 워크스페이스/pane cwd 변경 시 재조회(pull-only).
@@ -197,9 +234,106 @@ export function GitTab(): React.ReactElement {
     st.addWorkspaceDiffSurface(leaf.id, targetPath, `diff: ${pathLeaf(targetPath)}`);
   }, []);
 
+  // 머지 시작 — 이 워크트리(source)를 base로 격리 머지. 세션 1개만 허용.
+  const handleMerge = useCallback(
+    async (wt: WorktreeRowUI) => {
+      if (!repoPath || busy || session) return;
+      const { worktree } = getBridges();
+      if (!worktree?.mergeStart) return;
+      setBusy(true);
+      try {
+        const res = await worktree.mergeStart(repoPath, wt.path);
+        if (!res.ok) {
+          pushToast({ level: 'warn', message: `${t('git.mergeFailed') || 'Merge failed'}: ${res.error}` });
+          return;
+        }
+        setSession(res.status);
+      } catch (e) {
+        pushToast({ level: 'warn', message: `${t('git.mergeFailed') || 'Merge failed'}: ${e instanceof Error ? e.message : String(e)}` });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [repoPath, busy, session, pushToast, t],
+  );
+
+  // Land — verify 통과 시에만 base를 결과로 fast-forward. 성공 시 세션 소멸 + 재조회.
+  const handleLand = useCallback(async () => {
+    if (!repoPath || busy) return;
+    const { worktree } = getBridges();
+    if (!worktree?.mergeLand) return;
+    setBusy(true);
+    try {
+      const res = await worktree.mergeLand(repoPath);
+      if (!res.ok) {
+        pushToast({ level: 'warn', message: `${t('git.landFailed') || 'Land failed'}: ${res.error}` });
+        return;
+      }
+      setSession(null);
+      pushToast({ level: 'info', message: t('git.landed') || 'Merged into base.' });
+      void load();
+    } catch (e) {
+      pushToast({ level: 'warn', message: `${t('git.landFailed') || 'Land failed'}: ${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      setBusy(false);
+    }
+  }, [repoPath, busy, pushToast, t, load]);
+
+  // Discard — merge --abort + integration 워크트리 제거. base는 무변경.
+  const handleDiscard = useCallback(async () => {
+    if (!repoPath || busy) return;
+    const { worktree } = getBridges();
+    if (!worktree?.mergeDiscard) return;
+    setBusy(true);
+    try {
+      const res = await worktree.mergeDiscard(repoPath);
+      if (!res.ok) {
+        pushToast({ level: 'warn', message: `${t('git.discardFailed') || 'Discard failed'}: ${res.error}` });
+        return;
+      }
+      setSession(null);
+      void load();
+    } catch (e) {
+      pushToast({ level: 'warn', message: `${t('git.discardFailed') || 'Discard failed'}: ${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      setBusy(false);
+    }
+  }, [repoPath, busy, pushToast, t, load]);
+
+  // 충돌 시 수동 진입 — integration 워크트리를 새 워크스페이스로 열어(startupCwd)
+  // 사용자가 Claude로 충돌을 해결하게 한다(B-MVP: 자동해결 아님, handleOpen 패턴 재사용).
+  const openIntegration = useCallback(() => {
+    if (!session) return;
+    const st = useStore.getState();
+    st.addWorkspace(`merge: ${session.sourceBranch ?? pathLeaf(session.integrationPath)}`);
+    const fresh = useStore.getState();
+    fresh.setWorkspaceProfile(fresh.activeWorkspaceId, { startupCwd: session.integrationPath });
+  }, [session]);
+
+  // transient 단계(merging/verifying) 동안만 상태 폴링 — 종결 단계로 가면 정지.
+  const sessionPhase = session?.phase;
+  useEffect(() => {
+    if (sessionPhase !== 'merging' && sessionPhase !== 'verifying') return;
+    const { worktree } = getBridges();
+    const mergeStatus = worktree?.mergeStatus;
+    if (!mergeStatus || !repoPath) return;
+    let cancelled = false;
+    const id = setInterval(async () => {
+      const res = await mergeStatus(repoPath);
+      if (cancelled) return;
+      if (res.ok) setSession(res.status);
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [sessionPhase, repoPath]);
+
   const norm = (p: string) => p.replace(/[/\\]+$/, '').replace(/\\/g, '/').toLowerCase();
   const isMain = (wt: WorktreeEntry) => mainPath !== '' && norm(wt.path) === norm(mainPath);
   const isCurrent = (wt: WorktreeEntry) => currentWorktree !== '' && norm(wt.path) === norm(currentWorktree);
+  // 표시 목록에서 우리 소유 integration 워크트리는 감춘다(구현 세부, 세션 패널로 대체).
+  const visibleWorktrees = worktrees.filter((w) => !w.integration);
 
   return (
     <div data-git-tab className="flex flex-col flex-1 min-h-0 text-[12px]">
@@ -272,7 +406,7 @@ export function GitTab(): React.ReactElement {
         )}
         {!loading && !error && repoPath && (
           <ul data-git-worktree-list>
-            {worktrees.map((wt) => (
+            {visibleWorktrees.map((wt) => (
               <li
                 key={wt.path}
                 className="group flex items-center gap-2 px-3 h-9 border-b border-[var(--bg-surface)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)]"
@@ -319,6 +453,19 @@ export function GitTab(): React.ReactElement {
                 >
                   {t('git.open') || 'Open'}
                 </button>
+                {/* 이 워크트리(source)를 base로 격리 머지 — feature 행에만, 세션 1개일 때만. */}
+                {!isMain(wt) && wt.branch && (
+                  <button
+                    type="button"
+                    onClick={() => void handleMerge(wt)}
+                    disabled={busy || session !== null}
+                    className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
+                    title={t('git.mergeDesc') || 'Merge this worktree into the base branch (isolated, verified)'}
+                    {...tokenAttrs('textMuted', 'text')}
+                  >
+                    {t('git.merge') || 'Merge'}
+                  </button>
+                )}
                 {isMain(wt) ? (
                   <span className="text-[10px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                     {t('git.main') || 'main'}
@@ -340,6 +487,100 @@ export function GitTab(): React.ReactElement {
           </ul>
         )}
       </div>
+
+      {/* 머지 세션 패널 — 활성 세션일 때만. plain-language 요약 + Land/Discard. */}
+      {session && (
+        <div
+          data-git-merge-session
+          className="shrink-0 flex flex-col gap-1.5 px-3 py-2 border-t text-[11px]"
+          style={{ borderColor: 'var(--border-soft)' }}
+          {...tokenAttrs('bgSurface', 'border')}
+        >
+          <div className="flex items-center gap-2">
+            {/* 단계 dot: alive=amber(merging/verifying) · ok=green · 문제=red. */}
+            <span
+              aria-hidden="true"
+              className="w-1.5 h-1.5 rounded-full shrink-0"
+              style={{
+                backgroundColor:
+                  session.phase === 'verified'
+                    ? 'var(--accent-green)'
+                    : session.phase === 'failed' || session.phase === 'conflicted'
+                      ? 'var(--accent-red)'
+                      : session.phase === 'merging' || session.phase === 'verifying'
+                        ? 'var(--accent)'
+                        : 'var(--text-muted)',
+              }}
+            />
+            <span className="text-[var(--text-main)] truncate" {...tokenAttrs('textMain', 'text')}>
+              {(session.sourceBranch ?? pathLeaf(session.integrationPath))} → {session.baseBranch}
+            </span>
+            <div className="flex-1" />
+            <span className="text-[var(--text-sub)] shrink-0" {...tokenAttrs('textSub', 'text')}>
+              {session.phase === 'merging'
+                ? t('git.mergePhaseMerging') || 'Merging…'
+                : session.phase === 'verifying'
+                  ? t('git.mergePhaseVerifying') || 'Verifying…'
+                  : session.phase === 'verified'
+                    ? t('git.mergePhaseVerified') || 'Verified'
+                    : session.phase === 'failed'
+                      ? t('git.mergePhaseFailed') || 'Verify failed'
+                      : session.phase === 'conflicted'
+                        ? t('git.mergePhaseConflict') || 'Conflict'
+                        : t('git.mergePhaseReady') || 'Ready'}
+            </span>
+          </div>
+          {/* plain-language 요약 — 변경 파일 수 + verify 결과(diff-blind 사용자용). */}
+          <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+            {session.phase === 'conflicted'
+              ? `${session.conflicts.length} conflicting file(s) — open with Claude to resolve`
+              : session.phase === 'verifying'
+                ? `${session.changedFiles} file(s) changed · verifying`
+                : session.phase === 'verified'
+                  ? session.changedFiles > 0
+                    ? `${session.changedFiles} file(s) changed · verify passed`
+                    : 'Nothing to merge (already up to date)'
+                  : session.phase === 'failed'
+                    ? `${session.changedFiles} file(s) changed · verify failed${session.verify?.failedStep ? ` (${session.verify.failedStep})` : ''}${session.verify?.timedOut ? ' · timed out' : ''}`
+                    : `${session.changedFiles} file(s) changed`}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {session.phase === 'conflicted' && (
+              <button
+                type="button"
+                onClick={openIntegration}
+                className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] ${FOCUS_RING}`}
+                title={t('git.mergeOpenConflictDesc') || 'Open the integration worktree as a workspace to resolve conflicts with Claude'}
+                {...tokenAttrs('textSub', 'text')}
+              >
+                {t('git.mergeOpenConflict') || 'Conflict — open with Claude'}
+              </button>
+            )}
+            {session.phase === 'verified' && (
+              <button
+                type="button"
+                onClick={() => void handleLand()}
+                disabled={busy}
+                className={`px-2 py-0.5 rounded text-[10.5px] text-[var(--text-main)] border border-[var(--bg-surface)] disabled:opacity-40 ${FOCUS_RING}`}
+                title={t('git.landDesc') || 'Commit the verified merge and fast-forward the base branch'}
+                {...tokenAttrs('textMain', 'text')}
+              >
+                {t('git.land') || 'Land'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleDiscard()}
+              disabled={busy}
+              className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--accent-red)] border border-[var(--bg-surface)] disabled:opacity-40 ${FOCUS_RING}`}
+              title={t('git.discardDesc') || 'Abort the merge and remove the integration worktree (base unchanged)'}
+              {...tokenAttrs('textMuted', 'text')}
+            >
+              {t('git.discard') || 'Discard'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 새 워크트리 — 브랜치명 입력 한 줄(관례 위치는 main이 도출). */}
       {repoPath && (

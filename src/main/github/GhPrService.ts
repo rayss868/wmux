@@ -13,6 +13,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   PR_COMMENT_BODY_CAP,
+  cliPath,
   type PrProvider,
   type PrGate,
   type PrListResult,
@@ -44,6 +45,7 @@ function cacheKey(repoPath: string): string {
 
 const GH_ENV: NodeJS.ProcessEnv = {
   ...process.env,
+  PATH: cliPath(),
   GH_PROMPT_DISABLED: '1',
   GH_PAGER: 'cat',
   NO_COLOR: '1',

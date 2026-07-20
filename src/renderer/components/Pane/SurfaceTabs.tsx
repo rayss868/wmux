@@ -375,7 +375,7 @@ export default function SurfaceTabs({
           >
             <IconBrowser size={14} />
           </button>
-          {/* Zoom/maximize — fifth action, visually separated from the surface
+          {/* Zoom/maximize — fourth action, visually separated from the surface
               actions by the same border-l divider the cluster uses against the
               tabs. Consolidates the old absolute-positioned corner maximize/
               restore controls (Pane.tsx) that overlapped this cluster. Pressed

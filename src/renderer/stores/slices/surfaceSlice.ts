@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createSurface, generateId } from '../../../shared/types';
+import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
@@ -293,6 +294,9 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
 
   updateSurfaceCwd: (ptyId, cwd) => set((state: StoreState) => {
     if (!ptyId) return;
+    // 프롬프트 스크래핑 오탐 방어 — 구버전 데몬이 화면 텍스트에서 긁은
+    // 불가능한 모양의 경로(맥에서 "C:\…")는 기존 cwd를 덮지 않는다.
+    if (!isPlausibleCwd(cwd)) return;
     for (const ws of state.workspaces) {
       const updateInPane = (pane: Pane): boolean => {
         if (pane.type === 'leaf') {

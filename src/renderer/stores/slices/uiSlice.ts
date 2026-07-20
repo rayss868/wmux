@@ -156,12 +156,6 @@ export interface UISlice {
   channelsTabVisible: boolean;
   setChannelsTabVisible: (visible: boolean) => void;
 
-  // Whether the deck shows the Git tab (worktrees; PRs/comments in a later
-  // PR). Default ON — an informational surface, not an agent capability, so
-  // fail-closed gating isn't warranted; hideable for minimal-chrome setups.
-  gitTabVisible: boolean;
-  setGitTabVisible: (visible: boolean) => void;
-
   // Whether each pane's tab strip shows the right-aligned action cluster
   // (new terminal / split right / split down / new browser). Default ON —
   // discoverable mouse affordances for the same actions the keyboard already
@@ -807,15 +801,6 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     }
   }),
 
-  gitTabVisible: true,
-
-  setGitTabVisible: (visible) => set((state) => {
-    state.gitTabVisible = visible;
-    // Same unreachable-surface guard as channels: snap back to the orchestrator.
-    if (!visible && state.activeDeckTab === 'git') {
-      state.activeDeckTab = 'commander';
-    }
-  }),
 
   paneActionsVisible: true,
 

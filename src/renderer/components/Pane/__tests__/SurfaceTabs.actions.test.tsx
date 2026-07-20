@@ -92,7 +92,7 @@ afterEach(() => {
 });
 
 describe('SurfaceTabs pane action cluster', () => {
-  it('renders the four action buttons in order (no new-terminal button)', () => {
+  it('renders the action buttons in order (no new-terminal button)', () => {
     mount(rootLeafId());
     const actions = Array.from(
       container.querySelectorAll('[data-pane-action]'),

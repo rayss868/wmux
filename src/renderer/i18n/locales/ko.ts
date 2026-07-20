@@ -12,6 +12,13 @@ export const ko = {
   'sidebar.expandTooltip': '사이드바 펼치기 (Ctrl+B)',
   'sidebar.unreadCount': '읽지 않음 {count}개',
   'sidebar.agent': '에이전트',
+  'sidebar.git': 'Git',
+  'sidebar.gitTooltip': 'Git 패널 열기/닫기',
+  'sidebar.screenOff': '화면 끄기',
+  'sidebar.screenOn': '화면 켜기',
+  'sidebar.screenOffTooltip': '내장 화면만 끕니다 (외장 모니터는 유지)',
+  'sidebar.screenOffAccessibility': 'wmux에 손쉬운 사용 권한을 허용해 주세요 (시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용).',
+  'sidebar.screenOffFailed': '내장 화면 전환에 실패했습니다.',
   'sidebar.agentTooltip': '에이전트 패널 토글',
 
   // Workspace
@@ -647,10 +654,11 @@ export const ko = {
 
   // Agent toolbar
   'toolbar.attach': '첨부',
-  'toolbar.fileExplorer': '파일 탐색기',
+  'toolbar.fileExplorer': '파일',
   'toolbar.snippets': '스니펫',
   'toolbar.richInput': '리치 입력',
   'toolbar.new': '새로',
+  'toolbar.newChat': '새 대화',
   'toolbar.send': '보내기',
   'toolbar.addToPrompt': '프롬프트에 추가',
   'toolbar.close': '닫기',
@@ -727,7 +735,7 @@ export const ko = {
   // 안 함 — "오케스트레이터"는 한글 UI에서 넘침), pane 집합 = "에이전트".
   // "함대(fleet)" 어휘는 사용자 표면에서 쓰지 않는다.
   'deck.tabsAriaLabel': '커맨드 데크 탭',
-  'deck.tabCommander': 'agent',
+  'deck.tabCommander': '에이전트',
   'deck.tabChannels': '채널',
   'deck.tabGit': 'Git',
   'deck.tabReview': '리뷰',
@@ -776,9 +784,6 @@ export const ko = {
   'git.justNow': '방금',
   'git.diff': 'Diff',
   'git.diffDesc': '이 워크트리의 diff 뷰 열기',
-  'settings.gitTabVisible': 'Git 탭 표시',
-  'settings.gitTabVisibleDesc':
-    '우측 도크에 Git 탭(워크트리)을 표시합니다. 정보성 표면 — 최소 크롬을 원하면 숨기세요.',
   'deck.collapseDock': '도크 접기',
   'deck.commanderPlaceholder': 'agent에 지시하거나 @로 pane을 멘션…',
   'deck.commanderEmpty':
@@ -830,7 +835,7 @@ export const ko = {
   'deck.scheduleAdoptHere': '이 워크스페이스로',
   // Loop engineering v1 — 원클릭 루프.
   'deck.loop': '루프',
-  'deck.loopStartChip': '루프 시작',
+  'deck.loopStartChip': '루프',
   'deck.loopPaused': '일시정지',
   'deck.loopObjectivePlaceholder': '목표 — 이 루프가 달성할 것',
   'deck.loopDoneWhenPlaceholder': '완료 조건… (선택, 한 줄에 하나)',
@@ -907,6 +912,12 @@ export const ko = {
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — 현재 워크스페이스의 모든 터미널 페인에 같은 텍스트(격리 없음)',
   'toolbar.broadcastPrompt': 'broadcast — 현재 워크스페이스의 모든 터미널 페인에 전송',
+  'toolbar.broadcastTitle': '터미널에 브로드캐스트',
+  'toolbar.broadcastTargets': '터미널 {n}개',
+  'toolbar.broadcastPlaceholder': '한 번 입력하면 이 워크스페이스의 모든 터미널 페인에 전송됩니다…',
+  'toolbar.broadcastSend': '전송',
+  'toolbar.broadcastSending': '전송 중…',
+  'toolbar.broadcastResult': '{ok} 전송 · {fail} 실패',
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ────────────────────────
   'fanout.title': '병렬 작업 — N개 격리 태스크 동시 실행',

@@ -12,6 +12,13 @@ export const en = {
   'sidebar.expandTooltip': 'Expand sidebar (Ctrl+B)',
   'sidebar.unreadCount': '{count} unread',
   'sidebar.agent': 'Agent',
+  'sidebar.git': 'Git',
+  'sidebar.gitTooltip': 'Toggle the Git panel',
+  'sidebar.screenOff': 'Screen off',
+  'sidebar.screenOn': 'Screen on',
+  'sidebar.screenOffTooltip': 'Turn the built-in display off (external monitors stay on)',
+  'sidebar.screenOffAccessibility': 'Grant Accessibility permission to wmux (System Settings → Privacy & Security → Accessibility).',
+  'sidebar.screenOffFailed': 'Could not toggle the built-in display.',
   'sidebar.agentTooltip': 'Toggle agent panel',
 
   // Workspace
@@ -731,10 +738,11 @@ export const en = {
 
   // Agent toolbar
   'toolbar.attach': 'Attach',
-  'toolbar.fileExplorer': 'File explorer',
+  'toolbar.fileExplorer': 'Files',
   'toolbar.snippets': 'Snippets',
   'toolbar.richInput': 'Rich Input',
   'toolbar.new': 'New',
+  'toolbar.newChat': 'New chat',
   'toolbar.send': 'Send',
   'toolbar.addToPrompt': 'Add to prompt',
   'toolbar.close': 'Close',
@@ -811,7 +819,7 @@ export const en = {
   // "Orchestrator"; the pane collective is "agents". No "fleet" wording on
   // user surfaces.
   'deck.tabsAriaLabel': 'Command deck tabs',
-  'deck.tabCommander': 'Orchestrator',
+  'deck.tabCommander': 'Agent',
   'deck.tabChannels': 'Channels',
   'deck.tabGit': 'Git',
   'deck.tabReview': 'Review',
@@ -860,9 +868,6 @@ export const en = {
   'git.justNow': 'now',
   'git.diff': 'Diff',
   'git.diffDesc': 'Open the diff view for this worktree',
-  'settings.gitTabVisible': 'Show Git tab',
-  'settings.gitTabVisibleDesc':
-    'Show the Git tab (worktrees) in the right dock. Informational surface — hide it for a minimal chrome.',
   'deck.collapseDock': 'Collapse dock',
   'deck.commanderPlaceholder': 'Tell the orchestrator, or @mention panes…',
   'deck.commanderEmpty':
@@ -914,7 +919,7 @@ export const en = {
   'deck.scheduleAdoptHere': 'Adopt here',
   // Loop engineering v1 — the one-click loop.
   'deck.loop': 'Loop',
-  'deck.loopStartChip': 'Start a loop',
+  'deck.loopStartChip': 'Loop',
   'deck.loopPaused': 'paused',
   'deck.loopObjectivePlaceholder': 'Objective — what should this loop accomplish?',
   'deck.loopDoneWhenPlaceholder': 'Done when… (optional, one item per line)',
@@ -993,6 +998,12 @@ export const en = {
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — same text to every terminal pane in the current workspace (no isolation)',
   'toolbar.broadcastPrompt': 'Broadcast — send to every terminal pane in the current workspace',
+  'toolbar.broadcastTitle': 'Broadcast to terminals',
+  'toolbar.broadcastTargets': '{n} terminals',
+  'toolbar.broadcastPlaceholder': 'Type once — sent to every terminal pane in this workspace…',
+  'toolbar.broadcastSend': 'Send',
+  'toolbar.broadcastSending': 'Sending…',
+  'toolbar.broadcastResult': '{ok} sent · {fail} failed',
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ────────────────────────
   'fanout.title': 'Multi Task — N parallel isolated tasks',

@@ -44,9 +44,11 @@ function previewSlug(title: string): string {
 
 interface FanOutDialogProps {
   onClose: () => void;
+  /** 앵커 정렬 — 좁은 덱 컨트롤 바에서는 우측 정렬해 왼쪽 오버플로를 막는다. */
+  align?: 'left' | 'right';
 }
 
-export default function FanOutDialog({ onClose }: FanOutDialogProps) {
+export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogProps) {
   const t = useT();
   const activeWorkspace = useStore(selectActiveWorkspace);
   const pushToast = useStore((s) => s.pushToast);
@@ -177,7 +179,12 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';
 
   return (
-    <div className="absolute bottom-full mb-2 left-2 z-50 w-[420px] max-h-[70vh] overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl" data-testid="fanout-dialog">
+    <div
+      // 420px 고정 폭은 248–320px 덱 컨트롤 바에서 잘린다 → 뷰포트 클램프.
+      className={`absolute bottom-full mb-2 ${align === 'right' ? 'right-2' : 'left-2'} z-50 max-h-[70vh] overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl`}
+      style={{ width: 'min(420px, calc(100vw - 24px))' }}
+      data-testid="fanout-dialog"
+    >
       <div className="text-[12px] font-semibold text-[var(--text-main)] mb-2">{t('fanout.title')}</div>
 
       <div className="flex rounded-[5px] border border-[var(--bg-overlay)] p-0.5 mb-2" role="tablist" data-testid="fanout-mode">

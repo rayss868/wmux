@@ -203,6 +203,13 @@ describe('CommanderViewContent — brain surface', () => {
     expect(container.querySelector('[data-deck-quick-actions]')).toBeNull();
   });
 
+  it('no longer renders the fan-out chip in the control bar (moved to the agent toolbar)', () => {
+    // fan-out returned control bar → agent toolbar (DESIGN.md Decisions Log
+    // 2026-07-20); the control bar must not carry the chip anymore.
+    mount({ activeWorkspaceId: 'ws-1', quickActions: [], threads: [], brainMessages: [] });
+    expect(container.querySelector('[data-deck-fanout-chip]')).toBeNull();
+  });
+
   it('renders no control bar when there is no workspace and nothing to recover', () => {
     mount({ quickActions: [] });
     expect(container.querySelector('[data-deck-control-bar]')).toBeNull();

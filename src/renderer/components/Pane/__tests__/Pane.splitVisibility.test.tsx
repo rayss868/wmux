@@ -106,4 +106,14 @@ describe('pickOverlaySurfaces — F6 mixed-split diff/editor routing', () => {
     ];
     expect(pickOverlaySurfaces(surfaces)).toEqual([]);
   });
+
+  it('git·review는 오버레이 집합에서 제외(2026-07-20 워크스페이스 헤더로 이관)', () => {
+    // 페인 surface 폐지 후 git/review는 페인 오버레이가 아니라 중앙 표면으로 산다.
+    const surfaces = [
+      { id: 't', surfaceType: 'terminal' },
+      { id: 'g', surfaceType: 'git' },
+      { id: 'r', surfaceType: 'review' },
+    ];
+    expect(pickOverlaySurfaces(surfaces)).toEqual([]);
+  });
 });

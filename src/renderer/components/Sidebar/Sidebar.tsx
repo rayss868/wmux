@@ -10,7 +10,7 @@ import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
-import { IconPlus, IconChevronDir, IconRobot } from '../icons';
+import { IconPlus, IconChevronDir, IconRobot, IconGitBranch } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
@@ -64,6 +64,25 @@ export default function Sidebar() {
   const channelDockVisible = useStore((s) => s.channelDockVisible);
   const toggleChannelDock = useStore((s) => s.toggleChannelDock);
   const channelUnreadTotal = useMemo(() => sumUnread(channelUnread), [channelUnread]);
+
+  // Git 버튼(Agent 아래) — 덱을 열고 Git 탭으로. 이미 Git 탭이 열려 있으면 덱을
+  // 닫는다(토글). dirty 배지 = 커밋 안 된 변경이 있는 워크스페이스 수(신호등과
+  // 같은 gitSync 메타 재사용, 신규 폴링 0).
+  const activeDeckTab = useStore((s) => s.activeDeckTab);
+  const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
+  const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
+  const dirtyWsCount = useStore(
+    (s) => s.workspaces.filter((w) => (w.metadata?.gitSync?.dirty ?? 0) > 0).length,
+  );
+  const gitOpen = channelDockVisible && activeDeckTab === 'git';
+  const toggleGit = useCallback(() => {
+    if (gitOpen) {
+      setChannelDockVisible(false);
+    } else {
+      setActiveDeckTab('git');
+      setChannelDockVisible(true);
+    }
+  }, [gitOpen, setActiveDeckTab, setChannelDockVisible]);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
@@ -173,6 +192,33 @@ export default function Sidebar() {
         {channelUnreadTotal > 0 && (
           <span className="ml-auto text-[var(--text-sub)]" data-sidebar-agent-unread {...tokenAttrs('textSub', 'text')}>
             {channelUnreadTotal > 99 ? '99+' : channelUnreadTotal}
+          </span>
+        )}
+      </button>
+
+      {/* Git toggle — Agent 바로 아래. 덱을 열고 Git 탭으로(이미 Git이면 덱 닫기).
+          열림=steel(내비게이션) · dirty=warm(카운트 동반) · 그 외 muted. git 상태
+          신호등이 좌측 행에 살므로 진입점도 좌측 푸터에 둔다(오너 결정 2026-07-20). */}
+      <button
+        type="button"
+        onClick={toggleGit}
+        aria-pressed={gitOpen}
+        title={t('sidebar.gitTooltip') || 'Toggle the Git panel'}
+        className={`flex items-center gap-2 shrink-0 h-9 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono transition-colors ${FOCUS_RING} ${
+          gitOpen
+            ? 'text-[var(--accent-blue)]'
+            : dirtyWsCount > 0
+              ? 'text-[var(--accent)] hover:opacity-80'
+              : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
+        }`}
+        style={{ borderColor: 'var(--border-soft)' }}
+        data-sidebar-git
+      >
+        <IconGitBranch size={14} />
+        <span>{t('sidebar.git') || 'Git'}</span>
+        {dirtyWsCount > 0 && (
+          <span className="ml-auto" data-sidebar-git-dirty>
+            {dirtyWsCount > 99 ? '99+' : dirtyWsCount}
           </span>
         )}
       </button>

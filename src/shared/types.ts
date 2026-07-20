@@ -49,7 +49,7 @@ export interface Surface {
   title: string;
   shell: string;
   cwd: string;
-  surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff';
+  surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review';
   browserUrl?: string;
   browserPartition?: string;
   editorFilePath?: string;
@@ -570,9 +570,6 @@ export interface SessionData {
    *  false — the orchestrator is the single interface; the tab is an
    *  opt-in inspection surface (Settings). */
   channelsTabVisible?: boolean;
-  /** Whether the deck shows the Git tab (worktrees / PRs). Default true —
-   *  informational surface; hideable for minimal-chrome setups. */
-  gitTabVisible?: boolean;
   /** Whether each pane's tab strip shows the action-button cluster (new
    *  terminal / split right / split down / new browser). Default true —
    *  hideable for minimal-chrome setups. */

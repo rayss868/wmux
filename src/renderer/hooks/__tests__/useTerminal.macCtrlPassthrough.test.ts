@@ -3,19 +3,20 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 /**
- * 소스 레벨 회귀 락 (owner-reported 2026-07-19):
+ * Source-level regression lock (owner-reported 2026-07-19):
  *
- * macOS에서 앱 단축키는 cmdOrCtrl=metaKey(useKeyboard)라, xterm 핸들러가
- * Ctrl+D/K/I/N/T/,/` 를 삼켜 DOM으로 버블시키면 앱 액션도 안 걸리고 PTY에도
- * 못 가서 readline 컨트롤 문자(Ctrl+D EOF, Ctrl+I Tab, Ctrl+K kill-line …)가
- * 통째로 죽는다. mac에서는 literal-Ctrl 바인딩(b=프리픽스, m=북마크,
- * Ctrl+Arrow)만 버블시키고 나머지는 PTY로 통과해야 한다.
+ * On macOS, app shortcuts use cmdOrCtrl=metaKey (useKeyboard), so if the xterm
+ * handler swallows Ctrl+D/K/I/N/T/,/` and bubbles them to the DOM, neither the app
+ * action fires nor does the key reach the PTY, killing readline control characters
+ * (Ctrl+D EOF, Ctrl+I Tab, Ctrl+K kill-line …) entirely. On mac, only the literal-Ctrl
+ * bindings (b=prefix, m=bookmark, Ctrl+Arrow) should bubble; the rest must pass through
+ * to the PTY.
  *
- * 또한 mac은 복사가 Cmd+C 전담이므로 Ctrl+C는 선택영역이 있어도 항상
- * SIGINT여야 한다(복사 가로채기는 비-mac 한정).
+ * Also, since copy is Cmd+C's job on mac, Ctrl+C must always be SIGINT even with an
+ * active selection (copy interception is non-mac only).
  *
- * imeCopyPaste 락과 동일하게, jsdom이 xterm 커스텀 키 핸들러 + IME를 충실히
- * 못 돌리므로 소스 레벨로 고정한다.
+ * Like the imeCopyPaste lock, jsdom can't faithfully run xterm's custom key handler +
+ * IME, so we pin it at the source level.
  */
 
 const SRC = readFileSync(
@@ -31,7 +32,7 @@ describe('useTerminal macOS Ctrl passthrough (source-level lock)', () => {
     expect(handlerStart).toBeGreaterThan(-1);
   });
 
-  it('mac 버블 목록은 literal-Ctrl 바인딩(b, m, Arrow)만 담는다', () => {
+  it('the mac bubble list contains only the literal-Ctrl bindings (b, m, Arrow)', () => {
     expect(HANDLER).toMatch(
       /isMac\s*\?\s*\['b', 'm', 'ArrowUp', 'ArrowDown'\]/,
     );
@@ -40,24 +41,24 @@ describe('useTerminal macOS Ctrl passthrough (source-level lock)', () => {
     );
   });
 
-  it('비-mac 버블 목록은 기존 전체 집합을 유지한다 (win/linux 무회귀)', () => {
+  it('the non-mac bubble list keeps the full original set (no win/linux regression)', () => {
     expect(HANDLER).toMatch(
       /\[',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'\]/,
     );
   });
 
-  it('Ctrl+`와 Ctrl+=/-/0 줌 버블은 비-mac 한정이다', () => {
+  it('Ctrl+` and Ctrl+=/-/0 zoom bubbling are non-mac only', () => {
     expect(HANDLER).toMatch(/!isMac && e\.ctrlKey && !e\.shiftKey && e\.code === 'Backquote'/);
     expect(HANDLER).toMatch(/!isMac && e\.ctrlKey && !e\.shiftKey && \(\s*\n?\s*e\.key === '='/);
   });
 
-  it('Ctrl+C 복사 가로채기는 비-mac 한정 — mac은 항상 SIGINT', () => {
+  it('Ctrl+C copy interception is non-mac only — mac is always SIGINT', () => {
     expect(HANDLER).toMatch(
       /!isMac && e\.ctrlKey && !e\.shiftKey && \(e\.key === 'c' \|\| e\.code === 'KeyC'\)/,
     );
   });
 
-  it('Ctrl+V 붙여넣기 가로채기는 비-mac 한정 — mac은 quoted-insert로 PTY 통과', () => {
+  it('Ctrl+V paste interception is non-mac only — mac passes through to the PTY as quoted-insert', () => {
     expect(HANDLER).toMatch(
       /!isMac && e\.ctrlKey && !e\.shiftKey && \(e\.key === 'v' \|\| e\.code === 'KeyV'\)/,
     );

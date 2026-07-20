@@ -101,7 +101,9 @@ export function pickSplitShownSurfaces(
 export function pickOverlaySurfaces<T extends { surfaceType?: string }>(
   surfaces: ReadonlyArray<T>,
 ): T[] {
-  return surfaces.filter((s) => s.surfaceType === 'diff' || s.surfaceType === 'editor');
+  return surfaces.filter(
+    (s) => s.surfaceType === 'diff' || s.surfaceType === 'editor',
+  );
 }
 
 export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true }: PaneProps) {

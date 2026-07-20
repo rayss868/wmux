@@ -77,7 +77,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach } from 'vitest';
-import { installCliShimDarwin, deriveDarwinCliTarget } from '../cliShim';
+import { installCliShimDarwin, deriveDarwinCliTarget, darwinShimNeedsRepair } from '../cliShim';
 
 describe.skipIf(process.platform === 'win32')('installCliShimDarwin', () => {
   let tmp: string;
@@ -148,5 +148,40 @@ describe.skipIf(process.platform === 'win32')('installCliShimDarwin', () => {
     // 재실행 → 이미 올바름 → skip
     const again = installCliShimDarwin(execPath, opts);
     expect(again.status).toBe('already');
+  });
+
+  // issue #505 — the marker must not gate out repair of a stale owned link.
+  describe('darwinShimNeedsRepair', () => {
+    it('owned link that targets a moved/old bundle needs repair', () => {
+      const link = path.join(tmp, 'bin', 'wmux');
+      fs.mkdirSync(path.dirname(link), { recursive: true });
+      const oldTarget = path.join(tmp, 'old.app', 'Contents', 'Resources', 'cli-bundle', 'index.js');
+      fs.symlinkSync(oldTarget, link); // owned shape, but not the current bundle
+      expect(darwinShimNeedsRepair(execPath, { homeDir: tmp, candidates: [link] })).toBe(true);
+    });
+
+    it('owned link whose target no longer exists (DMG ejected) needs repair', () => {
+      const link = path.join(tmp, 'bin', 'wmux');
+      fs.mkdirSync(path.dirname(link), { recursive: true });
+      // Points at the current-shaped target path, but the file is gone.
+      fs.symlinkSync(target, link);
+      fs.rmSync(target);
+      expect(darwinShimNeedsRepair(execPath, { homeDir: tmp, candidates: [link] })).toBe(true);
+    });
+
+    it('correct link needs no repair', () => {
+      const link = path.join(tmp, 'bin', 'wmux');
+      fs.mkdirSync(path.dirname(link), { recursive: true });
+      fs.symlinkSync(target, link);
+      expect(darwinShimNeedsRepair(execPath, { homeDir: tmp, candidates: [link] })).toBe(false);
+    });
+
+    it('foreign symlink and absent link never need repair', () => {
+      const foreign = path.join(tmp, 'bin', 'wmux');
+      fs.mkdirSync(path.dirname(foreign), { recursive: true });
+      fs.symlinkSync('/opt/homebrew/Cellar/wmux/bin/wmux', foreign); // not owned shape
+      const absent = path.join(tmp, 'nope', 'wmux');
+      expect(darwinShimNeedsRepair(execPath, { homeDir: tmp, candidates: [foreign, absent] })).toBe(false);
+    });
   });
 });
