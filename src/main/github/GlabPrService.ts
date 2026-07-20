@@ -14,6 +14,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   PR_COMMENT_BODY_CAP,
+  cliPath,
   type PrProvider,
   type PrGate,
   type PrListResult,
@@ -31,6 +32,7 @@ const MAX_ENTRIES = 128;
 
 const GLAB_ENV: NodeJS.ProcessEnv = {
   ...process.env,
+  PATH: cliPath(),
   // glab 비대화형 강제 — 프롬프트/페이저가 폴을 블록하면 안 된다(gh와 동일 계약).
   NO_PROMPT: '1',
   GLAB_PAGER: 'cat',
