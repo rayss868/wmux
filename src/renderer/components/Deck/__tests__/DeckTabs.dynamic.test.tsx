@@ -102,14 +102,12 @@ describe('DeckTabs', () => {
     expect(badge?.textContent).toContain('3');
   });
 
-  it('renders only the Orchestrator and Channels tabs (Git·Review moved to center surface tabs)', () => {
+  it('renders Orchestrator·Git·Channels tabs (owner 2026-07-20: 덱 복귀, Review는 Git에 병합)', () => {
     mount({ active: 'commander' });
     const ids = Array.from(container.querySelectorAll('[data-deck-tab]')).map((el) =>
       el.getAttribute('data-deck-tab'),
     );
-    expect(ids).toEqual(['commander', 'channels']);
-    expect(container.querySelector('[data-deck-tab="git"]')).toBeNull();
-    expect(container.querySelector('[data-deck-tab="review"]')).toBeNull();
+    expect(ids).toEqual(['commander', 'git', 'channels']);
   });
 
   it('hides the Channels tab (and its badge) when showChannels is false', () => {

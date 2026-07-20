@@ -10,7 +10,7 @@ import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
-import { IconPlus, IconChevronDir, IconRobot, IconGitBranch, IconReview, IconMoon } from '../icons';
+import { IconPlus, IconChevronDir, IconRobot } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
@@ -64,41 +64,6 @@ export default function Sidebar() {
   const channelDockVisible = useStore((s) => s.channelDockVisible);
   const toggleChannelDock = useStore((s) => s.toggleChannelDock);
   const channelUnreadTotal = useMemo(() => sumUnread(channelUnread), [channelUnread]);
-
-  // Git·Review 유틸 표면(중앙) 토글 — 2026-07-20 IA: 상단 헤더 행(36px, 이름 중복)을
-  // 없애고 사이드바 푸터로 이동. 글씨 색으로 상태 표시: 열림=steel(내비게이션),
-  // dirty=warm(주의), 그 외 muted. dirty는 기존 gitSync 메타(5s 폴) 재사용 — 신규 폴링 0.
-  const utilityView = useStore((s) => s.workspaceUtilityView);
-  const setUtilityView = useStore((s) => s.setWorkspaceUtilityView);
-  const activeWsDirty = useStore(
-    (s) => s.workspaces.find((w) => w.id === s.activeWorkspaceId)?.metadata?.gitSync?.dirty ?? 0,
-  );
-  const dirtyWsCount = useStore(
-    (s) => s.workspaces.filter((w) => (w.metadata?.gitSync?.dirty ?? 0) > 0).length,
-  );
-
-  // 내장 화면 끄기(외장 모니터 유지) — 밝기 키 이벤트를 IPC로 전송. macOS 전용.
-  // screenDark는 낙관적 로컬 상태(실제 밝기를 읽는 API가 없음) — 실패 시 원복.
-  const [screenDark, setScreenDark] = useState(false);
-  const toggleBuiltinDisplay = useCallback(async () => {
-    const next = !screenDark;
-    setScreenDark(next);
-    const api = (window.electronAPI as unknown as {
-      system?: { builtinDisplay: (m: 'off' | 'on') => Promise<{ ok: boolean; code?: string }> };
-    })?.system;
-    const res = await api?.builtinDisplay(next ? 'off' : 'on');
-    if (!res?.ok) {
-      setScreenDark(!next);
-      pushToast({
-        level: 'warn',
-        message:
-          res?.code === 'accessibility'
-            ? t('sidebar.screenOffAccessibility') ||
-              'Grant Accessibility permission to wmux (System Settings → Privacy & Security → Accessibility).'
-            : t('sidebar.screenOffFailed') || 'Could not toggle the built-in display.',
-      });
-    }
-  }, [screenDark, pushToast, t]);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
@@ -184,68 +149,6 @@ export default function Sidebar() {
 
       {/* Plugin sidebar panels (B-1 ui.sidebar contribution point) */}
       <PluginPanels />
-
-      {/* Git·Review 유틸 표면 토글(2026-07-20) — Agent 행과 같은 푸터 문법.
-          글씨 색 = 상태: 열림 steel · dirty warm(카운트 동반) · 그 외 muted. */}
-      {(
-        [
-          { id: 'git' as const, icon: <IconGitBranch size={14} />, labelKey: 'deck.tabGit', fallback: 'Git', count: activeWsDirty },
-          { id: 'review' as const, icon: <IconReview size={14} />, labelKey: 'deck.tabReview', fallback: 'Review', count: dirtyWsCount },
-        ]
-      ).map((row) => {
-        const isOpen = utilityView === row.id;
-        const isDirty = row.count > 0;
-        return (
-          <button
-            key={row.id}
-            type="button"
-            onClick={() => setUtilityView(isOpen ? null : row.id)}
-            aria-pressed={isOpen}
-            data-sidebar-utility={row.id}
-            className={`flex items-center gap-2 shrink-0 h-9 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono transition-colors ${FOCUS_RING} ${
-              isOpen
-                ? 'text-[var(--accent-blue)]'
-                : isDirty
-                  ? 'text-[var(--accent)] hover:opacity-80'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
-            }`}
-            style={{ borderColor: 'var(--border-soft)' }}
-          >
-            {row.icon}
-            <span>{t(row.labelKey) || row.fallback}</span>
-            {isDirty && (
-              <span className="ml-auto" data-sidebar-utility-count>
-                {row.count > 99 ? '99+' : row.count}
-              </span>
-            )}
-          </button>
-        );
-      })}
-
-      {/* 내장 화면 끄기(외장 모니터 유지) — 밝기 키는 내장 디스플레이에만 적용된다.
-          꺼짐 상태 동안은 warm(주의: 화면이 어두운 이유를 알린다). macOS 전용. */}
-      {window.electronAPI?.platform === 'darwin' && (
-        <button
-          type="button"
-          onClick={toggleBuiltinDisplay}
-          aria-pressed={screenDark}
-          title={t('sidebar.screenOffTooltip') || 'Turn the built-in display off (external monitors stay on)'}
-          data-sidebar-screen-off
-          className={`flex items-center gap-2 shrink-0 h-9 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono transition-colors ${FOCUS_RING} ${
-            screenDark
-              ? 'text-[var(--accent)]'
-              : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
-          }`}
-          style={{ borderColor: 'var(--border-soft)' }}
-        >
-          <IconMoon size={14} />
-          <span>
-            {screenDark
-              ? t('sidebar.screenOn') || 'Screen on'
-              : t('sidebar.screenOff') || 'Screen off'}
-          </span>
-        </button>
-      )}
 
       {/* Agent toggle — the reopen affordance for the right-side ChannelDock
           (agents + their channels), moved here from the status bar so it lives at

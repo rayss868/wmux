@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Git·Review를 워크스페이스 헤더 탭 + 중앙 표면으로 이관.** Git(워크트리·PR)과 Review(전-워크스페이스 diff 로스터)를 중앙 상단 워크스페이스 이름 행 우측의 Git·Review 탭으로 옮겼습니다. 탭을 누르면 페인 그리드 전체를 덮는 중앙 화면으로 열리고, 다시 누르거나 ✕/Esc로 닫힙니다. Git 화면은 지금 포커스한 페인의 디렉터리를 실시간으로 따라갑니다. 페인 탭 스트립은 터미널·브라우저 전용으로 정리됐습니다(우측 덱은 Orchestrator·Channels 2탭). 페인은 화면 뒤에서 살아 있어 터미널 세션이 끊기지 않습니다.
+- **Git이 우측 덱 탭으로 합류, 사이드바에 git 신호등.** 우측 덱이 Orchestrator·Git·Channels 3탭이 됐습니다. Git 탭은 위에 현재 워크스페이스의 워크트리·PR, 아래에 전-워크스페이스 diff 집계(구 Review — 별도 탭에서 병합)를 한 스크롤로 보여줍니다. 좌측 사이드바의 각 워크스페이스 이름 아래에는 git 신호등 줄이 생겼습니다: 브랜치명과 함께 초록 ●(clean) / 앰버 ●N(커밋 안 된 변경) / 파랑 ↑N(ahead) / 빨강 ↓N(behind)을 색으로 즉시 읽을 수 있습니다. 이전 시안(상단 헤더 탭·중앙 전면 표면·좌측 푸터 버튼)은 원복했습니다.
 - **Agent toolbar: Broadcast is back and works.** The old Broadcast prompt relied on a browser dialog that never existed in the packaged app; it now opens an inline popover that shows how many terminals it will hit, sends to every terminal pane in the current workspace, and reports how many succeeded or failed.
 - **macOS: the `wmux` CLI now installs itself from DMG/ZIP installs.** On first launch the packaged app symlinks the bundled CLI to `/usr/local/bin/wmux`, falling back to `~/.local/bin/wmux` (with a PATH hint) when permissions deny it. Homebrew-owned or any foreign file at that path is never touched; only wmux-owned stale symlinks are refreshed. Attempted once, off the boot path.
 - **macOS: "Start at login" works now.** The autostart toggle was a Windows-registry-only no-op on macOS; it now drives `app.setLoginItemSettings`, and the Startup section is visible in Settings on macOS.

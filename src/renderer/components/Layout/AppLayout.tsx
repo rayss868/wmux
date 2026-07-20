@@ -1104,12 +1104,10 @@ export default function AppLayout() {
         {/* P1.5 — the status strip moved into the Titlebar (owner feedback:
             the empty titlebar center + a second status row doubled the top
             chrome). This column now starts directly with the pane area. */}
-        {/* Workspace center — 헤더 탭(Git·Review) + 페인 그리드 + 유틸 중앙 표면.
+        {/* Workspace center — 페인 그리드 전용(Git·Review는 우측 덱 탭으로 복귀).
             페인 그리드는 WorkspaceViewport가 `workspaces` 구독을 소유(PERF 2026-07-13)
             해 메타데이터/서피스 churn이 뷰포트(메모된 슬롯)만 리렌더하고 AppLayout
-            크롬은 건드리지 않는다. WorkspaceCenter는 workspaceUtilityView 토글만
-            구독해 Git·Review 표면을 페인 그리드 위에 겹쳐 렌더한다(그리드는 display로
-            숨김 — 터미널 PTY 유지). */}
+            크롬은 건드리지 않는다. */}
         <WorkspaceCenter />
         {/* Render-null logic mounts. Both own subscriptions that change on a
             workspace switch (EmptyLeafFunnel: activeWorkspaceId + empty-leaf
