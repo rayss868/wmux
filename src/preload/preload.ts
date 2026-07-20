@@ -580,6 +580,24 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.WORKTREE_REMOVE, repoPath, worktreePath) as Promise<
         import('../main/ipc/handlers/worktree.handler').WorktreeMutateResult
       >,
+    // 머지 세션 — 격리 integration 워크트리(start/status/land/discard). sourcePath는
+    // 머지할 feature 워크트리, repoPath는 그 repo의 임의 워크트리 경로(main 도출용).
+    mergeStart: (repoPath: string, sourcePath: string) =>
+      ipcRenderer.invoke(IPC.WORKTREE_MERGE_START, repoPath, sourcePath) as Promise<
+        import('../main/ipc/handlers/worktree.handler').MergeStartResult
+      >,
+    mergeStatus: (repoPath: string) =>
+      ipcRenderer.invoke(IPC.WORKTREE_MERGE_STATUS, repoPath) as Promise<
+        import('../main/ipc/handlers/worktree.handler').MergeStatusResult
+      >,
+    mergeLand: (repoPath: string) =>
+      ipcRenderer.invoke(IPC.WORKTREE_MERGE_LAND, repoPath) as Promise<
+        import('../main/ipc/handlers/worktree.handler').MergeActionResult
+      >,
+    mergeDiscard: (repoPath: string) =>
+      ipcRenderer.invoke(IPC.WORKTREE_MERGE_DISCARD, repoPath) as Promise<
+        import('../main/ipc/handlers/worktree.handler').MergeActionResult
+      >,
   },
   diff: {
     // 워크스페이스 diff — 임의 cwd를 자기 worktree toplevel로 정규화(비-git이면 ok:false).
