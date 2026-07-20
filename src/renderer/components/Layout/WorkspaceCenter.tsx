@@ -57,6 +57,14 @@ function WorkspaceUtilitySurface({ view }: { view: 'git' | 'review' }) {
 
 export function WorkspaceCenter() {
   const view = useStore((s) => s.workspaceUtilityView);
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const setView = useStore((s) => s.setWorkspaceUtilityView);
+
+  // 워크스페이스 전환 시 유틸 표면 자동 닫기 — 전역 단일 값이라 열어둔 채 전환하면
+  // 새 워크스페이스에서도 그리드를 가려 "터미널이 안 열린다"로 보인다.
+  useEffect(() => {
+    setView(null);
+  }, [activeWorkspaceId, setView]);
 
   return (
     <>
