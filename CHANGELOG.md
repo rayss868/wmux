@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The orchestrator can tell a pane that finished from a pane that asked you something.** A pane's turn-end reached the orchestrator as "pane stopped" and nothing else, so the only way to learn *why* it stopped was to read the rendered terminal — where a question the agent printed looks exactly like text sitting in its input box. Orchestrators mis-read that: reporting panes as "still running" while they sat blocked on an unanswered question, and pressing Enter to "submit" a line that was never there. A turn-end now carries the agent's own closing words, lifted from its transcript rather than the screen, and a stop that ends in a question (including Korean endings that carry no `?`) is stamped **BLOCKED ON A QUESTION** with the question quoted — the same treatment reviewer comments already get. The pane's question is also published as `pendingQuestion` on `pane_list`, so an orchestrator can check whether a pane is waiting on it without reading the terminal at all. Deliberately not a new agent status: `waiting` already meant "turn ended", and what was missing was the content, not another state.
+- **`terminal_send_key` no longer implies it submitted something.** Sending `enter` returned a bare success whether or not anything was committed, which is what let an orchestrator report a blocked pane as working. Enter presses now come back with an explicit note that delivery is not submission, and the tool description points callers at `terminal_send({ text, submit: true })` for answering an agent that is waiting on them.
+
 ## [3.28.0] — 2026-07-20
 
 ### Added

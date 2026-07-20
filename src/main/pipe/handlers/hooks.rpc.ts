@@ -50,6 +50,8 @@ import { IPC, dataSuffix } from '../../../shared/constants';
 import { summarizeActivity } from '../../../shared/activitySummary';
 import type { DaemonClient } from '../../DaemonClient';
 import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
+import { readLastAssistantMessage } from '../../claude/lastAssistantMessage';
+import type { AgentLastMessage } from '../../../shared/events';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -72,6 +74,25 @@ const VALID_PERMISSION_MODES: ReadonlySet<string> = new Set([
 function readPermissionMode(payload: Record<string, unknown>): PermissionMode | undefined {
   const m = payload?.permissionMode;
   return typeof m === 'string' && VALID_PERMISSION_MODES.has(m) ? (m as PermissionMode) : undefined;
+}
+
+/**
+ * Pull the pane's closing message off the Stop hook's transcript.
+ *
+ * Wrapped and swallowing: this runs inside the hook's 2s budget, and a
+ * transcript that is missing, mid-rotation, or in an unexpected format must
+ * degrade to a contentless wake rather than fail the hook.
+ */
+function readLastAssistantMessageSafely(
+  payload: Record<string, unknown>,
+): AgentLastMessage | null {
+  const p = payload?.transcript_path;
+  if (typeof p !== 'string' || !p) return null;
+  try {
+    return readLastAssistantMessage(p);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -359,10 +380,30 @@ export function registerHooksRpc(
     // tool calls coming — clearing there would erase live activity.
     // `activity: ''` is the established clear signal (setSurfaceActivity
     // deletes both the string and its freshness timestamp on a falsy value).
+    //
+    // The same turn boundary also decides the pane's PENDING QUESTION, so both
+    // fields ride ONE broadcast — a stop is a single state transition and must
+    // not fan out as two IPC messages. `pendingQuestion` lets a poller
+    // (`pane_list`, the sidebar) tell "finished" from "blocked on an answer"
+    // without reading the terminal, where an agent's printed question is
+    // indistinguishable from text pending in its input box. It is written on
+    // EVERY stop: a stop that asks nothing CLEARS a question left by an earlier
+    // turn, otherwise a pane reads as blocked forever. session_start clears it
+    // for the same reason it clears activity.
+    //
+    // The transcript tail is read ONCE here and reused for the EventBus tee
+    // below — it is real file I/O inside the hook's 2s budget.
+    const stopMessage = signal.kind === 'agent.stop'
+      ? readLastAssistantMessageSafely(signal.payload)
+      : null;
     if (signal.kind === 'agent.stop' || signal.kind === 'agent.session_start') {
       const win = getWindow();
       if (win) {
-        broadcastMetadataUpdate(win, { ptyId, activity: '' });
+        broadcastMetadataUpdate(win, {
+          ptyId,
+          activity: '',
+          pendingQuestion: stopMessage?.endsWithQuestion ? stopMessage.text : '',
+        });
       }
     }
 
@@ -407,6 +448,18 @@ export function registerHooksRpc(
     //    single claimed workspace.
     const workspaceId = findWorkspaceIdForPty(ptyId, workspaces);
     if (workspaceId) {
+      // Attach the pane's closing words to a turn-end wake. Without this the
+      // orchestrator receives "pane stopped" and nothing else, so its only way
+      // to find out whether the pane finished or is blocked on a question is to
+      // read the rendered terminal — where an agent's printed proposal is
+      // indistinguishable from text pending in the input box. Carrying the
+      // message (and whether it ends in a question) makes the wake actionable
+      // the same way pr.review_comment carries the reviewer's snippet.
+      //
+      // Stop only: awaiting_input is a mid-turn y/N gate whose prompt is
+      // already on screen, and subagent_stop is a nested return the human is
+      // not waiting on. Best-effort — a null just restores the old behavior.
+      const lastMessage = stopMessage;
       eventBus.emit({
         type: 'agent.lifecycle',
         workspaceId,
@@ -415,6 +468,7 @@ export function registerHooksRpc(
         source: 'hook',
         agent: signal.agent,
         decision,
+        ...(lastMessage ? { lastMessage } : {}),
       });
       // M2: a claude turn just ended in this workspace — the usage number for its
       // bound account may have moved. Hook-gate a per-account probe (main applies

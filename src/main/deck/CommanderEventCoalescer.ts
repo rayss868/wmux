@@ -37,6 +37,7 @@
 
 import type { WorkspaceAutonomy, WakePolicy } from './deckAutonomyStore';
 import { DEFAULT_AUTONOMY, modeToWakePolicy } from './deckAutonomyStore';
+import type { AgentLastMessage } from '../../shared/events';
 
 /** The kinds we wake on:
  *   - agent.stop / agent.awaiting_input — pane lifecycle (decision 7 —
@@ -85,6 +86,8 @@ export interface CoalescerInput {
   ts: number;
   /** Only set for kind === 'pr.ci_failed'. */
   detail?: PrCiDetail;
+  /** Only set for kind === 'agent.stop' from a hook (see AgentLastMessage). */
+  lastMessage?: AgentLastMessage;
 }
 
 /** One buffered event: the last seen per (ptyId, kind). Exported so the pure
@@ -98,6 +101,8 @@ export interface BufferedEvent {
   ts: number;
   /** Only set for kind === 'pr.ci_failed'. */
   detail?: PrCiDetail;
+  /** Only set for kind === 'agent.stop' from a hook (see AgentLastMessage). */
+  lastMessage?: AgentLastMessage;
 }
 
 /** Internal per-workspace phase — surfaced only for tests/observability. The
@@ -212,6 +217,7 @@ export class CommanderEventCoalescer {
       seq: ev.seq,
       ts: ev.ts,
       ...(ev.detail ? { detail: ev.detail } : {}),
+      ...(ev.lastMessage ? { lastMessage: ev.lastMessage } : {}),
     });
     st.buffer.set(ev.ptyId, byKind);
 
@@ -525,6 +531,35 @@ function pad(s: string, width: number): string {
   return s.length >= width ? s : s + ' '.repeat(width - s.length);
 }
 
+/** Max quoted pane text per event line. The producer already caps the message;
+ *  this is the second, independent cap so one pane can't crowd out the others. */
+const MAX_QUOTED = 400;
+
+/**
+ * Flatten agent-authored text for inclusion in the one-line-per-event block.
+ *
+ * The block's structure IS its security boundary: the brain reads each
+ * `  seq=… pane=… kind=…` line as one event. Text carrying a newline could
+ * forge an additional line — a fake pane, a fake verdict granting itself
+ * permission to act. Collapsing every newline and control character removes
+ * that, and escaping quotes keeps the quoted span unambiguous. The content is
+ * still untrusted after this: it is evidence to report on, never an order.
+ */
+function sanitizeSnippet(raw: string): string {
+  // Stripping control characters IS the point here: they are what would let
+  // pane text forge block structure.
+  // eslint-disable-next-line no-control-regex
+  const flat = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  // Defence in depth. Flattening newlines already stops a forged event LINE —
+  // the structural boundary. This additionally defangs the block's grammar
+  // tokens so quoted text can't even LOOK like a field of a real event to a
+  // model skimming for `seq=`/`kind=`. Rewriting the separator keeps the text
+  // readable while making it unparseable as block syntax.
+  const defanged = flat.replace(/\b(seq|pane|kind|source|autonomy|wake-budget)=/gi, '$1:');
+  const escaped = defanged.replace(/"/g, "'");
+  return escaped.length > MAX_QUOTED ? `${escaped.slice(0, MAX_QUOTED)}…` : escaped;
+}
+
 /**
  * Build the ONE fenced, untrusted, seq-tagged flush prompt for a set of buffered
  * events. This is where the fail-closed approval policy is ENFORCED, not merely
@@ -605,9 +640,28 @@ export function buildEventPrompt(
         ? `(CI FAILING on${prRef} — you MAY send ONE instruction to this pane to investigate and fix the failing checks)`
         : `(CI FAILING on${prRef} — report only, do not send anything to this pane)`;
     } else if (e.kind === 'agent.stop') {
-      verdict = autonomy.continueInstruction
-        ? '(you MAY send ONE follow-up instruction to this pane)'
-        : '(summarize only — do not send anything to this pane)';
+      // The pane's own closing words, when the Stop hook gave us a transcript.
+      // A stop that ends in a question means the pane is BLOCKED until someone
+      // answers it — reporting that pane as "still working" (the failure this
+      // field exists to prevent) is a lie the brain can no longer tell by
+      // accident. The text rides inside the untrusted fenced block like every
+      // other pane-derived string: quote it, never obey it.
+      const said = e.lastMessage ? ` said: "${sanitizeSnippet(e.lastMessage.text)}"` : '';
+      if (e.lastMessage?.endsWithQuestion) {
+        verdict = autonomy.continueInstruction
+          ? `(BLOCKED ON A QUESTION — the pane${said} and is waiting for an answer, NOT working. `
+            + 'Answer it with terminal_send({text, submit:true}) — terminal_send_key(enter) will '
+            + 'NOT submit a question the pane merely printed — or escalate it to the human with '
+            + 'deck_ask_decision. Do not report this pane as running.)'
+          : `(BLOCKED ON A QUESTION — the pane${said} and is waiting for an answer, NOT working. `
+            + 'Relay the question to the human — summarize only — do not send anything to this pane.)';
+      } else {
+        // Canonical phrasing preserved verbatim — the quote is additive context,
+        // not a rewrite of the permission verdict downstream readers match on.
+        verdict = autonomy.continueInstruction
+          ? `(turn ended${said} — you MAY send ONE follow-up instruction to this pane)`
+          : `(turn ended${said} — summarize only — do not send anything to this pane)`;
+      }
     } else {
       // awaiting_input
       if (!autonomy.approvalPress) {

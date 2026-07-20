@@ -834,7 +834,19 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         // pane is individually addressable (gaps 1/8).
         agents: l.surfaces.flatMap((s) => {
           const a = store.surfaceAgent[s.ptyId];
-          return a ? [{ ptyId: s.ptyId, surfaceId: s.id, agentName: a.name, agentStatus: a.status }] : [];
+          if (!a) return [];
+          // pendingQuestion answers "is this pane blocked on me?" — a status of
+          // 'waiting' alone can't, and reading the terminal to find out is what
+          // makes an orchestrator mistake a printed question for pending input.
+          // Omitted when there is none, so existing readers are unaffected.
+          const q = store.surfacePendingQuestion[s.ptyId];
+          return [{
+            ptyId: s.ptyId,
+            surfaceId: s.id,
+            agentName: a.name,
+            agentStatus: a.status,
+            ...(q ? { pendingQuestion: q } : {}),
+          }];
         }),
       };
     });

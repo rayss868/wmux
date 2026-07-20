@@ -126,6 +126,15 @@ export interface PaneSlice {
   // (buildSessionData is an allowlist and deliberately omits it).
   surfaceActivity: Record<string, string>;
   setSurfaceActivity: (ptyId: string, activity: string | null) => void;
+  // Per-surface "this agent ended its turn asking something" text, keyed by
+  // ptyId. Populated from METADATA_UPDATE.pendingQuestion, which main derives
+  // from the Stop hook's transcript — not from the rendered terminal, where a
+  // printed question is indistinguishable from a line pending in the input box.
+  // Every stop writes it, so a stop that asks nothing clears a stale question.
+  // Read by pane.list so an orchestrator can tell "finished" from "blocked".
+  // Transient — never persisted (buildSessionData allowlist excludes it).
+  surfacePendingQuestion: Record<string, string>;
+  setSurfacePendingQuestion: (ptyId: string, question: string | null) => void;
   // Stamp the "running" freshness clock for a pane WITHOUT an activity string —
   // the byte-based per-PTY 'running' broadcast has no tool name. Same 120s-TTL
   // decay as setSurfaceActivity's stamp; lights background dots from bytes.
@@ -299,6 +308,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
   surfaceActivity: {},
   surfaceActivityAt: {},
+  surfacePendingQuestion: {},
   agentClockMs: Date.now(),
 
   bumpAgentClock: () => set((state: StoreState) => {
@@ -320,6 +330,14 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       delete state.surfaceActivity[ptyId];
       delete state.surfaceActivityAt[ptyId];
     }
+  }),
+
+  setSurfacePendingQuestion: (ptyId, question) => set((state: StoreState) => {
+    if (!ptyId) return;
+    // Main already truncated the text. Empty/null clears — every stop writes
+    // this field, so an answered pane drops its question on its next turn end.
+    if (question) state.surfacePendingQuestion[ptyId] = question;
+    else delete state.surfacePendingQuestion[ptyId];
   }),
 
   markSurfaceRunning: (ptyId) => set((state: StoreState) => {

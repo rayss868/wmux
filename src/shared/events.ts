@@ -263,6 +263,28 @@ export interface AgentLifecycleEvent extends WmuxEventBase {
    * `null` when the shell emitted `OSC 133;D` without an exit code suffix.
    */
   exitCode?: number | null;
+  /**
+   * What the pane said as it stopped. Set only for `kind:'agent.stop'` with
+   * `source:'hook'` — the Stop hook is the only signal that hands us a
+   * transcript path, so a detector-sourced stop still arrives contentless.
+   *
+   * Consumers use this to tell "finished its work" apart from "asked me
+   * something and is blocked". Absent whenever the transcript is unreadable;
+   * treat absence as "unknown", never as "no question".
+   */
+  lastMessage?: AgentLastMessage;
+}
+
+/**
+ * The closing message of an agent turn, lifted from the agent's own transcript
+ * rather than from the rendered terminal — screen text cannot distinguish a
+ * printed proposal from a line pending in the input box.
+ */
+export interface AgentLastMessage {
+  /** Tail of the message (≤600 chars), whitespace-collapsed. */
+  text: string;
+  /** The final line reads as a question aimed at the human. */
+  endsWithQuestion: boolean;
 }
 
 /**
