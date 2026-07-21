@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
@@ -35,6 +35,13 @@ export default function Sidebar() {
   // WorkspaceItem이 자기 ws를 self-subscribe한다. 배경 ws의 metadata/surface
   // churn은 이 컴포넌트를 리렌더하지 않는다(이름/추가/삭제/재정렬 시에만).
   const workspaces = useStore(useShallow(selectWorkspaceIdName));
+  const [wsSearch, setWsSearch] = useState('');
+  const wsSearchRef = useRef<HTMLInputElement>(null);
+  const filteredWorkspaces = useMemo(() => {
+    if (!wsSearch.trim()) return workspaces;
+    const q = wsSearch.toLowerCase();
+    return workspaces.filter((ws) => ws.name.toLowerCase().includes(q));
+  }, [workspaces, wsSearch]);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const addWorkspace = useStore((s) => s.addWorkspace);
   const removeWorkspace = useStore((s) => s.removeWorkspace);
@@ -88,6 +95,18 @@ export default function Sidebar() {
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
   const closePicker = useCallback(() => setPickerOpen(false), []);
 
+  // Ctrl+F → focus workspace search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'f' && (e.ctrlKey || e.metaKey) && workspaces.length >= 3) {
+        e.preventDefault();
+        wsSearchRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [workspaces.length]);
+
   // A1: 콜백을 useCallback으로 안정화해 memo(WorkspaceItem)가 실효하게 한다.
   // 요약만 구독하므로 개별 ws는 getState()로 명령형 조회한다(구독 다이어트).
   const handleCtrlSelect = useCallback((wsId: string) => {
@@ -120,6 +139,20 @@ export default function Sidebar() {
     >
       {pickerOpen && <PresetPicker onClose={closePicker} />}
 
+      {/* Workspace search input — only visible when 3+ workspaces */}
+      {workspaces.length >= 3 && (
+        <div className="px-2 pt-2">
+          <input
+            ref={wsSearchRef}
+            type="text"
+            value={wsSearch}
+            onChange={(e) => setWsSearch(e.target.value)}
+            placeholder="Search workspaces…"
+            className="w-full px-2 py-1 text-xs bg-[var(--bg-surface)] text-[var(--text-main)] border border-[var(--bg-surface)] rounded outline-none focus:border-[var(--text-muted)] placeholder:text-[var(--text-muted)]"
+          />
+        </div>
+      )}
+
       {/* Central content: company tree when in company mode, else the
           workspace list. This is the consumer of `sidebarMode` that was
           missing — CompanyPanel was orphaned (never rendered) so the
@@ -147,7 +180,7 @@ export default function Sidebar() {
             스토어 액션/useCallback 핸들러라 렌더마다 새로 만들어지지 않아
             memo(WorkspaceItem)가 실효한다. 항목 내용은 WorkspaceItem이 자기
             ws를 self-subscribe해 반영한다. */}
-        {workspaces.map((ws, i) => (
+        {filteredWorkspaces.map((ws, i) => (
           <WorkspaceItem
             key={ws.id}
             workspaceId={ws.id}
