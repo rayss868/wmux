@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Notifications can be muted per category instead of all-or-nothing.** Every notification now carries the kind of event that produced it — agent turn finished, subagent finished, awaiting approval, terminal (OSC 9/99/777), system/external — and Settings → Notifications has a switch per category. Before, the only knobs were global sound/toast/ring toggles, so quieting subagent chatter during parallel work also silenced the "awaiting approval" signal that actually needs you. Muted categories still land in the notification panel; only toast, sound, pane ring, and taskbar flash are suppressed, the same contract a muted workspace already had. Nothing is muted by default, and a notification whose source can't classify it is never suppressed by a category mute. The mute is honored even when wmux has no live window — the muted set is mirrored to the main process, so a category you turned off can't come back as a desktop banner while the app sits in the tray. Subagent-vs-main-agent classification comes from the Claude Code hook bridge; the text detector can only distinguish approval prompts from turn ends, and the Settings copy says so. (#516)
+
 ### Fixed
 
 - **A single failing installer step no longer discards the platform's whole release.** Forge builds makers in sequence and stops at the first failure, so when the macOS DMG step hit a transient `hdiutil detach` error during v3.28.1, the upload step never ran — and the runner was thrown away with a perfectly good `.zip` still on it. That zip is what backs the auto-update feed, so one flaky maker silently took out both the download **and** auto-update for macOS until the job was re-run. Both the macOS and Linux upload steps now run regardless of whether the build step failed, publishing whatever artifacts did get made.

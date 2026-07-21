@@ -54,7 +54,14 @@ export function registerNotifyRpc(router: RpcRouter, getWindow: GetWindow): void
     // surface — including the OS toast (osToast action when the window is
     // unfocused). With no renderer window at all, dispatchNotification
     // falls back to a direct OS toast.
-    dispatchNotification(getWindow(), null, { title, body, type, workspaceId }, { workspaceId });
+    dispatchNotification(
+      getWindow(),
+      null,
+      // External callers (MCP clients, `wmux notify`) supply free-form text with
+      // no event semantics, so they ride the 'system' category (#516).
+      { title, body, type, workspaceId, category: 'system' },
+      { workspaceId },
+    );
 
     return Promise.resolve({ delivered: true, type });
   });

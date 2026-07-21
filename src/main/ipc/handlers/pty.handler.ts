@@ -528,7 +528,7 @@ export function registerPTYHandlers(
           dispatchNotification(
             win,
             null,
-            { type: 'warning', title, body, workspaceId: options?.workspaceId },
+            { type: 'warning', title, body, workspaceId: options?.workspaceId, category: 'system' },
             { workspaceId: options?.workspaceId ?? null },
           );
         }
@@ -1126,7 +1126,12 @@ export function registerPTYHandlers(
         // In-app notification (unread badge) + renderer-decided OS toast,
         // mirroring the agent notification surface. Toast click jumps to
         // the originating pane.
-        dispatchNotification(win, payload.sessionId, { type: 'warning', title, body }, { ptyId: payload.sessionId });
+        dispatchNotification(
+          win,
+          payload.sessionId,
+          { type: 'warning', title, body, category: 'system' },
+          { ptyId: payload.sessionId },
+        );
       }
     };
     daemonClient.on('supervision:changed', onDaemonSupervisionChanged);

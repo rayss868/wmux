@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, t as i18nT, type Locale } from '../../i18n';
@@ -639,6 +639,21 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.sidebarPosition) state.sidebarPosition = data.sidebarPosition;
       if (data.notificationSoundEnabled != null) state.notificationSoundEnabled = data.notificationSoundEnabled;
+      // Whitelist + dedupe on the way in: a corrupted or forward-version
+      // session file must not park unknown strings in the store, where the
+      // Settings UI can't show them and every save writes them back out.
+      // Copy rather than aliasing the caller's array (immer autoFreeze would
+      // otherwise freeze the SessionData object the caller still holds).
+      if (Array.isArray(data.mutedNotificationCategories)) {
+        state.mutedNotificationCategories = [
+          ...new Set(
+            data.mutedNotificationCategories.filter((c) => NOTIFICATION_CATEGORIES.includes(c)),
+          ),
+        ];
+        window.electronAPI.settings.setMutedNotificationCategories(
+          state.mutedNotificationCategories,
+        );
+      }
       if (data.toastEnabled != null) {
         state.toastEnabled = data.toastEnabled;
         window.electronAPI.settings.setToastEnabled(data.toastEnabled);

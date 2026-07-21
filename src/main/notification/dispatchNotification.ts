@@ -2,6 +2,7 @@ import type { BrowserWindow } from 'electron';
 import { sendNotification, type NotificationPayload } from './sendNotification';
 import { toastManager, type ToastFocusContext } from './ToastManager';
 import { isRendererNotificationListenerReady } from './rendererNotificationReadiness';
+import { isCategoryMuted } from './mutedCategories';
 
 /**
  * Single entry point for "surface a notification to the user".
@@ -52,6 +53,12 @@ export function dispatchNotification(
     sendNotification(win, ptyId, payload);
     return;
   }
+  // The renderer's policy is unreachable here, so apply the one gate it would
+  // have applied that main can know about: the mirrored per-category mute
+  // (#516). Without this, muting a category went quiet inside the app but
+  // still banner-ed the desktop whenever the window was closed to the tray —
+  // the exact case the mute exists for.
+  if (isCategoryMuted(payload.category)) return;
   toastManager.showDirect(
     payload.title,
     payload.body,

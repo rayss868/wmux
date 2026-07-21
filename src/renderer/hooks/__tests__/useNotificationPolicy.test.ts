@@ -32,6 +32,7 @@ function baseCtx(overrides: Partial<PolicyContext> = {}): PolicyContext {
     windowFocused: true,
     isActiveSurface: false,
     isMutedWorkspace: false,
+    mutedCategories: [],
     paneId: 'pane-1',
     settings: {
       toastEnabled: true,
@@ -297,5 +298,34 @@ describe('decideNotificationActions', () => {
       expect(add.surfaceId).toBe('sf-1');
       expect(add.payload).toEqual(samplePayload);
     }
+  });
+
+  // #516 — per-category mute. Same "data preserved, surfaces silent" contract
+  // as a muted workspace, keyed on the event kind.
+  it('a muted category suppresses every surface but still records the notification', () => {
+    const result = decideNotificationActions(
+      { ...samplePayload, type: 'agent', category: 'subagent' },
+      sampleTarget,
+      baseCtx({ windowFocused: false, mutedCategories: ['subagent'] }),
+    );
+    expect(result.map((a) => a.kind)).toEqual(['addNotification']);
+  });
+
+  it('muting one category leaves the others loud', () => {
+    const result = decideNotificationActions(
+      { ...samplePayload, type: 'agent', category: 'approval' },
+      sampleTarget,
+      baseCtx({ mutedCategories: ['subagent'] }),
+    );
+    expect(result.some((a) => a.kind === 'pushToast')).toBe(true);
+  });
+
+  it('an uncategorized notification is never suppressed by a category mute', () => {
+    const result = decideNotificationActions(
+      samplePayload,
+      sampleTarget,
+      baseCtx({ mutedCategories: ['subagent', 'agent-turn', 'approval', 'terminal', 'system'] }),
+    );
+    expect(result.some((a) => a.kind === 'pushToast')).toBe(true);
   });
 });

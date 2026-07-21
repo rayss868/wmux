@@ -39,7 +39,7 @@
  * internal throttler instances into every test fixture for no benefit.
  */
 
-import type { NotificationType } from '../../shared/types';
+import type { NotificationCategory, NotificationType } from '../../shared/types';
 
 /**
  * The shape the listener receives over IPC (notification.onNew). Defined
@@ -53,6 +53,12 @@ export interface NotifPayload {
   body: string;
   /** Optional workspace hint. resolveNotificationTarget already used this. */
   workspaceId?: string;
+  /**
+   * Event class the per-category mute keys off (#516). Undefined for emitters
+   * that don't classify — an uncategorized notification is never suppressed
+   * by a category mute.
+   */
+  category?: NotificationCategory;
 }
 
 /**
@@ -106,6 +112,13 @@ export interface PolicyContext {
   /** Target workspace's metadata.notificationsMuted === true. */
   isMutedWorkspace: boolean;
   /**
+   * Categories the user has muted in Settings (#516). Same semantics as a
+   * muted workspace — the notification is still recorded, every surface is
+   * silent — but scoped to the KIND of event instead of where it came from,
+   * so subagent chatter can be quieted without losing approval prompts.
+   */
+  mutedCategories: readonly NotificationCategory[];
+  /**
    * Resolved pane id for the ring action. null when the notification has
    * no surface match (e.g. external MCP `notify` without ptyId or workspace
    * hint resolves to active workspace but not to a specific pane). The
@@ -137,6 +150,8 @@ export interface PolicyContext {
  *   2. Muted workspace — return [addNotification] only. Data is preserved
  *      in the panel, every surface action is suppressed regardless of
  *      individual toggles.
+ *   2b. Muted category — same contract, keyed on the event kind instead of
+ *      the workspace. Uncategorized notifications are never suppressed here.
  *   3. Normal fan-out — addNotification first, then each surface action
  *      gated by its own setting.
  */
@@ -171,6 +186,14 @@ export function decideNotificationActions(
   //    badge math still ignores it via the mute flag), but every surface
   //    is silent. Independent of individual toggles by design (A4).
   if (ctx.isMutedWorkspace) {
+    return [addAction];
+  }
+
+  // 2b. Muted category — same "data preserved, surfaces silent" contract as
+  //     a muted workspace. Uncategorized notifications (category undefined)
+  //     fall through: a mute must never silence an event we couldn't
+  //     classify.
+  if (payload.category && ctx.mutedCategories.includes(payload.category)) {
     return [addAction];
   }
 
