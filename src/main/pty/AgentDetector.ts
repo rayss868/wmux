@@ -34,7 +34,7 @@ type CriticalEventCallback = (event: CriticalEvent) => void;
 // signals on this slug, so the two MUST stay in lock-step. New agents
 // added here must also be added to integrations/shared/signal-types.ts
 // (AgentSlug union) and to any HookSignalRouter dedup table.
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot';
+export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude';
 
 interface AgentPattern {
   /** Display name. Surfaced in UI ("Claude Code", "Codex CLI"). */
@@ -60,6 +60,7 @@ export function agentDisplayToSlug(display: string): AgentSlug | undefined {
     case 'Aider': return 'aider';
     case 'OpenCode': return 'opencode';
     case 'GitHub Copilot CLI': return 'copilot';
+    case 'OpenClaude': return 'openclaude';
     default: return undefined;
   }
 }
@@ -110,7 +111,10 @@ const AGENT_PATTERNS: AgentPattern[] = [
     // \s* — Claude Code TUI는 배너 "Claude Code"를 셀 단위 커서 이동으로 그려,
     // ANSI strip 후 "Claude"와 "Code" 사이 공백이 사라진 "ClaudeCode"가 된다.
     // 공백을 선택적으로 둬야 daemon mode에서도 gate가 매칭된다(핵심 race 원인).
-    gate: /Claude\s*Code|claude-code|╭.*Claude/,
+    // (?<!Open)(?<!Open\s) keeps this gate from also opening on the
+    // OpenClaude fork's banner ("╭ … OpenClaude" / "╭ … Open Claude"),
+    // which would double-activate and misattribute events to Claude.
+    gate: /(?<!Open)(?<!Open\s)Claude\s*Code|claude-code|╭.*(?<!Open)(?<!Open\s)Claude/,
     patterns: [
       // Waiting — Claude Code's unique idle prompt fragments.
       //
@@ -182,6 +186,24 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // older patterns use, so the new class includes them.)
       { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)\s*\S[^?]*\?[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Edit approval requested' },
       { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,             status: 'awaiting_input',   message: 'Edit approval requested' },
+    ],
+  },
+
+  // ── OpenClaude ───────────────────────────────────────────────────────────
+  // Gate: OpenClaude startup banner — same fork-derived TUI as Claude Code
+  // but prints "OpenClaude" or "Open Claude" in its banner.
+  {
+    agent: 'OpenClaude',
+    slug: 'openclaude',
+    gate: /Open\s*Claude|openclaude|╭.*OpenClaude/,
+    patterns: [
+      { regex: /bypass permissions on/,          status: 'waiting',          message: 'Ready for input' },
+      { regex: /shift\+tab to cycle/,            status: 'waiting',          message: 'Ready for input' },
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                                                  status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
+      { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)\s*\S[^?]*\?[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Edit approval requested' },
+      { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,             status: 'awaiting_input',   message: 'Edit approval requested' },
+      { regex: />$/,                                                                                                                                                    status: 'waiting',          message: 'Ready for input' },
     ],
   },
 

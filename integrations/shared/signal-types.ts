@@ -43,7 +43,7 @@ export type AgentSignalKind =
  * renderer layer, NOT carried in the envelope. This keeps envelopes
  * lowercase + whitespace-free for safe routing key construction.
  */
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot';
+export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude';
 
 /**
  * Canonical envelope. All fields are required UNLESS marked optional.
@@ -129,7 +129,7 @@ export interface HookSignalResponse {
  *  unknown agent values rather than accepting any string (codex round-2
  *  review P2 #9). Keep this in sync with the AgentSlug union above. */
 const ALLOWED_AGENT_SLUGS: ReadonlySet<string> = new Set([
-  'claude', 'codex', 'gemini', 'aider', 'opencode', 'copilot',
+  'claude', 'codex', 'gemini', 'aider', 'opencode', 'copilot', 'openclaude',
 ]);
 
 export function isAgentSignal(value: unknown): value is AgentSignal {

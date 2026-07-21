@@ -299,6 +299,7 @@ export const IPC = {
   GITHUB_PR_LIST: 'github:prList',
   GITHUB_PR_DETAIL: 'github:prDetail',
   DIALOG_PICK_FILE: 'dialog:pick-file',
+  DIALOG_PICK_FOLDER: 'dialog:pick-folder',
   // File system
   FS_READ_DIR: 'fs:read-dir',
   FS_READ_FILE: 'fs:read-file',

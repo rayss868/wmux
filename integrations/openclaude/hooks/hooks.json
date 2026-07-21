@@ -1,0 +1,59 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${OPENCLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" PreToolUse"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${OPENCLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" PostToolUse"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${OPENCLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" Stop"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${OPENCLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" SubagentStop"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${OPENCLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" SessionStart"
+          }
+        ]
+      }
+    ]
+  }
+}

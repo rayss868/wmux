@@ -28,6 +28,16 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
     onClose();
   }, [addWorkspace, addWorkspaceWithPreset, onClose]);
 
+  const handleBrowseFolder = useCallback(async () => {
+    const folders = await window.electronAPI?.dialog?.pickFolder();
+    if (folders && folders.length > 0) {
+      const folderPath = folders[0];
+      const folderName = folderPath.split(/[/\\]/).filter(Boolean).pop() || 'Workspace';
+      addWorkspace(folderName, { startupCwd: folderPath });
+      onClose();
+    }
+  }, [addWorkspace, onClose]);
+
   // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -60,6 +70,17 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
       style={anchorStyle}
       className={`${anchorStyle ? 'fixed' : 'absolute right-2 top-10'} z-50 w-52 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-1 text-xs font-mono`}
     >
+      {/* Browse folder option */}
+      <button
+        className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
+        onClick={handleBrowseFolder}
+      >
+        <div className="font-semibold">Browse Folder…</div>
+        <div className="text-[var(--text-muted)] text-[10px]">Pick a folder as workspace</div>
+      </button>
+
+      <div className="border-t border-[var(--bg-surface)] my-0.5" />
+
       {/* Empty workspace option */}
       <button
         className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"

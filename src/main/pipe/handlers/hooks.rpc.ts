@@ -985,5 +985,6 @@ function agentDisplayName(slug: AgentSignal['agent']): string {
     case 'aider': return 'Aider';
     case 'opencode': return 'OpenCode';
     case 'copilot': return 'GitHub Copilot CLI';
+    case 'openclaude': return 'OpenClaude';
   }
 }
