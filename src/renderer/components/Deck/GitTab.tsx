@@ -229,11 +229,9 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
 
   const handleOpen = useCallback((wt: WorktreeEntry) => {
     const st = useStore.getState();
-    st.addWorkspace(wt.branch ?? pathLeaf(wt.path));
-    // addWorkspace가 새 ws를 활성화하므로 activeWorkspaceId = 새 ws. 새 pane의
-    // 터미널은 profile.startupCwd에서 스폰된다(스폰 시 tolerant 폴백 내장).
-    const fresh = useStore.getState();
-    fresh.setWorkspaceProfile(fresh.activeWorkspaceId, { startupCwd: wt.path });
+    // #515: attach the profile atomically with creation so pane #1 spawns in
+    // startupCwd (the create → setWorkspaceProfile pair left pane #1 in home).
+    st.addWorkspace(wt.branch ?? pathLeaf(wt.path), { startupCwd: wt.path });
   }, []);
 
   // diff 서피스 열기 — 워크트리 path는 이미 toplevel이라 resolveRepo 불요,
@@ -327,9 +325,8 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
   const openIntegration = useCallback(() => {
     if (!session) return;
     const st = useStore.getState();
-    st.addWorkspace(`merge: ${session.sourceBranch ?? pathLeaf(session.integrationPath)}`);
-    const fresh = useStore.getState();
-    fresh.setWorkspaceProfile(fresh.activeWorkspaceId, { startupCwd: session.integrationPath });
+    // #515: attach the profile atomically with creation (see handleOpen).
+    st.addWorkspace(`merge: ${session.sourceBranch ?? pathLeaf(session.integrationPath)}`, { startupCwd: session.integrationPath });
   }, [session]);
 
   // transient 단계(merging/verifying) 동안만 상태 폴링 — 종결 단계로 가면 정지.

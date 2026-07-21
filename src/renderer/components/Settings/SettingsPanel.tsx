@@ -21,7 +21,8 @@ import {
   type ForegroundTokenKey,
   type ContrastReport,
 } from '../../contrastSafety';
-import type { CustomThemeColors, XtermThemeColors } from '../../../shared/types';
+import type { CustomThemeColors, NotificationCategory, XtermThemeColors } from '../../../shared/types';
+import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
@@ -3190,6 +3191,10 @@ export interface NotificationsViewProps {
   notificationSoundChoice: 'default' | 'none';
   onChangeNotificationSoundChoice: (choice: 'default' | 'none') => void;
 
+  // #516 — per-category mute
+  mutedNotificationCategories: NotificationCategory[];
+  onChangeCategoryMuted: (category: NotificationCategory, muted: boolean) => void;
+
   // T12 — per-workspace mute list
   workspaces: NotificationsViewWorkspaceRow[];
   onChangeWorkspaceMuted: (workspaceId: string, muted: boolean) => void;
@@ -3215,6 +3220,7 @@ export function NotificationsView(props: NotificationsViewProps) {
     paneFlashEnabled, onChangePaneFlashEnabled,
     taskbarFlashEnabled, onChangeTaskbarFlashEnabled,
     notificationSoundChoice, onChangeNotificationSoundChoice,
+    mutedNotificationCategories, onChangeCategoryMuted,
     workspaces, onChangeWorkspaceMuted,
     t,
   } = props;
@@ -3324,6 +3330,28 @@ export function NotificationsView(props: NotificationsViewProps) {
         </div>
       </div>
 
+      {/* #516 — Per-category mute. Muted categories still reach the
+          notification panel; only toast/sound/ring/flash are suppressed. */}
+      <div className="flex flex-col gap-2" data-testid="notification-category-section">
+        <SectionLabel label={t('settings.notificationCategories')} />
+        <p className="text-[11px] text-[color:var(--text-muted)] px-1">
+          {t('settings.notificationCategoriesDesc')}
+        </p>
+        {NOTIFICATION_CATEGORIES.map((category) => (
+          <SettingRow
+            key={category}
+            label={t(`settings.notificationCategory.${category}`)}
+            description={t(`settings.notificationCategory.${category}.desc`)}
+          >
+            <Toggle
+              checked={!mutedNotificationCategories.includes(category)}
+              onChange={(enabled) => onChangeCategoryMuted(category, !enabled)}
+              label={t(`settings.notificationCategory.${category}`)}
+            />
+          </SettingRow>
+        ))}
+      </div>
+
       {/* T12 — Per-workspace mute list */}
       <div className="flex flex-col gap-2" data-testid="per-workspace-mute-section">
         <SectionLabel label={t('settings.perWorkspaceNotifications')} />
@@ -3409,6 +3437,10 @@ function TabNotifications() {
   const notificationSoundChoice  = useStore((s) => s.notificationSoundChoice);
   const setNotificationSoundChoice = useStore((s) => s.setNotificationSoundChoice);
 
+  // #516 fields
+  const mutedNotificationCategories = useStore((s) => s.mutedNotificationCategories);
+  const setNotificationCategoryMuted = useStore((s) => s.setNotificationCategoryMuted);
+
   // A1: {id,name,notificationsMuted}만 필요 — 투영만 구독해 cwd/git/port churn에
   // 리렌더되지 않게 한다.
   const muteRows = useStore(useShallow(selectWorkspaceMuteRows));
@@ -3440,6 +3472,8 @@ function TabNotifications() {
       onChangeTaskbarFlashEnabled={setTaskbarFlashEnabled}
       notificationSoundChoice={notificationSoundChoice}
       onChangeNotificationSoundChoice={setNotificationSoundChoice}
+      mutedNotificationCategories={mutedNotificationCategories}
+      onChangeCategoryMuted={setNotificationCategoryMuted}
       workspaces={workspaceRows}
       onChangeWorkspaceMuted={(id, muted) => updateWorkspaceMetadata(id, { notificationsMuted: muted })}
     />

@@ -6,6 +6,7 @@ import type {
   SampleTaskStartPayload,
 } from '../shared/firstRun';
 import { isFileDrag } from '../shared/dragDrop';
+import type { NotificationCategory } from '../shared/types';
 import type { ResumeBinding } from '../shared/agentResume';
 import type {
   RemoteInboxItem,
@@ -166,6 +167,8 @@ const electronAPI = {
   },
   settings: {
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
+    setMutedNotificationCategories: (categories: NotificationCategory[]) =>
+      ipcRenderer.send(IPC.MUTED_NOTIFICATION_CATEGORIES, categories),
     setAutoUpdateEnabled: (enabled: boolean) => ipcRenderer.send(IPC.AUTO_UPDATE_ENABLED, enabled),
   },
   // Windows "start on login" toggle (issue #460). Backed by the per-user Run
@@ -180,8 +183,8 @@ const electronAPI = {
     // `notify` RPC, where no PTY originates the message). When null, the
     // renderer resolves via `data.workspaceId` or falls back to the active
     // workspace.
-    onNew: (callback: (ptyId: string | null, data: { type: string; title: string; body: string; workspaceId?: string }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, ptyId: string | null, data: { type: string; title: string; body: string; workspaceId?: string }) =>
+    onNew: (callback: (ptyId: string | null, data: { type: string; title: string; body: string; workspaceId?: string; category?: NotificationCategory }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, ptyId: string | null, data: { type: string; title: string; body: string; workspaceId?: string; category?: NotificationCategory }) =>
         callback(ptyId, data);
       ipcRenderer.on(IPC.NOTIFICATION, listener);
       return () => { ipcRenderer.removeListener(IPC.NOTIFICATION, listener); };

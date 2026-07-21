@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, t as i18nT, type Locale } from '../../i18n';
@@ -39,7 +39,10 @@ export interface WorkspaceSlice {
   /** P2 — global high-water for stable Workspace.wsOrdinal allocation. Never
    *  decremented; persisted in SessionData so numbers survive restart. */
   nextWorkspaceOrdinal: number;
-  addWorkspace: (name?: string) => void;
+  /** Create and activate a new workspace. An optional `profile` is normalized
+   * (dropSecretKeys) and attached in the SAME immer set, so pane #1 spawns with
+   * profile.startupCwd already present instead of a home fallback (#515). */
+  addWorkspace: (name?: string, profile?: WorkspaceProfile) => void;
   addWorkspaceWithPreset: (presetId: string, name?: string) => void;
   /**
    * Duplicate an existing workspace's LAYOUT (pane tree, with fresh ids and
@@ -91,7 +94,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     activeWorkspaceId: initial.id,
     nextWorkspaceOrdinal: 2,
 
-    addWorkspace: (name) => set((state: StoreState) => {
+    addWorkspace: (name, profile) => set((state: StoreState) => {
       let wsName = name;
       if (!wsName) {
         const usedNumbers = new Set(
@@ -108,6 +111,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
       const ws = createWorkspace(wsName, wsOrdinal);
+      // #515: attach the profile BEFORE activation (same set) so pane #1's PTY
+      // create sees profile.startupCwd. Editor/save boundary → dropSecretKeys.
+      if (profile) {
+        const normalized = normalizeWorkspaceProfile(profile, { dropSecretKeys: true });
+        if (normalized) ws.profile = normalized;
+      }
       state.nextWorkspaceOrdinal = wsOrdinal + 1;
       state.workspaces.push(ws);
       state.activeWorkspaceId = ws.id;
@@ -630,6 +639,21 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.sidebarPosition) state.sidebarPosition = data.sidebarPosition;
       if (data.notificationSoundEnabled != null) state.notificationSoundEnabled = data.notificationSoundEnabled;
+      // Whitelist + dedupe on the way in: a corrupted or forward-version
+      // session file must not park unknown strings in the store, where the
+      // Settings UI can't show them and every save writes them back out.
+      // Copy rather than aliasing the caller's array (immer autoFreeze would
+      // otherwise freeze the SessionData object the caller still holds).
+      if (Array.isArray(data.mutedNotificationCategories)) {
+        state.mutedNotificationCategories = [
+          ...new Set(
+            data.mutedNotificationCategories.filter((c) => NOTIFICATION_CATEGORIES.includes(c)),
+          ),
+        ];
+        window.electronAPI.settings.setMutedNotificationCategories(
+          state.mutedNotificationCategories,
+        );
+      }
       if (data.toastEnabled != null) {
         state.toastEnabled = data.toastEnabled;
         window.electronAPI.settings.setToastEnabled(data.toastEnabled);

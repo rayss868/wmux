@@ -81,6 +81,38 @@ describe('workspaceSlice — setWorkspaceProfile', () => {
   });
 });
 
+// Issue #515: attach the profile atomically at creation so pane #1 spawns in
+// profile.startupCwd (the create-then-set pair left pane #1 in home).
+describe('workspaceSlice — addWorkspace(name, profile)', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+  });
+
+  it('attaches a normalized profile to the newly-activated workspace', () => {
+    store.getState().addWorkspace('proj', { startupCwd: 'D:\\proj' });
+    const active = store.getState().workspaces.find((w) => w.id === store.getState().activeWorkspaceId);
+    expect(active?.name).toBe('proj');
+    expect(active?.profile).toEqual({ startupCwd: 'D:\\proj' });
+  });
+
+  it('drops secret-named keys on the atomic profile (editor/save boundary)', () => {
+    store.getState().addWorkspace('proj', {
+      startupCwd: 'D:\\proj',
+      env: { CLAUDE_CONFIG_DIR: 'C:/a', OPENAI_API_KEY: 'sk-leak' },
+    });
+    const active = store.getState().workspaces.find((w) => w.id === store.getState().activeWorkspaceId);
+    expect(active?.profile?.env).toEqual({ CLAUDE_CONFIG_DIR: 'C:/a' });
+  });
+
+  it('leaves the profile unset when none is passed (existing callers unchanged)', () => {
+    store.getState().addWorkspace('plain');
+    const active = store.getState().workspaces.find((w) => w.id === store.getState().activeWorkspaceId);
+    expect(active?.profile).toBeUndefined();
+  });
+});
+
 describe('workspaceSlice — loadSession profile sanitization', () => {
   let store: ReturnType<typeof createTestStore>;
 

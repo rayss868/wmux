@@ -495,7 +495,7 @@ export class DaemonNotificationRouter {
       dispatchNotification(
         win,
         null,
-        { type: 'agent', title, body, workspaceId: event.workspaceId },
+        { type: 'agent', title, body, workspaceId: event.workspaceId, category: 'system' },
         { workspaceId: event.workspaceId },
       );
       eventBus.emit({
@@ -569,7 +569,14 @@ export class DaemonNotificationRouter {
           dispatchNotification(
             win,
             payload.sessionId,
-            { type: 'agent', title, body },
+            // Daemon-mode twin of PTYBridge's detector path: text-only signal,
+            // so anything that isn't an approval prompt is 'agent-turn' (#516).
+            {
+              type: 'agent',
+              title,
+              body,
+              category: ev.status === 'awaiting_input' ? 'approval' : 'agent-turn',
+            },
             { ptyId: payload.sessionId },
           );
 
@@ -629,7 +636,7 @@ export class DaemonNotificationRouter {
         dispatchNotification(
           win,
           payload.sessionId,
-          { type: 'info', title: title ?? 'Terminal', body: ev.body },
+          { type: 'info', title: title ?? 'Terminal', body: ev.body, category: 'terminal' },
           { ptyId: payload.sessionId },
         );
         // X1 — fold the latest notification text into the sidebar metadata

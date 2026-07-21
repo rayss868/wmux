@@ -23,6 +23,7 @@ Object.defineProperty(globalThis, 'window', {
       settings: {
         setToastEnabled: vi.fn(),
         setAutoUpdateEnabled: vi.fn(),
+        setMutedNotificationCategories: vi.fn(),
       },
     },
   },
@@ -504,5 +505,18 @@ describe('UISlice — Fleet View overlay (S-C1)', () => {
     store.setState({ inspectModeActive: true });
     store.getState().toggleFleetView();
     expect(store.getState().inspectModeActive).toBe(false);
+  });
+
+  // #516 — per-category notification mute
+  it('setNotificationCategoryMuted adds and removes without duplicating', () => {
+    expect(store.getState().mutedNotificationCategories).toEqual([]);
+
+    store.getState().setNotificationCategoryMuted('subagent', true);
+    store.getState().setNotificationCategoryMuted('subagent', true);
+    expect(store.getState().mutedNotificationCategories).toEqual(['subagent']);
+
+    store.getState().setNotificationCategoryMuted('approval', true);
+    store.getState().setNotificationCategoryMuted('subagent', false);
+    expect(store.getState().mutedNotificationCategories).toEqual(['approval']);
   });
 });

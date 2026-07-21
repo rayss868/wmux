@@ -686,9 +686,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
     const paneId = ws.activePaneId;
     const shell = typeof params.shell === 'string' ? params.shell : '';
-    const cwd = typeof params.cwd === 'string' ? params.cwd : '';
+    // #515: when the caller supplies no cwd, apply the same profile.startupCwd >
+    // global startupDirectory fallback chain the Ctrl+T / palette paths use,
+    // instead of spawning in home. An explicit caller cwd still wins.
+    const cwd =
+      typeof params.cwd === 'string' && params.cwd.length > 0
+        ? params.cwd
+        : resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: store.startupDirectory }) ?? '';
 
-    const { id: ptyId } = await window.electronAPI.pty.create(
+    const created = await window.electronAPI.pty.create(
       withWorkspaceProfile(
         {
           ...withDefaultShell({ shell: shell || undefined }, store.defaultShell),
@@ -698,6 +704,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         ws.profile,
       ),
     );
+    const ptyId = created.id;
 
     // Re-read state after async gap — the pane may have been removed. Look up
     // the SAME workspace by id (NOT the active one, which may have changed).
@@ -708,7 +715,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
       return { error: 'pane was removed during PTY creation' };
     }
-    freshAfterCreate.addSurface(paneId, ptyId, shell, cwd, ws.id);
+    // #515: adopt the cwd main actually spawned in (validated/home-fallback
+    // applied) so the surface tracks its real dir and later splits seed correctly.
+    freshAfterCreate.addSurface(paneId, ptyId, shell, created.cwd || cwd, ws.id);
 
     const fresh = useStore.getState();
     const freshWs = fresh.workspaces.find((w) => w.id === ws.id);

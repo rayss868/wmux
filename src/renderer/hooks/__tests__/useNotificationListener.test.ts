@@ -118,6 +118,7 @@ function makeHarness(overrides: { state?: Partial<MockState> } = {}): Harness {
     paneRingEnabled: true,
     paneFlashEnabled: true,
     taskbarFlashEnabled: true,
+    mutedNotificationCategories: [],
     addNotification: spies.addNotification,
     pushToast: spies.pushToast,
     setPaneNotificationRing: spies.setPaneNotificationRing,

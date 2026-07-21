@@ -240,6 +240,9 @@ export const IPC = {
   UPDATE_INSTALL: 'update:install',
   // Settings sync (renderer → main)
   TOAST_ENABLED: 'settings:toast-enabled',
+  // #516 — renderer mirrors the muted notification categories so the
+  // no-renderer toast fallback in dispatchNotification can honor them.
+  MUTED_NOTIFICATION_CATEGORIES: 'settings:muted-notification-categories',
   AUTO_UPDATE_ENABLED: 'settings:auto-update-enabled',
   // Agent critical action approval
   APPROVAL_REQUEST: 'approval:request',

@@ -1,5 +1,5 @@
 import type { BrowserWindow } from 'electron';
-import type { NotificationType } from '../../shared/types';
+import type { NotificationCategory, NotificationType } from '../../shared/types';
 import { IPC } from '../../shared/constants';
 
 export interface NotificationPayload {
@@ -13,6 +13,12 @@ export interface NotificationPayload {
    * workspace-scoped notification with surfaceId left undefined.
    */
   workspaceId?: string;
+  /**
+   * Event class used by the renderer's per-category mute (#516). Optional:
+   * emitters that leave it unset stay uncategorized and are never suppressed
+   * by a category mute.
+   */
+  category?: NotificationCategory;
 }
 
 /**
