@@ -196,6 +196,19 @@ function validateCwd(cwd: string | undefined): string | undefined {
   return resolved;
 }
 
+/**
+ * Diagnostic one-liner for the cwd a create request resolved to (issue #515).
+ * `why` is: valid (used as-is) | dropped (validateCwd rejected — missing/UNC/
+ * not-a-dir) | absent (caller sent no cwd). When dropped/absent the spawn layer
+ * falls back to homedir, which is exactly the "panes land in home" symptom, so
+ * this makes future reports diagnosable straight from the log.
+ */
+function logCwdResolution(sessionId: string, incoming: string | undefined, safe: string | undefined): void {
+  const why = incoming ? (safe ? 'valid' : 'dropped') : 'absent';
+  const effective = safe ?? '(home-fallback)';
+  console.log(`[pty:create] ${sessionId} cwd in=${incoming ?? '-'} → ${effective} (${why})`);
+}
+
 export function registerPTYHandlers(
   ptyManager: PTYManager,
   ptyBridge: PTYBridge,
@@ -353,6 +366,7 @@ export function registerPTYHandlers(
       // Generate a unique session ID
       const crypto = require('crypto');
       const sessionId = `daemon-${crypto.randomUUID().slice(0, 8)}`;
+      logCwdResolution(sessionId, options?.cwd, safeCwd);
 
       // Identity env vars for the spawned shell. The daemon's
       // `buildSafeChildEnv` passes WMUX_WORKSPACE_ID / WMUX_SURFACE_ID
@@ -528,6 +542,7 @@ export function registerPTYHandlers(
       // from only the local-relevant fields instead of spreading the payload.
       const { initialCommand, shell, cols, rows, workspaceId, surfaceId, env, spawnKind } = options ?? {};
       const instance = ptyManager.create({ shell, cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind });
+      logCwdResolution(instance.id, options?.cwd, safeCwd);
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);

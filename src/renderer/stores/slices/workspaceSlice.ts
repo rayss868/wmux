@@ -39,7 +39,10 @@ export interface WorkspaceSlice {
   /** P2 — global high-water for stable Workspace.wsOrdinal allocation. Never
    *  decremented; persisted in SessionData so numbers survive restart. */
   nextWorkspaceOrdinal: number;
-  addWorkspace: (name?: string) => void;
+  /** Create and activate a new workspace. An optional `profile` is normalized
+   * (dropSecretKeys) and attached in the SAME immer set, so pane #1 spawns with
+   * profile.startupCwd already present instead of a home fallback (#515). */
+  addWorkspace: (name?: string, profile?: WorkspaceProfile) => void;
   addWorkspaceWithPreset: (presetId: string, name?: string) => void;
   /**
    * Duplicate an existing workspace's LAYOUT (pane tree, with fresh ids and
@@ -91,7 +94,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     activeWorkspaceId: initial.id,
     nextWorkspaceOrdinal: 2,
 
-    addWorkspace: (name) => set((state: StoreState) => {
+    addWorkspace: (name, profile) => set((state: StoreState) => {
       let wsName = name;
       if (!wsName) {
         const usedNumbers = new Set(
@@ -108,6 +111,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
       const ws = createWorkspace(wsName, wsOrdinal);
+      // #515: attach the profile BEFORE activation (same set) so pane #1's PTY
+      // create sees profile.startupCwd. Editor/save boundary → dropSecretKeys.
+      if (profile) {
+        const normalized = normalizeWorkspaceProfile(profile, { dropSecretKeys: true });
+        if (normalized) ws.profile = normalized;
+      }
       state.nextWorkspaceOrdinal = wsOrdinal + 1;
       state.workspaces.push(ws);
       state.activeWorkspaceId = ws.id;

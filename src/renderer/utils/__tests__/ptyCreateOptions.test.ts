@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../ptyCreateOptions';
+import { resolveRespawnCwd, resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../ptyCreateOptions';
 
 describe('withDefaultShell', () => {
   it('uses the stored detected shell path when no shell is specified', () => {
@@ -95,6 +95,17 @@ describe('resolveStartupCwd', () => {
     expect(resolveStartupCwd({ splitInheritsCwd: true })).toBeUndefined();
   });
 
+  it('ignores an empty-string split seed and falls to profile.startupCwd (#515 healthy path)', () => {
+    // A split from a parent whose tracked cwd is empty must not seed '' — it
+    // falls through to the profile default, not home.
+    expect(resolveStartupCwd({
+      splitSeed: '',
+      splitInheritsCwd: true,
+      profile: { startupCwd: 'C:\\ws' },
+      startupDirectory: 'C:\\global',
+    })).toBe('C:\\ws');
+  });
+
   it('treats an empty/whitespace global setting as unset', () => {
     expect(resolveStartupCwd({ splitInheritsCwd: true, startupDirectory: '   ' })).toBeUndefined();
     expect(resolveStartupCwd({ splitInheritsCwd: true, startupDirectory: '' })).toBeUndefined();
@@ -106,5 +117,39 @@ describe('resolveStartupCwd', () => {
       profile: { env: { FOO: 'bar' } },
       startupDirectory: 'C:\\global',
     })).toBe('C:\\global');
+  });
+});
+
+// Issue #515: a self-create (dead-session respawn / blank-slate recovery) is a
+// NEW shell, so the workspace default OUTRANKS the surface's tracked cwd — the
+// inverse of resolveStartupCwd's split-seed-first semantics.
+describe('resolveRespawnCwd', () => {
+  it('prefers profile.startupCwd over a non-empty (contaminated) surface cwd', () => {
+    // This is the core #515 heal: the surface tracks home, the profile is
+    // configured — the respawn must land in the profile dir, not home.
+    expect(resolveRespawnCwd({
+      surfaceCwd: 'C:\\Users\\rizz',
+      profile: { startupCwd: 'D:\\proj' },
+      startupDirectory: 'C:\\global',
+    })).toBe('D:\\proj');
+  });
+
+  it('honors a non-empty surface cwd when there is no profile.startupCwd', () => {
+    expect(resolveRespawnCwd({
+      surfaceCwd: 'D:\\live',
+      profile: { env: { FOO: 'bar' } },
+      startupDirectory: 'C:\\global',
+    })).toBe('D:\\live');
+  });
+
+  it('falls back surface → global → undefined', () => {
+    expect(resolveRespawnCwd({ surfaceCwd: '', startupDirectory: 'C:\\global' })).toBe('C:\\global');
+    expect(resolveRespawnCwd({ startupDirectory: 'C:\\global' })).toBe('C:\\global');
+    expect(resolveRespawnCwd({})).toBeUndefined();
+  });
+
+  it('treats an empty/whitespace surface cwd and global as unset', () => {
+    expect(resolveRespawnCwd({ surfaceCwd: '   ', startupDirectory: '  ' })).toBeUndefined();
+    expect(resolveRespawnCwd({ surfaceCwd: '' })).toBeUndefined();
   });
 });
