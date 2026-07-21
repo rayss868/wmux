@@ -111,7 +111,10 @@ const AGENT_PATTERNS: AgentPattern[] = [
     // \s* — Claude Code TUI는 배너 "Claude Code"를 셀 단위 커서 이동으로 그려,
     // ANSI strip 후 "Claude"와 "Code" 사이 공백이 사라진 "ClaudeCode"가 된다.
     // 공백을 선택적으로 둬야 daemon mode에서도 gate가 매칭된다(핵심 race 원인).
-    gate: /Claude\s*Code|claude-code|╭.*Claude/,
+    // (?<!Open)(?<!Open\s) keeps this gate from also opening on the
+    // OpenClaude fork's banner ("╭ … OpenClaude" / "╭ … Open Claude"),
+    // which would double-activate and misattribute events to Claude.
+    gate: /Claude\s*Code|claude-code|╭.*(?<!Open)(?<!Open\s)Claude/,
     patterns: [
       // Waiting — Claude Code's unique idle prompt fragments.
       //

@@ -33,7 +33,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
     if (folders && folders.length > 0) {
       const folderPath = folders[0];
       const folderName = folderPath.split(/[/\\]/).filter(Boolean).pop() || 'Workspace';
-      addWorkspace(folderName);
+      addWorkspace(folderName, { startupCwd: folderPath });
       onClose();
     }
   }, [addWorkspace, onClose]);

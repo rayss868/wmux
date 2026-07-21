@@ -95,16 +95,23 @@ export default function Sidebar() {
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
   const closePicker = useCallback(() => setPickerOpen(false), []);
 
-  // Ctrl+F → focus workspace search
+  // Ctrl+F → focus workspace search, but only while focus is already inside
+  // the sidebar. A document-level listener would collide with the global
+  // Ctrl+F terminal-search shortcut (useKeyboard), so this is scoped to the
+  // sidebar root via onKeyDown and stops propagation so the global handler
+  // does not also fire.
+  const handleSidebarKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'f' && (e.ctrlKey || e.metaKey) && workspaces.length >= 3) {
+      e.preventDefault();
+      e.stopPropagation();
+      wsSearchRef.current?.focus();
+    }
+  }, [workspaces.length]);
+
+  // The search input hides below 3 workspaces; clear any leftover query so
+  // the list can't stay filtered with no visible way to reset it.
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'f' && (e.ctrlKey || e.metaKey) && workspaces.length >= 3) {
-        e.preventDefault();
-        wsSearchRef.current?.focus();
-      }
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    if (workspaces.length < 3) setWsSearch('');
   }, [workspaces.length]);
 
   // A1: 콜백을 useCallback으로 안정화해 memo(WorkspaceItem)가 실효하게 한다.
@@ -136,6 +143,7 @@ export default function Sidebar() {
       className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`}
       style={{ width: 240, borderColor: 'var(--border-soft)' }}
       {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}
+      onKeyDown={handleSidebarKeyDown}
     >
       {pickerOpen && <PresetPicker onClose={closePicker} />}
 
@@ -180,13 +188,15 @@ export default function Sidebar() {
             스토어 액션/useCallback 핸들러라 렌더마다 새로 만들어지지 않아
             memo(WorkspaceItem)가 실효한다. 항목 내용은 WorkspaceItem이 자기
             ws를 self-subscribe해 반영한다. */}
-        {filteredWorkspaces.map((ws, i) => (
+        {/* index must be the position in the UNFILTERED list — reorder and
+            the Ctrl+number labels are defined against it. */}
+        {filteredWorkspaces.map((ws) => (
           <WorkspaceItem
             key={ws.id}
             workspaceId={ws.id}
             isActive={ws.id === activeWorkspaceId}
             isMultiview={multiviewIds.includes(ws.id)}
-            index={i}
+            index={workspaces.indexOf(ws)}
             onSelect={setActiveWorkspace}
             onCtrlSelect={handleCtrlSelect}
             onRename={renameWorkspace}
