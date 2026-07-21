@@ -298,6 +298,7 @@ export class PTYBridge {
             type: 'info' as const,
             title: parsed.title ?? 'Terminal',
             body: parsed.body,
+            category: 'terminal' as const,
           };
           dispatchNotification(win, ptyId, notification, { ptyId });
           // X1 — sidebar "latest notification" line (schema-freeze §2),
@@ -448,7 +449,12 @@ export class PTYBridge {
           const body = status === 'awaiting_input'
             ? 'Awaiting input'
             : status === 'waiting' ? 'Ready for input' : 'Task finished';
-          dispatchNotification(win, ptyId, { type: 'agent', title, body }, { ptyId });
+          // The regex detector sees only terminal text, so it can never tell a
+          // subagent turn from a main-agent one — everything that isn't an
+          // approval prompt lands in 'agent-turn'. Subagent classification
+          // requires the hook bridge (#516).
+          const category = status === 'awaiting_input' ? 'approval' as const : 'agent-turn' as const;
+          dispatchNotification(win, ptyId, { type: 'agent', title, body, category }, { ptyId });
 
           // Tee to EventBus for external observers (orchestrator clients).
           // 'waiting' and 'complete' collapse to kind:'agent.stop' — they
@@ -668,6 +674,7 @@ export class PTYBridge {
             type: 'error' as const,
             title: 'Process exited with error',
             body: `Exit code ${exitCode} after ${seconds}s`,
+            category: 'system' as const,
           };
           dispatchNotification(win, ptyId, notification, { ptyId });
         }

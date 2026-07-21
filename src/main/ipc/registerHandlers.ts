@@ -31,6 +31,7 @@ import { createFlashFrameHandler } from '../window/flashFrame';
 import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { markRendererNotificationListenerReady } from '../notification/rendererNotificationReadiness';
+import { setMutedNotificationCategories } from '../notification/mutedCategories';
 import { eventBus } from '../events/EventBus';
 import { WMUX_EVENT_TYPES, type WmuxEventType } from '../../shared/events';
 import { VALID_TRANSITIONS, type TaskState } from '../../shared/types';
@@ -187,6 +188,14 @@ export function registerAllHandlers(
   };
   ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
   ipcMain.on(IPC.TOAST_ENABLED, onToastEnabled);
+
+  // #516 — mirror the renderer's per-category mute so the no-renderer toast
+  // fallback in dispatchNotification can honor it.
+  const onMutedCategories = (_event: Electron.IpcMainEvent, categories: unknown): void => {
+    setMutedNotificationCategories(categories);
+  };
+  ipcMain.removeAllListeners(IPC.MUTED_NOTIFICATION_CATEGORIES);
+  ipcMain.on(IPC.MUTED_NOTIFICATION_CATEGORIES, onMutedCategories);
 
   // Window hide (prefix-d detach)
   const onWindowHide = (): void => {
@@ -385,6 +394,7 @@ export function registerAllHandlers(
     // handle behind (handle handlers are not .on listeners — see above).
     ipcMain.removeHandler(IPC.RPC_INVOKE);
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
+    ipcMain.removeAllListeners(IPC.MUTED_NOTIFICATION_CATEGORIES);
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
     ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
     ipcMain.removeAllListeners(IPC.NOTIFICATION_OS_TOAST);

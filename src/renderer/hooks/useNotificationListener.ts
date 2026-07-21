@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../stores';
-import type { AgentStatus, NotificationType, Pane, Workspace } from '../../shared/types';
+import type { AgentStatus, NotificationCategory, NotificationType, Pane, Workspace } from '../../shared/types';
 import type { AgentSlug } from '../../shared/events';
 import { playNotificationSound } from './useNotificationSound';
 import { createThrottler, type Throttler } from '../utils/createThrottler';
@@ -248,7 +248,8 @@ export interface NotificationHandlerDeps {
     paneRingEnabled: boolean;
     paneFlashEnabled: boolean;
     taskbarFlashEnabled: boolean;
-    addNotification: (n: { workspaceId: string; surfaceId?: string; ptyId?: string; type: NotificationType; title: string; body: string }) => void;
+    mutedNotificationCategories: NotificationCategory[];
+    addNotification: (n: { workspaceId: string; surfaceId?: string; ptyId?: string; type: NotificationType; title: string; body: string; category?: NotificationCategory }) => void;
     pushToast: (t: {
       message: string;
       level: 'info' | 'warn' | 'error';
@@ -288,7 +289,7 @@ export interface NotificationHandlerDeps {
 export function createNotificationHandler(deps: NotificationHandlerDeps) {
   return function handleNotification(
     ptyId: string | null,
-    data: { type: string; title: string; body: string; workspaceId?: string },
+    data: { type: string; title: string; body: string; workspaceId?: string; category?: NotificationCategory },
   ): void {
     const state = deps.getState();
     const target = resolveNotificationTarget(
@@ -312,12 +313,14 @@ export function createNotificationHandler(deps: NotificationHandlerDeps) {
       title: data.title,
       body: data.body,
       workspaceId: data.workspaceId,
+      category: data.category,
     };
 
     const ctx: PolicyContext = {
       windowFocused: deps.isWindowFocused(),
       isActiveSurface: isActive,
       isMutedWorkspace: ws?.metadata?.notificationsMuted === true,
+      mutedCategories: state.mutedNotificationCategories,
       paneId: target.paneId ?? null,
       settings: {
         toastEnabled: state.toastEnabled,
@@ -348,6 +351,9 @@ export function createNotificationHandler(deps: NotificationHandlerDeps) {
             type: action.payload.type,
             title: action.payload.title,
             body: action.payload.body,
+            // Recorded on the panel entry so a future category filter/badge
+            // doesn't need a schema migration over existing sessions (#516).
+            category: action.payload.category,
           });
           break;
         case 'pushToast':

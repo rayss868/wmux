@@ -47,6 +47,8 @@ function makeProps(overrides: Partial<NotificationsViewProps> = {}): Notificatio
     onChangeToastEnabled: noopBool,
     notificationRingEnabled: true,
     onChangeNotificationRingEnabled: noopBool,
+    mutedNotificationCategories: [],
+    onChangeCategoryMuted: noop,
     paneRingEnabled: true,
     onChangePaneRingEnabled: noopBool,
     paneFlashEnabled: true,

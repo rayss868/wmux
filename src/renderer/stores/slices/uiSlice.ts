@@ -16,6 +16,7 @@ import {
   type Pane,
   type PaneBranch,
   type PrefixConfig,
+  type NotificationCategory,
   BUILTIN_TEMPLATES,
   DEFAULT_PREFIX_CONFIG,
   buildDefaultCustomKeybindings,
@@ -284,6 +285,16 @@ export interface UISlice {
 
   notificationSoundChoice: 'default' | 'none';
   setNotificationSoundChoice: (choice: 'default' | 'none') => void;
+
+  // ─── Per-category notification mute (#516) ───────────────────────────────
+  // The surface toggles above are all-or-nothing across event kinds: quieting
+  // subagent chatter meant killing the "awaiting approval" signal too. This
+  // list mutes by KIND instead of by surface. Muted categories still land in
+  // the notification panel (same data-preservation contract as a muted
+  // workspace) — only toast/sound/ring/flash are suppressed.
+  // Persisted through SessionData.mutedNotificationCategories.
+  mutedNotificationCategories: NotificationCategory[];
+  setNotificationCategoryMuted: (category: NotificationCategory, muted: boolean) => void;
 
   // ─── Claude Code hook integration (Phase 1.5) ────────────────────────────
   // Driven by main process: whenever a hook signal arrives via the
@@ -979,6 +990,24 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   setNotificationSoundChoice: (choice) => set((state) => {
     state.notificationSoundChoice = choice;
   }),
+
+  // ─── Per-category notification mute (#516) ───────────────────────────────
+  // Defaults to nothing muted: every category is loud until the user says
+  // otherwise, so an upgrade never silently drops a signal they had before.
+  mutedNotificationCategories: [],
+
+  setNotificationCategoryMuted: (category, muted) => {
+    const current = get().mutedNotificationCategories;
+    const has = current.includes(category);
+    if (muted === has) return;
+    const next = muted ? [...current, category] : current.filter((c) => c !== category);
+    // Mirror to main so the no-renderer toast fallback honors the mute too
+    // (dispatchNotification → isCategoryMuted). Same pattern as toastEnabled.
+    window.electronAPI.settings.setMutedNotificationCategories(next);
+    set((state) => {
+      state.mutedNotificationCategories = next;
+    });
+  },
 
   // ─── Claude Code hook integration (Phase 1.5) ────────────────────────────
   hookSignalHealth: {

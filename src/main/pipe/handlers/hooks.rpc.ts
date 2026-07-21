@@ -52,6 +52,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
 import { readLastAssistantMessage } from '../../claude/lastAssistantMessage';
 import type { AgentLastMessage } from '../../../shared/events';
+import type { NotificationCategory } from '../../../shared/types';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -495,7 +496,12 @@ export function registerHooksRpc(
     dispatchNotification(
       getWindow(),
       ptyId,
-      { type: 'agent', title: titleFor(signal), body: bodyFor(signal) },
+      {
+        type: 'agent',
+        title: titleFor(signal),
+        body: bodyFor(signal),
+        category: categoryFor(signal),
+      },
       { ptyId },
     );
     const win = getWindow();
@@ -930,6 +936,26 @@ function titleFor(signal: AgentSignal): string {
       return `${display}: Session started`;
     case 'agent.awaiting_input':
       return `${display}: Awaiting input`;
+  }
+}
+
+/**
+ * Map the hook signal kind onto the notification category the renderer mutes
+ * on (#516). The hook path is the only emitter that can tell a subagent turn
+ * from a main-agent turn with certainty — the local detector only sees text.
+ * The non-emit kinds (activity / session_start) never reach dispatch, but are
+ * mapped anyway so the switch stays exhaustive.
+ */
+function categoryFor(signal: AgentSignal): NotificationCategory {
+  switch (signal.kind) {
+    case 'agent.subagent_stop':
+      return 'subagent';
+    case 'agent.awaiting_input':
+      return 'approval';
+    case 'agent.stop':
+    case 'agent.activity':
+    case 'agent.session_start':
+      return 'agent-turn';
   }
 }
 

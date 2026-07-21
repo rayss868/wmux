@@ -233,6 +233,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,
     notificationRingEnabled: state.notificationRingEnabled,
+    mutedNotificationCategories: state.mutedNotificationCategories,
     customKeybindings: state.customKeybindings,
     autoUpdateEnabled: state.autoUpdateEnabled,
     customThemeColors: state.customThemeColors ?? undefined,

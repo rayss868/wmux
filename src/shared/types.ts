@@ -212,6 +212,40 @@ export interface PaneSearchResponse {
 // === Notification ===
 export type NotificationType = 'info' | 'warning' | 'error' | 'agent';
 
+/**
+ * What KIND of event produced a notification, independent of its severity
+ * `type`. `type: 'agent'` alone conflated four very different events — a main
+ * agent finishing its turn, a subagent finishing, an approval prompt waiting
+ * on the user, and a channel nudge — so the only way to quiet subagent chatter
+ * was a global mute that also killed the approval signal the user actually
+ * needs (#516).
+ *
+ *   agent-turn — main agent finished its turn / is ready for input
+ *   subagent   — a subagent finished (the noisiest class by far)
+ *   approval   — the agent is BLOCKED waiting on the user (never mute by default)
+ *   terminal   — OSC 9/99/777 desktop notification from a terminal program
+ *   system     — process exit, supervision, channel nudge, external `notify` RPC
+ *
+ * Optional on the wire: an emitter that doesn't set it produces an
+ * uncategorized notification, which no category mute can suppress (fail open —
+ * a mute must never silence something we can't classify).
+ */
+export type NotificationCategory =
+  | 'agent-turn'
+  | 'subagent'
+  | 'approval'
+  | 'terminal'
+  | 'system';
+
+/** Category rows rendered in Settings, in display order. */
+export const NOTIFICATION_CATEGORIES: readonly NotificationCategory[] = [
+  'agent-turn',
+  'subagent',
+  'approval',
+  'terminal',
+  'system',
+];
+
 export interface Notification {
   id: string;
   // Optional: app-level / workspace-level notifications (e.g. from MCP `notify` RPC
@@ -227,6 +261,8 @@ export interface Notification {
   type: NotificationType;
   title: string;
   body: string;
+  /** Event class (#516). Undefined for records written before categories existed. */
+  category?: NotificationCategory;
   timestamp: number;
   read: boolean;
 }
@@ -630,6 +666,8 @@ export interface SessionData {
   notificationSoundEnabled?: boolean;
   toastEnabled?: boolean;
   notificationRingEnabled?: boolean;
+  /** Categories whose surface actions are suppressed (#516). */
+  mutedNotificationCategories?: NotificationCategory[];
   customKeybindings?: CustomKeybinding[];
   autoUpdateEnabled?: boolean;
   customThemeColors?: CustomThemeColors;
