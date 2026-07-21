@@ -34,7 +34,7 @@ type CriticalEventCallback = (event: CriticalEvent) => void;
 // signals on this slug, so the two MUST stay in lock-step. New agents
 // added here must also be added to integrations/shared/signal-types.ts
 // (AgentSlug union) and to any HookSignalRouter dedup table.
-export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot';
+export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | 'copilot' | 'openclaude';
 
 interface AgentPattern {
   /** Display name. Surfaced in UI ("Claude Code", "Codex CLI"). */
@@ -60,6 +60,7 @@ export function agentDisplayToSlug(display: string): AgentSlug | undefined {
     case 'Aider': return 'aider';
     case 'OpenCode': return 'opencode';
     case 'GitHub Copilot CLI': return 'copilot';
+    case 'OpenClaude': return 'openclaude';
     default: return undefined;
   }
 }
@@ -182,6 +183,24 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // older patterns use, so the new class includes them.)
       { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)\s*\S[^?]*\?[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Edit approval requested' },
       { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,             status: 'awaiting_input',   message: 'Edit approval requested' },
+    ],
+  },
+
+  // ── OpenClaude ───────────────────────────────────────────────────────────
+  // Gate: OpenClaude startup banner — same fork-derived TUI as Claude Code
+  // but prints "OpenClaude" or "Open Claude" in its banner.
+  {
+    agent: 'OpenClaude',
+    slug: 'openclaude',
+    gate: /Open\s*Claude|openclaude|╭.*OpenClaude/,
+    patterns: [
+      { regex: /bypass permissions on/,          status: 'waiting',          message: 'Ready for input' },
+      { regex: /shift\+tab to cycle/,            status: 'waiting',          message: 'Ready for input' },
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                                                  status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
+      { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)\s*\S[^?]*\?[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Edit approval requested' },
+      { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,             status: 'awaiting_input',   message: 'Edit approval requested' },
+      { regex: />$/,                                                                                                                                                    status: 'waiting',          message: 'Ready for input' },
     ],
   },
 
