@@ -66,9 +66,18 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     method: Parameters<RpcRouter['register']>[0],
     handler: (params: Record<string, unknown>) => Promise<unknown>,
   ): void => {
-    router.register(method, (params) => {
+    router.register(method, async (params) => {
       const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-      const resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
+      let resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
+      // Memory relief (#517 slice C): automation targeting a discarded guest
+      // wakes it (renderer remounts + page reloads) before taking the lease,
+      // so hidden-guest automation keeps working instead of "no target".
+      // Also with NO surfaceId: ensureAwake falls back to any discarded
+      // surface, matching getTarget()'s default-target contract (codex P1 —
+      // otherwise the default MCP path fails once the only pane is discarded).
+      if (!resolved) {
+        resolved = (await webviewCdpManager.ensureAwake(surfaceId))?.surfaceId;
+      }
       if (!resolved) return handler(params);
       return webviewCdpManager.withAutomationLease(resolved, () => handler(params));
     });
@@ -81,7 +90,13 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
   // long waits.
   router.register('browser.lease.acquire', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-    const resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
+    let resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
+    // Wake a discarded guest so out-of-process (Playwright) automation gets a
+    // live target under its lease (#517 slice C). Works without surfaceId too
+    // (defaults to any discarded surface, matching getTarget's contract).
+    if (!resolved) {
+      resolved = (await webviewCdpManager.ensureAwake(surfaceId))?.surfaceId;
+    }
     if (!resolved) return { token: null };
     return { token: webviewCdpManager.acquireRpcLease(resolved) };
   });
