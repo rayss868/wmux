@@ -24,6 +24,8 @@ interface PaneProps {
   workspace: Workspace;
   isActive: boolean;
   isWorkspaceVisible?: boolean;
+  /** This leaf is hidden because another pane in ITS tree is zoomed (#517). */
+  isZoomHidden?: boolean;
 }
 
 /**
@@ -108,7 +110,7 @@ export function pickOverlaySurfaces<T extends { surfaceType?: string }>(
   );
 }
 
-export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true }: PaneProps) {
+export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true, isZoomHidden = false }: PaneProps) {
   const t = useT();
   const [flashing, setFlashing] = useState(false);
   const setActivePane = useStore((s) => s.setActivePane);
@@ -610,6 +612,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         workspaceId={workspace.id}
         activeSurfaceId={pane.activeSurfaceId}
         isWorkspaceVisible={isWorkspaceVisible}
+        isZoomHidden={isZoomHidden}
         onCloseSurface={handleCloseSurface}
         onPtyCreated={(surfaceId, ptyId) => updateSurfacePtyId(pane.id, surfaceId, ptyId)}
         emptyMessage={t('pane.empty')}
@@ -625,6 +628,7 @@ function SplitSurfaceView({
   workspaceId,
   activeSurfaceId,
   isWorkspaceVisible,
+  isZoomHidden,
   onCloseSurface,
   onPtyCreated,
   emptyMessage,
@@ -635,6 +639,7 @@ function SplitSurfaceView({
   workspaceId: string;
   activeSurfaceId: string;
   isWorkspaceVisible: boolean;
+  isZoomHidden?: boolean;
   onCloseSurface: (id: string) => void;
   onPtyCreated: (surfaceId: string, ptyId: string) => void;
   emptyMessage: string;
@@ -682,6 +687,8 @@ function SplitSurfaceView({
               initialUrl={surface.browserUrl || 'https://google.com'}
               partition={surface.browserPartition || 'persist:wmux-default'}
               isActive={surface.id === activeSurfaceId}
+              isWorkspaceVisible={isWorkspaceVisible}
+              isZoomHidden={isZoomHidden}
               onClose={() => onCloseSurface(surface.id)}
             />
           ) : surface.surfaceType === 'diff' ? (
@@ -723,6 +730,10 @@ function SplitSurfaceView({
   // activeSurfaceId (which now only drives focus), else focusing one side
   // display:none'd the other (blank-pane bug).
   const { shownTerminalId, shownBrowserId } = pickSplitShownSurfaces(terminals, browsers, activeSurfaceId);
+  // #517 (codex P3): when a diff/editor overlay is the ACTIVE surface it
+  // covers the whole split, so the browser underneath is not actually visible
+  // — report it occluded so lightweight mode can throttle it.
+  const overlayActive = others.some((s) => s.id === activeSurfaceId);
   return (
     <div className="flex-1 relative overflow-hidden">
       <Group orientation="horizontal" className="h-full w-full" resizeTargetMinimumSize={{ coarse: 37, fine: 16 }}>
@@ -759,6 +770,9 @@ function SplitSurfaceView({
                 partition={surface.browserPartition || 'persist:wmux-default'}
                 isActive={surface.id === activeSurfaceId}
                 visible={surface.id === shownBrowserId}
+                isWorkspaceVisible={isWorkspaceVisible}
+                isZoomHidden={isZoomHidden}
+                occluded={overlayActive}
                 onClose={() => onCloseSurface(surface.id)}
               />
             ))}

@@ -176,6 +176,40 @@ export class PlaywrightEngine {
     return isElectronShellUrl(url);
   }
 
+  /**
+   * Resolve the Playwright Page for an explicitly pinned CDP target (codex
+   * P2, PR #528): two panes can share a URL (duplicated tabs, default
+   * new-browser URL), so URL equality alone can hand back the WRONG guest
+   * while the lease is held for the requested one.
+   *
+   * Client-side Page objects expose no targetId, so an unambiguous URL match
+   * resolves directly, and only ambiguous candidates pay for a real
+   * Target.getTargetInfo round-trip over a throwaway CDP session (codex round
+   * 4 — the earlier `_delegate._targetId` probe never matched). Ambiguity
+   * that cannot be resolved → null (fail rather than drive the wrong pane).
+   */
+  private async matchPinnedPage(pages: Page[], targetId: string, url: string): Promise<Page | null> {
+    const byUrl = pages.filter((p) => p.url() === url);
+    if (byUrl.length === 1) return byUrl[0];
+    const candidates = byUrl.length > 1 ? byUrl : pages;
+    for (const p of candidates) {
+      try {
+        const session = await p.context().newCDPSession(p);
+        try {
+          const { targetInfo } = (await session.send('Target.getTargetInfo')) as {
+            targetInfo: { targetId: string };
+          };
+          if (targetInfo?.targetId === targetId) return p;
+        } finally {
+          await session.detach().catch(() => { /* best-effort */ });
+        }
+      } catch {
+        /* page may be mid-navigation or gone — try the next candidate */
+      }
+    }
+    return null;
+  }
+
   async connect(cdpPort: number): Promise<void> {
     if (this.browser && this.cdpPort === cdpPort && this.browser.isConnected()) {
       return;
@@ -324,13 +358,20 @@ export class PlaywrightEngine {
         // the app shell. Used when positive targetId matching didn't yield a
         // page (e.g. target not registered yet). isShellPage() prefers the
         // runtime shell URL and falls back to the static heuristic.
-        const allPages = this.getAllPages();
-        console.error(`[PlaywrightEngine] Attempt ${attempt}: ${allPages.length} pages in ${this.browser?.contexts().length ?? 0} contexts`);
+        //
+        // Strict surface targeting (#517): when the caller pinned an explicit
+        // surfaceId, this heuristic is SKIPPED — returning "some other guest"
+        // would silently drive surface B while the automation lease (and the
+        // caller's intent) points at surface A.
+        if (!surfaceId) {
+          const allPages = this.getAllPages();
+          console.error(`[PlaywrightEngine] Attempt ${attempt}: ${allPages.length} pages in ${this.browser?.contexts().length ?? 0} contexts`);
 
-        const safePage = allPages.find((p) => !this.isShellPage(p.url()));
-        if (safePage) {
-          console.error(`[PlaywrightEngine] Found page via contexts: ${safePage.url()}`);
-          return safePage;
+          const safePage = allPages.find((p) => !this.isShellPage(p.url()));
+          if (safePage) {
+            console.error(`[PlaywrightEngine] Found page via contexts: ${safePage.url()}`);
+            return safePage;
+          }
         }
 
         // Strategy 3: Use /json endpoint + match registered targets
@@ -340,8 +381,11 @@ export class PlaywrightEngine {
         }
 
         // Strategy 4: No browser surface exists — auto-open one via RPC.
-        // This eliminates the requirement for callers to call browser_open first.
-        if (attempt === 1 && !this.autoOpenAttempted) {
+        // This eliminates the requirement for callers to call browser_open
+        // first. Skipped for an explicitly pinned surfaceId (codex P3, PR
+        // #528): a fresh surface gets a DIFFERENT id, so the pinned lookup
+        // would still fail while the user is left with an unexpected pane.
+        if (attempt === 1 && !this.autoOpenAttempted && !surfaceId) {
           console.error('[PlaywrightEngine] No page found — auto-opening browser surface');
           try {
             if (await this.attemptAutoOpen()) {
@@ -467,8 +511,10 @@ export class PlaywrightEngine {
           ? targetInfos.find((t) => t.targetId === wmuxTarget.targetId)
           : undefined;
 
-        // Fallback: find any page target that isn't the Electron shell
-        if (!webviewTarget) {
+        // Fallback: find any page target that isn't the Electron shell.
+        // Strict surface targeting (#517): only when NO explicit surfaceId was
+        // requested — an explicit surface must match by targetId or fail.
+        if (!webviewTarget && !surfaceId) {
           webviewTarget = targetInfos.find(
             (t) => t.type === 'page' && !this.isShellPage(t.url) && t.url !== 'about:blank',
           );
@@ -496,7 +542,12 @@ export class PlaywrightEngine {
         const newPages = this.getAllPages();
         console.error(`[PlaywrightEngine] After attach: ${newPages.length} pages`);
 
-        const matchedPage = newPages.find((p) => !this.isShellPage(p.url()));
+        // Strict surface targeting (#517): with an explicit surfaceId, match
+        // the attached page by the pinned targetId (URL only as an unambiguous
+        // fallback) instead of "any non-shell page".
+        const matchedPage = surfaceId
+          ? await this.matchPinnedPage(newPages, webviewTarget.targetId, webviewTarget.url)
+          : newPages.find((p) => !this.isShellPage(p.url()));
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page after attach: ${matchedPage.url()}`);
           return matchedPage;
@@ -547,7 +598,9 @@ export class PlaywrightEngine {
         ? targets.find((t) => t.id === wmuxTarget.targetId)
         : undefined;
 
-      if (!jsonTarget) {
+      // Strict surface targeting (#517): the any-non-shell fallback only runs
+      // when no explicit surfaceId was requested.
+      if (!jsonTarget && !surfaceId) {
         jsonTarget = targets.find(
           (t) => t.type === 'page' && !this.isShellPage(t.url) && t.url !== 'about:blank',
         );
@@ -580,7 +633,11 @@ export class PlaywrightEngine {
         const pages = this.getAllPages();
         console.error(`[PlaywrightEngine] After /json attach: ${pages.length} pages`);
 
-        const matchedPage = pages.find((p) => !this.isShellPage(p.url()));
+        // Strict surface targeting (#517): pinned surface matches by targetId
+        // (URL only when unambiguous) — never "any non-shell page".
+        const matchedPage = surfaceId
+          ? await this.matchPinnedPage(pages, jsonTarget.id, jsonTarget.url)
+          : pages.find((p) => !this.isShellPage(p.url()));
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page via /json attach: ${matchedPage.url()}`);
           return matchedPage;

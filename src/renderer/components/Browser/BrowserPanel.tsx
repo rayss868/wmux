@@ -27,14 +27,43 @@ interface BrowserPanelProps {
    *  shows both sides at once, so visibility is decoupled from `isActive`.
    *  Defaults to `isActive` (stacked/tab case: only the active tab renders). */
   visible?: boolean;
+  /** Hidden because another pane in THIS pane tree is zoomed (#517). Computed
+   *  by PaneContainer from the actual render tree — the global zoomedPaneId
+   *  cannot distinguish a zoom in a different, still-visible workspace tree
+   *  (codex P2). */
+  isZoomHidden?: boolean;
+  /** True when a full-pane overlay (active diff/editor surface) covers this
+   *  browser in the terminal+browser split (#517, codex P3): the panel stays
+   *  rendered underneath, but the user cannot see it. */
+  occluded?: boolean;
+  /** Whether the owning workspace is the visible one (#517). The pane-local
+   *  `visible` flag cannot see hidden workspaces — exactly the case
+   *  lightweight mode exists for. Defaults true for callers that don't
+   *  thread it (fail open: never throttle on missing signal). */
+  isWorkspaceVisible?: boolean;
   onClose: () => void;
+}
+
+/**
+ * Effective visibility (#517): pane-local shown ∧ workspace visible ∧ window
+ * shown ∧ not hidden behind another pane's zoom. Exported for unit tests.
+ */
+export function computeEffectiveVisibility(input: {
+  shown: boolean;
+  isWorkspaceVisible: boolean;
+  windowVisible: boolean;
+  isZoomHidden?: boolean;
+  occluded?: boolean;
+}): boolean {
+  const { shown, isWorkspaceVisible, windowVisible, isZoomHidden, occluded } = input;
+  return shown && isWorkspaceVisible && windowVisible && !isZoomHidden && !occluded;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, visible, onClose }: BrowserPanelProps) {
+export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, visible, isZoomHidden, isWorkspaceVisible, occluded, onClose }: BrowserPanelProps) {
   const t = useT();
   const updateBrowserUrl = useStore((s) => s.updateBrowserUrl);
   const webviewRef = useRef<Electron.WebviewTag>(null);
@@ -156,6 +185,32 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     if (!isActive || !(visible ?? isActive) || !isReady) return;
     webviewRef.current?.focus();
   }, [isActive, visible, isReady]);
+
+  // #517 lightweight mode: report this surface's EFFECTIVE visibility to main
+  // so an invisible guest can be background-throttled. Window visibility rides
+  // on the document Page Visibility API (fires on minimize/hide of the shell
+  // window). Fires on mount, on every input change, and re-fires visible=true
+  // is harmless (main dedupes).
+  const [windowVisible, setWindowVisible] = useState(
+    () => document.visibilityState !== 'hidden',
+  );
+  useEffect(() => {
+    const onVis = () => setWindowVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
+  const effectiveVisible = computeEffectiveVisibility({
+    shown: visible ?? isActive,
+    isWorkspaceVisible: isWorkspaceVisible ?? true,
+    windowVisible,
+    isZoomHidden,
+    occluded,
+  });
+  useEffect(() => {
+    try {
+      (window as any).electronAPI?.browser?.setVisibility?.(surfaceId, effectiveVisible);
+    } catch { /* best-effort — older mains lack the handler */ }
+  }, [surfaceId, effectiveVisible]);
 
   const handleNavigate = useCallback((url: string) => {
     if (!isSafeBrowserUrl(url)) return;
