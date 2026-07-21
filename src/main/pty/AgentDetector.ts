@@ -114,7 +114,7 @@ const AGENT_PATTERNS: AgentPattern[] = [
     // (?<!Open)(?<!Open\s) keeps this gate from also opening on the
     // OpenClaude fork's banner ("╭ … OpenClaude" / "╭ … Open Claude"),
     // which would double-activate and misattribute events to Claude.
-    gate: /Claude\s*Code|claude-code|╭.*(?<!Open)(?<!Open\s)Claude/,
+    gate: /(?<!Open)(?<!Open\s)Claude\s*Code|claude-code|╭.*(?<!Open)(?<!Open\s)Claude/,
     patterns: [
       // Waiting — Claude Code's unique idle prompt fragments.
       //
