@@ -111,6 +111,31 @@ export function resolveStartupCwd(args: {
 }
 
 /**
+ * Resolve the starting directory when a mounted Terminal SELF-CREATES a PTY
+ * (issue #515). This is a fresh shell for a blank surface — recovery blank-slate,
+ * rebind failure, or a dead-session respawn — so the workspace default is
+ * authoritative and OUTRANKS the surface's tracked cwd.
+ *
+ * Priority differs from resolveStartupCwd on purpose: profile.startupCwd >
+ * surface.cwd (prop) > global startupDirectory > undefined. A contaminated
+ * surface whose tracked cwd points at home (funnel addSurface stored the main-
+ * side homedir fallback, or an OSC-7-less agent pane never updated it) must NOT
+ * win, or the reporter's panes never heal back to the configured startup dir.
+ * When there is no profile.startupCwd the existing non-empty surface.cwd is
+ * still honored, so a correctly-tracked pane respawns in place.
+ */
+export function resolveRespawnCwd(args: {
+  surfaceCwd?: string;
+  profile?: WorkspaceProfile;
+  startupDirectory?: string;
+}): string | undefined {
+  if (args.profile?.startupCwd) return args.profile.startupCwd;
+  if (args.surfaceCwd && args.surfaceCwd.trim().length > 0) return args.surfaceCwd;
+  if (args.startupDirectory && args.startupDirectory.trim().length > 0) return args.startupDirectory.trim();
+  return undefined;
+}
+
+/**
  * Human-readable shell label derived from an executable path
  * (e.g. `C:\\…\\pwsh.exe` → "PowerShell 7"). Used for the surface tab title
  * when a PTY is adopted. Lifted out of AppLayout so the eager-spawn path in

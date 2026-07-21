@@ -242,11 +242,13 @@ export default function CommandPalette() {
           if (ws) {
             // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
             const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory });
-            void ipcInvoke<{ id: string }>(() =>
+            void ipcInvoke<{ id: string; cwd?: string }>(() =>
               window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id, cwd, spawnKind: 'user-shell' }, state.defaultShell), ws.profile))
             ).then((result) => {
               if (result.ok) {
-                useStore.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', '');
+                // #515: adopt the cwd main actually spawned in (was '' → later
+                // splits seed from an empty cwd and fall back to home).
+                useStore.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', result.data.cwd || '');
               }
             });
           }

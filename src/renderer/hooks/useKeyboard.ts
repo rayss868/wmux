@@ -482,11 +482,14 @@ export function useKeyboard() {
           // pre-v2.8.2 .then-only chain made the shortcut look unresponsive.
           // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
           const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory });
-          void ipcInvokeRef.current<{ id: string }>(() =>
+          void ipcInvokeRef.current<{ id: string; cwd?: string }>(() =>
             window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id, cwd, spawnKind: 'user-shell' }, state.defaultShell), ws.profile))
           ).then((result) => {
             if (result.ok) {
-              store.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', '');
+              // #515: adopt the cwd main actually spawned in so the surface
+              // tracks its real dir from the start (was '' → later splits seed
+              // from an empty cwd and fall back to home).
+              store.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', result.data.cwd || '');
             }
             // On failure useIpc already surfaced a toast — nothing to do here.
           });

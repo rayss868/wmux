@@ -3,7 +3,7 @@ import { useTerminal, copySelectionWithFeedback, getPaneSyncUi, subscribePaneSyn
 import { useStore } from '../../stores';
 import { t } from '../../i18n';
 import { useIpc } from '../../hooks/useIpc';
-import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
+import { resolveRespawnCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { openTerminalUrl } from '../../utils/browserPaneActions';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
@@ -146,9 +146,15 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     const defaultShell = useStore.getState().defaultShell;
     // Owning workspace's profile (env + startup command) for this new pane.
     const profile = useStore.getState().workspaces.find((w) => w.id === workspaceId)?.profile;
-    console.log(`[Terminal] Creating new PTY: shell=${shell}, cwd=${cwd}, cols=${cols}, rows=${rows}, ws=${workspaceId}, surface=${surfaceId ?? '-'}`);
-    void ipcInvokeRef.current<{ id: string }>(() =>
-      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ shell, cwd, cols, rows, workspaceId, surfaceId, spawnKind: 'user-shell' }, defaultShell), profile))
+    // Issue #515: a self-create is a NEW shell for a blank surface — resolve the
+    // startup dir with the workspace default OUTRANKING the (possibly stale/home-
+    // contaminated) surface.cwd prop, so a dead-session respawn heals back to
+    // profile.startupCwd instead of perpetuating home.
+    const respawnCwd = resolveRespawnCwd({ surfaceCwd: cwd, profile, startupDirectory: useStore.getState().startupDirectory });
+    const cwdSource = profile?.startupCwd ? 'profile' : cwd ? 'surface' : useStore.getState().startupDirectory ? 'global' : 'none';
+    console.log(`[Terminal] self-create PTY: shell=${shell}, cwd=${respawnCwd ?? '(home)'} source=${cwdSource} surfaceCwd=${cwd ?? '-'} cols=${cols}, rows=${rows}, ws=${workspaceId}, surface=${surfaceId ?? '-'}`);
+    void ipcInvokeRef.current<{ id: string; cwd?: string }>(() =>
+      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ shell, cwd: respawnCwd, cols, rows, workspaceId, surfaceId, spawnKind: 'user-shell' }, defaultShell), profile))
     ).then((result) => {
       // v2 RCA fix (adversarial review): release the latch once this create
       // settles. It guards against DOUBLE-create within one attempt, but as a
@@ -169,6 +175,11 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       }
       setPtyId(result.data.id);
       onPtyCreated?.(result.data.id);
+      // Heal the surface's tracked cwd to what main actually spawned in, so a
+      // contaminated-home surface.cwd is corrected the moment it respawns and a
+      // later split seeds from the real dir (issue #515). onPtyCreated binds the
+      // ptyId first, so this write lands on the now-bound surface.
+      if (result.data.cwd) useStore.getState().updateSurfaceCwd(result.data.id, result.data.cwd);
     });
 
     return () => { cancelled = true; };
