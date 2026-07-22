@@ -191,18 +191,22 @@ const AGENT_PATTERNS: AgentPattern[] = [
 
   // ── OpenClaude ───────────────────────────────────────────────────────────
   // Gate: OpenClaude startup banner — same fork-derived TUI as Claude Code
-  // but prints "OpenClaude" or "Open Claude" in its banner.
+  // but draws its own banner.
   // NOTE: "bypass permissions on" is NOT used for waiting because OpenClaude
-  // re-renders its status bar every frame, flooding notifications. Instead
-  // "/shift\+tab to cycle/" (the keyboard hint shown only at the input
-  // prompt) is the stable idle indicator, matching the Claude Code approach.
+  // re-renders its status bar every frame, flooding notifications (confirmed
+  // via debug capture 2026-07-22 — the line reaches the detector as a single
+  // concatenated token "…bypassPermissions modeisactive…" every ~16ms).
+  // "shift+tab to cycle" does NOT appear in OpenClaude's TUI at all (unlike
+  // Claude Code). The actual prompt after ANSI strip + trim is just ">" or
+  // "> ○" (with spinner), so we match those directly.
   {
     agent: 'OpenClaude',
     slug: 'openclaude',
     gate: /Open\s*Claude|openclaude|╭.*OpenClaude/,
     patterns: [
-      // Waiting — OpenClaude's idle prompt indicator (keyboard hint).
-      { regex: /shift\+tab to cycle/,            status: 'waiting',          message: 'Ready for input' },
+      // Waiting — the bare ">" prompt after trim, optionally followed by a
+      // spinner character (○) when the TUI is waiting for input.
+      { regex: /^>[\s○◌●]*$/,                                                                               status: 'waiting',          message: 'Ready for input' },
       { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                              status: 'awaiting_input',   message: 'Approval requested' },
       { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
       { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)\s*\S[^?]*\?[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Edit approval requested' },
