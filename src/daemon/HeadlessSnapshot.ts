@@ -71,7 +71,12 @@ export type SnapshotOutcome =
 // avoid; 4 s keeps headroom while still bounding a pathological stream.
 const DEFAULT_BUDGET_MS = 4000;
 const DEFAULT_SCROLLBACK = 5000;
-const MAX_SCROLLBACK = 50_000;
+/** Lossless upper bound on serialized scrollback. Aligned with the Settings
+ *  ceiling for `scrollbackLines` (SettingsPanel.tsx — the slider maxes at
+ *  100k), so a compact attach snapshot never drops rows a raw replay would have
+ *  kept for a user configured that high. The headless terminal is per-snapshot
+ *  and disposed, so the peak cost is bounded. */
+export const MAX_SCROLLBACK = 100_000;
 /** Feed slice size — keeps each synchronous parse burst bounded so the daemon
  * event loop (input forwarding!) never stalls behind an 8 MB write.
  * Exported for the slice-boundary regression test. */
@@ -102,6 +107,160 @@ export function enqueueSnapshotJob<T>(job: () => Promise<T>): Promise<T> {
 
 export function generateSnapshot(req: SnapshotRequest): Promise<SnapshotOutcome> {
   return enqueueSnapshotJob(() => generateInner(req));
+}
+
+/** One physical row of a text snapshot — ANSI already stripped by xterm. */
+export interface TextSnapshotRow {
+  text: string;
+  /** `true` when this row is the soft-wrap continuation of the row above. */
+  wrapped: boolean;
+}
+
+export type TextSnapshotOutcome =
+  | { ok: true; rows: TextSnapshotRow[]; bytesIn: number; durationMs: number }
+  | { ok: false; reason: SnapshotFallbackReason; detail?: string };
+
+/**
+ * Plain-text variant of the snapshot used by the cold-park search/read
+ * fallback (TASK-9): a parked pane has no renderer xterm buffer, so cross-pane
+ * search and `input.readScreen` must read its content from the daemon ring
+ * instead of silently skipping it. Feeds the ring through a headless terminal
+ * (same chunked, budgeted, UTF-8-safe path as `generateInner`) and returns the
+ * parsed grid as physical rows with wrap flags — the renderer rebuilds a
+ * `SearchableBuffer` from these and runs the identical search engine.
+ *
+ * Unlike the ANSI snapshot this never fails on alt-screen/margins: the text of
+ * the visible grid is still the honest answer for a read, and search over it is
+ * strictly better than a silent miss. It only fails on budget/parse errors.
+ * Runs on the shared concurrency-1 queue so it can't multiply peak memory.
+ */
+export function generateTextSnapshot(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
+  return enqueueSnapshotJob(() => generateTextInner(req));
+}
+
+/** Per-row structural JSON overhead for `,{"text":,"wrapped":false}`. */
+const TEXT_ROW_JSON_OVERHEAD = 26;
+
+/** Serialized cost of one row: the JSON-escaped text (quotes, backslashes — and
+ *  Windows paths are backslash-heavy — DOUBLE under JSON.stringify, so measuring
+ *  raw text.length would UNDER-estimate and could still blow the frame) plus the
+ *  structural overhead. `.length` (UTF-16 code units) is the correct unit here:
+ *  MAX_LINE_BUFFER is compared against the string `.length` after
+ *  setEncoding('utf8') in BOTH DaemonPipeServer and DaemonClient — do NOT switch
+ *  this to Buffer.byteLength (that would be a byte/code-unit mismatch). */
+function rowSerializedCost(r: TextSnapshotRow): number {
+  return JSON.stringify(r.text).length + TEXT_ROW_JSON_OVERHEAD;
+}
+
+/**
+ * Cap serialized text rows to a budget for the control-pipe frame limit
+ * (DaemonPipeServer/DaemonClient MAX_LINE_BUFFER is 1 MiB and CLEARS on
+ * overflow — an oversized readSessionText response would time out and come back
+ * empty). Drops the OLDEST rows (front) until the estimated size fits, since the
+ * tail is the most relevant, and reports whether it trimmed.
+ */
+export function capTextRowsToFrameBudget(
+  rows: TextSnapshotRow[],
+  maxBytes: number,
+): { rows: TextSnapshotRow[]; truncated: boolean } {
+  const costs = rows.map(rowSerializedCost);
+  let total = 0;
+  for (const c of costs) total += c;
+  if (total <= maxBytes) return { rows, truncated: false };
+  let drop = 0;
+  while (drop < rows.length && total > maxBytes) {
+    total -= costs[drop];
+    drop++;
+  }
+  return { rows: rows.slice(drop), truncated: true };
+}
+
+async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
+  const started = Date.now();
+  const budgetMs = req.budgetMs ?? DEFAULT_BUDGET_MS;
+  const scrollback = clamp(req.scrollback ?? DEFAULT_SCROLLBACK, 0, MAX_SCROLLBACK);
+
+  const terminal = new Terminal({
+    cols: req.cols,
+    rows: req.rows,
+    scrollback,
+    allowProposedApi: true,
+    logLevel: 'off',
+  });
+  try {
+    terminal.loadAddon(new Unicode11Addon());
+    terminal.unicode.activeVersion = '11';
+
+    let utf8Carry: Buffer = Buffer.alloc(0);
+    let bytesIn = 0;
+
+    // Mirror generateInner's slice/retreat/carry discipline so an interior
+    // 256 KB boundary through a CJK/emoji char never decodes as U+FFFD.
+    const feed = async (raw: Buffer): Promise<boolean> => {
+      bytesIn += raw.length;
+      const buf = utf8Carry.length > 0 ? Buffer.concat([utf8Carry, raw]) : raw;
+      utf8Carry = Buffer.alloc(0);
+      for (let off = 0; off < buf.length; ) {
+        const end = Math.min(off + FEED_SLICE_BYTES, buf.length);
+        const isFinal = end === buf.length;
+        let slice = buf.subarray(off, end);
+        const pending = incompleteUtf8SuffixLength(slice);
+        if (pending > 0) {
+          slice = slice.subarray(0, slice.length - pending);
+          if (isFinal) {
+            utf8Carry = Buffer.from(buf.subarray(end - pending, end));
+            off = end;
+          } else {
+            off = end - pending;
+          }
+        } else {
+          off = end;
+        }
+        if (slice.length === 0) continue;
+        await new Promise<void>((resolve) => terminal.write(slice.toString('utf8'), resolve));
+        if (Date.now() - started > budgetMs) return false;
+      }
+      return true;
+    };
+
+    if (!(await feed(req.initial))) {
+      return { ok: false, reason: 'budget' };
+    }
+    if (req.drainQueue) {
+      for (;;) {
+        const chunks = req.drainQueue();
+        if (chunks.length === 0) break;
+        for (const chunk of chunks) {
+          if (!(await feed(chunk))) return { ok: false, reason: 'budget' };
+        }
+      }
+    }
+
+    const buffer = terminal.buffer.active;
+    const rows: TextSnapshotRow[] = [];
+    // Walk scrollback + viewport (0 .. baseY + rows). translateToString(true)
+    // strips ANSI and trailing grid whitespace, matching the renderer's read.
+    const limit = buffer.baseY + terminal.rows;
+    for (let i = 0; i < limit; i++) {
+      const line = buffer.getLine(i);
+      if (!line) continue;
+      rows.push({ text: line.translateToString(true), wrapped: i > 0 && line.isWrapped });
+    }
+    // Drop trailing empty viewport rows: the grid is always `rows` tall, so a
+    // short session leaves blank rows the live read path (readPtyBufferTail)
+    // never returns — including them would make readScreen tail_lines come back
+    // as blank lines.
+    while (rows.length > 0 && rows[rows.length - 1].text === '') rows.pop();
+    return { ok: true, rows, bytesIn, durationMs: Date.now() - started };
+  } catch (err) {
+    return { ok: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };
+  } finally {
+    try {
+      terminal.dispose();
+    } catch {
+      /* already disposed on some error paths */
+    }
+  }
 }
 
 /**

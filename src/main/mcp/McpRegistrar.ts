@@ -6,6 +6,7 @@ import { secureWriteTokenFile } from '../../shared/security';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import { MCP_TARGETS } from '../../shared/mcpTargets';
+import { isMcpBrokerEnabled } from './BrokerSupervisor';
 import { CODEX_NOTIFY_BASENAME } from '../../shared/configIO';
 import {
   readAllTargetStatuses,
@@ -200,6 +201,21 @@ export class McpRegistrar {
   }
 
   private getMcpScriptPath(): string | null {
+    // Broker topology (WMUX_MCP_BROKER=1): agents spawn the thin shim
+    // instead of the full bundle; the resident broker (BrokerSupervisor)
+    // hosts the actual server. Registered server name stays "wmux" — only
+    // the script path changes, which hosts tolerate without a restart
+    // (design doc §81: a NEW name would trip host schema caches).
+    // Fail-open: if the shim is missing (stale build), fall through to the
+    // full bundle so agents keep working in the legacy topology.
+    if (isMcpBrokerEnabled()) {
+      const shim = app.isPackaged
+        ? path.join(process.resourcesPath, 'mcp-bundle', 'shim.js')
+        : path.join(app.getAppPath(), 'dist', 'mcp', 'mcp', 'shim.js');
+      if (fs.existsSync(shim)) return shim;
+      console.error('[McpRegistrar] WMUX_MCP_BROKER=1 but shim.js missing — falling back to full bundle');
+    }
+
     if (app.isPackaged) {
       // Production: bundled single-file in resources/mcp-bundle/
       const bundlePath = path.join(process.resourcesPath, 'mcp-bundle', 'index.js');
@@ -210,18 +226,21 @@ export class McpRegistrar {
       return null;
     }
 
-    // Dev mode: use the unbundled tsc output (has access to node_modules)
+    // Dev mode: use the unbundled tsc output (has access to node_modules).
+    // entry.js is the stdio boot; index.js is now a side-effect-free factory
+    // (the broker split moved main() into entry.ts), so pointing at index.js
+    // would launch a module that does nothing.
     const appPath = app.getAppPath();
 
-    const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'index.js');
+    const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'entry.js');
     if (fs.existsSync(devPath)) return devPath;
 
-    // Walk up directories until we find dist/mcp/mcp/index.js or hit root
+    // Walk up directories until we find dist/mcp/mcp/entry.js or hit root
     let current = appPath;
     for (let i = 0; i < 5; i++) {
       const parent = path.resolve(current, '..');
       if (parent === current) break;
-      const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'index.js');
+      const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'entry.js');
       if (fs.existsSync(candidate)) return candidate;
       current = parent;
     }

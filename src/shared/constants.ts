@@ -7,6 +7,12 @@ export const IPC = {
   PTY_DATA: 'pty:data',
   PTY_EXIT: 'pty:exit',
   PTY_LIST: 'pty:list',
+  // TASK-6 — per-pane agent resource attribution for the Fleet View cockpit.
+  // Renderer → main invoke: takes a list of ptyIds, resolves each to its shell
+  // PID (via daemon.listSessions), takes ONE Win32_Process CIM snapshot, walks
+  // each pane's descendant tree, and returns summed RAM + dominant image name.
+  // Polled ONLY while Fleet View is visible (renderer-gated) — zero cost idle.
+  PANE_RESOURCES: 'pane:resources',
   PTY_RECONNECT: 'pty:reconnect',
   // Phase 3 PR-B — live-pipe re-flush. Re-runs the daemon SessionPipe flush on
   // the EXISTING connected socket (no teardown / re-auth), so a hidden pane can
@@ -14,6 +20,11 @@ export const IPC = {
   // from PTY_RECONNECT, which opens a fresh socket. Renderer degrades to
   // reconnect against legacy daemons (code:'legacy-daemon').
   PTY_RESYNC: 'pty:resync',
+  // TASK-9 cold-park — read-only PLAIN-TEXT snapshot of a session's grid from
+  // the daemon ring (ANSI stripped, rows + wrap flags). Used by the cross-pane
+  // search / readScreen fallback when a workspace is cold-parked and has no
+  // renderer xterm buffer, so parked panes are searched, never silently skipped.
+  PTY_READ_TEXT: 'pty:readText',
   // X8 pane supervision. PTY_RESTARTED fires when the daemon's PaneSupervisor
   // re-created a session under the SAME id with a fresh PTY (a supervised
   // restart). Distinct from PTY_EXIT — the renderer must re-attach the
@@ -451,6 +462,21 @@ export function getPipeName(): string {
   }
   const home = require('os').homedir() || '/tmp';
   return `${home}/.wmux${dataSuffix()}.sock`;
+}
+
+// Shared MCP broker pipe (plans/mcp-broker-design-2026-07-16.md Option A).
+// A SECOND named pipe, separate from the main RPC pipe above: the broker
+// speaks line-framed MCP JSON-RPC to shims, not the wmux RPC envelope, and
+// keeping the protocols on separate pipes means neither server needs to
+// sniff frames. Same per-user + instance-suffix keying as getPipeName so a
+// dev-suffixed app's shims can never join the production broker.
+export function getMcpBrokerPipeName(): string {
+  if (process.platform === 'win32') {
+    const username = require('os').userInfo().username || 'default';
+    return `\\\\.\\pipe\\wmux-mcpb${dataSuffix()}-${username}`;
+  }
+  const home = require('os').homedir() || '/tmp';
+  return `${home}/.wmux-mcpb${dataSuffix()}.sock`;
 }
 
 // Environment variable names injected into PTY sessions
