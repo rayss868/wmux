@@ -4,14 +4,18 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   raiseDecision,
+  replaceStaleDecision,
   resolveDecision,
   clearDecision,
   clearResolvedDecision,
   loadWorkspaceDecision,
   hasPendingDecision,
   renderDecisionBlock,
+  renderStaleDecisionBlock,
+  isDecisionStale,
   getDeckDecisionPath,
   DECISION_LIMITS,
+  type WorkspaceDecision,
 } from '../deckDecisionStore';
 
 let dir: string;
@@ -131,5 +135,199 @@ describe('deckDecisionStore', () => {
     const p = (await raiseDecision('ws-2', { question: 'P?' }, dir))!;
     await clearResolvedDecision('ws-2', p.id, dir);
     expect(hasPendingDecision('ws-2', dir)).toBe(true);
+  });
+
+  it('renderDecisionBlock output is byte-identical to the pre-WP3 wording (no drift for existing callers)', async () => {
+    // The stale variant is a SIBLING — the plain pending/resolved output must not
+    // have shifted, or withLoopContext / the UI hydrate would see different text.
+    const d = (await raiseDecision('ws-1', { question: 'Ship it?', options: ['yes', 'no'], context: 'why' }, dir))!;
+    expect(renderDecisionBlock(d)).toBe(
+      [
+        '[decision] BLOCKED — you are waiting on a human decision and must NOT proceed:',
+        '  Ship it?',
+        '  options: yes | no',
+        '  context: why',
+        'Do not act until the human resolves this. If they just messaged you, they may be answering — otherwise wait.',
+      ].join('\n'),
+    );
+  });
+});
+
+describe('isDecisionStale', () => {
+  const pending = (raisedAt: number): WorkspaceDecision => ({
+    id: 'd1',
+    question: 'Q?',
+    options: [],
+    context: '',
+    status: 'pending',
+    raisedAt,
+  });
+
+  it('is false before the TTL elapses and true strictly after', () => {
+    const ttl = 30 * 60_000;
+    const d = pending(1_000_000);
+    expect(isDecisionStale(d, ttl, 1_000_000)).toBe(false); // age 0
+    expect(isDecisionStale(d, ttl, 1_000_000 + ttl)).toBe(false); // exactly TTL — not yet stale
+    expect(isDecisionStale(d, ttl, 1_000_000 + ttl + 1)).toBe(true); // one ms past
+  });
+
+  it('a resolved decision is never stale', () => {
+    const d: WorkspaceDecision = { ...pending(0), status: 'resolved', resolution: 'x', resolvedAt: 1 };
+    expect(isDecisionStale(d, 1_000, 10_000_000)).toBe(false);
+  });
+
+  it('a non-positive / non-finite TTL is never stale (guards a misconfigured 0)', () => {
+    expect(isDecisionStale(pending(0), 0, 10_000_000)).toBe(false);
+    expect(isDecisionStale(pending(0), Number.NaN, 10_000_000)).toBe(false);
+  });
+
+  it('a raisedAt of 0 (lost clock) reads as stale immediately (conservative)', () => {
+    expect(isDecisionStale(pending(0), 30 * 60_000, 30 * 60_000 + 1)).toBe(true);
+  });
+});
+
+describe('renderStaleDecisionBlock', () => {
+  const base: WorkspaceDecision = {
+    id: 'dec-42',
+    question: 'Force-push to main?',
+    options: ['yes', 'no'],
+    context: 'CI is red',
+    status: 'pending',
+    raisedAt: 0,
+  };
+
+  it('auto mode carries the self-resolve instruction and the id', () => {
+    const out = renderStaleDecisionBlock(base, { ttlMinutes: 30, mode: 'auto' });
+    expect(out).toContain('STALE');
+    expect(out).toContain('30+ minutes');
+    expect(out).toContain('Force-push to main?');
+    expect(out).toContain('options: yes | no');
+    expect(out).toContain('id: dec-42');
+    expect(out).toContain('deck_resolve_decision');
+    expect(out).toContain('AUTO mode');
+  });
+
+  it('assist mode does NOT offer self-resolve (restate/wait only)', () => {
+    const out = renderStaleDecisionBlock(base, { ttlMinutes: 30, mode: 'assist' });
+    expect(out).toContain('STALE');
+    expect(out).not.toContain('deck_resolve_decision');
+    expect(out).toContain('may NOT resolve this yourself');
+  });
+
+  it('off mode also withholds self-resolve', () => {
+    const out = renderStaleDecisionBlock(base, { ttlMinutes: 30, mode: 'off' });
+    expect(out).not.toContain('deck_resolve_decision');
+  });
+});
+
+// ─── 3-way review round 2 — CAS replace + resolution provenance ──────────────
+
+describe('replaceStaleDecision (compare-and-swap)', () => {
+  const TTL = 30 * 60_000;
+
+  const seedPending = (raisedAt: number, id = 'dec-old'): void => {
+    writeFileSync(
+      getDeckDecisionPath(dir),
+      JSON.stringify({
+        'ws-1': {
+          id,
+          question: 'Old question?',
+          options: [],
+          context: '',
+          status: 'pending',
+          raisedAt,
+        },
+      }),
+    );
+  };
+
+  it('replaces a STALE pending decision atomically', async () => {
+    seedPending(Date.now() - TTL - 60_000);
+    const next = await replaceStaleDecision(
+      'ws-1',
+      'dec-old',
+      TTL,
+      { question: 'Sharper question?' },
+      dir,
+    );
+    expect(next).toMatchObject({ question: 'Sharper question?', status: 'pending' });
+    expect(next!.id).not.toBe('dec-old');
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ question: 'Sharper question?' });
+  });
+
+  it('refuses a FRESH pending decision (CAS re-checks staleness at write time)', async () => {
+    seedPending(Date.now() - 60_000); // 1 min old
+    const next = await replaceStaleDecision(
+      'ws-1',
+      'dec-old',
+      TTL,
+      { question: 'Sharper question?' },
+      dir,
+    );
+    expect(next).toBeNull();
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ question: 'Old question?' });
+  });
+
+  it('refuses an id mismatch (decision was already replaced)', async () => {
+    seedPending(Date.now() - TTL - 60_000, 'dec-other');
+    const next = await replaceStaleDecision(
+      'ws-1',
+      'dec-old',
+      TTL,
+      { question: 'Sharper question?' },
+      dir,
+    );
+    expect(next).toBeNull();
+  });
+
+  it("NEVER overwrites the human's concurrent resolve — their answer survives", async () => {
+    seedPending(Date.now() - TTL - 60_000);
+    // The human resolves between the brain's check and its replace attempt.
+    await resolveDecision('ws-1', 'dec-old', 'Human said: use the worktree.', dir);
+    const next = await replaceStaleDecision(
+      'ws-1',
+      'dec-old',
+      TTL,
+      { question: 'Sharper question?' },
+      dir,
+    );
+    expect(next).toBeNull(); // CAS lost
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({
+      status: 'resolved',
+      resolution: 'Human said: use the worktree.',
+    });
+  });
+});
+
+describe('resolution provenance (resolvedBy)', () => {
+  it('defaults to human, tags brain when asked, and round-trips through sanitize', async () => {
+    const d1 = (await raiseDecision('ws-1', { question: 'Q1?' }, dir))!;
+    await resolveDecision('ws-1', d1.id, 'the human answer', dir);
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ resolvedBy: 'human' });
+    await clearDecision('ws-1', dir);
+
+    const d2 = (await raiseDecision('ws-1', { question: 'Q2?' }, dir))!;
+    await resolveDecision('ws-1', d2.id, 'per policy rule X, settled', dir, 'brain');
+    // A fresh read from disk exercises sanitizeDecision — the tag must survive.
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ resolvedBy: 'brain' });
+  });
+});
+
+describe('renderDecisionBlock provenance (round 3)', () => {
+  it('presents a brain self-resolution as the brain own answer, never the human', async () => {
+    const d = (await raiseDecision('ws-1', { question: 'Q?' }, dir))!;
+    await resolveDecision('ws-1', d.id, 'per policy rule, settled', dir, 'brain');
+    const block = renderDecisionBlock(loadWorkspaceDecision('ws-1', dir)!);
+    expect(block).toContain('RESOLVED (self)');
+    expect(block).toContain('YOURSELF');
+    expect(block).not.toContain('the human decided');
+  });
+
+  it('keeps the human-resolved wording byte-identical for human resolutions', async () => {
+    const d = (await raiseDecision('ws-1', { question: 'Q?' }, dir))!;
+    await resolveDecision('ws-1', d.id, 'human answer', dir);
+    const block = renderDecisionBlock(loadWorkspaceDecision('ws-1', dir)!);
+    expect(block).toContain('the human decided: human answer');
+    expect(block).not.toContain('(self)');
   });
 });

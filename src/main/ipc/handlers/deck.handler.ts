@@ -27,6 +27,8 @@ import { ClaudeSdkAdapter, buildCommanderSystemPrompt, resolveMcpBundlePath } fr
 import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
 import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
+import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
+import { grantReExamineLease, revokeReExamineLease } from '../../deck/reExamineLease';
 import {
   CommanderSessionManager,
   type CommanderSendResult,
@@ -66,6 +68,8 @@ import {
   clearResolvedDecision,
   clearDecision,
   renderDecisionBlock,
+  renderStaleDecisionBlock,
+  isDecisionStale,
   hasPendingDecision,
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
@@ -136,6 +140,32 @@ export function buildFleetTailLine(snapshot: FleetSnapshot | null): string | und
   // Just the counts — no "heartbeat will review" clause, which would be a lie
   // whenever the heartbeat is disabled (3-way review P3).
   return `(fleet: ${parts.join(', ')})`;
+}
+
+/**
+ * The per-turn `[autonomy]` block: tells the brain what DECISION AUTHORITY its
+ * current mode carries, so it reads the policy/decision/loop blocks below it in
+ * the right frame. Mode is read FRESH each turn (a Settings flip applies without
+ * a restart). `off` workspaces get NO block — an off workspace should never
+ * receive ambient-turn instructions. Pure + exported for unit testing.
+ */
+export function renderAutonomyBlock(mode: AgentMode): string | null {
+  switch (mode) {
+    case 'auto':
+      return (
+        '[autonomy] mode: auto — you have DECISION AUTHORITY. Resolve forks yourself from ' +
+        'binding policy rules, standing conventions, and memory; escalate via ' +
+        'deck_ask_decision ONLY for a genuine residual fork none of those settles (or a risky/' +
+        'irreversible action).'
+      );
+    case 'assist':
+      return (
+        '[autonomy] mode: assist — report and recommend; do not drive panes beyond your ' +
+        'caps. Escalate genuine forks via deck_ask_decision.'
+      );
+    case 'off':
+      return null;
+  }
 }
 
 export function registerDeckHandler(
@@ -308,12 +338,28 @@ export function registerDeckHandler(
   // to write `passes` and `done` does not suppress wakes in v1 (owner decision:
   // the human stops the loop).
   const withLoopContext = (workspaceId: string, text: string): string => {
+    // Mode is read fresh here (not cached) so a Settings flip between turns
+    // takes effect immediately — same rationale as the heartbeat's per-tick read.
+    const mode = loadWorkspaceMode(workspaceId);
     const decision = loadWorkspaceDecision(workspaceId);
     const loop = loadWorkspaceLoopState(workspaceId);
     const blocks: string[] = [];
-    // The decision block LEADS — a blocked (or just-resolved) decision is the
-    // most urgent trusted context for this turn. Both survive a reboot as
-    // atomic JSON, so a resumed brain re-reads exactly where it paused.
+    // The [autonomy] block LEADS — it frames how the brain should read everything
+    // below it (whether it has authority to resolve the policy/decision itself).
+    // `off` returns null (no ambient instructions for an off workspace).
+    const autonomy = renderAutonomyBlock(mode);
+    if (autonomy) blocks.push(autonomy);
+    // Binding operator policy next: the standing rules that let the brain resolve
+    // a fork itself instead of escalating (and, in assist, guide what it
+    // recommends). Injected for auto AND assist; never for off. Read fresh (the
+    // operator can edit deck-policy.md between turns). Fail-open → no block.
+    if (mode !== 'off') {
+      const policy = loadDeckPolicyBlock();
+      if (policy) blocks.push(policy);
+    }
+    // Then the decision block — a blocked (or just-resolved) decision is the most
+    // urgent trusted context. Both decision + loop survive a reboot as atomic
+    // JSON, so a resumed brain re-reads exactly where it paused.
     if (decision) blocks.push(renderDecisionBlock(decision));
     if (loop) blocks.push(renderLoopStateBlock(loop));
     if (blocks.length === 0) return text;
@@ -498,7 +544,22 @@ export function registerDeckHandler(
   const runTurnForWorkspace = async (
     prompt: string,
     workspaceId: string,
-    runOpts: { queued?: boolean } = {},
+    runOpts: {
+      queued?: boolean;
+      // WP3 re-examine: a heartbeat-fired wake that BYPASSES the pending-decision
+      // block. The wire prompt carries the STALE decision block (not the normal
+      // "BLOCKED — wait" pending block withLoopContext would prepend), so the
+      // brain re-examines and — in auto mode — may self-resolve. Present only on
+      // that one narrow path; every other caller leaves it undefined and gets
+      // the unchanged withLoopContext prompt.
+      // Only the EXPECTED decision id is captured at fire time; mode, TTL and
+      // staleness are re-validated FRESH after the (possibly long) queued gate
+      // wait — a workspace flipped to `off`, a replaced decision, or a decision
+      // that is no longer stale/pending ABORTS the re-examine instead of running
+      // a stale turn (3-way review P1: the off kill switch must hold across the
+      // gate wait, and a replaced decision must not inherit the old re-examine).
+      reExamine?: { expectedId: string };
+    } = {},
   ): Promise<{ ok: boolean; code?: string }> => {
     if (!WORKSPACE_ID_RE.test(workspaceId)) {
       return { ok: false, code: 'invalid_workspace' as const };
@@ -546,14 +607,115 @@ export function registerDeckHandler(
       // prompt this turn was built before (that would silently drop the human's
       // answer and unblock the loop — 3-way review P1).
       const injected = loadWorkspaceDecision(workspaceId);
-      const prompted = withLoopContext(workspaceId, prompt);
+      // WP3 re-examine builds a DIFFERENT wire prompt: the STALE decision block
+      // (re-examine / auto-may-self-resolve) instead of withLoopContext's normal
+      // "BLOCKED — wait" pending block. Everything is RE-VALIDATED fresh here —
+      // after the queued gate wait — and the turn is ABORTED (not run through the
+      // normal path) when the re-examine no longer applies: mode flipped to off
+      // (kill switch), the decision was resolved/cleared/replaced (id mismatch),
+      // or it is no longer stale under the CURRENT TTL. Running the fallback
+      // prompt instead would waste a turn telling a blocked brain to wait.
+      let prompted: string;
+      if (runOpts.reExamine) {
+        const mode = loadWorkspaceMode(workspaceId);
+        const ttlMs = loadDeckHeartbeat().decisionTtlMs;
+        // The global auto-wake switch is re-checked here too (round-4 review
+        // P1): the heartbeat checked it at fire time, but the queued gate wait
+        // above can span minutes — an operator who flipped Auto-wake off during
+        // the wait must not get an ambient turn.
+        const valid =
+          loadAutoWakeEnabled() &&
+          mode !== 'off' &&
+          injected?.status === 'pending' &&
+          injected.id === runOpts.reExamine.expectedId &&
+          isDecisionStale(injected, ttlMs);
+        if (!valid) {
+          return { ok: false, code: 'reexamine_invalidated' as const };
+        }
+        // TURN LEASE (round-5 review P1): deck_resolve_decision is refused
+        // server-side unless THIS re-examine turn for THIS decision is live.
+        // Granted here (post-validation, pre-send), revoked in the outer
+        // finally — success, error, or abort all die with the turn.
+        grantReExamineLease(workspaceId, injected.id);
+        const ttlMinutes = Math.max(1, Math.round(ttlMs / 60_000));
+        // Same leading context as a normal turn (3-way review P2: the stale block
+        // tells the brain to cite a binding policy rule — that rule must be IN
+        // this turn): [autonomy] → [policy] → stale [decision] → loop → prompt.
+        const blocks: string[] = [];
+        const autonomy = renderAutonomyBlock(mode);
+        if (autonomy) blocks.push(autonomy);
+        const policy = loadDeckPolicyBlock();
+        if (policy) blocks.push(policy);
+        blocks.push(renderStaleDecisionBlock(injected, { ttlMinutes, mode }));
+        const loop = loadWorkspaceLoopState(workspaceId);
+        if (loop) blocks.push(renderLoopStateBlock(loop));
+        prompted = `${blocks.join('\n\n')}\n\n${prompt}`;
+      } else {
+        prompted = withLoopContext(workspaceId, prompt);
+      }
       emit(workspaceId, { type: 'turn-start', prompt });
       const verdict = await mgr.send(prompted);
-      if (verdict.ok && injected?.status === 'resolved') {
-        void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
+      if (verdict.ok) {
+        if (runOpts.reExamine) {
+          // The brain may have self-resolved its OWN decision during this
+          // re-examine turn (deck_resolve_decision). It is already awake and has
+          // acted on it in-turn, so there is no separate resume to kick (a kick
+          // would just busy-reject against this very turn); we only CONSUME the
+          // now-resolved record so it doesn't linger and re-inject. Scope the
+          // consume to the id this turn actually re-examined AND to the BRAIN's
+          // own resolution (resolvedBy === 'brain'). If the HUMAN resolved it
+          // while this turn was running, their answer was never in this turn's
+          // prompt — consuming it here would silently discard it (3-way review
+          // round 2 P1). A human resolution is left on disk so the next natural
+          // wake / startup reconcile carries it into a resume turn.
+          const after = loadWorkspaceDecision(workspaceId);
+          if (
+            after?.status === 'resolved' &&
+            after.resolvedBy === 'brain' &&
+            injected &&
+            after.id === injected.id &&
+            // Round-4 review P1: send() reports ok:true even when the adapter
+            // errored mid-turn (code:'errored'). A self-resolution from a turn
+            // that DIED may never have been acted on — keep the durable record
+            // so the self-resume path (honest '(self)' provenance) replays it,
+            // instead of deleting the only evidence it existed.
+            verdict.code !== 'errored'
+          ) {
+            void clearResolvedDecision(workspaceId, after.id).catch(() => {});
+          } else if (after?.status === 'resolved' && injected && after.id === injected.id) {
+            // Two ways to land here, both needing a follow-up resume turn:
+            //  - the HUMAN answered while this re-examine turn was running
+            //    (their resolve kick busy-rejected against this very turn, and
+            //    this turn's prompt never carried their answer — round-3 P2), or
+            //  - the BRAIN self-resolved but the turn then ERRORED before acting
+            //    (round-4 P1: the record was deliberately NOT consumed above).
+            // resumePromptFor() picks the honest prompt for each provenance.
+            // Deferred a tick so the manager has fully settled to idle before
+            // the busy precheck.
+            const resumeFor = after;
+            setImmediate(() => {
+              void runTurnForWorkspace(resumePromptFor(resumeFor), workspaceId, {
+                queued: true,
+              }).catch(() => {
+                /* best-effort — the durable resolved record rides the next turn */
+              });
+            });
+          }
+        } else if (injected?.status === 'resolved' && verdict.code !== 'errored') {
+          // Same errored guard as the re-examine consume (final review round):
+          // a resume turn that DIED mid-stream (code:'errored') may never have
+          // acted on the resolution its prompt carried — keep the durable
+          // record so the next natural wake / startup reconcile resumes it
+          // again, instead of deleting the answer unacted-on.
+          void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
+        }
       }
       return verdict;
     } finally {
+      // The re-examine self-resolve lease dies with the turn, no matter how it
+      // ended (round-5 review P1) — revoke BEFORE the slot release so no other
+      // turn can observe a stale lease.
+      if (runOpts.reExamine) revokeReExamineLease(workspaceId);
       // Release the slot once the turn has fully settled (send resolved/rejected)
       // — never on the synchronous path only, or a long turn would free its slot
       // early and let the cap be exceeded. Release is by token: a slot already
@@ -726,6 +888,12 @@ export function registerDeckHandler(
     }
     return [...ids];
   };
+  // WP3 — the instruction the re-examine wake carries as its ORIGINAL prompt (the
+  // stale [decision] block is prepended on the wire by runTurnForWorkspace). Kept
+  // short: the stale block already states the re-examine / self-resolve rules.
+  const DECISION_REEXAMINE_PROMPT =
+    'A decision you raised has been pending too long with no human answer (see the STALE ' +
+    '[decision] block above). Re-examine it now per that block, then end your turn.';
   const heartbeatConfig = loadDeckHeartbeat();
   const heartbeat = new DeckHeartbeat({
     getWorkspaceIds: heartbeatWorkspaceIds,
@@ -736,12 +904,55 @@ export function registerDeckHandler(
     getFleetSnapshot: (workspaceId) => getWorkspaceMirror().getFleetSnapshot(workspaceId),
     flushSnapshot: (workspaceId, snapshot) => coalescer?.flushSnapshot(workspaceId, snapshot),
     lastWakeAt: (workspaceId) => coalescer?.lastWakeAt(workspaceId) ?? null,
+    // WP3: the current decision + TTL let the heartbeat detect a STALE pending
+    // decision and fire a bounded re-examine wake that bypasses the wake block.
+    getDecision: (workspaceId) => loadWorkspaceDecision(workspaceId),
+    decisionTtlMs: heartbeatConfig.decisionTtlMs,
+    reExamineDecision: (workspaceId, decision) => {
+      // AMBIENT-WAKE CONTROLS (3-way review round 2 P1): this path bypasses
+      // ONLY the pending-decision gate — that is the feature. The other
+      // ambient controls still apply: the global auto-wake switch (off ⇒ no
+      // ambient wakes of any kind) and the coalescer's consecutive-wake
+      // budget. The rate ceiling is inherently respected — the heartbeat
+      // debounces re-pings to once per TTL (≥ 5 min), far under any per-minute
+      // cap.
+      if (!loadAutoWakeEnabled()) return;
+      if ((coalescer?.getWakeBudgetRemaining(workspaceId) ?? 0) <= 0) return;
+      // Capture ONLY the decision id. Mode/TTL/staleness are re-validated
+      // FRESH inside runTurnForWorkspace after the queued gate wait, so an
+      // off-flip or a replaced decision aborts instead of running stale
+      // (3-way review P1).
+      void runTurnForWorkspace(DECISION_REEXAMINE_PROMPT, workspaceId, {
+        queued: true,
+        reExamine: { expectedId: decision.id },
+      })
+        .then((r) => {
+          // Round-3 review P2: an ACCEPTED re-examine consumes the consecutive-
+          // wake budget and counts against the rate ceiling like any other
+          // ambient wake — an unresolved decision cannot fund an unbounded
+          // stream of re-examines. Rejected/aborted turns cost nothing.
+          if (r.ok) coalescer?.noteExternalWake(workspaceId);
+        })
+        .catch(() => {
+          /* best-effort — a rejected re-examine just retries after the next TTL */
+        });
+    },
     // Read the on/off switch fresh each tick so a Settings toggle applies without
     // a restart; the cadence is fixed at construction (a rare change, restart-ok).
     isEnabled: () => loadDeckHeartbeat().enabled,
     intervalMs: heartbeatConfig.intervalMs,
   });
   heartbeat.start();
+
+  // Seed the binding operator-policy file once (never overwrites an existing
+  // one). Fire-and-forget: a missing policy file just means no policy block, so
+  // a failure here is harmless. Done at init so the file exists for the operator
+  // to edit before their first autonomous turn.
+  try {
+    ensureDeckPolicySeed();
+  } catch {
+    /* best-effort — deckPolicy already swallows its own IO errors */
+  }
 
   ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
   ipcMain.handle(
@@ -1199,7 +1410,21 @@ export function registerDeckHandler(
   // resolution so the brain continues from exactly where it paused.
   const DECISION_RESUME_PROMPT =
     'The operator just resolved the decision you raised (see the [decision] block above). ' +
-    'Act on their answer now and continue — take the next concrete step, then end the turn.';
+    'Act on their answer now and continue — take the next concrete step, then end the turn. ' +
+    'If their resolution corrects your judgment or cites a rule you missed, persist a short ' +
+    'memory fact about it (per your memory-write policy) so you do not re-raise that class ' +
+    'of question.';
+  // Round-3 review P2: a brain-self-resolved record that survived its re-examine
+  // turn (turn errored/interrupted after the resolve landed) must NOT replay as
+  // "the operator resolved" — that would misattribute the brain's own answer to
+  // the human. Same resume mechanics, honest provenance.
+  const DECISION_SELF_RESUME_PROMPT =
+    'A decision you SELF-RESOLVED earlier (auto-mode, see the [decision] block above) was ' +
+    'never acted on — the turn that resolved it did not complete. This is YOUR OWN ' +
+    'resolution, not a human answer: if it still holds, act on it now and continue; if it ' +
+    'no longer applies, raise a fresh decision instead.';
+  const resumePromptFor = (d: WorkspaceDecision): string =>
+    d.resolvedBy === 'brain' ? DECISION_SELF_RESUME_PROMPT : DECISION_RESUME_PROMPT;
 
   ipcMain.removeHandler(IPC.DECK_DECISION_GET);
   ipcMain.handle(
@@ -1222,7 +1447,9 @@ export function registerDeckHandler(
       if (workspaceId && decision?.status === 'resolved') {
         // Queued acquire (P1): a one-shot resume must await a slot, not silently
         // drop on a full gate — the answer would sit forever with autonomy off.
-        void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId, { queued: true }).catch(() => {});
+        // Provenance-aware prompt (round-3 P2): a brain self-resolution must not
+        // replay as "the operator resolved".
+        void runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(() => {});
       }
       return { decision };
     }),
@@ -1275,7 +1502,9 @@ export function registerDeckHandler(
     // silently dropped the rest.
     for (const [workspaceId, decision] of Object.entries(loadDeckDecisions())) {
       if (decision.status === 'resolved') {
-        await runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId, { queued: true }).catch(
+        // Provenance-aware prompt (round-3 P2): a stranded brain self-resolution
+        // resumes as the brain's OWN answer, never as "the operator resolved".
+        await runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(
           () => {},
         );
       }

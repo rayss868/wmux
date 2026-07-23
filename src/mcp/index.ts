@@ -122,6 +122,15 @@ const DECK_ASK_DECISION_SHAPE = {
     .describe('Optional short note on what is at stake or why you cannot decide yourself.'),
 };
 
+const DECK_RESOLVE_DECISION_SHAPE = {
+  id: z
+    .string()
+    .describe('The id of the pending decision to resolve (shown in the STALE re-examine block).'),
+  resolution: z
+    .string()
+    .describe('How the decision is settled — MUST state the binding rule / standing convention that resolves it. Not a bare "yes"/"done"; the server rejects an insubstantial answer.'),
+};
+
 const SURFACE_LIST_SHAPE = {
   workspaceId: z.string().optional().describe("Target a specific workspace by ID. Omit to use your own (the caller's) workspace."),
 };
@@ -962,7 +971,7 @@ server.tool(
 
 server.tool(
   'deck_ask_decision',
-  'Pause your working loop and ask the human operator to make a decision you should NOT make yourself — an ambiguous requirement, a risky or irreversible action, or a genuine choice between approaches. Your loop STOPS and will not auto-advance until the human answers; the pending decision survives an app restart or reboot, so the human can answer later and you will resume from here. After calling this, END YOUR TURN and do not act further. Use only for real forks — never for routine progress updates or questions you can resolve yourself.',
+  'Pause your working loop and ask the human operator to make a decision you should NOT make yourself — an ambiguous requirement, a risky or irreversible action, or a genuine choice between approaches. Before calling this, check the binding policy rules / standing conventions / your memory — if one settles the question, act on it instead of asking; a question whose answer you can already cite is NOT a decision for the human. Your loop STOPS and will not auto-advance until the human answers; the pending decision survives an app restart or reboot, so the human can answer later and you will resume from here. After calling this, END YOUR TURN and do not act further. Use only for real forks — never for routine progress updates or questions you can resolve yourself.',
   DECK_ASK_DECISION_SHAPE,
   async ({ question, options, context }) => {
     // Only the commander brain has WMUX_COMMANDER_TOKEN; a non-commander caller
@@ -974,6 +983,21 @@ server.tool(
     if (options && options.length > 0) params.options = options;
     if (context) params.context = context;
     return callRpc('deck.requestDecision', params);
+  },
+);
+
+server.tool(
+  'deck_resolve_decision',
+  'Resolve YOUR OWN stale pending decision — the one you raised with deck_ask_decision that has now blocked your loop past its TTL with no human answer. ONLY call this when the STALE re-examine prompt has told you a decision went unanswered AND a BINDING policy rule or standing convention actually settles the question: pass the decision id and a resolution that STATES that rule/basis, then act on it. This is NOT a way to unblock yourself by inventing an answer — the server enforces every condition and refuses the call unless your workspace is in AUTO mode, the decision is genuinely stale (not one you just raised), and the resolution is substantive. If nothing settles it, do not call this: re-raise a sharper question with deck_ask_decision or keep waiting.',
+  DECK_RESOLVE_DECISION_SHAPE,
+  async ({ id, resolution }) => {
+    // Only the commander brain has WMUX_COMMANDER_TOKEN; a non-commander caller
+    // sends an undefined token and the RPC fail-closes ("not a live commander").
+    return callRpc('deck.resolveDecision', {
+      token: ctx.commanderToken,
+      id,
+      resolution,
+    });
   },
 );
 
