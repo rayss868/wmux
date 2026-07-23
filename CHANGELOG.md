@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Groundwork for installing the per-account usage statusline from within the app.** The statusline setup logic (`wmux setup-statusline`) is now exposed to the renderer through IPC handlers (`statusline:bridge:status` / `statusline:bridge:install`), mirroring the hooks bridge pattern, so an upcoming Settings UI can let an app-only user (winget/Setup.exe) who never opens a terminal discover and enable it. No user-facing UI ships yet with this change. Same explicit user-click constraint as hooks: never auto-run at boot. (#555)
+
 - **The orchestrator now runs a periodic level review, and caps how many brain turns run at once.** Two additions harden autonomous (Command Deck) orchestration. A *level-review heartbeat* re-reads each armed workspace's current per-pane state every few minutes and, if a pane needs attention that no live event ever surfaced (a dropped hook, an event lost during a busy stretch), wakes the brain to catch it — routed through the exact same mode/decision/budget/rate gates as an ordinary event wake, so it can never wake *more* than the live path would, only recover what it missed. Separately, a *global concurrency cap* limits the whole app to two autonomous turns in flight at once across all workspaces: a burst of activity spread over a fleet no longer spins up a pile of brain subprocesses simultaneously — the extra turns are deferred and retried, exactly like a workspace that's already mid-turn. Neither affects a turn you type yourself, which is never throttled.
 
 ### Fixed
