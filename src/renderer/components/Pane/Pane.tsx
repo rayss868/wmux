@@ -726,6 +726,7 @@ function SplitSurfaceView({
             <BrowserPanel
               key={`${surface.id}:${surface.browserPartition || 'persist:wmux-default'}`}
               surfaceId={surface.id}
+              workspaceId={workspaceId}
               initialUrl={surface.browserUrl || 'https://google.com'}
               partition={surface.browserPartition || 'persist:wmux-default'}
               isActive={surface.id === activeSurfaceId}
@@ -808,6 +809,7 @@ function SplitSurfaceView({
               <BrowserPanel
                 key={`${surface.id}:${surface.browserPartition || 'persist:wmux-default'}`}
                 surfaceId={surface.id}
+                workspaceId={workspaceId}
                 initialUrl={surface.browserUrl || 'https://google.com'}
                 partition={surface.browserPartition || 'persist:wmux-default'}
                 isActive={surface.id === activeSurfaceId}

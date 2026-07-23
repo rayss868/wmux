@@ -517,3 +517,158 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
   }, 15_000);
 });
+
+/*
+ * #554 — read-path workspace scoping.
+ *
+ * browser_snapshot / browser_evaluate / browser_extract_* take an OPTIONAL
+ * surfaceId. When it is omitted (the common case), page selection must be
+ * scoped to the CALLING session's workspace. Before this fix getPage() fell
+ * back to "first non-shell page", which is workspace-blind: with two live
+ * browser surfaces, an agent in workspace A could read workspace B's page.
+ *
+ * resolveCallerSurface() is the scoping primitive — it maps the caller's
+ * resolved workspace to its own surfaceId from the workspace-tagged
+ * browser.cdp.info target list, and reports 'none' (own workspace has no
+ * surface) or 'unscoped' (identity/tags unavailable → stay lenient) so the
+ * caller never falls through to another workspace's page.
+ */
+interface ScopeInternals {
+  setWorkspaceIdResolver(resolver: () => Promise<string>): void;
+  resolveCallerSurface(): Promise<
+    | { kind: 'surface'; surfaceId: string; workspaceId: string }
+    | { kind: 'none'; workspaceId: string }
+    | { kind: 'unscoped' }
+  >;
+  resolveSelectionContext(
+    explicitSurfaceId?: string,
+  ): Promise<{ key: string; surfaceId?: string; callerHasNoSurface: boolean }>;
+}
+function scope(engine: PlaywrightEngine): ScopeInternals {
+  return engine as unknown as ScopeInternals;
+}
+
+describe('PlaywrightEngine read-path workspace scoping (#554)', () => {
+  const twoWorkspaceTargets = {
+    cdpPort: 9222,
+    targets: [
+      { surfaceId: 'surf-A', targetId: 'wc-1', workspaceId: 'ws-A' },
+      { surfaceId: 'surf-B', targetId: 'wc-2', workspaceId: 'ws-B' },
+    ],
+  };
+
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it("picks the caller's own surface, never another workspace's, when surfaceId is omitted", async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({
+      kind: 'surface',
+      surfaceId: 'surf-A',
+      workspaceId: 'ws-A',
+    });
+  });
+
+  it("reports 'none' — not another workspace's surface — when the caller's workspace owns no surface", async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-C-no-surface');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({
+      kind: 'none',
+      workspaceId: 'ws-C-no-surface',
+    });
+  });
+
+  it("stays 'unscoped' (legacy lenient) when the main doesn't tag targets with a workspaceId", async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({ cdpPort: 9222, targets: [{ surfaceId: 'surf-A', targetId: 'wc-1' }] })
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
+  });
+
+  it("stays 'unscoped' when no resolver is wired or identity cannot be resolved", async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+
+    // No resolver wired.
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
+
+    // Resolver throws (server-walk failed).
+    scope(engine).setWorkspaceIdResolver(async () => {
+      throw new Error('identity unknown');
+    });
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
+
+    // Resolver returns empty id.
+    scope(engine).setWorkspaceIdResolver(async () => '');
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
+  });
+
+  // The in-flight getPage lock, the auto-open latch, and the fast-fail latch
+  // are all keyed by this context. A per-workspace key is what keeps a
+  // concurrent call from another workspace from sharing the first caller's
+  // in-flight page / auto-open / failure state (CodeRabbit #554).
+  it('derives a DISTINCT selection-context key per workspace (isolates lock/latches)', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+    const ctxA = await scope(engine).resolveSelectionContext();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-B');
+    const ctxB = await scope(engine).resolveSelectionContext();
+
+    expect(ctxA.surfaceId).toBe('surf-A');
+    expect(ctxB.surfaceId).toBe('surf-B');
+    expect(ctxA.key).not.toBe(ctxB.key); // no shared lock/latch across workspaces
+  });
+
+  it('keys an explicit surfaceId separately from a resolved workspace', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    const explicit = await scope(engine).resolveSelectionContext('surf-B');
+    const resolved = await scope(engine).resolveSelectionContext();
+    expect(explicit).toEqual({ key: 'surf:surf-B', surfaceId: 'surf-B', callerHasNoSurface: false });
+    expect(resolved.surfaceId).toBe('surf-A');
+    expect(explicit.key).not.toBe(resolved.key);
+  });
+
+  it("keys 'no surface' by the caller's own workspace so its auto-open isn't blocked by another", async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-C-no-surface');
+    const ctxC = await scope(engine).resolveSelectionContext();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-D-no-surface');
+    const ctxD = await scope(engine).resolveSelectionContext();
+
+    expect(ctxC.callerHasNoSurface).toBe(true);
+    expect(ctxD.callerHasNoSurface).toBe(true);
+    expect(ctxC.key).not.toBe(ctxD.key); // each surfaceless workspace auto-opens independently
+  });
+});
