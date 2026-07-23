@@ -137,6 +137,11 @@ export class StateWriter {
   private filePath: string;
   private readonly suspendedTtlHours: number;
   private readonly detachedTtlHours: number;
+  // When true, load() persists the healed state to disk if it had to restamp
+  // any corrupt lastActivity (see load()). Enabled ONLY on the main recovery
+  // StateWriter — the acquireLock() one-shot writer leaves it false so it can
+  // never race the main instance over sessions.json.
+  private readonly persistHealedOnLoad: boolean;
   private debounceTimer: NodeJS.Timeout | null = null;
   private pendingState: DaemonState | null = null;
   private readonly queue = new AsyncQueue();
@@ -149,7 +154,7 @@ export class StateWriter {
   private immediateEpoch = 0;
   private lastImmediateState: DaemonState | null = null;
 
-  constructor(baseDir: string, suspendedTtlHours: number = SUSPENDED_TTL_HOURS_DEFAULT, detachedTtlHours: number = DETACHED_TTL_HOURS_DEFAULT) {
+  constructor(baseDir: string, suspendedTtlHours: number = SUSPENDED_TTL_HOURS_DEFAULT, detachedTtlHours: number = DETACHED_TTL_HOURS_DEFAULT, persistHealedOnLoad = false) {
     this.filePath = path.join(baseDir, 'sessions.json');
     // Substrate 3.0: suspended-tombstone GC retention. The daemon main
     // threads config.session.suspendedTtlHours here (codex #2). The
@@ -163,6 +168,7 @@ export class StateWriter {
     // that reach this TTL on load are dropped BEFORE recovery iterates, so a
     // crash/forced-kill no longer resurrects a fleet of orphan shells.
     this.detachedTtlHours = detachedTtlHours;
+    this.persistHealedOnLoad = persistHealedOnLoad;
 
     // Sync fallback used by `flushSync()` on emergency exit paths.
     // It writes whatever the latest pending snapshot is using the
@@ -352,7 +358,27 @@ export class StateWriter {
     // Graceful shutdown still demotes every live session to suspended, so on a
     // clean exit these become suspended-tombstones governed by the 7 d TTL.
     const now = Date.now();
+    let restamped = false;
     state.sessions = state.sessions.filter((s) => {
+      // Heal any lastActivity that is not a valid, parseable ISO timestamp.
+      // isDaemonState() only validates minimal fields, so disk corruption or a
+      // legacy record can leave lastActivity as a non-string (null, number,
+      // boolean) or an unparseable string. `new Date(null/false/0).getTime()`
+      // coerces to a VALID epoch 0, which a NaN-only guard would miss — the
+      // record would then look ancient and be silently reaped, contradicting
+      // this reaper's own fail-open design. So we detect corruption directly:
+      // non-string OR Date.parse() → NaN. Restamp to now rather than pruning:
+      // pruning would fail-closed and could kill a possibly-live session on a
+      // single bad timestamp, while restamping restarts the TTL clock so the
+      // record can age out on a later load. The restamp is persisted below
+      // (persistHealedOnLoad) so the fix survives a daemon restart — otherwise
+      // the corrupt value would be re-read and re-restamped every boot and
+      // never actually age out.
+      if (typeof s.lastActivity !== 'string' || Number.isNaN(Date.parse(s.lastActivity))) {
+        s.lastActivity = new Date(now).toISOString();
+        restamped = true;
+        return true;
+      }
       const sinceMs = now - new Date(s.lastActivity).getTime();
       if (s.state === 'dead') {
         return sinceMs < s.deadTtlHours * 60 * 60 * 1000;
@@ -372,6 +398,16 @@ export class StateWriter {
       }
       return true; // attached: in active use, never TTL-reaped
     });
+
+    // If we healed any corrupt timestamp, persist the repaired state so the fix
+    // is durable across restarts. Gated on persistHealedOnLoad: only the main
+    // recovery StateWriter writes here. The acquireLock() one-shot writer (which
+    // only reads bootId and discards the pruned list) leaves the flag off, so it
+    // can never race the main instance over sessions.json. saveImmediate is sync
+    // and durable, matching the recovery path's write expectations.
+    if (restamped && this.persistHealedOnLoad) {
+      this.saveImmediate(state);
+    }
 
     return state;
   }
