@@ -8,11 +8,16 @@ import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEv
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
+import { normalizeRoleBinding } from '../../shared/orchestratorRole';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
 import { requestExecuteApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
+import {
+  closeBrowserTabInWorkspace,
+  handleBrowserTabsRpc,
+} from '../utils/browserTabs';
 import { terminalRegistry, hydrateTerminalForRead } from './useTerminal';
 import { readPtyBufferLines, readPtyBufferTail, DEFAULT_READ_TAIL_LINES } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
@@ -20,55 +25,59 @@ import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
+import { findActivePtyId, collectAllPtyIds, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
+
+// ---------------------------------------------------------------------------
+// Cold-park (TASK-9) daemon-backed read fallback
+// ---------------------------------------------------------------------------
+//
+// A cold-parked workspace has no renderer xterm buffer (its terminals were
+// unmounted to reclaim RAM), so pane.search and input.readScreen would silently
+// skip its panes. These helpers pull the pane's grid from the daemon ring as
+// plain-text rows and adapt them so the SAME search engine / read path runs —
+// no silent misses (hard AC). Fails soft to null: a legacy daemon, local mode,
+// or a gone session degrades to "skip this pane" exactly as before the feature.
+
+interface DaemonTextRow { text: string; wrapped: boolean }
+interface ParkedPaneRead { rows: DaemonTextRow[]; truncated: boolean }
+
+/** Fetch a parked pane's grid from the daemon as plain-text rows, or null.
+ *  `truncated` is true when the daemon dropped oldest rows to fit the RPC frame
+ *  budget — the caller propagates it so coverage is reported as incomplete. */
+async function fetchParkedPaneRows(ptyId: string, scrollback?: number): Promise<ParkedPaneRead | null> {
+  const api = window.electronAPI?.pty;
+  if (!api || typeof api.readText !== 'function') return null; // stale preload
+  try {
+    const res = await api.readText(ptyId, scrollback !== undefined ? { scrollback } : undefined);
+    return res?.success ? { rows: res.rows, truncated: res.truncated === true } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Adapt daemon text rows to the SearchableBuffer surface searchInBuffer needs. */
+function rowsToSearchableBuffer(rows: DaemonTextRow[]): SearchableBuffer {
+  return {
+    length: rows.length,
+    getLine(idx: number) {
+      const row = rows[idx];
+      if (!row) return undefined;
+      return {
+        isWrapped: row.wrapped,
+        translateToString: () => row.text,
+      };
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Pane tree utilities
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve the ptyId of a workspace's active pane + active surface.
- *
- * Duplicated from StatusBar.tsx's local helper — kept inline here rather
- * than lifting to a shared module because both call sites read the active
- * pane through the renderer store and lifting would force a circular
- * dependency between renderer/utils and the store. Two tiny copies are
- * cheaper than the shared-module gymnastics.
- *
- * Used by the workspace.list RPC response so hook bridge scripts
- * (integrations/<agent>/bin/wmux-bridge.mjs) can resolve their hook
- * payload's cwd → workspace → activePtyId in a single round-trip.
- */
-function findActivePtyId(rootPane: Pane | undefined, activePaneId: string): string | null {
-  if (!rootPane) return null;
-  const findLeaf = (pane: Pane): PaneLeaf | null => {
-    if (pane.type === 'leaf') return pane.id === activePaneId ? pane : null;
-    for (const child of pane.children) {
-      const found = findLeaf(child);
-      if (found) return found;
-    }
-    return null;
-  };
-  const leaf = findLeaf(rootPane);
-  if (!leaf) return null;
-  const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-  return surface?.ptyId ?? null;
-}
-
-/** All ptyIds in a workspace (every leaf, every surface). */
-function collectAllPtyIds(root: Pane): string[] {
-  const ids: string[] = [];
-  const walk = (pane: Pane): void => {
-    if (pane.type === 'leaf') {
-      for (const s of pane.surfaces) {
-        if (s.ptyId) ids.push(s.ptyId);
-      }
-      return;
-    }
-    for (const child of pane.children) walk(child);
-  };
-  walk(root);
-  return ids;
-}
+// `findActivePtyId` / `collectAllPtyIds` were lifted to
+// ./workspaceMirrorSnapshot so the WorkspaceMirror push payload (which mirrors
+// the `workspace.list` reply) shares one source of truth for them. Imported
+// above; the workspace.list handler and line-492 pty sweep use them unchanged.
 
 function findPaneById(root: Pane, id: string): Pane | null {
   if (root.id === id) return root;
@@ -434,26 +443,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // -------------------------------------------------------------------------
 
   if (method === 'workspace.list') {
-    return store.workspaces.map((w) => ({
-      id: w.id,
-      name: w.name,
-      metadata: {
-        cwd: w.metadata?.cwd ?? null,
-        gitBranch: w.metadata?.gitBranch ?? null,
-        agentName: w.metadata?.agentName ?? null,
-        agentStatus: w.metadata?.agentStatus ?? null,
-        status: w.metadata?.status ?? null,
-        progress: w.metadata?.progress ?? null,
-      },
-      // Phase 1 hook plugin support — bridge scripts resolve hook payload's
-      // cwd → workspace → activePtyId. activePtyId is the active pane's
-      // active surface; ptyIds is the union over the whole workspace
-      // (used when bridge needs to disambiguate via env if cwd alone is
-      // ambiguous). Both fields are optional from the wire-format POV —
-      // existing consumers that destructure metadata only are unaffected.
-      activePtyId: findActivePtyId(w.rootPane, w.activePaneId),
-      ptyIds: collectAllPtyIds(w.rootPane),
-    }));
+    // Phase 1 hook plugin support — bridge scripts resolve hook payload's
+    // cwd → workspace → activePtyId. Shared with the WorkspaceMirror push so
+    // the mirror snapshot can never diverge from this reply (see
+    // buildWorkspaceListEntries).
+    return buildWorkspaceListEntries(store.workspaces);
   }
 
   if (method === 'workspace.new') {
@@ -1180,6 +1174,72 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       }
     }
 
+    // ─── Cold-park fallback (TASK-9) ─────────────────────────────────────
+    // Panes in this workspace whose terminals are unmounted (cold-parked) are
+    // absent from terminalRegistry and were skipped above. Read their grid from
+    // the daemon ring so they are still searched — a parked pane must not be a
+    // silent miss (hard AC). Sequential (not Promise.all) so the shared budget
+    // is honored and the daemon's concurrency-1 snapshot queue isn't stormed.
+    const parkedPtyIds = Array.from(ptyToPaneId.keys()).filter((id) => !terminalRegistry.has(id));
+    // Wall-clock deadline: each parked read can take seconds on the daemon's
+    // concurrency-1 snapshot queue, and 3+ heavy panes would blow the outer 10s
+    // MCP RPC timeout. Stop issuing reads past ~6s and report truncated rather
+    // than let the whole search time out to empty.
+    const PARKED_DEADLINE_MS = 6000;
+    const parkedStart = Date.now();
+    for (const ptyId of parkedPtyIds) {
+      if (remainingBudget <= 0) { truncated = true; break; }
+      if (Date.now() - parkedStart > PARKED_DEADLINE_MS) { truncated = true; break; }
+      const paneId = ptyToPaneId.get(ptyId);
+      if (!paneId) continue;
+      // Request the renderer's configured scrollback depth (daemon clamps to
+      // MAX_SCROLLBACK) — a hard 5000 would miss the older half of a 10k buffer
+      // while still reporting truncated:false.
+      const read = await fetchParkedPaneRows(ptyId, store.scrollbackLines);
+      if (!read) {
+        // Legacy daemon / local mode / gone session: this parked pane could not
+        // be read, so coverage is incomplete — flag truncated so callers know
+        // the result set is partial rather than treating it as authoritative.
+        truncated = true;
+        continue;
+      }
+      // The daemon dropped oldest rows to fit the RPC frame → partial coverage.
+      if (read.truncated) truncated = true;
+      try {
+        const requestedBudget = remainingBudget;
+        const matches = searchInBuffer(
+          rowsToSearchableBuffer(read.rows),
+          query,
+          { regex, contextLines: 2, perBufferLineCap: 20_000, remainingBudget },
+        );
+        totalMatches += matches.length;
+        for (const m of matches) {
+          const label = ptyToPaneLabel.get(ptyId);
+          results.push({
+            paneId,
+            surfaceId: ptyToSurfaceId.get(ptyId)!,
+            ptyId,
+            lineIdx: m.lineIdx,
+            physicalBaseY: m.physicalBaseY,
+            text: m.text,
+            contextBefore: m.contextBefore,
+            contextAfter: m.contextAfter,
+            ...(label !== undefined && { paneLabel: label }),
+          });
+          remainingBudget--;
+          if (remainingBudget <= 0) break;
+        }
+        if (matches.length === requestedBudget && remainingBudget <= 0) {
+          truncated = true;
+        }
+      } catch (err) {
+        if (err instanceof SyntaxError) {
+          return { error: `pane.search: invalid regex: ${err.message}` };
+        }
+        // Per-pane fallback errors — skip silently, same as the live path.
+      }
+    }
+
     const response: PaneSearchResponse = {
       resultShapeVersion: 1,
       results,
@@ -1198,6 +1258,13 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // or null if no surface in any workspace is bound to that PTY. Main-side
   // validators use this to gate cross-workspace terminal access (defense
   // against PTY-id leaks bypassing the metadata-layer isolation).
+  //
+  // D2: also returns the owning paneId and its resolved role→model binding (if
+  // any), so main's input.send rewrite can enforce the bound model without a
+  // second round-trip. Both the role mirror (paneRole) and the operator binding
+  // map (orchestratorRoleBindings) live in the renderer store, so the renderer
+  // is the natural place to resolve the pair. Fields are additive — legacy
+  // callers that read only `workspaceId` are unaffected.
   if (method === 'input.findOwnerWorkspace') {
     const ptyId = typeof params.ptyId === 'string' ? params.ptyId : '';
     if (!ptyId) return { workspaceId: null };
@@ -1205,7 +1272,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       const leaves = findLeafPanes(ws.rootPane);
       for (const leaf of leaves) {
         for (const s of leaf.surfaces) {
-          if (s.ptyId === ptyId) return { workspaceId: ws.id };
+          if (s.ptyId === ptyId) {
+            const role = store.paneRole[leaf.id];
+            const binding = role ? normalizeRoleBinding(store.orchestratorRoleBindings[role]) : undefined;
+            return {
+              workspaceId: ws.id,
+              paneId: leaf.id,
+              ...(binding ? { roleBinding: binding } : {}),
+            };
+          }
         }
       }
     }
@@ -1249,8 +1324,37 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     if (!ptyId) return { ptyId: null, text: '' };
 
+    const raw = params as Record<string, unknown>;
+
     const terminal = terminalRegistry.get(ptyId);
-    if (!terminal) return { ptyId, text: '' };
+    if (!terminal) {
+      // Cold-park fallback (TASK-9): the pane's terminal is unmounted (parked).
+      // Read its grid from the daemon ring instead of returning empty — an agent
+      // reading a parked pane must see its content, not a silent blank.
+      const wantsFull = raw.full_scrollback === true;
+      const rawTailP = raw.tail_lines;
+      const capP =
+        typeof rawTailP === 'number' && Number.isFinite(rawTailP) && rawTailP > 0
+          ? Math.floor(rawTailP)
+          : DEFAULT_READ_TAIL_LINES;
+      // Request only as deep as the read needs: a bounded tail read fetches
+      // `capP` rows, not the whole configured scrollback — avoids the big daemon
+      // payload for the common case. full_scrollback opts into the full depth.
+      const depth = wantsFull ? store.scrollbackLines : capP;
+      const read = await fetchParkedPaneRows(ptyId, depth);
+      if (!read) return { ptyId, text: '' }; // legacy daemon / local / gone
+      const texts = read.rows.map((r) => r.text);
+      if (wantsFull) {
+        // full_scrollback promises the ENTIRE backlog — if the daemon dropped
+        // oldest rows to fit the RPC frame, surface truncated so the caller
+        // doesn't read partial history as complete (callRpc serializes the whole
+        // result object, so the field reaches the agent).
+        return { ptyId, text: texts.join('\n'), ...(read.truncated && { truncated: true }) };
+      }
+      // Bounded tail read: only the last capP rows were requested, so older
+      // history missing is by design, not a truncation to report.
+      return { ptyId, text: texts.slice(-capP).join('\n') };
+    }
 
     // Phase 3 hydrate-before-read — see pane.search above. Agents reading a
     // hidden pane must see its live state, not a retention-stale buffer.
@@ -1268,7 +1372,6 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     //   - neither              → the last DEFAULT rows, read in O(DEFAULT).
     // The bounded reader never walks past its window, so a 10k-row backlog costs
     // the same as a fresh pane.
-    const raw = params as Record<string, unknown>;
     const fullScrollback = raw.full_scrollback === true;
     if (fullScrollback) {
       // Explicit opt-in to the exact, unbounded read (walk 0..baseY+cursorY).
@@ -1314,6 +1417,13 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // -------------------------------------------------------------------------
   // browser.*
   // -------------------------------------------------------------------------
+
+  if (method === 'browser.tabs') {
+    return handleBrowserTabsRpc(params, {
+      getState: () => useStore.getState(),
+      openUrl: openUrlInBrowserPane,
+    });
+  }
 
   if (method === 'browser.open') {
     const targetWsId = typeof params.workspaceId === 'string'
@@ -1410,37 +1520,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       return { error: 'browser.close: no browser surface found' };
     }
 
-    // Snapshot whether this was the pane's last surface BEFORE removing it, so
-    // the decision matches Pane.tsx handleCloseSurface (which reads
-    // pane.surfaces.length at call time, pre-close) regardless of how the store
-    // applies the mutation.
-    const wasLastSurface = targetLeaf.surfaces.length <= 1;
-
-    store.closeSurface(targetLeaf.id, targetSurfaceId, targetWs.id);
-
-    // Mirror the UI close path's cascade: when the closed surface was the
-    // pane's last one, remove the now-empty leaf too. Without this, AppLayout's
-    // "auto-create initial surface for empty leaf panes" effect backfills the
-    // empty leaf with a fresh terminal, so MCP browser_close would accrete
-    // blank terminals where the UI path leaves nothing. A browser sharing a
-    // split pane with a terminal has surfaces.length > 1, so only the surface
-    // is removed and the pane stays.
-    //
-    // Root-pane edge: closePane is a no-op on the root pane ("can't close root
-    // pane"), so a browser that is a workspace's ONLY pane leaves an empty root
-    // that AppLayout backfills with a terminal. That is intended (a workspace
-    // can't have zero panes) and the UI path behaves identically, so it is not
-    // an asymmetry — only the non-root case was leaking.
-    //
-    // Safety note: closeSurface and closePane are two separate set() calls, so
-    // there is a transient "empty leaf" state between them. They run
-    // synchronously with no await in between, so zustand batches them and React
-    // never re-renders on the intermediate state — the empty-leaf auto-terminal
-    // effect only ever sees the final state (pane removed) and stays dormant.
-    // Keep these two calls synchronous and adjacent; an await between them would
-    // expose the empty leaf to the effect and reintroduce the backfill.
-    if (wasLastSurface) {
-      store.closePane(targetLeaf.id, targetWs.id);
+    // Shared with browser.tabs close so both paths preserve the exact UI
+    // last-surface cascade. The helper re-resolves within targetWs immediately
+    // before mutation; browser.close keeps its legacy global explicit-id
+    // resolution above, while browser.tabs never leaves caller scope.
+    if (!closeBrowserTabInWorkspace(store, targetWs.id, targetSurfaceId)) {
+      return { error: 'browser.close: no browser surface found' };
     }
     return { ok: true };
   }

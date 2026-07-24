@@ -95,6 +95,16 @@ export function permissionFlagFor(mode: PermissionMode | undefined): string {
 }
 
 /**
+ * Whether an agent accepts a permission-mode launch flag. Claude only in v1 —
+ * `PERMISSION_FLAG` is a Claude Code concept; Codex has no equivalent (its
+ * `permissionMode` is never captured). Gates the resume chip's
+ * skip-permissions toggle so it never shows a Codex user a flag Codex rejects.
+ */
+export function agentSupportsPermissionFlag(agent: string): boolean {
+  return agent === 'claude';
+}
+
+/**
  * Normalize a cwd for resume-binding equality: backslashes → forward slashes,
  * lowercase a leading Windows drive letter, strip a trailing separator. POSIX
  * paths stay case-sensitive. So `D:\repo` and `d:/repo/` compare equal but
@@ -157,7 +167,7 @@ const SKIP_TOKENS: ReadonlySet<string> = new Set([
   '-p',
 ]);
 
-interface Token {
+export interface Token {
   /** Literal value with surrounding quotes stripped. */
   value: string;
   /** True if any part of the token was quoted (so flags inside a prompt
@@ -171,8 +181,12 @@ interface Token {
  * Minimal POSIX-ish tokenizer: splits on unquoted whitespace, respects single
  * and double quotes (a quoted span contributes to the current token and marks
  * it `quoted`). Good enough for launch commands; not a full shell parser.
+ *
+ * Exported so the role→model rewrite (orchestratorRole.applyRoleBinding) shares
+ * the EXACT same launcher/quoting rules — a `--model` inside a quoted prompt
+ * must be classified identically by both modules.
  */
-function tokenize(command: string): Token[] {
+export function tokenize(command: string): Token[] {
   const tokens: Token[] = [];
   const n = command.length;
   let i = 0;
@@ -203,8 +217,9 @@ function tokenize(command: string): Token[] {
 }
 
 /** Launcher executable stem: basename, drop a Windows executable extension,
- *  lowercase. `"C:\\tools\\claude.cmd"` → `claude`; `claude-foo` → `claude-foo`. */
-function launcherStem(firstToken: string): string {
+ *  lowercase. `"C:\\tools\\claude.cmd"` → `claude`; `claude-foo` → `claude-foo`.
+ *  Exported so the role→model rewrite agrees with resume on what a launcher is. */
+export function launcherStem(firstToken: string): string {
   const base = firstToken.split(/[\\/]/).pop() ?? '';
   return base.toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '');
 }

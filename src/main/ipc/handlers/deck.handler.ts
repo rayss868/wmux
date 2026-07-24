@@ -27,6 +27,8 @@ import { ClaudeSdkAdapter, buildCommanderSystemPrompt, resolveMcpBundlePath } fr
 import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
 import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
+import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
+import { grantReExamineLease, revokeReExamineLease } from '../../deck/reExamineLease';
 import {
   CommanderSessionManager,
   type CommanderSendResult,
@@ -34,7 +36,11 @@ import {
 } from '../../deck/CommanderSessionManager';
 import { loadCommanderSession, saveCommanderSession, clearCommanderSession } from '../../deck/commanderSessionStore';
 import { DeckScheduler } from '../../deck/DeckScheduler';
+import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
+import { createGlobalTurnGate, type GlobalTurnGate } from '../../deck/globalTurnGate';
+import { loadDeckHeartbeat } from '../../deck/deckHeartbeatStore';
+import { getWorkspaceMirror, type FleetSnapshot } from '../../workspace/WorkspaceMirror';
 import {
   loadWorkspaceAutonomy,
   setWorkspaceAutonomy,
@@ -62,10 +68,26 @@ import {
   clearResolvedDecision,
   clearDecision,
   renderDecisionBlock,
+  renderStaleDecisionBlock,
+  isDecisionStale,
   hasPendingDecision,
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
+import {
+  buildWorkspaceBriefing,
+  toBriefedSnapshot,
+  type BriefedSnapshot,
+  type WorkspaceBriefing,
+} from '../../deck/deckBriefing';
+import {
+  loadDeckBriefingConfig,
+  saveDeckBriefingConfig,
+  readDeckBriefingConfig,
+  readBriefedSnapshot,
+  saveBriefedSnapshot,
+  type DeckBriefingConfig,
+} from '../../deck/deckBriefingStore';
 import { eventBus } from '../../events/EventBus';
 import {
   loadDeckSchedules,
@@ -93,6 +115,9 @@ export interface RegisterDeckHandlerOptions {
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
    *  injected small in tests. */
   reconcileDelayMs?: number;
+  /** The fleet-wide concurrent-turn gate. Injected in tests to observe/spy the
+   *  acquire path; defaults to a fresh cap-2 gate. */
+  turnGate?: GlobalTurnGate;
 }
 
 /** Fleet-context token budget (~2KB). A larger snapshot is truncated so the
@@ -102,6 +127,60 @@ const FLEET_CONTEXT_MAX_CHARS = 2048;
 /** Workspace ids key maps and persisted JSON — reject anything that isn't a
  *  plausible id token before it can become a key. */
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
+
+/**
+ * The optional one-line fleet summary the coalescer appends to an edge-wake
+ * prompt (getFleetTail). Counts the mirror snapshot's attention panes by status
+ * so the brain sees the wider fleet state without a poll, e.g.
+ * `(fleet: 2 awaiting, 1 stopped)`. Returns undefined when the mirror is empty
+ * for this workspace or nothing needs attention — no line rather than a noisy
+ * "0 of everything". Pure + exported for unit testing.
+ */
+export function buildFleetTailLine(snapshot: FleetSnapshot | null): string | undefined {
+  if (!snapshot || snapshot.panes.length === 0) return undefined;
+  let awaiting = 0;
+  let stopped = 0;
+  let errored = 0;
+  for (const p of snapshot.panes) {
+    if (p.agentStatus === 'awaiting_input' || p.agentStatus === 'waiting') awaiting += 1;
+    else if (p.agentStatus === 'complete') stopped += 1;
+    else if (p.agentStatus === 'error') errored += 1;
+  }
+  const parts: string[] = [];
+  if (awaiting > 0) parts.push(`${awaiting} awaiting`);
+  if (stopped > 0) parts.push(`${stopped} stopped`);
+  if (errored > 0) parts.push(`${errored} error${errored === 1 ? '' : 's'}`);
+  if (parts.length === 0) return undefined; // fleet is all running/idle — no line
+  // Just the counts — no "heartbeat will review" clause, which would be a lie
+  // whenever the heartbeat is disabled (3-way review P3).
+  return `(fleet: ${parts.join(', ')})`;
+}
+
+/**
+ * The per-turn `[autonomy]` block: tells the brain what DECISION AUTHORITY its
+ * current mode carries, so it reads the policy/decision/loop blocks below it in
+ * the right frame. Mode is read FRESH each turn (a Settings flip applies without
+ * a restart). `off` workspaces get NO block — an off workspace should never
+ * receive ambient-turn instructions. Pure + exported for unit testing.
+ */
+export function renderAutonomyBlock(mode: AgentMode): string | null {
+  switch (mode) {
+    case 'auto':
+      return (
+        '[autonomy] mode: auto — you have DECISION AUTHORITY. Resolve forks yourself from ' +
+        'binding policy rules, standing conventions, and memory; escalate via ' +
+        'deck_ask_decision ONLY for a genuine residual fork none of those settles (or a risky/' +
+        'irreversible action).'
+      );
+    case 'assist':
+      return (
+        '[autonomy] mode: assist — report and recommend; do not drive panes beyond your ' +
+        'caps. Escalate genuine forks via deck_ask_decision.'
+      );
+    case 'off':
+      return null;
+  }
+}
 
 export function registerDeckHandler(
   getWindow: GetWindow,
@@ -141,6 +220,20 @@ export function registerDeckHandler(
     vendor: BrainVendor;
   }
   const managers = new Map<string, ManagedCommander>();
+
+  // Fleet-wide ceiling on CONCURRENT autonomous turns. Each workspace's manager
+  // is already one-turn-at-a-time, but a hook storm across many workspaces could
+  // wake several brains at once — this caps how many run in parallel. Held for
+  // the WHOLE turn at runTurnForWorkspace (autonomous path only); human
+  // DECK_SEND never passes through it. One instance per registration (not a
+  // module singleton) so tests start clean.
+  const globalTurnGate = opts.turnGate ?? createGlobalTurnGate(2);
+
+  // One-shot autonomous callers (loop kickoff, decision resume, startup
+  // reconcile) await a fleet slot rather than dropping their turn on a transient
+  // full gate. Generous ceiling — well beyond any real turn — so it never hangs
+  // forever; on timeout the queued acquire falls back to the fast `busy` reject.
+  const QUEUED_ACQUIRE_TIMEOUT_MS = 120_000;
 
   // Full-power toggle (BYOB approach A) — MAIN-side authority so scheduled /
   // event-woken turns and toggle changes between typed commands all see the
@@ -259,12 +352,28 @@ export function registerDeckHandler(
   // to write `passes` and `done` does not suppress wakes in v1 (owner decision:
   // the human stops the loop).
   const withLoopContext = (workspaceId: string, text: string): string => {
+    // Mode is read fresh here (not cached) so a Settings flip between turns
+    // takes effect immediately — same rationale as the heartbeat's per-tick read.
+    const mode = loadWorkspaceMode(workspaceId);
     const decision = loadWorkspaceDecision(workspaceId);
     const loop = loadWorkspaceLoopState(workspaceId);
     const blocks: string[] = [];
-    // The decision block LEADS — a blocked (or just-resolved) decision is the
-    // most urgent trusted context for this turn. Both survive a reboot as
-    // atomic JSON, so a resumed brain re-reads exactly where it paused.
+    // The [autonomy] block LEADS — it frames how the brain should read everything
+    // below it (whether it has authority to resolve the policy/decision itself).
+    // `off` returns null (no ambient instructions for an off workspace).
+    const autonomy = renderAutonomyBlock(mode);
+    if (autonomy) blocks.push(autonomy);
+    // Binding operator policy next: the standing rules that let the brain resolve
+    // a fork itself instead of escalating (and, in assist, guide what it
+    // recommends). Injected for auto AND assist; never for off. Read fresh (the
+    // operator can edit deck-policy.md between turns). Fail-open → no block.
+    if (mode !== 'off') {
+      const policy = loadDeckPolicyBlock();
+      if (policy) blocks.push(policy);
+    }
+    // Then the decision block — a blocked (or just-resolved) decision is the most
+    // urgent trusted context. Both decision + loop survive a reboot as atomic
+    // JSON, so a resumed brain re-reads exactly where it paused.
     if (decision) blocks.push(renderDecisionBlock(decision));
     if (loop) blocks.push(renderLoopStateBlock(loop));
     if (blocks.length === 0) return text;
@@ -449,37 +558,184 @@ export function registerDeckHandler(
   const runTurnForWorkspace = async (
     prompt: string,
     workspaceId: string,
+    runOpts: {
+      queued?: boolean;
+      // WP3 re-examine: a heartbeat-fired wake that BYPASSES the pending-decision
+      // block. The wire prompt carries the STALE decision block (not the normal
+      // "BLOCKED — wait" pending block withLoopContext would prepend), so the
+      // brain re-examines and — in auto mode — may self-resolve. Present only on
+      // that one narrow path; every other caller leaves it undefined and gets
+      // the unchanged withLoopContext prompt.
+      // Only the EXPECTED decision id is captured at fire time; mode, TTL and
+      // staleness are re-validated FRESH after the (possibly long) queued gate
+      // wait — a workspace flipped to `off`, a replaced decision, or a decision
+      // that is no longer stale/pending ABORTS the re-examine instead of running
+      // a stale turn (3-way review P1: the off kill switch must hold across the
+      // gate wait, and a replaced decision must not inherit the old re-examine).
+      reExamine?: { expectedId: string };
+    } = {},
   ): Promise<{ ok: boolean; code?: string }> => {
     if (!WORKSPACE_ID_RE.test(workspaceId)) {
       return { ok: false, code: 'invalid_workspace' as const };
     }
-    // Scheduled/event-woken turns reuse the live manager's model (a lazily
-    // created one starts with the default). Full power always comes from the
-    // main-side authority inside ensureManager — the live toggle applies to
-    // autonomous turns too.
-    const mgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
-    if (mgr.getStatus().status !== 'idle') {
+    // Per-workspace busy check BEFORE the fleet-slot acquire (3-way review P3):
+    // a workspace already running a turn must not momentarily consume — or, for
+    // the queued path, sit and WAIT on — one of the scarce global slots. ensureManager
+    // still runs first (unchanged lazy-creation semantics), we just don't hold the
+    // gate across the check. Scheduled/event-woken turns reuse the live manager's
+    // model; full power always comes from the main-side authority in ensureManager.
+    const preMgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
+    if (preMgr.getStatus().status !== 'idle') {
       return { ok: false, code: 'busy' as const };
     }
-    // Build the wire prompt (prepends any pending/resolved [decision] block and
-    // the loop block) BEFORE the send — the status check and send stay one
-    // synchronous sequence (nothing awaits between them).
-    // turn-start announces the ORIGINAL prompt (what the human should see as
-    // the turn's cause); the context blocks ride only on the wire to the brain,
-    // mirroring the DECK_SEND path.
-    // Capture the decision THIS turn will inject (withLoopContext reads the same
-    // on-disk state synchronously right below) so at turn end we consume ONLY a
-    // resolution this turn actually carried — never one RAISED mid-turn, whose
-    // prompt this turn was built before (that would silently drop the human's
-    // answer and unblock the loop — 3-way review P1).
-    const injected = loadWorkspaceDecision(workspaceId);
-    const prompted = withLoopContext(workspaceId, prompt);
-    emit(workspaceId, { type: 'turn-start', prompt });
-    const verdict = await mgr.send(prompted);
-    if (verdict.ok && injected?.status === 'resolved') {
-      void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
+    // Fleet-wide concurrency gate (autonomous path only). One-shot callers (loop
+    // kickoff, decision resume, startup reconcile) AWAIT a slot so their turn is
+    // not silently dropped on a transient full gate with no event to retry it;
+    // coalescer/scheduler take the fast reject-and-requeue path. The slot is held
+    // for the WHOLE turn — release in the finally once mgr.send has settled — so
+    // N concurrent turns never exceed the cap even while their streams are open.
+    const token = runOpts.queued
+      ? await globalTurnGate.acquireWhenAvailable(QUEUED_ACQUIRE_TIMEOUT_MS, workspaceId)
+      : globalTurnGate.tryAcquire(workspaceId);
+    if (!token) {
+      return { ok: false, code: 'busy' as const };
     }
-    return verdict;
+    try {
+      // The queued path awaited (up to 120s) for the slot — re-resolve the manager
+      // and re-check idle now that we hold it: a human/scheduled turn (or a
+      // settings-driven manager swap) could have started/retired this workspace's
+      // brain during the wait. From here the status check and send are one
+      // synchronous sequence (nothing awaits between them).
+      const mgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
+      if (mgr.getStatus().status !== 'idle') {
+        return { ok: false, code: 'busy' as const };
+      }
+      // Build the wire prompt (prepends any pending/resolved [decision] block and
+      // the loop block) BEFORE the send.
+      // turn-start announces the ORIGINAL prompt (what the human should see as
+      // the turn's cause); the context blocks ride only on the wire to the brain,
+      // mirroring the DECK_SEND path.
+      // Capture the decision THIS turn will inject (withLoopContext reads the same
+      // on-disk state synchronously right below) so at turn end we consume ONLY a
+      // resolution this turn actually carried — never one RAISED mid-turn, whose
+      // prompt this turn was built before (that would silently drop the human's
+      // answer and unblock the loop — 3-way review P1).
+      const injected = loadWorkspaceDecision(workspaceId);
+      // WP3 re-examine builds a DIFFERENT wire prompt: the STALE decision block
+      // (re-examine / auto-may-self-resolve) instead of withLoopContext's normal
+      // "BLOCKED — wait" pending block. Everything is RE-VALIDATED fresh here —
+      // after the queued gate wait — and the turn is ABORTED (not run through the
+      // normal path) when the re-examine no longer applies: mode flipped to off
+      // (kill switch), the decision was resolved/cleared/replaced (id mismatch),
+      // or it is no longer stale under the CURRENT TTL. Running the fallback
+      // prompt instead would waste a turn telling a blocked brain to wait.
+      let prompted: string;
+      if (runOpts.reExamine) {
+        const mode = loadWorkspaceMode(workspaceId);
+        const ttlMs = loadDeckHeartbeat().decisionTtlMs;
+        // The global auto-wake switch is re-checked here too (round-4 review
+        // P1): the heartbeat checked it at fire time, but the queued gate wait
+        // above can span minutes — an operator who flipped Auto-wake off during
+        // the wait must not get an ambient turn.
+        const valid =
+          loadAutoWakeEnabled() &&
+          mode !== 'off' &&
+          injected?.status === 'pending' &&
+          injected.id === runOpts.reExamine.expectedId &&
+          isDecisionStale(injected, ttlMs);
+        if (!valid) {
+          return { ok: false, code: 'reexamine_invalidated' as const };
+        }
+        // TURN LEASE (round-5 review P1): deck_resolve_decision is refused
+        // server-side unless THIS re-examine turn for THIS decision is live.
+        // Granted here (post-validation, pre-send), revoked in the outer
+        // finally — success, error, or abort all die with the turn.
+        grantReExamineLease(workspaceId, injected.id);
+        const ttlMinutes = Math.max(1, Math.round(ttlMs / 60_000));
+        // Same leading context as a normal turn (3-way review P2: the stale block
+        // tells the brain to cite a binding policy rule — that rule must be IN
+        // this turn): [autonomy] → [policy] → stale [decision] → loop → prompt.
+        const blocks: string[] = [];
+        const autonomy = renderAutonomyBlock(mode);
+        if (autonomy) blocks.push(autonomy);
+        const policy = loadDeckPolicyBlock();
+        if (policy) blocks.push(policy);
+        blocks.push(renderStaleDecisionBlock(injected, { ttlMinutes, mode }));
+        const loop = loadWorkspaceLoopState(workspaceId);
+        if (loop) blocks.push(renderLoopStateBlock(loop));
+        prompted = `${blocks.join('\n\n')}\n\n${prompt}`;
+      } else {
+        prompted = withLoopContext(workspaceId, prompt);
+      }
+      emit(workspaceId, { type: 'turn-start', prompt });
+      const verdict = await mgr.send(prompted);
+      if (verdict.ok) {
+        if (runOpts.reExamine) {
+          // The brain may have self-resolved its OWN decision during this
+          // re-examine turn (deck_resolve_decision). It is already awake and has
+          // acted on it in-turn, so there is no separate resume to kick (a kick
+          // would just busy-reject against this very turn); we only CONSUME the
+          // now-resolved record so it doesn't linger and re-inject. Scope the
+          // consume to the id this turn actually re-examined AND to the BRAIN's
+          // own resolution (resolvedBy === 'brain'). If the HUMAN resolved it
+          // while this turn was running, their answer was never in this turn's
+          // prompt — consuming it here would silently discard it (3-way review
+          // round 2 P1). A human resolution is left on disk so the next natural
+          // wake / startup reconcile carries it into a resume turn.
+          const after = loadWorkspaceDecision(workspaceId);
+          if (
+            after?.status === 'resolved' &&
+            after.resolvedBy === 'brain' &&
+            injected &&
+            after.id === injected.id &&
+            // Round-4 review P1: send() reports ok:true even when the adapter
+            // errored mid-turn (code:'errored'). A self-resolution from a turn
+            // that DIED may never have been acted on — keep the durable record
+            // so the self-resume path (honest '(self)' provenance) replays it,
+            // instead of deleting the only evidence it existed.
+            verdict.code !== 'errored'
+          ) {
+            void clearResolvedDecision(workspaceId, after.id).catch(() => {});
+          } else if (after?.status === 'resolved' && injected && after.id === injected.id) {
+            // Two ways to land here, both needing a follow-up resume turn:
+            //  - the HUMAN answered while this re-examine turn was running
+            //    (their resolve kick busy-rejected against this very turn, and
+            //    this turn's prompt never carried their answer — round-3 P2), or
+            //  - the BRAIN self-resolved but the turn then ERRORED before acting
+            //    (round-4 P1: the record was deliberately NOT consumed above).
+            // resumePromptFor() picks the honest prompt for each provenance.
+            // Deferred a tick so the manager has fully settled to idle before
+            // the busy precheck.
+            const resumeFor = after;
+            setImmediate(() => {
+              void runTurnForWorkspace(resumePromptFor(resumeFor), workspaceId, {
+                queued: true,
+              }).catch(() => {
+                /* best-effort — the durable resolved record rides the next turn */
+              });
+            });
+          }
+        } else if (injected?.status === 'resolved' && verdict.code !== 'errored') {
+          // Same errored guard as the re-examine consume (final review round):
+          // a resume turn that DIED mid-stream (code:'errored') may never have
+          // acted on the resolution its prompt carried — keep the durable
+          // record so the next natural wake / startup reconcile resumes it
+          // again, instead of deleting the answer unacted-on.
+          void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
+        }
+      }
+      return verdict;
+    } finally {
+      // The re-examine self-resolve lease dies with the turn, no matter how it
+      // ended (round-5 review P1) — revoke BEFORE the slot release so no other
+      // turn can observe a stale lease.
+      if (runOpts.reExamine) revokeReExamineLease(workspaceId);
+      // Release the slot once the turn has fully settled (send resolved/rejected)
+      // — never on the synchronous path only, or a long turn would free its slot
+      // early and let the cap be exceeded. Release is by token: a slot already
+      // reclaimed by lease (a wedged turn) makes this a safe no-op.
+      globalTurnGate.release(token);
+    }
   };
 
   // The first turn a freshly started/resumed loop takes. Without this, START
@@ -504,7 +760,12 @@ export function registerDeckHandler(
   // drivers take over. runTurnForWorkspace prepends the loop-state block and
   // emits turn-start, so the kick renders in the thread like a scheduled run.
   const kickLoop = (workspaceId: string): void => {
-    void runTurnForWorkspace(LOOP_KICKOFF_PROMPT, workspaceId).catch(() => {
+    // Queued acquire (3-way review P1): a loop start/resume is a ONE-SHOT caller
+    // — nothing requeues it. On a transient full gate it must AWAIT a slot, not
+    // reject and leave the loop sitting idle until an unrelated event happens to
+    // wake it. A busy reject (this workspace already streaming) is still fine —
+    // the drivers take over.
+    void runTurnForWorkspace(LOOP_KICKOFF_PROMPT, workspaceId, { queued: true }).catch(() => {
       /* best-effort — a rejected kick just means the drivers take over */
     });
   };
@@ -531,6 +792,14 @@ export function registerDeckHandler(
     // A PENDING decision gate blocks every wake for this workspace (even a
     // running loop) until the human resolves it. Read fresh at each flush.
     hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
+    // maxWakesPerMin: left to the coalescer's built-in default (6 accepted wakes
+    // per 60s window) — the single unconditional rate ceiling. No store knob
+    // yet, so nothing to thread here.
+    // One-line fleet summary appended to an edge-wake prompt: counts the mirror's
+    // attention panes so the brain sees the wider fleet without a poll. undefined
+    // (no line) when the mirror is empty or the fleet is all quiescent.
+    getFleetTail: (workspaceId) =>
+      buildFleetTailLine(getWorkspaceMirror().getFleetSnapshot(workspaceId)),
   });
   const offBus = eventBus.subscribe((ev) => {
     // AO-style CI feedback (owner decision 2026-07-18): a pane's PR went red.
@@ -613,6 +882,91 @@ export function registerDeckHandler(
     hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
   });
   scheduler.start();
+
+  // ── WP4: level-review heartbeat ───────────────────────────────────────────
+  // A slow cadence re-reads each armed workspace's CURRENT per-pane state (from
+  // the renderer mirror) and hands it to the coalescer's flushSnapshot, which
+  // re-runs the full gate stack — the missed-judgment safety net for a pane
+  // whose edge event was dropped. Reviewed workspaces are those with a live
+  // manager OR a resting mode other than 'off'; the coalescer's own gates decide
+  // whether a wake actually fires (the tick conditions only skip obvious no-ops).
+  const heartbeatWorkspaceIds = (): string[] => {
+    const ids = new Set<string>(managers.keys());
+    // A workspace can be armed (autonomy on) before its brain has ever spawned a
+    // manager — include every mirrored workspace whose resting mode isn't 'off'.
+    const entries = getWorkspaceMirror().getEntries();
+    if (entries) {
+      for (const e of entries) {
+        if (WORKSPACE_ID_RE.test(e.id) && loadWorkspaceMode(e.id) !== 'off') ids.add(e.id);
+      }
+    }
+    return [...ids];
+  };
+  // WP3 — the instruction the re-examine wake carries as its ORIGINAL prompt (the
+  // stale [decision] block is prepended on the wire by runTurnForWorkspace). Kept
+  // short: the stale block already states the re-examine / self-resolve rules.
+  const DECISION_REEXAMINE_PROMPT =
+    'A decision you raised has been pending too long with no human answer (see the STALE ' +
+    '[decision] block above). Re-examine it now per that block, then end your turn.';
+  const heartbeatConfig = loadDeckHeartbeat();
+  const heartbeat = new DeckHeartbeat({
+    getWorkspaceIds: heartbeatWorkspaceIds,
+    getAutonomy: (workspaceId) => loadWorkspaceAutonomy(workspaceId),
+    isBusy: (workspaceId) =>
+      managers.get(workspaceId)?.manager.getStatus().status === 'busy',
+    hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
+    getFleetSnapshot: (workspaceId) => getWorkspaceMirror().getFleetSnapshot(workspaceId),
+    flushSnapshot: (workspaceId, snapshot) => coalescer?.flushSnapshot(workspaceId, snapshot),
+    lastWakeAt: (workspaceId) => coalescer?.lastWakeAt(workspaceId) ?? null,
+    // WP3: the current decision + TTL let the heartbeat detect a STALE pending
+    // decision and fire a bounded re-examine wake that bypasses the wake block.
+    getDecision: (workspaceId) => loadWorkspaceDecision(workspaceId),
+    decisionTtlMs: heartbeatConfig.decisionTtlMs,
+    reExamineDecision: (workspaceId, decision) => {
+      // AMBIENT-WAKE CONTROLS (3-way review round 2 P1): this path bypasses
+      // ONLY the pending-decision gate — that is the feature. The other
+      // ambient controls still apply: the global auto-wake switch (off ⇒ no
+      // ambient wakes of any kind) and the coalescer's consecutive-wake
+      // budget. The rate ceiling is inherently respected — the heartbeat
+      // debounces re-pings to once per TTL (≥ 5 min), far under any per-minute
+      // cap.
+      if (!loadAutoWakeEnabled()) return;
+      if ((coalescer?.getWakeBudgetRemaining(workspaceId) ?? 0) <= 0) return;
+      // Capture ONLY the decision id. Mode/TTL/staleness are re-validated
+      // FRESH inside runTurnForWorkspace after the queued gate wait, so an
+      // off-flip or a replaced decision aborts instead of running stale
+      // (3-way review P1).
+      void runTurnForWorkspace(DECISION_REEXAMINE_PROMPT, workspaceId, {
+        queued: true,
+        reExamine: { expectedId: decision.id },
+      })
+        .then((r) => {
+          // Round-3 review P2: an ACCEPTED re-examine consumes the consecutive-
+          // wake budget and counts against the rate ceiling like any other
+          // ambient wake — an unresolved decision cannot fund an unbounded
+          // stream of re-examines. Rejected/aborted turns cost nothing.
+          if (r.ok) coalescer?.noteExternalWake(workspaceId);
+        })
+        .catch(() => {
+          /* best-effort — a rejected re-examine just retries after the next TTL */
+        });
+    },
+    // Read the on/off switch fresh each tick so a Settings toggle applies without
+    // a restart; the cadence is fixed at construction (a rare change, restart-ok).
+    isEnabled: () => loadDeckHeartbeat().enabled,
+    intervalMs: heartbeatConfig.intervalMs,
+  });
+  heartbeat.start();
+
+  // Seed the binding operator-policy file once (never overwrites an existing
+  // one). Fire-and-forget: a missing policy file just means no policy block, so
+  // a failure here is harmless. Done at init so the file exists for the operator
+  // to edit before their first autonomous turn.
+  try {
+    ensureDeckPolicySeed();
+  } catch {
+    /* best-effort — deckPolicy already swallows its own IO errors */
+  }
 
   ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
   ipcMain.handle(
@@ -1070,7 +1424,21 @@ export function registerDeckHandler(
   // resolution so the brain continues from exactly where it paused.
   const DECISION_RESUME_PROMPT =
     'The operator just resolved the decision you raised (see the [decision] block above). ' +
-    'Act on their answer now and continue — take the next concrete step, then end the turn.';
+    'Act on their answer now and continue — take the next concrete step, then end the turn. ' +
+    'If their resolution corrects your judgment or cites a rule you missed, persist a short ' +
+    'memory fact about it (per your memory-write policy) so you do not re-raise that class ' +
+    'of question.';
+  // Round-3 review P2: a brain-self-resolved record that survived its re-examine
+  // turn (turn errored/interrupted after the resolve landed) must NOT replay as
+  // "the operator resolved" — that would misattribute the brain's own answer to
+  // the human. Same resume mechanics, honest provenance.
+  const DECISION_SELF_RESUME_PROMPT =
+    'A decision you SELF-RESOLVED earlier (auto-mode, see the [decision] block above) was ' +
+    'never acted on — the turn that resolved it did not complete. This is YOUR OWN ' +
+    'resolution, not a human answer: if it still holds, act on it now and continue; if it ' +
+    'no longer applies, raise a fresh decision instead.';
+  const resumePromptFor = (d: WorkspaceDecision): string =>
+    d.resolvedBy === 'brain' ? DECISION_SELF_RESUME_PROMPT : DECISION_RESUME_PROMPT;
 
   ipcMain.removeHandler(IPC.DECK_DECISION_GET);
   ipcMain.handle(
@@ -1091,7 +1459,11 @@ export function registerDeckHandler(
       // the resumed turn consumes the resolved record, and a busy reject is fine.
       // A full headless (no-deck-open) startup reconcile is the M2 follow-up.
       if (workspaceId && decision?.status === 'resolved') {
-        void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId).catch(() => {});
+        // Queued acquire (P1): a one-shot resume must await a slot, not silently
+        // drop on a full gate — the answer would sit forever with autonomy off.
+        // Provenance-aware prompt (round-3 P2): a brain self-resolution must not
+        // replay as "the operator resolved".
+        void runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(() => {});
       }
       return { decision };
     }),
@@ -1121,10 +1493,140 @@ export function registerDeckHandler(
       // reject is fine — the resolution rides withLoopContext on the next turn
       // (event / schedule / human) and is consumed then. Fire-and-forget: the
       // renderer only needs the resolve's accept, not the turn's outcome.
-      void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId).catch(() => {
+      void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId, { queued: true }).catch(() => {
         /* best-effort resume — the durable resolved decision rides the next turn */
       });
       return { ok: true, decision };
+    }),
+  );
+
+  // ── D1: deterministic "welcome home" briefing ─────────────────────────────
+  // A synchronous main-process READ of existing judgment-engine state — NO brain
+  // turn, NO globalTurnGate acquire, renders in every autonomy mode including
+  // 'off'. Every feed is a main-singleton read (mirror snapshot/entries,
+  // decision, mode, loop) plus the last-viewed snapshot for the delta.
+  //
+  // READ and ACKNOWLEDGE are deliberately SEPARATE channels. The card fetches on
+  // every deck stream tick (and while collapsed), so persisting the baseline
+  // inside GET consumed deltas nobody ever saw: "2 finished, 1 now blocked"
+  // could be folded into the snapshot while the operator was on another tab and
+  // was then unrecoverable. GET is therefore pure; the card calls
+  // DECK_BRIEFING_SEEN only once the briefing is actually rendered expanded, and
+  // only THAT advances the "what you last saw" baseline.
+  //
+  // markColdStart returns true the FIRST time a workspace is briefed since this
+  // handler registered (process start), false thereafter.
+  const briefedSinceStart = new Set<string>();
+  const markColdStart = (workspaceId: string): boolean => {
+    if (briefedSinceStart.has(workspaceId)) return false;
+    briefedSinceStart.add(workspaceId);
+    return true;
+  };
+
+  // The snapshot each GET *would* persist, held until the renderer acknowledges
+  // that build. Keyed by workspace, matched by builtAt so an acknowledge can only
+  // ever commit the exact build the operator saw — a newer build that landed in
+  // between is not silently consumed, and the renderer never gets to hand main
+  // its own snapshot data.
+  const pendingSeen = new Map<string, { builtAt: number; snapshot: BriefedSnapshot }>();
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_GET);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_GET,
+    wrapHandler(IPC.DECK_BRIEFING_GET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ briefing: WorkspaceBriefing | null; autoShow?: boolean; mirrorReady?: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { briefing: null };
+      // Both reads join the store's write chain so a GET that races a queued
+      // acknowledge still computes its delta from POST-write state.
+      const cfg = await readDeckBriefingConfig();
+      if (!cfg.enabled) return { briefing: null };
+      const mirror = getWorkspaceMirror();
+      // The mirror push waits for paneGate === 'ready', so an early GET during
+      // startup sees an EMPTY fleet that is not the truth. Building on it would
+      // burn the one-shot cold-start flag and (once acknowledged) seed an empty
+      // baseline, leaving recovered panes invisible. Report "not ready" instead
+      // and let the card retry — nothing is consumed.
+      if (!mirror.hasEverBeenPopulated()) return { briefing: null, mirrorReady: false };
+      const snapshot = mirror.getFleetSnapshot(workspaceId);
+      const entry = mirror.getEntries()?.find((e) => e.id === workspaceId) ?? null;
+      const briefing = buildWorkspaceBriefing({
+        workspaceId,
+        entry,
+        snapshot,
+        decision: loadWorkspaceDecision(workspaceId),
+        mode: loadWorkspaceMode(workspaceId),
+        loop: loadWorkspaceLoopState(workspaceId),
+        prior: await readBriefedSnapshot(workspaceId),
+        coldStart: markColdStart(workspaceId),
+      });
+      pendingSeen.set(workspaceId, {
+        builtAt: briefing.builtAt,
+        snapshot: toBriefedSnapshot(
+          snapshot,
+          briefing.pendingDecision?.id ?? null,
+          briefing.builtAt,
+        ),
+      });
+      return { briefing, autoShow: cfg.autoShow, mirrorReady: true };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_SEEN);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_SEEN,
+    wrapHandler(IPC.DECK_BRIEFING_SEEN, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false };
+      const builtAt = typeof req.builtAt === 'number' ? req.builtAt : NaN;
+      const pending = pendingSeen.get(workspaceId);
+      // No-op unless this acknowledges the exact build main handed out. Also
+      // makes a repeated ack for the same build free (no disk write).
+      if (!pending || pending.builtAt !== builtAt) return { ok: false };
+      pendingSeen.delete(workspaceId);
+      const live = getWorkspaceMirror().getEntries()?.map((e) => e.id);
+      // Fire-and-forget, same never-throw posture as the rest of the store: a
+      // failed persist only costs a slightly-stale delta on the next open.
+      void saveBriefedSnapshot(workspaceId, pending.snapshot, undefined, {
+        ...(live ? { liveWorkspaceIds: live } : {}),
+      }).catch(() => undefined);
+      return { ok: true };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_GET);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_CONFIG_GET,
+    wrapHandler(IPC.DECK_BRIEFING_CONFIG_GET, async (): Promise<DeckBriefingConfig> => {
+      return loadDeckBriefingConfig();
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_SET);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_CONFIG_SET,
+    wrapHandler(IPC.DECK_BRIEFING_CONFIG_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<DeckBriefingConfig> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const patch: Partial<DeckBriefingConfig> = {};
+      if (typeof req.enabled === 'boolean') patch.enabled = req.enabled;
+      if (typeof req.autoShow === 'boolean') patch.autoShow = req.autoShow;
+      return saveDeckBriefingConfig(patch);
     }),
   );
 
@@ -1137,15 +1639,23 @@ export function registerDeckHandler(
   // Deferred so the daemon's session recovery settles first (a resume turn
   // wants the recovered fleet); unref'd so it never keeps Electron alive.
   const DECISION_RECONCILE_DELAY_MS = 4000;
-  const reconcileResolvedDecisions = (): void => {
+  const reconcileResolvedDecisions = async (): Promise<void> => {
+    // Serial + QUEUED (P1): each resume awaits a fleet slot and runs to
+    // completion before the next starts, so >2 resolved decisions ALL process —
+    // the old fire-and-forget loop only got the first `cap` past the gate and
+    // silently dropped the rest.
     for (const [workspaceId, decision] of Object.entries(loadDeckDecisions())) {
       if (decision.status === 'resolved') {
-        void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId).catch(() => {});
+        // Provenance-aware prompt (round-3 P2): a stranded brain self-resolution
+        // resumes as the brain's OWN answer, never as "the operator resolved".
+        await runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(
+          () => {},
+        );
       }
     }
   };
   const reconcileTimer = setTimeout(
-    reconcileResolvedDecisions,
+    () => void reconcileResolvedDecisions(),
     opts.reconcileDelayMs ?? DECISION_RECONCILE_DELAY_MS,
   );
   (reconcileTimer as { unref?: () => void }).unref?.();
@@ -1164,7 +1674,9 @@ export function registerDeckHandler(
     clearTimeout(reconcileTimer);
     offBus();
     coalescer?.dispose();
+    globalTurnGate.dispose();
     scheduler.stop();
+    heartbeat.stop();
     disposeAll();
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
@@ -1188,5 +1700,9 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MODE_SET);
     ipcMain.removeHandler(IPC.DECK_DECISION_GET);
     ipcMain.removeHandler(IPC.DECK_DECISION_RESOLVE);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_GET);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_SEEN);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_GET);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_SET);
   };
 }

@@ -147,6 +147,27 @@ describe('selectFleetPanes', () => {
     expect(p2a.isActivePane).toBe(true);
   });
 
+  it('a hook-sourced complete on the ACTIVE pane wins over stale running metadata (TUI turn-end)', () => {
+    // The OpenCode-forever-running bug: a long-lived TUI agent is a foreground
+    // command the whole time it is open, so ws metadata stays 'running' between
+    // turns. The Stop hook now writes an attention 'complete' for the pty; the
+    // selector's attention tier must outrank the workspace-level 'running' so
+    // the fleet badge / heartbeat level review see the turn ended.
+    const tui = workspace(
+      'ws-tui', 'tui',
+      leaf('ptui', [surface('stui', 'pty-tui')]),
+      'ptui',
+      { agentName: 'OpenCode', agentStatus: 'running' },
+    );
+    const [card] = selectFleetPanes({
+      workspaces: [tui],
+      surfaceAgentStatus: { 'pty-tui': 'complete' },
+      surfaceActivity: {},
+    });
+    expect(card.isActivePane).toBe(true);
+    expect(card.agentStatus).toBe('complete');
+  });
+
   it('keeps per-pty attention status for a BACKGROUND pane but not its agentName', () => {
     const p2b = byPane(selectFleetPanes(fixture()), 'p2b');
     expect(p2b.agentStatus).toBe('complete'); // per-pty, accurate in background
@@ -551,6 +572,16 @@ describe('isPaneAgentBusy — OSC 133 commandRunning', () => {
   const NOW = 1_000_000_000;
   const staleActivity = NOW - (HOOK_RUNNING_TTL_MS + 5_000);
 
+  it('commandRunning=true → busy even when the FLEET status is complete (chip gate ≠ fleet display)', () => {
+    // Concern separation: the Stop hook now marks a foreground TUI agent
+    // 'complete' for the FLEET (display / pane_list / level review). That must
+    // NOT surface the resume chip — typing into a live agent TUI would land in
+    // its input, not a shell — so the chip gate's OSC 133 tier-1 still wins.
+    expect(isPaneAgentBusy({
+      activityAt: 0, agentClockMs: NOW, status: 'complete', commandRunning: true,
+    })).toBe(true);
+  });
+
   it('commandRunning=true → busy even with NO activity and no status (closes the idle-TUI gap)', () => {
     expect(isPaneAgentBusy({
       activityAt: 0, agentClockMs: NOW, status: undefined, commandRunning: true,
@@ -571,6 +602,48 @@ describe('isPaneAgentBusy — OSC 133 commandRunning', () => {
     })).toBe(true);
     expect(isPaneAgentBusy({
       activityAt: staleActivity, agentClockMs: NOW, status: undefined, commandRunning: undefined,
+    })).toBe(false);
+  });
+});
+
+// ─── isPaneAgentBusy — process-truth tier (agentProcessAlive edge trigger) ───
+describe('isPaneAgentBusy — agentProcessAlive', () => {
+  const NOW = 1_000_000_000;
+  const staleActivity = NOW - (HOOK_RUNNING_TTL_MS + 5_000);
+
+  it('alive agent past the activity TTL → still busy (the mid-session false chip)', () => {
+    // The reported bug: a quiet claude (long thinking / finished turn) on a
+    // no-integration pane decayed the heuristic and surfaced the chip while
+    // the TUI was alive. Process truth must override the decay.
+    expect(isPaneAgentBusy({
+      activityAt: staleActivity, agentClockMs: NOW, status: 'complete', agentProcessAlive: true,
+    })).toBe(true);
+  });
+
+  it('dead agent process → idle even if the heuristic would say busy (the exit edge)', () => {
+    expect(isPaneAgentBusy({
+      activityAt: NOW, agentClockMs: NOW, status: 'running', agentProcessAlive: false,
+    })).toBe(false);
+  });
+
+  it('OSC 133 outranks process truth in both directions', () => {
+    // Shell provably at a prompt → typing is safe, chip may show.
+    expect(isPaneAgentBusy({
+      activityAt: 0, agentClockMs: NOW, status: undefined, commandRunning: false, agentProcessAlive: true,
+    })).toBe(false);
+    // A foreground command owns the PTY (agent died, user ran something else)
+    // → the chip must stay away.
+    expect(isPaneAgentBusy({
+      activityAt: 0, agentClockMs: NOW, status: undefined, commandRunning: true, agentProcessAlive: false,
+    })).toBe(true);
+  });
+
+  it('undefined → falls through to the activity heuristic', () => {
+    expect(isPaneAgentBusy({
+      activityAt: NOW, agentClockMs: NOW, status: undefined, agentProcessAlive: undefined,
+    })).toBe(true);
+    expect(isPaneAgentBusy({
+      activityAt: staleActivity, agentClockMs: NOW, status: undefined, agentProcessAlive: undefined,
     })).toBe(false);
   });
 });

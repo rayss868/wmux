@@ -5,6 +5,7 @@ import * as path from 'path';
 import {
   installHooks,
   removeHooks,
+  refreshHookBridge,
   statusHooks,
   findBridgeSourceFrom,
   type SetupHooksPaths,
@@ -26,6 +27,23 @@ function paths(overrides: Partial<SetupHooksPaths> = {}): SetupHooksPaths {
 
 function readSettings(): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+}
+
+/** Write Claude Code's installed-plugins manifest next to settings.json. */
+function writePluginManifest(raw: string): void {
+  const manifestPath = path.join(path.dirname(settingsPath), 'plugins', 'installed_plugins.json');
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  fs.writeFileSync(manifestPath, raw, 'utf8');
+}
+
+/** Flatten every hook command string across all events in settings.json. */
+function allHookCommands(): string[] {
+  const hooks = (readSettings().hooks ?? {}) as Record<string, unknown[]>;
+  return Object.values(hooks).flatMap((groups) =>
+    (groups as { hooks: { command: string }[] }[]).flatMap((g) =>
+      g.hooks.map((h) => h.command),
+    ),
+  );
 }
 
 beforeEach(() => {
@@ -154,6 +172,113 @@ describe('installHooks', () => {
   });
 });
 
+describe('installHooks — plugin-aware', () => {
+  it('strips duplicate wmux entries, does not re-add, and preserves foreign hooks', () => {
+    // Seed a prior plugin-LESS install so settings.json carries wmux entries.
+    installHooks(paths());
+    // Add foreign hooks alongside the wmux ones.
+    const s0 = readSettings();
+    (s0.hooks as Record<string, unknown[]>).Stop.push({
+      matcher: '',
+      hooks: [{ type: 'command', command: 'echo foreign-stop' }],
+    });
+    (s0.hooks as Record<string, unknown[]>).PreToolUse = [
+      { matcher: '', hooks: [{ type: 'command', command: 'echo foreign-pre' }] },
+    ];
+    fs.writeFileSync(settingsPath, JSON.stringify(s0), 'utf8');
+
+    // Now the marketplace plugin appears.
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+    );
+
+    const outcome = installHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pluginDetected).toBe(true);
+    expect(outcome.removedForPlugin).toBe(3);
+    expect(outcome.events).toEqual([]);
+
+    // No wmux command remains; both foreign hooks are preserved.
+    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(false);
+    expect(allHookCommands()).toContain('echo foreign-stop');
+    expect(allHookCommands()).toContain('echo foreign-pre');
+
+    // Idempotent: a second plugin-mode run removes nothing and never re-adds.
+    const again = installHooks(paths());
+    expect(again.pluginDetected).toBe(true);
+    expect(again.removedForPlugin).toBe(0);
+    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(false);
+  });
+
+  it('installs normally when the manifest exists but lacks the wmux plugin key', () => {
+    writePluginManifest(JSON.stringify({ 'some-other-plugin@market': {} }));
+    const outcome = installHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pluginDetected).toBe(false);
+    expect(outcome.events.sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
+    const hooks = readSettings().hooks as Record<string, unknown[]>;
+    expect(Object.keys(hooks).sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
+  });
+
+  it('treats a malformed installed_plugins.json as plugin-absent (normal install)', () => {
+    writePluginManifest('{ this is not json');
+    const outcome = installHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pluginDetected).toBe(false);
+    expect(outcome.events.sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
+    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
+  });
+
+  it('detects the plugin when referenced as an array value, not just a key', () => {
+    writePluginManifest(JSON.stringify({ 'wmux-marketplace': ['wmux-claude-integration'] }));
+    const outcome = installHooks(paths());
+    expect(outcome.pluginDetected).toBe(true);
+    expect(outcome.events).toEqual([]);
+  });
+
+  // Codex review: installed_plugins.json keeps listing a plugin the user
+  // disabled via settings `enabledPlugins` — its hooks.json is NOT loaded, so
+  // the settings.json entries are the only live installation and must not be
+  // stripped (that would leave zero wmux hooks).
+  it('installs normally when the plugin is installed but explicitly disabled', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+    );
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ enabledPlugins: { 'wmux-claude-integration@wmux-marketplace': false } }),
+      'utf8',
+    );
+
+    const outcome = installHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pluginDetected).toBe(false);
+    expect(outcome.events.sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
+    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
+    // The user's enabledPlugins map is preserved untouched.
+    expect((readSettings().enabledPlugins as Record<string, unknown>)[
+      'wmux-claude-integration@wmux-marketplace'
+    ]).toBe(false);
+  });
+
+  it('still short-circuits when enabledPlugins lists the plugin as true', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+    );
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ enabledPlugins: { 'wmux-claude-integration@wmux-marketplace': true } }),
+      'utf8',
+    );
+
+    const outcome = installHooks(paths());
+    expect(outcome.pluginDetected).toBe(true);
+    expect(outcome.events).toEqual([]);
+  });
+});
+
 describe('removeHooks', () => {
   it('removes only wmux entries and preserves foreign hooks', () => {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
@@ -267,6 +392,104 @@ describe('statusHooks', () => {
     fs.mkdirSync(pluginDir, { recursive: true });
     const s = statusHooks(paths());
     expect(s.pluginAlsoInstalled).toBe(true);
+  });
+});
+
+describe('refreshHookBridge', () => {
+  /** An install whose settings.json references the stable bridge, then a bundle
+   *  that has since moved on — the exact post-app-update stale state. */
+  function installThenBumpSource(): void {
+    installHooks(paths());
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
+  }
+
+  it('replaces a stale bridge when settings.json references it', () => {
+    installThenBumpSource();
+    expect(refreshHookBridge(paths())).toBe('refreshed');
+    expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V2\n');
+  });
+
+  it('never writes settings.json — only the bridge file', () => {
+    installThenBumpSource();
+    const before = fs.readFileSync(settingsPath, 'utf8');
+    refreshHookBridge(paths());
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(before);
+  });
+
+  it('reports up-to-date without rewriting an identical bridge', () => {
+    installHooks(paths());
+    const mtime = fs.statSync(bridgeDest).mtimeMs;
+    expect(refreshHookBridge(paths())).toBe('up-to-date');
+    expect(fs.statSync(bridgeDest).mtimeMs).toBe(mtime);
+  });
+
+  it('does NOT enroll a user who never installed the hooks', () => {
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.existsSync(bridgeDest)).toBe(false);
+    expect(fs.existsSync(settingsPath)).toBe(false);
+  });
+
+  it('restores a referenced bridge that was deleted, without writing settings', () => {
+    installHooks(paths());
+    const settingsBefore = fs.readFileSync(settingsPath, 'utf8');
+    fs.rmSync(bridgeDest); // file gone, but settings hooks still reference it
+    expect(refreshHookBridge(paths())).toBe('refreshed');
+    expect(fs.existsSync(bridgeDest)).toBe(true);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(settingsBefore);
+  });
+
+  it('does NOT restore when settings has no wmux hooks referencing the bridge', () => {
+    // settings.json present with only foreign hooks; bridge absent.
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'node other.js' }] }] } }),
+      'utf8',
+    );
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.existsSync(bridgeDest)).toBe(false);
+  });
+
+  it('leaves the bridge alone when settings.json no longer references it', () => {
+    // A leftover bridge file, but the user has since removed the hooks — the
+    // plugin now owns the signals, and refreshing this orphan is pure surprise.
+    installHooks(paths());
+    removeHooks(paths());
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
+  });
+
+  it('does not resurrect a bridge for a FOREIGN-only hooks map', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'node my-own.js' }] }] } }),
+      'utf8',
+    );
+    fs.mkdirSync(path.dirname(bridgeDest), { recursive: true });
+    fs.writeFileSync(bridgeDest, 'BRIDGE_CONTENT_V1\n', 'utf8');
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
+  });
+
+  it('reports no-source when the bundled bridge cannot be located', () => {
+    installHooks(paths());
+    expect(refreshHookBridge(paths({ bridgeSource: null }))).toBe('no-source');
+  });
+
+  it('degrades to failed instead of throwing on an unreadable source', () => {
+    installHooks(paths());
+    expect(refreshHookBridge(paths({ bridgeSource: path.join(tmpDir, 'gone.mjs') }))).toBe('failed');
+  });
+
+  it('does not refresh through a corrupted settings.json', () => {
+    installHooks(paths());
+    fs.writeFileSync(settingsPath, '{not json', 'utf8');
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
   });
 });
 

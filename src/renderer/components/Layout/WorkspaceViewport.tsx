@@ -19,13 +19,24 @@ import { useT } from '../../hooks/useT';
 import PaneContainer from '../Pane/PaneContainer';
 import type { Workspace } from '../../../shared/types';
 
-/** One single-view workspace pane subtree. Inactive → display:none (kept mounted). */
+/** One single-view workspace pane subtree. Inactive → display:none (kept mounted).
+ *
+ * Cold-park (TASK-9): when `parked` is true the PaneContainer is NOT rendered —
+ * unmounting it disposes the workspace's xterm/WebGL/registry entries (useTerminal
+ * cleanup) WITHOUT touching the daemon PTY, so RAM stops scaling with hidden
+ * workspace count. A parked slot is always hidden (parked ⇒ not active), so the
+ * placeholder is never visible; it exists only to keep the mount slot alive.
+ * Only terminal-only workspaces are ever parked (sweepColdPark gates on
+ * isTerminalOnlyWorkspace), so unmounting here can never drop a browser webview
+ * session or unsaved editor state — those have no daemon-side replay. */
 export const WorkspaceSlot = memo(function WorkspaceSlot({
   workspace,
   isActive,
+  parked,
 }: {
   workspace: Workspace;
   isActive: boolean;
+  parked?: boolean;
 }) {
   return (
     <div
@@ -36,7 +47,9 @@ export const WorkspaceSlot = memo(function WorkspaceSlot({
         flexDirection: 'column',
       }}
     >
-      <PaneContainer pane={workspace.rootPane} workspace={workspace} isWorkspaceVisible={isActive} />
+      {parked ? null : (
+        <PaneContainer pane={workspace.rootPane} workspace={workspace} isWorkspaceVisible={isActive} />
+      )}
     </div>
   );
 });
@@ -115,6 +128,8 @@ export function WorkspaceViewport() {
   const workspaces = useStore((s) => s.workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const multiviewIds = useStore((s) => s.multiviewIds);
+  // Cold-park (TASK-9): parked ids render a placeholder instead of PaneContainer.
+  const parkedWorkspaceIds = useStore((s) => s.parkedWorkspaceIds);
   const paneGate = useStore((s) => s.paneGate);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const removeMultiviewWorkspace = useStore((s) => s.removeMultiviewWorkspace);
@@ -179,7 +194,23 @@ export function WorkspaceViewport() {
   return (
     <div className="flex-1 min-h-0 relative">
       {workspaces.map((ws) => (
-        <WorkspaceSlot key={ws.id} workspace={ws} isActive={ws.id === activeWorkspaceId} />
+        <WorkspaceSlot
+          key={ws.id}
+          workspace={ws}
+          isActive={ws.id === activeWorkspaceId}
+          // Visible ⇒ never rendered as parked, regardless of the parked set.
+          // activeWorkspaceId is assigned directly by several handoff paths
+          // (removeWorkspace, company destroy/removeDept, loadSession) that
+          // don't run the un-park action, so a parked id promoted to active
+          // would otherwise render a blank viewport until the 30s sweep. This
+          // render guard covers every current and future promotion path; the
+          // slice still converges its state via the clears in those sites.
+          parked={
+            parkedWorkspaceIds[ws.id] === true &&
+            ws.id !== activeWorkspaceId &&
+            !multiviewIds.includes(ws.id)
+          }
+        />
       ))}
     </div>
   );

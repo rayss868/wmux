@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// wmux statusline for Claude Code — renders `<model> · <account> · 5h N% · 7d N%`
+// wmux statusline for Claude Code — renders
+// `<model> · <account> · 5h N% ↺ HH:MM · 7d N% ↺ Nh` (beyond 48h: `↺ NdNh`)
 // on the line under the input box (Claude Code `statusLine` command).
 //
 // How it knows WHICH account this session runs on: the statusline process is
@@ -105,8 +106,23 @@ function main() {
 
   const parts = [];
 
+  // Model label: `Opus 4.8 (xhigh)` — the model and the effort it runs at, and
+  // deliberately nothing else. The context-window SIZE is not rendered: it is a
+  // property of the account's model selection that rarely differs pane to pane,
+  // and the live fill (`ctx N%` below) is the part that actually changes. Two
+  // stdin fields feed the label:
+  //   display_name — older Claude Code baked a verbose " (1M context)" suffix
+  //     into it for `[1m]` model variants ("Opus 4.7 (1M context)"); ≥2.1.218
+  //     sends the clean name and reports the window under context_window
+  //     instead. The suffix is stripped so both versions render identically.
+  //   effort.level — present only on models that expose one ("high", "xhigh"…);
+  //     a model without one renders as a bare `Haiku 4.5`.
   const model = input?.model?.display_name;
-  if (typeof model === 'string' && model.length > 0) parts.push(model);
+  if (typeof model === 'string' && model.length > 0) {
+    const name = model.replace(/ \(1M context\)$/, '');
+    const effort = input?.effort?.level;
+    parts.push(typeof effort === 'string' && effort.length > 0 ? `${name} (${effort})` : name);
+  }
 
   // Account label: registered wmux name > logged-in email local part >
   // 'default' for ~/.claude > dir basename.
@@ -127,18 +143,38 @@ function main() {
   const sevenDay = rl?.seven_day?.used_percentage;
   if (typeof fiveHour === 'number') {
     // The 5h window resets within hours, so WHEN it frees up is actionable —
-    // show the local reset time (HH:MM). The 7d reset is days out; omitted.
+    // show the local reset time (HH:MM). Space after ↺ so terminal fonts that
+    // render it double-width don't swallow the first digit.
     const resetsAt = rl?.five_hour?.resets_at;
     let reset = '';
     if (typeof resetsAt === 'number' && resetsAt * 1000 > Date.now()) {
       const d = new Date(resetsAt * 1000);
       const hh = String(d.getHours()).padStart(2, '0');
       const mm = String(d.getMinutes()).padStart(2, '0');
-      reset = ` ↺${hh}:${mm}`;
+      reset = ` ↺ ${hh}:${mm}`;
     }
     parts.push(`5h ${Math.round(fiveHour)}%${reset}`);
   }
-  if (typeof sevenDay === 'number') parts.push(`7d ${Math.round(sevenDay)}%`);
+  if (typeof sevenDay === 'number') {
+    // The 7d reset is days out, so remaining TIME (not clock time) is what's
+    // actionable: `↺ 52h`, or `↺ 2d4h` once it exceeds 48h.
+    const resetsAt = rl?.seven_day?.resets_at;
+    let reset = '';
+    const now = Date.now();
+    if (typeof resetsAt === 'number' && resetsAt * 1000 > now) {
+      const msLeft = resetsAt * 1000 - now;
+      if (msLeft >= 48 * 3600000) {
+        const hoursLeft = Math.round(msLeft / 3600000);
+        const d = Math.floor(hoursLeft / 24);
+        const h = hoursLeft % 24;
+        reset = h > 0 ? ` ↺ ${d}d${h}h` : ` ↺ ${d}d`;
+      } else {
+        // ceil so a positive remainder never renders as `0h`
+        reset = ` ↺ ${Math.ceil(msLeft / 3600000)}h`;
+      }
+    }
+    parts.push(`7d ${Math.round(sevenDay)}%${reset}`);
+  }
 
   if (typeof fiveHour !== 'number' && typeof sevenDay !== 'number') {
     // rate_limits hasn't arrived yet (first turn pending) or this session has

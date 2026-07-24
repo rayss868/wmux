@@ -24,6 +24,7 @@ vi.mock('node-pty', () => ({
 import { DaemonSessionManager } from '../DaemonSessionManager';
 import { StateWriter } from '../StateWriter';
 import { createSnapshotRunner } from '../snapshotRunner';
+import { waitForCondition } from './_waitForFile';
 
 describe('createSnapshotRunner (A1b — extracted from periodic interval body)', () => {
   let tmpDir: string;
@@ -114,6 +115,44 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     expect(persisted.bootId).toBe('a1b-test-boot');
     // Live session's .buf produced.
     expect(fs.existsSync(writer.getBufferDumpPath('live-one'))).toBe(true);
+  });
+
+  // Review consensus (Claude+Codex): a corrupt primary — or a read landing
+  // inside atomicWriteJSON's rename window — must NOT be treated as "nothing
+  // to preserve": the subsequent save would permanently drop cap-skipped
+  // suspended sessions that exist only on disk. The runner walks the same
+  // .bak rotation load() uses.
+  it('preserves cap-skipped sessions from .bak when the primary is corrupt', async () => {
+    const sessionsFile = path.join(tmpDir, 'sessions.json');
+    const recentIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const suspended = {
+      id: 'cap-skipped',
+      state: 'suspended',
+      cmd: 'bash',
+      cwd: tmpDir,
+      env: {},
+      cols: 80,
+      rows: 24,
+      pid: 999,
+      createdAt: recentIso,
+      lastActivity: recentIso,
+      deadTtlHours: 24,
+    };
+    // Valid backup slot, corrupt primary.
+    fs.writeFileSync(
+      `${sessionsFile}.bak`,
+      JSON.stringify({ version: 1, sessions: [suspended], bootId: 'old-boot' }),
+    );
+    fs.writeFileSync(sessionsFile, '{{ definitely not json', 'utf8');
+
+    manager.createSession({ id: 'live-one', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    await runSnapshotOnce();
+
+    const persisted = JSON.parse(fs.readFileSync(sessionsFile, 'utf-8')) as {
+      sessions: { id: string }[];
+    };
+    const ids = persisted.sessions.map((s) => s.id).sort();
+    expect(ids).toEqual(['cap-skipped', 'live-one'].sort());
   });
 
   // Authoritative-managed rule: if a session id exists in both the existing
@@ -208,9 +247,11 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     session.ringBuffer.write(Buffer.from('mid-flight bytes'));
 
     // Release the first dump. The runner sees pendingRerun and re-loops,
-    // which calls dumpToFile a second time on the next iteration.
+    // which calls dumpToFile a second time on the next iteration. The
+    // iteration now also awaits a real fsp.readFile + queued saveAsap
+    // between dumps, so poll instead of a single setImmediate hop.
     resolveCurrent!();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await waitForCondition(() => dumpSpy.mock.calls.length === 2);
     expect(dumpSpy).toHaveBeenCalledTimes(2);
 
     // Release the rerun's dump so `first` can resolve.
@@ -222,7 +263,7 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     // again — P1-5 skips clean rings by design).
     session.ringBuffer.write(Buffer.from('post-run bytes'));
     const third = runSnapshotOnce();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await waitForCondition(() => dumpSpy.mock.calls.length === 3);
     expect(dumpSpy).toHaveBeenCalledTimes(3);
     resolveCurrent!();
     await third;
@@ -341,7 +382,10 @@ describe('createSnapshotRunner — dirty-only dumps (P1-5)', () => {
   it('sessions.json is saved even when every dump was skipped (metadata freshness)', async () => {
     manager.createSession({ id: 's1', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
     ring('s1').write(Buffer.from('x'));
-    const saveSpy = vi.spyOn(writer, 'saveImmediate');
+    // 30-session scaling: the runner persists via saveAsap (awaited async
+    // write) instead of the old sync saveImmediate — same unconditional
+    // per-tick cadence, off the event loop.
+    const saveSpy = vi.spyOn(writer, 'saveAsap');
     await runSnapshotOnce();
     await runSnapshotOnce(); // all-clean tick
     expect(saveSpy).toHaveBeenCalledTimes(2); // unconditional both times

@@ -54,6 +54,9 @@ import type { RpcMethod } from '../../shared/rpc';
 //   - `claude-code`        Claude Code           (verified)
 //   - `codex-mcp-client`   OpenAI Codex CLI      (verified 2026-06-15; clientInfo
 //                          name captured live — `codex mcp add` → initialize)
+//   - `opencode`           OpenCode              (verified 2026-07-22; clientInfo
+//                          name captured live from opencode 1.17.11 initialize —
+//                          issue #536)
 //
 // New names MUST be captured empirically (the agent's actual clientInfo.name),
 // not guessed, and the agent must be confirmed to use the wmux tools end-to-end
@@ -61,6 +64,7 @@ import type { RpcMethod } from '../../shared/rpc';
 export const FIRST_PARTY_CLIENT_NAMES: ReadonlySet<string> = new Set<string>([
   'claude-code',
   'codex-mcp-client',
+  'opencode',
 ]);
 
 // The exact RPC methods the bundled MCP server (src/mcp/index.ts and its
@@ -108,9 +112,14 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // commander-brain decision gate (deck_ask_decision tool). Same per-spawn-token
   // auth; a non-commander caller has no token and fails closed.
   'deck.requestDecision',
+  // commander-brain self-resolve of a STALE decision (deck_resolve_decision tool,
+  // WP3). Same per-spawn-token auth; the handler server-enforces auto-mode +
+  // staleness + substance, so a non-commander or premature caller fails closed.
+  'deck.resolveDecision',
   // events
   'events.poll',
   // browser (Playwright + packaged CDP/RPC fallbacks)
+  'browser.tabs',
   'browser.open',
   'browser.navigate',
   'browser.goBack',

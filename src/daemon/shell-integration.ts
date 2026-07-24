@@ -26,14 +26,27 @@ import { isMac } from '../shared/platform';
 // v7: 번호만 재승격 — 릴리즈 데몬이 OSC 7 없는 스크립트를 ".version=6"으로
 // 이미 설치해 둔 기기에서 v6 게이트가 "최신"으로 오판, OSC 7 스텁이 영영
 // 설치되지 않던 문제(dogfood 실측 2026-07-20). 내용 변경 없음.
-const INTEGRATION_VERSION = 7;
+// v8: emit OSC 7 (cwd) from the pwsh and bash integrations too (issue #540).
+// The daemon's OSC 7-sticky permanently disables prompt scraping on the first
+// OSC 7 it sees, on the assumption that "the integration hook re-emits OSC 7
+// on every prompt" — which v6 made true only for zsh. On pwsh/bash a single
+// stray OSC 7 from any child program (agent TUI, nested shell) killed the only
+// cwd source, freezing the pane's tracked cwd at its spawn value (usually
+// home) — so splits landed in home, regressing #515.
+// v9: percent-encode the zsh OSC 7 payload — parity with the v8 pwsh/bash
+// encoders (#541 review follow-up). The v6 zsh hook emitted raw $PWD, but the
+// daemon's parseOsc7Cwd unconditionally decodeURIComponent()s the payload, so
+// a directory whose real name contains a literal percent sequence
+// ("build%20cache") was silently corrupted, and a raw ESC/BEL byte in a
+// directory name could terminate the OSC 7 early and inject terminal escapes.
+const INTEGRATION_VERSION = 9;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
 // PowerShell (pwsh 7+ and Windows PowerShell 5.1) — uses PSReadLine hook
 // for the command_start marker and prompt function for A/B/D.
 // -----------------------------------------------------------------------
-const PWSH_INIT = `# wmux shell integration — OSC 133 semantic markers (v${INTEGRATION_VERSION})
+export const PWSH_INIT = `# wmux shell integration — OSC 133 semantic markers (v${INTEGRATION_VERSION})
 # Emits prompt/command boundaries so wmux's daemon can index command output
 # without parsing a scrollback viewport.
 
@@ -74,6 +87,26 @@ function global:prompt {
     # D;<exit>  marks end of previous command.
     # A         marks start of the new prompt.
     $pre = "$esc]133;D;$ec$bel$esc]133;A$bel"
+
+    # OSC 7: cwd report (issue #540). wmux treats OSC 7 as the authoritative
+    # cwd source and turns prompt scraping off for good the first time it sees
+    # one — so this hook MUST re-emit on every prompt (parity with the zsh
+    # integration), or a single stray OSC 7 from a child program would freeze
+    # the pane's tracked cwd. FileSystem provider only: a registry/cert
+    # location has no directory to report.
+    #
+    # Each path segment is percent-encoded (CodeRabbit review on #541): the
+    # daemon's parseOsc7Cwd unconditionally decodeURIComponent()s the payload,
+    # so a raw path containing a literal '%' (e.g. "build%20cache") would
+    # otherwise be silently corrupted by the decode. Splitting on '\' first and
+    # encoding each segment keeps '/' as the literal path separator
+    # parseOsc7Cwd expects while %-escaping everything else — colons, spaces,
+    # unicode, and literal '%' all round-trip correctly through decode.
+    $loc = $executionContext.SessionState.Path.CurrentLocation
+    if ($loc.Provider.Name -eq 'FileSystem') {
+        $osc7Path = ($loc.ProviderPath -split '\\\\' | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/'
+        $pre += "$esc]7;file://$env:COMPUTERNAME/$osc7Path$bel"
+    }
 
     $body = if ($global:__wmux_prev_prompt) {
         try { & $global:__wmux_prev_prompt } catch { "PS $($executionContext.SessionState.Path.CurrentLocation)> " }
@@ -121,7 +154,7 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
 // Bash 4.4+ — uses PS0 (pre-execution) for C and PROMPT_COMMAND for D/A.
 // PS1 suffix emits B.
 // -----------------------------------------------------------------------
-const BASH_INIT = `# wmux shell integration — OSC 133 semantic markers (v${INTEGRATION_VERSION})
+export const BASH_INIT = `# wmux shell integration — OSC 133 semantic markers (v${INTEGRATION_VERSION})
 # shellcheck shell=bash
 
 # Allow users to opt out via env.
@@ -142,9 +175,53 @@ __wmux_preexec() {
   printf '\\033]133;C\\a'
 }
 
+# Percent-encode a path for OSC 7 (CodeRabbit review on #541): the daemon's
+# parseOsc7Cwd unconditionally decodeURIComponent()s the payload, so a raw '%'
+# in a directory name (e.g. "build%20cache") would otherwise be silently
+# corrupted by the decode, and a raw ESC/BEL byte in a directory name would
+# terminate the OSC 7 sequence early and let its remaining bytes inject
+# arbitrary terminal escape sequences. One byte-wise walk over the whole path:
+# '/' passes through as the literal separator parseOsc7Cwd expects, RFC 3986
+# unreserved characters pass as-is, everything else becomes %XX. LC_ALL=C makes
+# bash index/slice the string byte-wise (not by UTF-8 codepoint), so multi-byte
+# characters are encoded byte-by-byte — the exact %-per-byte scheme
+# decodeURIComponent expects. Walking the whole string (instead of splitting on
+# '/' and re-joining) keeps trailing slashes (drive root "/c:/") and even
+# newline bytes in hostile directory names intact.
+__wmux_osc7_encode() {
+  local LC_ALL=C LC_CTYPE=C
+  local s="\$1" out= c i hex
+  for (( i=0; i<\${#s}; i++ )); do
+    c="\${s:i:1}"
+    case "\$c" in
+      [a-zA-Z0-9./~_-]) out+="\$c" ;;
+      *) printf -v hex '%02X' "'\$c"; out+="%\$hex" ;;
+    esac
+  done
+  printf '%s' "\$out"
+}
+
+# OSC 7: cwd report (issue #540) — parity with the zsh integration, because
+# wmux disables prompt scraping permanently after the first OSC 7 and relies
+# on the hook re-emitting it on every prompt. Git Bash (MSYSTEM set) rewrites
+# /c/Users/... to /c:/Users/... so wmux's parseOsc7Cwd recovers the real
+# Windows path; WSL/Linux/macOS emit \$PWD as-is (percent-encoded either way,
+# see __wmux_osc7_encode).
+__wmux_osc7() {
+  local p="\$PWD"
+  if [ -n "\${MSYSTEM:-}" ]; then
+    case "\$p" in
+      /[A-Za-z]/*) p="/\${p:1:1}:\${p:2}" ;;
+      /[A-Za-z])   p="/\${p:1:1}:/" ;;
+    esac
+  fi
+  printf '\\033]7;file://%s%s\\a' "\${HOSTNAME-localhost}" "\$(__wmux_osc7_encode "\$p")"
+}
+
 __wmux_precmd() {
   __wmux_last_exit=\$?
   printf '\\033]133;D;%d\\a\\033]133;A\\a' "\$__wmux_last_exit"
+  __wmux_osc7
 }
 
 # PS0 runs after Enter, before the command executes (bash 4.4+).
@@ -224,7 +301,35 @@ __wmux_precmd() { local __ec=$?; printf '\\033]133;D;%d\\a\\033]133;A\\a' "$__ec
 # 시점 cwd에 고정된다. chpwd로 cd 즉시(뒤에 장기 실행 명령이 붙어도) 보고 +
 # precmd로 최초/매 프롬프트 보고. parseOsc7Cwd와 맞춰 host 뒤 슬래시 없이
 # \$PWD(절대경로, / 로 시작)를 붙여 file://host/abs/path 형태로 낸다.
-__wmux_osc7() { printf '\\033]7;file://%s%s\\a' "\${HOST-localhost}" "$PWD"; }
+#
+# v9: percent-encode the payload (parity with the pwsh/bash v8 encoders —
+# #541 review follow-up). The daemon's parseOsc7Cwd unconditionally
+# decodeURIComponent()s the payload, so a raw '%' in a directory name
+# ("build%20cache") was silently corrupted by the decode, and a raw ESC/BEL
+# byte in a directory name could terminate the OSC 7 early and inject
+# terminal escape sequences. One byte-wise walk over the whole path: '/'
+# passes through as the separator, RFC 3986 unreserved bytes pass as-is,
+# everything else becomes %XX. LC_ALL=C makes zsh index the string by byte
+# (not by UTF-8 codepoint), so multi-byte characters are encoded per byte —
+# the exact scheme decodeURIComponent expects. \`emulate -L zsh\` shields the
+# function from user rc options (KSH_ARRAYS would shift the 1-based string
+# subscripts this loop depends on).
+__wmux_osc7_encode() {
+  emulate -L zsh
+  local LC_ALL=C LC_CTYPE=C
+  local s="$1" out='' c hex
+  local -i i
+  for (( i = 1; i <= \${#s}; i++ )); do
+    c="\${s[i]}"
+    case "$c" in
+      [a-zA-Z0-9./~_-]) out+="$c" ;;
+      *) hex=\$(( [##16] #c )); [ \${#hex} -eq 1 ] && hex="0$hex"; out+="%$hex" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+__wmux_osc7() { printf '\\033]7;file://%s%s\\a' "\${HOST-localhost}" "\$(__wmux_osc7_encode "$PWD")"; }
 
 autoload -Uz add-zsh-hook 2>/dev/null
 if (( \${+functions[add-zsh-hook]} )); then

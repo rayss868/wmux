@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v3.30.0 sources.** This file is produced by
+> **Generated from wmux v3.32.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **142** methods (`ALL_RPC_METHODS` in
+Total: **144** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -122,6 +122,7 @@ Total: **142** methods (`ALL_RPC_METHODS` in
 
 | Method | Capability | Risk class |
 |---|---|---|
+| `browser.tabs` | `wmux.internal` |  |
 | `browser.open` | `browser.navigate` | `browser` |
 | `browser.navigate` | `browser.navigate` | `browser` |
 | `browser.goBack` | `browser.navigate` | `browser` |
@@ -264,6 +265,7 @@ Total: **142** methods (`ALL_RPC_METHODS` in
 | `deck.resolvePaneRoute` | `null` |  |
 | `deck.resolveCommanderWorkspace` | `null` |  |
 | `deck.requestDecision` | `null` |  |
+| `deck.resolveDecision` | `null` |  |
 | `task.mission.start` | `a2a.channel.send` | `a2a` |
 | `task.mission.close` | `a2a.channel.send` | `a2a` |
 | `task.mission.list` | `a2a.channel.read` | `a2a` |
@@ -311,7 +313,7 @@ typed in `src/shared/events.ts`.
 | Max concurrent connections (`MAX_CONNECTIONS`) | 50 | `src/main/pipe/PipeServer.ts` (private static) |
 | Per-socket RPC rate limit | 50 / s | `src/main/pipe/PipeServer.ts` |
 | Global RPC rate limit (`GLOBAL_RATE_LIMIT`) | 200 / s | `src/main/pipe/PipeServer.ts` (private static) |
-| New connections rate limit (`MAX_NEW_CONNECTIONS_PER_SEC`) | 30 / s (pre-auth) | `src/main/pipe/PipeServer.ts` (private static) |
+| New connections rate limit (`MAX_NEW_CONNECTIONS_PER_SEC`) | 120 / s (pre-auth) | `src/main/pipe/PipeServer.ts` (private static) |
 | Max line buffer (`MAX_LINE_BUFFER`) | 1 MB | `src/main/pipe/PipeServer.ts` |
 
 An unauthenticated request (missing/wrong token on the first line) gets

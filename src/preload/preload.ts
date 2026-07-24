@@ -61,7 +61,16 @@ const electronAPI = {
       // `surfaceId` (axis B, reboot-reattach): present only on sessions created
       // WITH a WMUX_SURFACE_ID (Terminal self-create path); reconcile uses it to
       // rebind a stale ptyId to the surviving session after a reboot.
-      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean }[]>,
+      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }[]>,
+    // TASK-6 — per-pane agent RAM for the Fleet View cockpit. Given the ptyIds
+    // currently shown as cards, returns { [ptyId]: { rss (bytes), image? } } by
+    // walking each pane shell's descendant process tree from ONE CIM snapshot.
+    // Empty map on non-Windows / local mode / snapshot failure (no chip shown).
+    // Called ONLY while Fleet View is visible (renderer-gated) — never on a timer
+    // here. `rss` is summed working-set bytes; `image` is the heaviest child's
+    // process name (e.g. "claude.exe").
+    resources: (ptyIds: string[]) =>
+      ipcRenderer.invoke(IPC.PANE_RESOURCES, ptyIds) as Promise<Record<string, { rss: number; image?: string }>>,
     reconnect: (id: string) =>
       // RCA A1 — `transient` distinguishes a recoverable failure (pipe not
       // writable yet, RPC threw during a handler-swap window) from a permanent
@@ -79,6 +88,14 @@ const electronAPI = {
         | { success: true; mode: 'snapshot' | 'raw' }
         | { success: true; mode: 'dead-snapshot'; payloadBase64: string; cols: number; rows: number }
         | { success: false; code: string; reason?: string; transient?: boolean }
+      >,
+    // TASK-9 cold-park — plain-text grid snapshot of a session from the daemon
+    // ring (ANSI stripped, rows + wrap flags). Backs the search / readScreen
+    // fallback for cold-parked panes that have no renderer xterm buffer.
+    readText: (id: string, opts?: { scrollback?: number }) =>
+      ipcRenderer.invoke(IPC.PTY_READ_TEXT, id, opts) as Promise<
+        | { success: true; rows: Array<{ text: string; wrapped: boolean }>; truncated?: boolean }
+        | { success: false; code: string; reason?: string }
       >,
     onData: (callback: (id: string, data: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, id: string, data: string) => callback(id, data);
@@ -502,6 +519,19 @@ const electronAPI = {
           import('../cli/commands/setupHooks').InstallOutcome
         >,
     },
+    // Per-account usage statusline (in-app `wmux setup-statusline`). Mirrors
+    // hooksBridge — STATUS feeds the Settings/install prompt; INSTALL is the
+    // explicit user-clicked install.
+    statuslineBridge: {
+      status: () =>
+        ipcRenderer.invoke(IPC.STATUSLINE_BRIDGE_STATUS) as Promise<
+          import('../main/ipc/handlers/statuslineBridge.handler').StatuslineBridgeStatus
+        >,
+      install: () =>
+        ipcRenderer.invoke(IPC.STATUSLINE_BRIDGE_INSTALL) as Promise<
+          import('../cli/commands/setupStatusline').StatuslineOutcome
+        >,
+    },
     // Brain-raised decision gate. GET hydrates the pending decision on mount (so
     // it shows after a reboot); RESOLVE is the human's answer, which clears the
     // block and resumes the loop.
@@ -516,6 +546,31 @@ const electronAPI = {
           code?: string;
           decision?: import('../main/deck/deckDecisionStore').WorkspaceDecision;
         }>,
+    },
+    // Deterministic "welcome home" briefing — a synchronous main-process READ of
+    // existing judgment state (no brain turn). GET builds the summary + delta and
+    // is PURE; `seen` is the acknowledge that advances the last-viewed baseline,
+    // sent only when the briefing is actually rendered expanded. CONFIG get/set
+    // are the Settings toggles.
+    briefing: {
+      get: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_BRIEFING_GET, { workspaceId }) as Promise<{
+          briefing: import('../main/deck/deckBriefing').WorkspaceBriefing | null;
+          autoShow?: boolean;
+          mirrorReady?: boolean;
+        }>,
+      seen: (workspaceId: string, builtAt: number) =>
+        ipcRenderer.invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId, builtAt }) as Promise<{
+          ok: boolean;
+        }>,
+      getConfig: () =>
+        ipcRenderer.invoke(IPC.DECK_BRIEFING_CONFIG_GET) as Promise<
+          import('../main/deck/deckBriefingStore').DeckBriefingConfig
+        >,
+      setConfig: (patch: Partial<import('../main/deck/deckBriefingStore').DeckBriefingConfig>) =>
+        ipcRenderer.invoke(IPC.DECK_BRIEFING_CONFIG_SET, patch) as Promise<
+          import('../main/deck/deckBriefingStore').DeckBriefingConfig
+        >,
     },
     // Normalized BrainEvent push, enveloped with the workspace whose
     // orchestrator produced it (see BrainAdapter.BrainEvent).
@@ -536,9 +591,17 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.DECK_STREAM, listener); };
     },
   },
+  // WorkspaceMirror push — fire-and-forget full snapshot of the workspace tree +
+  // per-pane agent status. Keeps the main-process mirror warm so routing / hook
+  // resolution is served locally instead of via a `workspace.list` round-trip
+  // (see main/workspace/WorkspaceMirror.ts). Snapshot-only; never read by the UI.
+  workspaceMirror: {
+    push: (payload: import('../shared/workspaceMirror').WorkspaceMirrorPushPayload) =>
+      ipcRenderer.send(IPC.WORKSPACE_MIRROR_PUSH, payload),
+  },
   browser: {
-    registerWebview: (surfaceId: string, webContentsId: number) =>
-      ipcRenderer.invoke('browser:register-webview', surfaceId, webContentsId),
+    registerWebview: (surfaceId: string, webContentsId: number, workspaceId?: string) =>
+      ipcRenderer.invoke('browser:register-webview', surfaceId, webContentsId, workspaceId),
     // #517 lightweight mode signals
     setVisibility: (surfaceId: string, visible: boolean) =>
       ipcRenderer.invoke('browser:set-visibility', surfaceId, visible),

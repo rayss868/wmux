@@ -119,15 +119,19 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
     );
 
     // The reserved methods the bundled first-party server legitimately calls:
-    // a workspace/window read, the company-scoped A2A messaging tools, and —
-    // per issue #285 (security review: plans/issue-285-pane-lifecycle-mcp-tools.md
-    // §6) — surface lifecycle (new/close), so a supervisor agent can spawn/reap
-    // its own terminals through MCP. The grant stays bounded to surface +
-    // observe + message; the bypass still never reaches WORKSPACE lifecycle,
-    // daemon control, or company mutation (asserted by the
-    // "reserved/destructive surface" test above).
+    // a workspace/window read, workspace-exact browser tab lifecycle, the
+    // company-scoped A2A messaging tools, and — per issue #285 (security review:
+    // plans/issue-285-pane-lifecycle-mcp-tools.md §6) — surface lifecycle
+    // (new/close), so a supervisor agent can spawn/reap its own terminals
+    // through MCP. The bypass still never reaches WORKSPACE lifecycle, daemon
+    // control, or company mutation (asserted by the "reserved/destructive
+    // surface" test above).
     const ALLOWED_RESERVED_FIRST_PARTY = new Set<RpcMethod>([
       'surface.list',
+      // issue #565 — workspace-exact browser tab lifecycle. Multiplexes list,
+      // create, focus and close; ownership is rechecked renderer-side and the
+      // whole RPC is commander-teardown-denied because it can close a surface.
+      'browser.tabs',
       // issue #285 — supervisor pane/surface lifecycle (reserved wmux.internal)
       'surface.new',
       'surface.close',
@@ -186,10 +190,12 @@ describe('isFirstPartyClient', () => {
     // Empirically-captured agent MCP clientInfo.name values (see firstParty.ts).
     expect(isFirstPartyClient('claude-code')).toBe(true);
     expect(isFirstPartyClient('codex-mcp-client')).toBe(true);
+    expect(isFirstPartyClient('opencode')).toBe(true);
     expect(FIRST_PARTY_CLIENT_NAMES.has('claude-code')).toBe(true);
     expect(FIRST_PARTY_CLIENT_NAMES.has('codex-mcp-client')).toBe(true);
+    expect(FIRST_PARTY_CLIENT_NAMES.has('opencode')).toBe(true);
     // Near-misses and impersonation attempts must NOT be first-party (exact match).
-    for (const name of [undefined, '', 'claude', 'Claude-Code', 'codex', 'Codex', 'evil', 'wmux-orchestrator-e2e']) {
+    for (const name of [undefined, '', 'claude', 'Claude-Code', 'codex', 'Codex', 'OpenCode', 'open-code', 'evil', 'wmux-orchestrator-e2e']) {
       expect(isFirstPartyClient(name as string | undefined)).toBe(false);
     }
   });

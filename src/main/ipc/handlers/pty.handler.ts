@@ -17,6 +17,11 @@ import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
+import {
+  createSessionDataDispatcher,
+  type SessionDataDispatcher,
+  type SessionDataHandler,
+} from './sessionDataDispatcher';
 import { updateCwd } from './metadata.handler';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
@@ -217,40 +222,32 @@ export function registerPTYHandlers(
 ): () => void {
   const useDaemon = daemonClient?.isConnected ?? false;
 
-  // Track daemon session:data listeners by sessionId so PTY_CREATE / PTY_RECONNECT
-  // can be idempotent. Without per-id tracking, every reconcile (mount + each
-  // daemon.onConnected) would push another listener for an already-active
-  // session, and the same PTY frame would be forwarded to the renderer N times
-  // — manifesting as spinner lines stacking up and characters smearing across
-  // rows in TUIs like Claude Code.
-  const daemonSessionListeners = new Map<string, (...args: unknown[]) => void>();
+  // Per-session data dispatch. DaemonClient emits a SINGLE 'session:data' event
+  // for ALL sessions; the O(N)-listeners-per-chunk fan-out (and its
+  // MaxListenersExceededWarning storm past the 11th session) is collapsed into
+  // ONE shared listener + a per-id handler map by createSessionDataDispatcher.
+  // Installed once per DaemonClient generation below and disposed in cleanup, so
+  // a daemon respawn (new DaemonClient) rewires a fresh dispatcher and old
+  // generations never cross-wire. See sessionDataDispatcher.ts for the
+  // single-slot-Map-vs-Set rationale. Null until the daemon-mode wiring below.
+  let sessionDataDispatcher: SessionDataDispatcher | null = null;
 
-  /** Register (or replace) the per-session data listener for `sessionId`. */
-  function setSessionDataListener(
-    sessionId: string,
-    listener: (...args: unknown[]) => void,
-  ): void {
-    if (!daemonClient) return;
-    const existing = daemonSessionListeners.get(sessionId);
-    if (existing) {
-      // P1-3: deliver anything the OLD listener generation buffered before
-      // the swap — identical ordering to the pre-batching path, and no
-      // old-generation bytes can interleave into the new stream.
-      dataBatcher.flushSession(sessionId);
-      daemonClient.removeListener('session:data', existing);
-    }
-    daemonClient.on('session:data', listener);
-    daemonSessionListeners.set(sessionId, listener);
+  /** Register (or replace) the per-session data handler for `sessionId`. */
+  function setSessionDataListener(sessionId: string, handler: SessionDataHandler): void {
+    if (!sessionDataDispatcher) return;
+    // P1-3: deliver anything the OLD handler generation buffered before the
+    // swap — identical ordering to the pre-batching path, and no old-generation
+    // bytes can interleave into the new stream.
+    if (sessionDataDispatcher.has(sessionId)) dataBatcher.flushSession(sessionId);
+    sessionDataDispatcher.set(sessionId, handler);
   }
 
-  /** Remove the per-session data listener for `sessionId`, if any. */
+  /** Remove the per-session data handler for `sessionId`, if any. */
   function clearSessionDataListener(sessionId: string): void {
-    if (!daemonClient) return;
-    const existing = daemonSessionListeners.get(sessionId);
-    if (!existing) return;
+    if (!sessionDataDispatcher) return;
+    if (!sessionDataDispatcher.has(sessionId)) return;
     dataBatcher.flushSession(sessionId); // P1-3: no bytes stranded in the batch
-    daemonClient.removeListener('session:data', existing);
-    daemonSessionListeners.delete(sessionId);
+    sessionDataDispatcher.delete(sessionId);
   }
 
   // Per-session StringDecoder to handle UTF-8 multi-byte sequences split across chunks
@@ -302,6 +299,9 @@ export function registerPTYHandlers(
   // matching what local-mode PTYBridge does inline.
   let onDaemonTitle: ((payload: { sessionId: string; title: string }) => void) | null = null;
   if (useDaemon && daemonClient) {
+    // Install the single shared 'session:data' listener for this generation.
+    sessionDataDispatcher = createSessionDataDispatcher(daemonClient);
+
     onDaemonFlushComplete = (payload: { sessionId: string; recoveredBytes: number }) => {
       // P1-3 ordering rule: the flush-complete marker must never overtake
       // batched data — the renderer resets + settles its resync on this
@@ -491,7 +491,7 @@ export function registerPTYHandlers(
         const text = decodeSessionData(sessionId, payload.data);
         if (text) dataBatcher.push(sessionId, text);
       };
-      setSessionDataListener(sessionId, onSessionData as (...args: unknown[]) => void);
+      setSessionDataListener(sessionId, onSessionData);
 
       // Register initial CWD
       updateCwd(sessionId, effectiveCwd);
@@ -774,6 +774,11 @@ export function registerPTYHandlers(
         // prompt, undefined = no shell integration. The resume chip's authoritative
         // gate (Pane.tsx / isPaneAgentBusy).
         commandRunning?: boolean;
+        // Process-truth agent liveness (AgentProcessTracker) — true = the pane's
+        // agent process is observed alive, false = it died (the edge the resume
+        // chip waits for), undefined = never attributed. Only present alongside
+        // resumeBinding.
+        agentProcessAlive?: boolean;
       }>;
       // Map to same shape as local PTYManager.getActiveInstances(), plus an
       // additive `supervision` summary for the renderer's supervision slice
@@ -817,6 +822,8 @@ export function registerPTYHandlers(
           // present when shell integration emits markers (else undefined → the
           // renderer falls back to its activity heuristic).
           ...(s.commandRunning !== undefined ? { commandRunning: s.commandRunning } : {}),
+          // Process-truth agent liveness — the resume chip's edge-trigger gate.
+          ...(s.agentProcessAlive !== undefined ? { agentProcessAlive: s.agentProcessAlive } : {}),
         }));
       // RCA A8 — log the count the renderer's reconcile will act on. An empty
       // or short list here, correlated with a renderer ptyId-clear, is the
@@ -858,6 +865,28 @@ export function registerPTYHandlers(
         // mac만 안 됨"의 정체). 여기서 seed하면 전 플랫폼에서 즉시 복원된다.
         if (session.cwd) updateCwd(id, session.cwd);
 
+        // Set up data forwarding BEFORE attachSession, not after. attachSession
+        // makes the daemon replay the session's historical screen (the recovered
+        // RingBuffer) the instant the pipe connects — for an IDLE recovered pane
+        // (a shell sitting at its prompt) that replay is the ONLY paint it will
+        // get, because no new output is coming. Registering the handler after
+        // attach+connect (the old order) left a window where DaemonClient could
+        // read+emit that replay before a handler existed, dropping it — the pane
+        // then sat blank until a focus/reveal forced a resync. At boot with many
+        // recovered sessions the busy event loop made losing that race likely
+        // (dogfood: a recovered pane blank until clicked). Registering first
+        // closes the window; replace-semantics keep a repeat reconnect from
+        // stacking a duplicate. Routed through the per-id helper so a stale
+        // listener (from a prior create with the same id, or an earlier
+        // reconnect) is swapped, not duplicated.
+        const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
+          if (payload.sessionId !== id) return;
+          // P1-3: same decode-then-batch as the create path.
+          const text = decodeSessionData(id, payload.data);
+          if (text) dataBatcher.push(id, text);
+        };
+        setSessionDataListener(id, onSessionData);
+
         // Reconnect is an explicit fresh-attach intent — pass forceFresh
         // so a stale sessionPipes entry (left over from a prior daemon
         // pipe replacement) is torn down rather than silently reused.
@@ -894,17 +923,8 @@ export function registerPTYHandlers(
           writePidMap(session.pid, id);
         }
 
-        // Set up data forwarding. Routed through the per-id helper so a
-        // repeat reconnect (e.g. AppLayout's reconcile firing again on the
-        // late daemon.onConnected event) replaces the prior listener instead
-        // of stacking a duplicate that doubles every byte the PTY emits.
-        const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
-          if (payload.sessionId !== id) return;
-          // P1-3: same decode-then-batch as the create path.
-          const text = decodeSessionData(id, payload.data);
-          if (text) dataBatcher.push(id, text);
-        };
-        setSessionDataListener(id, onSessionData as (...args: unknown[]) => void);
+        // (session:data forwarding was registered BEFORE attachSession above so
+        // the historical RingBuffer replay can't be dropped — see that comment.)
 
         console.log(`[lifecycle] pty.reconnect id=${id} result=ok pid=${session.pid ?? '?'}`);
         return { success: true, id: session.id, shell: session.cmd };
@@ -1018,6 +1038,40 @@ export function registerPTYHandlers(
       // daemon missing serializeSession). No scanner was armed on this path.
       const msg = err instanceof Error ? err.message : String(err);
       return { success: false, code: 'rpc-error', reason: msg, transient: true };
+    }
+  }));
+
+  // pty:readText (TASK-9 cold-park) — plain-text snapshot of a session's grid
+  // from the daemon ring, for the search / readScreen fallback when a workspace
+  // is cold-parked (no renderer xterm buffer). Read-only; never resurrects the
+  // session. Local mode / legacy daemons return { success: false } so the
+  // renderer degrades to "skip this pane" exactly as before the feature.
+  ipcMain.removeHandler(IPC.PTY_READ_TEXT);
+  ipcMain.handle(IPC.PTY_READ_TEXT, wrapHandler(IPC.PTY_READ_TEXT, async (_event: Electron.IpcMainInvokeEvent, id: string, opts?: { scrollback?: number }) => {
+    if (!useDaemon || !daemonClient) {
+      return { success: false, code: 'local-mode' };
+    }
+    const scrollback = opts?.scrollback;
+    try {
+      const res = await daemonClient.rpc('daemon.readSessionText', { id, scrollback }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
+        mode: 'rows' | 'unavailable';
+        rows?: Array<{ text: string; wrapped: boolean }>;
+        truncated?: boolean;
+        reason?: string;
+      };
+      if (res.mode === 'rows') {
+        return { success: true, rows: res.rows ?? [], truncated: res.truncated === true };
+      }
+      return { success: false, code: 'unavailable', reason: res.reason };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('Unknown method')) {
+        return { success: false, code: 'legacy-daemon' };
+      }
+      if (msg.includes('SESSION_NOT_FOUND')) {
+        return { success: false, code: 'session-gone' };
+      }
+      return { success: false, code: 'rpc-error', reason: msg };
     }
   }));
 
@@ -1155,10 +1209,12 @@ export function registerPTYHandlers(
       // owns the window, then stop batching — a re-registered handler gets a
       // fresh batcher, so generations can never interleave.
       dataBatcher.dispose();
-      for (const listener of daemonSessionListeners.values()) {
-        daemonClient.removeListener('session:data', listener);
+      // Detach the single shared 'session:data' listener and drop the dispatch
+      // map — the next generation installs its own onto the new DaemonClient.
+      if (sessionDataDispatcher) {
+        sessionDataDispatcher.dispose();
+        sessionDataDispatcher = null;
       }
-      daemonSessionListeners.clear();
       if (onDaemonSessionDied) {
         daemonClient.removeListener('session:died', onDaemonSessionDied);
       }

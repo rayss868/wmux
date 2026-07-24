@@ -24,7 +24,7 @@ import { PipeServer } from './pipe/PipeServer';
 import { registerWorkspaceRpc } from './pipe/handlers/workspace.rpc';
 import { registerSurfaceRpc } from './pipe/handlers/surface.rpc';
 import { registerPaneRpc } from './pipe/handlers/pane.rpc';
-import { registerInputRpc } from './pipe/handlers/input.rpc';
+import { registerInputRpc, makeRoleBindingResolver } from './pipe/handlers/input.rpc';
 import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
@@ -51,6 +51,7 @@ import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handle
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { registerWorktaskHandlers } from './ipc/handlers/worktask.handler';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
+import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
 import { registerUiPluginRpc } from './pipe/handlers/uiPlugin.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
@@ -61,6 +62,7 @@ import { resolveEnforcementMode } from './mcp/enforcementMode';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
+import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { raceDaemonShutdown } from './daemonShutdownRace';
@@ -85,6 +87,14 @@ import { terminateRunningAppInstances } from './squirrelTeardown';
 // Squirrel events entirely (issue #463).
 import * as autostart from './autostart';
 import * as cliShim from './cliShim';
+import {
+  refreshStatuslineScript,
+  defaultPaths as defaultStatuslinePaths,
+} from '../cli/commands/setupStatusline';
+import {
+  refreshHookBridge,
+  defaultPaths as defaultHooksPaths,
+} from '../cli/commands/setupHooks';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
@@ -327,6 +337,11 @@ markBoot('pipe-server-ctor-done');
 registerPluginSchemePrivileges();
 let pluginHostLoader: PluginHostLoader | null = null;
 const mcpRegistrar = new McpRegistrar();
+// Shared MCP broker (Option A, WMUX_MCP_BROKER=1; default OFF). Started on
+// ready BEFORE mcpRegistrar.register so the broker pipe is (or is about to
+// be) listening when the first shim spawns — the shim retries connect with
+// backoff, so start order is a latency nicety, not a correctness gate.
+const mcpBrokerSupervisor = new BrokerSupervisor();
 const webviewCdpManager = new WebviewCdpManager(cdpPort);
 
 // Daemon client — initialized on app ready, used if daemon is available
@@ -562,7 +577,13 @@ hookSignalRouter = new HookSignalRouter({ latencyMeter: signalLatencyMeter });
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
 registerPaneRpc(rpcRouter, () => mainWindow, {}, () => daemonClient);
-registerInputRpc(rpcRouter, ptyManager, () => mainWindow, () => daemonClient);
+registerInputRpc(
+  rpcRouter,
+  ptyManager,
+  () => mainWindow,
+  () => daemonClient,
+  makeRoleBindingResolver(() => mainWindow),
+);
 registerDeckRpc(rpcRouter, () => mainWindow);
 registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
@@ -601,6 +622,11 @@ registerWorktaskHandlers(() => daemonClient);
 // Agent-SDK orchestrator session runs in MAIN and drives the fleet via the wmux
 // MCP bundle. Lazily spawned on the first deck:send; disposed on before-quit.
 const disposeDeckHandler = registerDeckHandler(() => mainWindow);
+// WorkspaceMirror — renderer push (fire-and-forget) keeps a main-process cache
+// of the workspace tree + per-pane agent status warm, so routing / hook
+// resolution is served locally instead of via the workspace.list renderer
+// round-trip (which a large-buffer flush storm starves). Snapshot-only.
+const disposeWorkspaceMirrorHandler = registerWorkspaceMirrorHandler();
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
 // ─── M2 — per-account usage service (hook-gated, opt-in) ─────────────────────
@@ -762,8 +788,8 @@ console.log(
 );
 
 // IPC: webview CDP registration
-ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, webContentsId: number) => {
-  await webviewCdpManager.register(surfaceId, webContentsId);
+ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, webContentsId: number, workspaceId?: string) => {
+  await webviewCdpManager.register(surfaceId, webContentsId, typeof workspaceId === 'string' ? workspaceId : undefined);
   return { ok: true };
 });
 
@@ -836,6 +862,41 @@ app.on('ready', async () => {
       }
     }, 3000);
     shimTimer.unref();
+  }
+
+  // ~/.wmux/hooks/의 설치본 스크립트(statusline·hook bridge)를 번들 버전에 맞춘다.
+  // Squirrel은 app-x.y.z를 통째로 갈아치우지만 이 스크립트들은 (업데이트에서
+  // 살아남으라고) 그 바깥에 복사돼 있어서, 지금까지는 `wmux setup-statusline` /
+  // `wmux setup-hooks`를 손으로 다시 돌리기 전까지 옛 파일이 계속 돌았다. 낡은
+  // 스크립트는 에러 없이 조용히 옛 동작을 유지한다 — statusline은 틀린 줄을
+  // 그리고, bridge는 로그 로테이션·훅 스로틀 같은 스케일 픽스를 못 받는다.
+  // 이미 wmux가 소유한 설치에만, 내용이 실제로 다를 때만 손대고 settings.json은
+  // 절대 건드리지 않으므로 "부팅 시 자동 설치 금지" 제약(2026-07-17)과 충돌하지
+  // 않는다 — 그 규칙은 사용자를 새로 가입시키지 말라는 것이지, 이미 켠 파일을
+  // 낡은 채로 두라는 게 아니다. bridge refresh는 플러그인 캐시본(마켓플레이스가
+  // 버전 디렉터리로 따로 관리)은 건드리지 않고 오직 plugin-LESS 복사본만 담당한다.
+  // 부팅 경로를 막지 않게 지연 실행, 전체 best-effort.
+  if (app.isPackaged) {
+    const refreshTimer = setTimeout(() => {
+      try {
+        const sl = refreshStatuslineScript(defaultStatuslinePaths());
+        // 정상 무동작(up-to-date/not-installed)은 로그 소음이라 남기지 않는다.
+        // refreshed는 info, failed(실제 IO 실패)·no-source(설치 레이아웃 이상)는
+        // 정상과 섞이지 않게 warn으로 올린다.
+        if (sl === 'refreshed') logLine('info', 'main', `statusline script refresh: ${sl}`);
+        else if (sl === 'failed' || sl === 'no-source') logLine('warn', 'main', `statusline script refresh: ${sl}`);
+      } catch (err) {
+        console.warn('[statusline] script refresh failed (non-fatal):', err);
+      }
+      try {
+        const br = refreshHookBridge(defaultHooksPaths());
+        if (br === 'refreshed') logLine('info', 'main', `hook bridge refresh: ${br}`);
+        else if (br === 'failed' || br === 'no-source') logLine('warn', 'main', `hook bridge refresh: ${br}`);
+      } catch (err) {
+        console.warn('[hooks] bridge refresh failed (non-fatal):', err);
+      }
+    }, 3000);
+    refreshTimer.unref();
   }
 
   // Dev Dock 아이콘: dev에선 패키징 안 된 제네릭 Electron 바이너리로 실행돼
@@ -1424,6 +1485,7 @@ app.on('ready', async () => {
   // Write auth token BEFORE starting pipe server — prevents race where
   // MCP client reads old token while new pipe is already listening
   const authToken = pipeServer.getAuthToken();
+  if (isMcpBrokerEnabled()) mcpBrokerSupervisor.start();
   mcpRegistrar.register(authToken);
   pipeServer.start();
   autoUpdater.start();
@@ -1460,6 +1522,10 @@ app.on('before-quit', async (e) => {
   if (isQuitting) return; // second pass — let quit proceed
   e.preventDefault();
   isQuitting = true;
+
+  // Broker dies with the app: shims exit and hosts mark the server down,
+  // same visible behavior as the old per-agent child dying with wmux.
+  mcpBrokerSupervisor.stop();
 
   // macOS 로그아웃/재시작/종료 대응(P4): win32의 'session-end' flushSync와 동등한
   // 동기 세션 flush. macOS는 WM_ENDSESSION 대신 Apple Event로 quit을 보내고
@@ -1518,6 +1584,7 @@ app.on('before-quit', async (e) => {
   safeStep('cleanupHandlers', () => cleanupHandlers());
   safeStep('disposeFirstRunHandlers', () => disposeFirstRunHandlers());
   safeStep('disposeDeckHandler', () => disposeDeckHandler());
+  safeStep('disposeWorkspaceMirrorHandler', () => disposeWorkspaceMirrorHandler());
   safeStep('disposeHooksRpc', () => disposeHooksRpc());
   safeStep('disposeUsagePollerListener', () => disposeUsagePollerListener());
   safeStep('usagePoller.dispose', () => usagePoller.dispose());

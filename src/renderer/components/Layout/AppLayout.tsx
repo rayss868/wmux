@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react';
 import type { AgentSlug } from '../../../shared/events';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { useStore } from '../../stores';
@@ -11,11 +11,15 @@ import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import NotificationPanel from '../Notification/NotificationPanel';
-import CommandPalette from '../Palette/CommandPalette';
-import WorktaskCleanupView from '../WorkTask/WorktaskCleanupView';
 import FleetView from '../FleetView/FleetView';
-import SettingsPanel from '../Settings/SettingsPanel';
-import InspectOverlay from '../Inspect/InspectOverlay';
+// TASK-2: the 4 always-mounted overlays are lazy-loaded + render-gated below so
+// their chunks stay out of the cold-boot critical path (SettingsPanel alone is
+// ~4k lines). React.lazy without a render gate is a no-op for FCP, so each is
+// gated on its own open/visible store flag inside <Suspense> + <ErrorBoundary>.
+const CommandPalette = lazy(() => import('../Palette/CommandPalette'));
+const WorktaskCleanupView = lazy(() => import('../WorkTask/WorktaskCleanupView'));
+const SettingsPanel = lazy(() => import('../Settings/SettingsPanel'));
+const InspectOverlay = lazy(() => import('../Inspect/InspectOverlay'));
 import FileTreePanel from '../FileTree/FileTreePanel';
 import ApprovalDialog from '../Company/ApprovalDialog';
 import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
@@ -37,6 +41,7 @@ import { useAgentActivityClock } from '../../hooks/useAgentActivityClock';
 import { useTerminalCopyShortcut } from '../../hooks/useTerminalCopyShortcut';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
+import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
@@ -44,6 +49,7 @@ import { useDeckStream } from '../../hooks/useDeckStream';
 import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { useChannelsHydration } from '../../hooks/useChannelsHydration';
 import { useMissionsPolling } from '../../hooks/useMissionsPolling';
+import { useColdParkSweep } from '../../hooks/useColdParkSweep';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface } from '../../../shared/types';
@@ -215,6 +221,8 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalFontFamily: state.terminalFontFamily,
     defaultShell: state.defaultShell,
     deckBrainModel: state.deckBrainModel || undefined,
+    orchestratorRoleBindings:
+      Object.keys(state.orchestratorRoleBindings).length > 0 ? state.orchestratorRoleBindings : undefined,
     // Persisted explicitly (not `|| undefined`): an explicit false survives
     // serialization, so a future default flip can't resurrect full power for
     // a user who deliberately turned it off (CodeRabbit, PR #474).
@@ -225,6 +233,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     splitInheritsCwd: state.splitInheritsCwd,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
     hiddenPaneRetentionEnabled: state.hiddenPaneRetentionEnabled,
+    coldParkEnabled: state.coldParkEnabled,
     browserLightweightMode: state.browserLightweightMode,
     browserDiscardHidden: state.browserDiscardHidden,
     startupDirectory: state.startupDirectory || undefined,
@@ -292,6 +301,16 @@ export default function AppLayout() {
   // only run while the cockpit is open (the open toggle lives in the global
   // keyboard handler, not inside FleetView, so gating the mount is safe).
   const fleetViewVisible = useStore((s) => s.fleetViewVisible);
+  // TASK-2: render gates for the lazy overlays. Lift each component's own
+  // internal open/visible flag to the layout so the lazy chunk is fetched only
+  // when the overlay actually opens (the components self-gate on these exact
+  // fields, so behavior is identical). SettingsPanel must also stay mounted
+  // while inspect mode is active (SettingsPanel.tsx: "Settings stays mounted
+  // the whole time" during inspect), hence the extra inspectModeActive term.
+  const commandPaletteVisible = useStore((s) => s.commandPaletteVisible);
+  const worktaskCleanupVisible = useStore((s) => s.worktaskCleanupVisible);
+  const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
+  const inspectModeActive = useStore((s) => s.inspectModeActive);
   // S-C2: while the Fleet View's Approvals tab owns the screen, it is the SOLE
   // approval surface — suppress the standalone A2A / MCP modals (delta 5, one
   // surface per item). The container keeps its pluginHost deadlock-break UX in
@@ -338,6 +357,10 @@ export default function AppLayout() {
   useTerminalCopyShortcut();
   useNotificationListener();
   useRpcBridge();
+  // Keep the main-process WorkspaceMirror warm: push the workspace tree +
+  // per-pane agent status whenever it changes, so main resolves hooks/routing
+  // locally instead of round-tripping workspace.list back to the renderer.
+  useWorkspaceMirrorPush();
   // S-C2 Approval Inbox bridge: the SINGLE owner of permissionPrompt.onOpen /
   // onClosed (guard #2). Always-on (not gated on fleetViewVisible) so MCP
   // prompts accumulate in the store before the cockpit's Approvals tab opens.
@@ -364,6 +387,9 @@ export default function AppLayout() {
   // 사이드바 "Missions" 섹션 + FleetCard 미션 라인을 채운다(순수 pull, 성긴 폴링 —
   // useMissionsPolling 헤더 참조).
   useMissionsPolling();
+  // TASK-9 cold-park: sparse sweep that unmounts terminals of long-hidden
+  // workspaces to reclaim renderer RAM (reveal replays from the daemon snapshot).
+  useColdParkSweep();
   // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
   usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();
@@ -939,16 +965,20 @@ export default function AppLayout() {
         const resumeBindingSnapshot: Record<string, ResumeBinding> = {};
         // OSC 133 shell state per ptyId — the resume chip's authoritative gate.
         const commandRunningSnapshot: Record<string, boolean> = {};
+        // Process-truth agent liveness — the chip's edge-trigger gate.
+        const agentAliveSnapshot: Record<string, boolean> = {};
         for (const s of sessions) {
           if (s.supervision) snapshot[s.id] = s.supervision;
           if (s.resumeAgent) resumeSnapshot[s.id] = s.resumeAgent as AgentSlug;
           if (s.resumeBinding) resumeBindingSnapshot[s.id] = s.resumeBinding;
           if (s.commandRunning !== undefined) commandRunningSnapshot[s.id] = s.commandRunning;
+          if (s.agentProcessAlive !== undefined) agentAliveSnapshot[s.id] = s.agentProcessAlive;
         }
         useStore.getState().hydrateSupervision(snapshot);
         useStore.getState().hydrateResume(resumeSnapshot);
         useStore.getState().hydrateResumeBindings(resumeBindingSnapshot);
         useStore.getState().hydrateCommandRunning(commandRunningSnapshot);
+        useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
         // 4d (channels): seed agent identity for panes the user has NOT
         // visited yet, so recovered agents show up as invite/mention
         // candidates right after boot instead of only after a visit.
@@ -1008,12 +1038,17 @@ export default function AppLayout() {
         // OSC 133 shell state rides the same poll — keeps the chip's authoritative
         // gate fresh (a foreground command that started/ended since the last tick).
         const cmdSnapshot: Record<string, boolean> = {};
+        // Agent process liveness rides along too — it is the edge (alive→dead)
+        // that lets the chip appear on panes without shell integration.
+        const agentAliveSnapshot: Record<string, boolean> = {};
         for (const s of sessions) {
           if (s.resumeBinding) snapshot[s.id] = s.resumeBinding;
           if (s.commandRunning !== undefined) cmdSnapshot[s.id] = s.commandRunning;
+          if (s.agentProcessAlive !== undefined) agentAliveSnapshot[s.id] = s.agentProcessAlive;
         }
         useStore.getState().hydrateResumeBindings(snapshot);
         useStore.getState().hydrateCommandRunning(cmdSnapshot);
+        useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
       }).catch(() => { /* transient list failure — the next tick self-heals */ });
     };
     const id = window.setInterval(refreshBindings, 15_000);
@@ -1208,14 +1243,36 @@ export default function AppLayout() {
           <SearchResultsPanel />
         </ErrorBoundary>
       )}
-      <CommandPalette />
-      <WorktaskCleanupView />
-      <SettingsPanel />
+      {/* TASK-2: lazy overlays, render-gated on their own store flags and
+          wrapped in <Suspense fallback={null}> inside <ErrorBoundary> so a
+          failed chunk load surfaces instead of silently dropping the overlay. */}
+      {commandPaletteVisible && (
+        <ErrorBoundary name="CommandPalette">
+          <Suspense fallback={null}><CommandPalette /></Suspense>
+        </ErrorBoundary>
+      )}
+      {worktaskCleanupVisible && (
+        <ErrorBoundary name="WorktaskCleanupView">
+          <Suspense fallback={null}><WorktaskCleanupView /></Suspense>
+        </ErrorBoundary>
+      )}
+      {/* SettingsPanel: gate on visible OR inspect-active — inspect mode keeps
+          the panel mounted while the overlay picks colors (D3 / SettingsPanel
+          ESC + inspect contract). */}
+      {(settingsPanelVisible || inspectModeActive) && (
+        <ErrorBoundary name="SettingsPanel">
+          <Suspense fallback={null}><SettingsPanel /></Suspense>
+        </ErrorBoundary>
+      )}
       {/* Color inspect-mode overlay (S4). Sits at --z-inspect (65, declared
           inside the component) — above SettingsPanel (--z-overlay 50) so it
           captures clicks over the minimized Settings bar, below FirstRunWizard
           (--z-dialog 70). Returns null when inspectModeActive is false. */}
-      <InspectOverlay />
+      {inspectModeActive && (
+        <ErrorBoundary name="InspectOverlay">
+          <Suspense fallback={null}><InspectOverlay /></Suspense>
+        </ErrorBoundary>
+      )}
       <ApprovalDialog />
       {!inboxOwnsApprovals && <ExecuteApprovalDialog />}
       {!inboxOwnsApprovals && <PermissionApprovalDialogContainer />}

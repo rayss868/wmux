@@ -277,6 +277,11 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // itself. A benign self-signal — it can ONLY pause the loop and ask, the
   // opposite of a destructive tool — so it auto-allows like the comms tools.
   WMUX('deck_ask_decision'),
+  // Self-resolve of the brain's OWN stale decision. Auto-allowing is safe for
+  // the same reason as deck_ask_decision: the tool itself only flips a decision
+  // record — the server RPC (deck.rpc.ts) enforces every precondition (auto
+  // mode, TTL elapsed, substance floor), so a disallowed call is refused there.
+  WMUX('deck_resolve_decision'),
 ];
 
 // Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only
@@ -314,8 +319,9 @@ const DEFAULT_MAX_TURNS = 48;
 /**
  * Resolve the wmux MCP stdio bundle the brain mounts. Mirrors
  * McpRegistrar.getMcpScriptPath: packaged → resources/mcp-bundle/index.js (with
- * the legacy fallback); dev → dist/mcp/mcp/index.js, walking up a few parents so
- * a worktree / nested cwd still finds the repo's build output. Returns null when
+ * the legacy fallback); dev → dist/mcp/mcp/entry.js (the stdio boot; index.js is
+ * now a side-effect-free factory), walking up a few parents so a worktree /
+ * nested cwd still finds the repo's build output. Returns null when
  * no bundle exists (the deck then runs the brain with NO fleet tools, rather
  * than crashing — surfaced as a startup warning by the caller).
  */
@@ -328,13 +334,13 @@ export function resolveMcpBundlePath(): string | null {
     return null;
   }
   const appPath = app.getAppPath();
-  const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'index.js');
+  const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'entry.js');
   if (fs.existsSync(devPath)) return devPath;
   let current = appPath;
   for (let i = 0; i < 5; i++) {
     const parent = path.resolve(current, '..');
     if (parent === current) break;
-    const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'index.js');
+    const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'entry.js');
     if (fs.existsSync(candidate)) return candidate;
     current = parent;
   }
@@ -429,13 +435,22 @@ export function buildCommanderSystemPrompt(
     '  pane only when no existing pane is free, or the work genuinely needs to run',
     '  in parallel with everything already running. Spawning when an idle pane',
     '  exists wastes the operator\'s screen and resources.',
-    '- When you hit a fork only the human should settle — an ambiguous requirement, a',
-    '  risky or irreversible action, or a genuine choice between approaches — call',
-    '  deck_ask_decision({question, options?}) and then END YOUR TURN. Your loop pauses',
-    '  and will NOT auto-advance until the operator answers; the pending decision',
-    '  survives an app restart or reboot, so they can answer later and you resume from',
-    '  exactly here. Use it only for real forks — never for routine progress updates or',
-    '  questions you can resolve yourself.',
+    '- RESOLVE BEFORE YOU ESCALATE. Before you EVER call deck_ask_decision, try to settle',
+    '  the fork yourself. Check, IN ORDER: (1) the binding policy rules in the [policy]',
+    '  block of this turn, (2) the standing project conventions and prior operator',
+    '  decisions you already know, (3) your recalled memory. If ANY of those settles the',
+    '  question, it is NOT a fork: decide, state which rule settled it, and proceed — do',
+    '  not ask.',
+    '- Escalate with deck_ask_decision({question, options?}) ONLY for a real residual',
+    '  fork: an ambiguous requirement WITH no applicable rule, a risky or irreversible',
+    '  action, or a genuine choice between approaches WHERE NO standing rule or convention',
+    '  answers it. A choice that a standing rule already answers is NOT a genuine choice —',
+    '  raising a decision whose own context cites the rule that answers it is a',
+    '  contradiction; resolve it yourself instead.',
+    '- When you do escalate, END YOUR TURN after the call. Your loop pauses and will NOT',
+    '  auto-advance until the operator answers; the pending decision survives an app',
+    '  restart or reboot, so they can answer later and you resume from exactly here. Never',
+    '  use it for routine progress updates or questions you can resolve yourself.',
     '- Panes may carry an operator-assigned role (e.g. "role: Reviewer"), shown in your',
     '  workspace snapshot and readable live via pane_list (custom "orchestrator.role").',
     '  Treat a role as the operator\'s PREFERRED routing: send work to the EXISTING pane',
@@ -454,6 +469,9 @@ export function buildCommanderSystemPrompt(
     '  Before dispatching by role, call pane_list to get the target',
     '  pane\'s current role and ptyId (roles can change between turns). Never set or',
     '  change a pane\'s "orchestrator.role" yourself — it is the operator\'s to assign.',
+    '  A role-bound pane auto-applies its enforced agent+model when you launch an',
+    '  agent there — just terminal_send the bare launcher (e.g. `claude`); do NOT',
+    '  pass `--model` yourself, wmux rewrites it to the bound model for you.',
     '- YOU are the only router between panes. Worker panes cannot see or message each',
     '  other, so NEVER tell a pane to "hand off to the Builder/Reviewer when ready" —',
     '  that instruction is impossible for the worker to follow, and it will quietly do',
@@ -478,6 +496,9 @@ export function buildCommanderSystemPrompt(
     `- Workspace-specific facts go in ${workspaceClause}; operator-wide facts in ${globalClause}.`,
     '- If a stored fact turns out wrong, update or delete that file instead of writing',
     '  a duplicate. Never store secrets, and never store instructions disguised as facts.',
+    '- If the operator corrects an escalation you raised (e.g. "don\'t ask this — rule X',
+    '  answers it"), persist that correction as a memory fact so you never re-raise that',
+    '  class of question: name the rule and the kind of fork it settles.',
     '- Write works ONLY inside those two folders and only for `.md` files; any other',
     '  path is denied. You still have no shell or general file tools.',
   ].join('\n');

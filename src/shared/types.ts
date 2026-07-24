@@ -19,6 +19,7 @@ import { MAX_INBOX_SIZE as _MAX_INBOX_SIZE } from '../company/types';
 // ./events; the reverse type-only edge (events → types) makes this a type-level
 // cycle, which TypeScript resolves without any runtime import.
 import type { AgentSlug } from './events';
+import type { OrchestratorRoleBindings } from './orchestratorRole';
 
 // Re-export for backward compatibility
 /** BYOB M0 — which runtime serves as a workspace's orchestrator brain.
@@ -609,6 +610,9 @@ export interface SessionData {
   /** Orchestrator (deck brain) model override — '' / absent = the
    *  subscription's default model. A claude model alias or full id. */
   deckBrainModel?: string;
+  /** D2 — global operator role→model enforcement map. Absent = no bindings.
+   *  Keyed by role name; re-normalized on load (session.json is hand-editable). */
+  orchestratorRoleBindings?: OrchestratorRoleBindings;
   /** Orchestrator full-power mode (BYOB approach A) — load the user's Claude
    *  Code ecosystem (skills/CLAUDE.md/hooks) into brain turns. Absent/false =
    *  raw mode (the safe default). */
@@ -642,6 +646,12 @@ export interface SessionData {
    * daemon RingBuffer on reveal. Default false while dogfooding.
    */
   hiddenPaneRetentionEnabled?: boolean;
+  /**
+   * TASK-9 cold-park: hidden workspaces idle past a threshold unmount their
+   * terminal components to reclaim renderer RAM (reveal replays from the daemon
+   * snapshot). Default true; this persists an explicit opt-out.
+   */
+  coldParkEnabled?: boolean;
   /**
    * #517 browser lightweight mode: CPU-throttle effectively-invisible embedded
    * browser guests (automation-leased guests stay full-speed). Default false.

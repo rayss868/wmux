@@ -6,7 +6,7 @@ import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
-import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob } from './HeadlessSnapshot';
+import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
@@ -28,6 +28,7 @@ import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
 import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
+import { AgentProcessTracker } from './AgentProcessTracker';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
@@ -342,6 +343,14 @@ function resumeLaunchCommand(
 // throws (a corrupt spool file must not fail the recovery path). Returns the
 // number of bindings applied so the caller can skip the save when nothing changed.
 const RESUME_SPOOL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // prune orphans after 7d
+
+// #557: when an authed client socket vanishes without a detach RPC (GUI crash /
+// Task-Manager kill), the session is stuck 'attached' — exempt from every TTL
+// reaper and holding the daemon alive (the Watchdog counts live sessions). After
+// this grace window with no client, demote it to 'detached' so the 8 h detached
+// TTL can age it out. The grace absorbs renderer reloads / transient pipe flaps;
+// a real client crash never reconnects, so it always fires.
+const ATTACHED_ORPHAN_GRACE_MS = 60_000;
 const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
   'bypassPermissions', 'acceptEdits', 'plan', 'default',
 ]);
@@ -762,18 +771,19 @@ async function recoverSessions(
           try {
             recovered = sessionManager.createSession({
               id: session.id,
-              cmd: session.cmd,
-              cwd,
-              env: session.env,
-              cols: session.cols,
-              rows: session.rows,
-              agent: session.agent,
-              createdAt: session.createdAt,
-              deadTtlHours: session.deadTtlHours,
-              // X8: replay the exec unit + supervision policy — for an exec
-              // session this relaunches the supervised command itself (the
-              // reboot-survival story), not an empty shell.
-              exec: session.exec,
+            cmd: session.cmd,
+            cwd,
+            env: session.env,
+            cols: session.cols,
+            rows: session.rows,
+            agent: session.agent,
+            createdAt: session.createdAt,
+            lastActivity: session.lastActivity,
+            deadTtlHours: session.deadTtlHours,
+            // X8: replay the exec unit + supervision policy — for an exec
+            // session this relaunches the supervised command itself (the
+            // reboot-survival story), not an empty shell.
+            exec: session.exec,
               // X6: if the exec unit is an agent, resume its conversation
               // (non-persisted launch command; meta.exec.command stays original).
               execLaunchCommand: resumeLaunchCommand(session, spoolBindings.get(session.id)),
@@ -854,6 +864,7 @@ async function recoverSessions(
             rows: session.rows,
             agent: session.agent,
             createdAt: session.createdAt,
+            lastActivity: session.lastActivity,
             deadTtlHours: session.deadTtlHours,
             // X8: replay exec unit + supervision (see suspended path above).
             exec: session.exec,
@@ -898,6 +909,7 @@ async function recoverSessions(
           rows: session.rows,
           agent: session.agent,
           createdAt: session.createdAt,
+          lastActivity: session.lastActivity,
           deadTtlHours: session.deadTtlHours,
           // X8: replay exec unit + supervision (see suspended path above).
           exec: session.exec,
@@ -1103,6 +1115,7 @@ function registerRpcHandlers(
   channelStateWriter: ChannelStateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
+  agentProcessTracker: AgentProcessTracker,
   startTime: number,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
   watchdog: Watchdog,
@@ -1116,6 +1129,30 @@ function registerRpcHandlers(
   // J0: WorkTask 미션 채널 정본. 로그 개방 실패 시 null → 미션 RPC fail-closed.
   workTaskService: WorkTaskService | null,
 ): void {
+  // #557: shared teardown for both the explicit daemon.detachSession RPC and
+  // the onClientGone auto-demote timer. Removes the tracked PTY data listener,
+  // stops and drops the SessionPipe, then flips the session to 'detached'.
+  // Without routing the auto-demote through this, that path left the pipe
+  // listening (able to accept a re-authed client on a now-'detached' session)
+  // and leaked the data listener. Callers persist state + log after it returns.
+  const detachAndCleanup = async (id: string): Promise<void> => {
+    const tracked = sessionDataListeners.get(id);
+    if (tracked) {
+      tracked.bridge.removeListener('data', tracked.listener);
+      sessionDataListeners.delete(id);
+    }
+    const pipe = sessionPipes.get(id);
+    if (pipe) {
+      try {
+        await pipe.stop();
+      } catch (err) {
+        log('warn', `Failed to stop session pipe for ${id}:`, err);
+      }
+      sessionPipes.delete(id);
+    }
+    sessionManager.detachSession(id);
+  };
+
   // daemon.createSession
   pipeServer.onRpc('daemon.createSession', async (params) => {
     // B′ auto-replace (Codex #1): shutdown() snapshots the managed-session
@@ -1211,6 +1248,7 @@ function registerRpcHandlers(
 
     // Stop process monitoring
     processMonitor.unwatch(p.id);
+    agentProcessTracker.disarm(p.id);
 
     // X8 belt: the session:destroyed event below also disarms, but a
     // destroy of an id the manager no longer holds (restart-failure edge)
@@ -1251,8 +1289,45 @@ function registerRpcHandlers(
         sessionPipes.delete(p.id);
       }
 
-      const pipe = new SessionPipe(p.id, managed.ringBuffer, pipeServer.getAuthToken());
+      // TASK-10: dims provider enables the attach-flush snapshot (large ring
+      // buffers serialize daemon-side instead of shipping 8 MB raw). Read at
+      // flush time so a resize between attach RPC and socket connect is seen.
+      const pipe = new SessionPipe(p.id, managed.ringBuffer, pipeServer.getAuthToken(), () => {
+        const live = sessionManager.getSession(p.id);
+        return {
+          // 80x24 backstop: a recovered session whose meta predates dims
+          // tracking must not hand NaN to the headless terminal ctor.
+          cols: live?.meta.cols ?? managed.meta.cols ?? 80,
+          rows: live?.meta.rows ?? managed.meta.rows ?? 24,
+        };
+      });
       sessionPipes.set(p.id, pipe);
+
+      // #557: demote a stuck-'attached' session to 'detached' if its authed
+      // client dies without a detach RPC (GUI crash / kill). A single grace
+      // timer per pipe, reset on each onClientGone; .unref() so it never holds
+      // the daemon alive. On fire, re-validate everything before demoting so a
+      // reconnect during the grace window (which re-auths and sets hasClient())
+      // cancels the demotion.
+      let orphanTimer: NodeJS.Timeout | null = null;
+      pipe.onClientGone = () => {
+        if (orphanTimer) clearTimeout(orphanTimer);
+        orphanTimer = setTimeout(() => {
+          orphanTimer = null;
+          void (async () => {
+            if (sessionPipes.get(p.id) !== pipe) return; // superseded by a newer pipe
+            if (pipe.hasClient()) return; // a client re-authenticated in the grace window
+            const s = sessionManager.getSession(p.id);
+            if (!s || s.meta.state !== 'attached') return;
+            // Route through the shared teardown so the pipe + data listener are
+            // torn down exactly like an explicit detach — not just the state flip.
+            await detachAndCleanup(p.id);
+            stateWriter.saveImmediate(buildState(sessionManager));
+            log('info', `[lifecycle] auto-demoted attached→detached id=${p.id} (client gone without detach RPC, grace ${ATTACHED_ORPHAN_GRACE_MS}ms elapsed)`);
+          })().catch((err) => log('warn', `auto-demote failed for ${p.id}:`, err));
+        }, ATTACHED_ORPHAN_GRACE_MS);
+        orphanTimer.unref();
+      };
 
       // Forward PTY output to session pipe
       const onData = (data: Buffer) => {
@@ -1296,25 +1371,7 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.detachSession', async (params) => {
     const p = params as unknown as DaemonSessionIdParams;
 
-    // Remove data listener to prevent leak
-    const tracked = sessionDataListeners.get(p.id);
-    if (tracked) {
-      tracked.bridge.removeListener('data', tracked.listener);
-      sessionDataListeners.delete(p.id);
-    }
-
-    // Clean up session pipe
-    const pipe = sessionPipes.get(p.id);
-    if (pipe) {
-      try {
-        await pipe.stop();
-      } catch (err) {
-        log('warn', `Failed to stop session pipe for ${p.id}:`, err);
-      }
-      sessionPipes.delete(p.id);
-    }
-
-    sessionManager.detachSession(p.id);
+    await detachAndCleanup(p.id);
 
     const state = buildState(sessionManager);
     stateWriter.saveImmediate(state);
@@ -1407,6 +1464,45 @@ function registerRpcHandlers(
     };
   });
 
+  // daemon.readSessionText (TASK-9 cold-park) — read-only PLAIN-TEXT snapshot
+  // of a session's grid (scrollback + viewport), ANSI stripped, for the search
+  // / readScreen fallback when a workspace is cold-parked and has no renderer
+  // xterm buffer. Returns physical rows with wrap flags so the renderer can
+  // rebuild a SearchableBuffer and run the identical search engine — no silent
+  // misses. Never resurrects or mutates the session. Works for live, dead, or
+  // suspended sessions (it only reads the ring).
+  pipeServer.onRpc('daemon.readSessionText', async (params) => {
+    const p = params as unknown as { id: string; scrollback?: number };
+    const managed = sessionManager.getSession(p.id);
+    if (!managed) {
+      throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
+    }
+    const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 5000, MAX_SCROLLBACK);
+    const outcome = await generateTextSnapshot({
+      // Dims backstop parity with the attach flush (?? 80 / ?? 24): a recovered
+      // session may not have real dims yet, and a 0-wide headless terminal would
+      // fail soft instead of reading.
+      cols: managed.meta.cols ?? 80,
+      rows: managed.meta.rows ?? 24,
+      scrollback,
+      initial: managed.ringBuffer.readAll(),
+    });
+    if (!outcome.ok) {
+      log('info', `[readText] session=${p.id} unavailable reason=${outcome.reason}`);
+      return { ok: true, mode: 'unavailable', reason: outcome.reason };
+    }
+    // Frame budget: keep the JSON response under the 1 MiB control-pipe frame
+    // limit (leaving envelope headroom) by dropping oldest rows; see
+    // capTextRowsToFrameBudget. Without this a parked pane with 10k+ rows blows
+    // the frame and the RPC times out to empty.
+    const MAX_ROWS_BYTES = 700 * 1024;
+    const capped = capTextRowsToFrameBudget(outcome.rows, MAX_ROWS_BYTES);
+    if (capped.truncated) {
+      log('info', `[readText] session=${p.id} response truncated to fit frame budget (${outcome.rows.length} rows)`);
+    }
+    return { ok: true, mode: 'rows', rows: capped.rows, truncated: capped.truncated };
+  });
+
   // daemon.listSessions
   pipeServer.onRpc('daemon.listSessions', async () => {
     // X8: join the supervisor's volatile runtime (restart counts, pending
@@ -1470,7 +1566,23 @@ function registerRpcHandlers(
           : undefined;
       const withPrompt =
         commandRunning === undefined ? withAgent : { ...withAgent, commandRunning };
-      return surfacedBinding ? { ...withPrompt, resumeBinding: surfacedBinding } : withPrompt;
+      if (!surfacedBinding) return withPrompt;
+      // Resume-chip edge trigger — process truth for the chip's busy gate,
+      // reported ONLY alongside a surfaced binding (the only consumer). Three
+      // states: true = the agent process is observed alive (chip hidden),
+      // false = it was observed and DIED (the alive→dead edge — chip may
+      // show), undefined = never attributed (renderer keeps its heuristic).
+      // Exec units are their own agent process: while the session lives the
+      // agent runs (its exit kills the session), so they are always `true`;
+      // 'suspended' tombstones hold no live PTY and stay undecided.
+      const agentProcessAlive = s.exec
+        ? (s.state === 'attached' || s.state === 'detached' ? true : undefined)
+        : agentProcessTracker.statusFor(s.id);
+      return {
+        ...withPrompt,
+        resumeBinding: surfacedBinding,
+        ...(agentProcessAlive !== undefined ? { agentProcessAlive } : {}),
+      };
     });
   });
 
@@ -1498,6 +1610,12 @@ function registerRpcHandlers(
     const p = params as unknown as DaemonSetResumeBindingParams;
     const managed = sessionManager.getSession(p.id);
     if (!managed || !p.resumeBinding || !p.resumeBinding.sessionId) return { ok: false };
+    // Resume-chip edge trigger: a hook reaching this RPC proves claude is
+    // running in the pane RIGHT NOW — attach the process watch (no-op while a
+    // live watch exists, so hook storms cost nothing). Runs before the
+    // staleness guards below on purpose: even a capture we discard as stale
+    // still proves the process is alive.
+    agentProcessTracker.arm(p.id, managed.meta.pid);
     const prev = managed.meta.resumeBinding;
     // codex P2: ignore a STALE capture — an older hook RPC (a delayed Stop /
     // SessionStart from a prior turn) reaching the daemon after a newer one must
@@ -2513,6 +2631,7 @@ function wireEvents(
   stateWriter: StateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
+  agentProcessTracker: AgentProcessTracker,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
 ): void {
   // session:died → broadcast DaemonEvent + save state + cleanup.
@@ -2569,6 +2688,7 @@ function wireEvents(
     // Stop process monitoring
     try {
       processMonitor.unwatch(payload.id);
+      agentProcessTracker.disarm(payload.id);
     } catch (err) {
       log('warn', `session:died unwatch failed for ${payload.id}:`, err);
     }
@@ -2623,6 +2743,7 @@ function wireEvents(
     // removes). The watch closures also skip 'suspended' as defense in depth.
     try {
       processMonitor.unwatch(payload.id);
+      agentProcessTracker.disarm(payload.id);
     } catch (err) {
       log('warn', `session:interrupted unwatch failed for ${payload.id}:`, err);
     }
@@ -2768,6 +2889,11 @@ function wireEvents(
       // The agent is live again → this pane is no longer a "resume me" shell.
       recoveredAgentShellIds.delete(payload.sessionId);
       recoveredResumeBindings.delete(payload.sessionId);
+      // Resume-chip edge trigger: a live banner PROVES the agent is running
+      // right now — attach the process watch so the chip can hide on process
+      // truth and reappear exactly on the agent's exit edge. Covers codex,
+      // which has no hooks (the setResumeBinding arm never fires for it).
+      if (managed) agentProcessTracker.arm(payload.sessionId, managed.meta.pid);
     }
     const event: DaemonEvent = {
       type: 'agent.event',
@@ -2825,13 +2951,18 @@ function wireEvents(
       data: payload.cwd,
     };
     pipeServer.broadcast(event);
-    // Persist the new cwd IMMEDIATELY. Recovery replays meta.cwd (the pane
-    // respawns in it) AND the X6 ② resume pill pastes `claude --continue`,
-    // which is cwd-scoped — so a cwd lost to the reboot window would restore
-    // the pane to a stale directory and resume the wrong (or no) conversation.
-    // The bridge-level change-guard (DaemonSessionManager 'cwd' handler) means
-    // this only fires on an actual cd, so the immediate write stays cheap.
-    stateWriter.saveImmediate(buildState(sessionManager));
+    // Persist the new cwd NOW but asynchronously (saveAsap, not
+    // saveImmediate). Recovery replays meta.cwd AND the X6 ② resume pill
+    // pastes `claude --continue`, which is cwd-scoped — so the cwd must not
+    // wait out the 30s debounce. But the write must not run synchronously
+    // either: at fleet scale (30 sessions) sessions.json grows to hundreds
+    // of KB and concurrent agents `cd` constantly, so the old sync write +
+    // .bak rotation stalled the event loop right when it was busiest — the
+    // stall pattern that starves daemon.ping and gets a live daemon
+    // force-respawned. saveAsap persists within ms via the coalescing
+    // queue; only a SIGKILL inside that window can lose the cwd, and the
+    // next lifecycle event re-persists it.
+    stateWriter.saveAsap(buildState(sessionManager));
   });
 
   // Window-title change (OSC 0/2, detected in the daemon bridge). Broadcast so
@@ -3196,7 +3327,11 @@ async function main(): Promise<void> {
   // Thread the configured suspended-tombstone TTL into the authoritative
   // StateWriter (codex #2). The acquireLock() one-shot above runs pre-config
   // and only reads bootId, so the default there is harmless.
-  const stateWriter = new StateWriter(wmuxDir, config.session.suspendedTtlHours);
+  // persistHealedOnLoad=true: this is the authoritative recovery StateWriter, so
+  // when load() restamps a corrupt lastActivity it may write the healed state
+  // back to disk. The acquireLock() one-shot writer above leaves it off (default
+  // false) so the two paths never race over sessions.json.
+  const stateWriter = new StateWriter(wmuxDir, config.session.suspendedTtlHours, config.session.detachedTtlHours, true);
   // LanLink PR-2 — durable inbound inbox (remote peer messages). Daemon-owned
   // so it survives main/renderer death (C3). Lives next to sessions.json under
   // the same suffix-aware wmuxDir; every append is synchronous + fsync'd.
@@ -3557,6 +3692,10 @@ async function main(): Promise<void> {
   });
   // app-weight P1-1: cadence from config (default 15 s; clamped 5–120 s).
   const processMonitor = new ProcessMonitor((config.daemon.livenessIntervalSec ?? 15) * 1000);
+  // Resume-chip edge trigger: watches the agent process (claude/codex) inside
+  // interactive panes so the chip can gate on process truth instead of the
+  // decaying activity heuristic. Rides processMonitor's existing batch.
+  const agentProcessTracker = new AgentProcessTracker(processMonitor);
 
   // LanLink PR-4 — the network surface. An ISOLATED net.Server (its OWN admission
   // counters, never the control pipe's = G1) bound to the configured NIC, with
@@ -3708,6 +3847,7 @@ async function main(): Promise<void> {
     channelStateWriter,
     sessionPipes,
     processMonitor,
+    agentProcessTracker,
     startTime,
     sessionDataListeners,
     watchdog,
@@ -3723,7 +3863,7 @@ async function main(): Promise<void> {
   );
 
   // 6. Wire events
-  wireEvents(sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, sessionDataListeners);
+  wireEvents(sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, agentProcessTracker, sessionDataListeners);
 
   // 6b-X8. Supervisor lifecycle hooks. `session:died` = the PTY exited on
   // its own → policy evaluation. `session:destroyed` = the USER closed the
@@ -3849,18 +3989,43 @@ async function main(): Promise<void> {
   const reapInterval = setInterval(() => {
     let reaped = 0;
     for (const managed of sessionManager.listManagedSessions()) {
-      if (managed.meta.state !== 'dead') continue;
-      const deadSince = new Date(managed.meta.lastActivity).getTime();
-      const ttlMs = managed.meta.deadTtlHours * 60 * 60 * 1000;
-      if (Date.now() - deadSince >= ttlMs) {
-        const bufPath = stateWriter.getBufferDumpPath(managed.meta.id);
-        try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
-        sessionManager.destroySession(managed.meta.id);
-        reaped++;
+      if (managed.meta.state === 'dead') {
+        const deadSince = new Date(managed.meta.lastActivity).getTime();
+        const ttlMs = managed.meta.deadTtlHours * 60 * 60 * 1000;
+        if (Date.now() - deadSince >= ttlMs) {
+          const bufPath = stateWriter.getBufferDumpPath(managed.meta.id);
+          try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
+          sessionManager.destroySession(managed.meta.id);
+          reaped++;
+        }
+        continue;
+      }
+      // #557: also reap idle DETACHED sessions (no client attached, shell still
+      // alive) past config.session.detachedTtlHours. lastActivity is bumped on
+      // PTY output, so this only catches shells that have gone silent while
+      // detached — an active detached session (running build) is never touched.
+      // `attached` is never reaped here: a client is connected and in use.
+      if (managed.meta.state === 'detached') {
+        // #557: exec/supervised units (X8 reboot-survival) are intentionally
+        // long-lived unattached sessions that may sit silent for >8 h. Reaping
+        // them would defeat supervision, so skip them here (mirrors the
+        // StateWriter.load exemption). exec and supervision are independent
+        // optional fields, so exempt on either.
+        if (managed.meta.exec || managed.meta.supervision) continue;
+        const idleSince = new Date(managed.meta.lastActivity).getTime();
+        const ttlMs = config.session.detachedTtlHours * 60 * 60 * 1000;
+        if (Date.now() - idleSince >= ttlMs) {
+          // Mirror the dead branch: drop any leftover buffer dump from a prior
+          // suspend cycle before destroying, or it leaks until the next boot.
+          const bufPath = stateWriter.getBufferDumpPath(managed.meta.id);
+          try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
+          sessionManager.destroySession(managed.meta.id);
+          reaped++;
+        }
       }
     }
     if (reaped > 0) {
-      log('info', `Reaped ${reaped} expired dead session(s)`);
+      log('info', `Reaped ${reaped} expired session(s)`);
       const state = buildState(sessionManager);
       stateWriter.saveImmediate(state);
     }

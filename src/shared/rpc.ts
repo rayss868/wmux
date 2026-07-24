@@ -167,6 +167,8 @@ export type RpcMethod =
   | 'deck.resolvePaneRoute'
   | 'deck.resolveCommanderWorkspace'
   | 'deck.requestDecision'
+  | 'deck.resolveDecision'
+  | 'browser.tabs'
   | 'browser.open'
   | 'browser.navigate'
   | 'browser.goBack'
@@ -324,6 +326,8 @@ export const ALL_RPC_METHODS = [
   'deck.resolvePaneRoute',
   'deck.resolveCommanderWorkspace',
   'deck.requestDecision',
+  'deck.resolveDecision',
+  'browser.tabs',
   'browser.open',
   'browser.navigate',
   'browser.goBack',

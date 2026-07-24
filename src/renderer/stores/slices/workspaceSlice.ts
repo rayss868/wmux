@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
+import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, t as i18nT, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
@@ -9,11 +10,44 @@ import { resetInspectState } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
+import { decUnread } from './notificationSlice';
 
 /** Collect all leaf panes from a pane tree */
 function collectLeafPanes(pane: Pane): PaneLeaf[] {
   if (pane.type === 'leaf') return [pane];
   return pane.children.flatMap(collectLeafPanes);
+}
+
+/**
+ * Cold-park (TASK-9) is safe ONLY for terminal-only workspaces. Unmounting a
+ * pane tree that holds a browser (live webview session), editor (unsaved local
+ * scratch edits), or diff/git/review surface would lose that state — unlike a
+ * terminal, whose bytes live in the daemon ring and replay on reveal. So a
+ * workspace is parkable only when every surface is a terminal (surfaceType
+ * absent defaults to terminal). Deeper per-surface parking is a follow-up.
+ */
+/**
+ * Cold-park convergence helper: drop a workspace's parked / idle-clock entries.
+ * Called wherever activeWorkspaceId is assigned OUTSIDE setActiveWorkspace
+ * (removeWorkspace, company destroy/removeDept, loadSession) so a promoted-to-
+ * visible workspace's park state converges immediately instead of lingering
+ * until the next sweep. Guarded for stores/tests without the cold-park maps.
+ */
+export function clearColdParkEntry(
+  state: { parkedWorkspaceIds?: Record<string, true>; lastVisibleAt?: Record<string, number> },
+  id: string,
+): void {
+  if (state.parkedWorkspaceIds && state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
+  if (state.lastVisibleAt && state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+}
+
+function isTerminalOnlyWorkspace(ws: Workspace): boolean {
+  for (const leaf of collectLeafPanes(ws.rootPane)) {
+    for (const s of leaf.surfaces) {
+      if (s.surfaceType !== undefined && s.surfaceType !== 'terminal') return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -39,6 +73,25 @@ export interface WorkspaceSlice {
   /** P2 — global high-water for stable Workspace.wsOrdinal allocation. Never
    *  decremented; persisted in SessionData so numbers survive restart. */
   nextWorkspaceOrdinal: number;
+  // ─── Cold-park (TASK-9) — renderer-only, NOT persisted ───────────────────
+  // Hidden workspaces idle past a threshold are "parked": WorkspaceViewport
+  // renders a placeholder instead of PaneContainer, unmounting their terminals
+  // (daemon PTY + store row survive). These maps are deliberately NOT part of
+  // workspace metadata — metadata mutations publish over the RPC bus, and park
+  // state is a local view concern that must never leave this renderer.
+  /** Wall-clock ms a workspace was last visible (stamped when it goes hidden).
+   *  Absent while a workspace is visible. */
+  lastVisibleAt: Record<string, number>;
+  /** Set membership (id → true) of currently cold-parked workspaces. */
+  parkedWorkspaceIds: Record<string, true>;
+  /** Immediately un-park a workspace (called synchronously on reveal so the
+   *  same frame renders PaneContainer, not the placeholder). */
+  unparkWorkspace: (id: string) => void;
+  /** Idempotent periodic sweep: stamps newly-hidden workspaces, parks those
+   *  idle past `thresholdMs`, and un-parks/clears any that are visible now.
+   *  Visible = activeWorkspaceId OR a multiview member. Pure w.r.t. current
+   *  state — safe to call on any cadence. */
+  sweepColdPark: (nowTs: number, thresholdMs: number) => void;
   /** Create and activate a new workspace. An optional `profile` is normalized
    * (dropSecretKeys) and attached in the SAME immer set, so pane #1 spawns with
    * profile.startupCwd already present instead of a home fallback (#515). */
@@ -93,6 +146,49 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     workspaces: [initial],
     activeWorkspaceId: initial.id,
     nextWorkspaceOrdinal: 2,
+    lastVisibleAt: {},
+    parkedWorkspaceIds: {},
+
+    unparkWorkspace: (id) => set((state: StoreState) => {
+      if (state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
+      // It's about to be visible — drop its idle stamp so the clock restarts
+      // only once it goes hidden again.
+      if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+    }),
+
+    sweepColdPark: (nowTs, thresholdMs) => set((state: StoreState) => {
+      const visible = new Set<string>([state.activeWorkspaceId, ...state.multiviewIds]);
+      for (const ws of state.workspaces) {
+        const id = ws.id;
+        if (visible.has(id)) {
+          // Visible now — never parked, no idle clock running.
+          if (state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
+          if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+          continue;
+        }
+        if (state.parkedWorkspaceIds[id]) {
+          // Already parked — but a parked workspace can GAIN a non-terminal
+          // surface (e.g. browser.open targeting it), which would never mount
+          // until manual reveal. Re-check and unpark so the new surface renders.
+          if (!isTerminalOnlyWorkspace(ws)) {
+            delete state.parkedWorkspaceIds[id];
+            if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+          }
+          continue;
+        }
+        // Never park a workspace holding a browser/editor/diff surface — those
+        // carry live state a terminal doesn't (no daemon ring to replay from).
+        if (!isTerminalOnlyWorkspace(ws)) continue;
+        const since = state.lastVisibleAt[id];
+        if (since === undefined) {
+          // First time we observe it hidden — start the idle clock. (Covers
+          // restored-but-never-viewed workspaces, which have no stamp.)
+          state.lastVisibleAt[id] = nowTs;
+        } else if (nowTs - since >= thresholdMs) {
+          state.parkedWorkspaceIds[id] = true;
+        }
+      }
+    }),
 
     addWorkspace: (name, profile) => set((state: StoreState) => {
       let wsName = name;
@@ -273,6 +369,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.workspaces.splice(idx, 1);
       if (state.activeWorkspaceId === id) {
         state.activeWorkspaceId = state.workspaces[Math.min(idx, state.workspaces.length - 1)].id;
+        // Cold-park: the newly-promoted workspace must not stay parked.
+        clearColdParkEntry(state, state.activeWorkspaceId);
       }
       // D-teardown: removing a workspace (sidebar X, Ctrl+Shift+W, kill-pane)
       // unmounts the marked-region DOM the inspect overlay queries. setActiveWorkspace
@@ -303,6 +401,19 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
 
     setActiveWorkspace: (id) => set((state: StoreState) => {
       if (!state.workspaces.some((w: Workspace) => w.id === id)) return;
+      // Cold-park (TASK-9): the outgoing workspace is about to go hidden — start
+      // its idle clock. The incoming one is un-parked synchronously in this same
+      // mutation so WorkspaceViewport renders PaneContainer (not the placeholder)
+      // on the very next frame. The outgoing stamp is skipped if it stays visible
+      // as a multiview member.
+      if (state.parkedWorkspaceIds && state.lastVisibleAt) {
+        const prev = state.activeWorkspaceId;
+        if (prev && prev !== id && !(state.multiviewIds ?? []).includes(prev)) {
+          state.lastVisibleAt[prev] = Date.now();
+        }
+        if (state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
+        if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+      }
       state.activeWorkspaceId = id;
       // D-teardown: a workspace switch invalidates any marked-region queries
       // the inspect overlay is holding, so exit inspect explicitly rather than
@@ -318,7 +429,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // notification slice mounted.
       if (Array.isArray(state.notifications)) {
         for (const n of state.notifications) {
-          if (n.workspaceId === id && !n.read) n.read = true;
+          if (n.workspaceId === id && !n.read) {
+            n.read = true;
+            // Keep the O(S) unread index in sync — bypassing it here left ghost
+            // unread badges after visiting a workspace (Sprint-1 selector).
+            // Guarded for tests that mount workspaceSlice without the index.
+            if (n.surfaceId && state.unreadBySurfaceId) {
+              decUnread(state.unreadBySurfaceId, n.surfaceId);
+            }
+          }
         }
       }
       // Same lifecycle clear for the visual ring — once a workspace is
@@ -387,6 +506,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
 
     loadSession: (data: SessionData) => set((state: StoreState) => {
       if (!data.workspaces || data.workspaces.length === 0) return;
+
+      // Cold-park is renderer-only and non-persisted. loadSession replaces the
+      // whole workspace list, so any parked/idle-clock entry keyed to an id no
+      // longer in the new list would linger forever (the sweep only iterates
+      // current workspaces). Reset both maps — the sweep re-derives park state
+      // for the restored workspaces from scratch.
+      state.parkedWorkspaceIds = {};
+      state.lastVisibleAt = {};
 
       // Security + correctness: sanitize surfaces.
       //
@@ -563,6 +690,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.defaultShell) state.defaultShell = data.defaultShell;
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;
+      // D2 — re-normalize on load (session.json is hand-editable / untrusted).
+      state.orchestratorRoleBindings = normalizeRoleBindings(data.orchestratorRoleBindings);
       // Fail closed to raw mode: only an explicit true enables full power.
       state.deckBrainFullPower = data.deckBrainFullPower === true;
       // Fail closed to the default brain: only known vendor ids are restored.
@@ -635,6 +764,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       } else {
         markRetentionMigrationDone();
       }
+      // Cold-park (TASK-9): default ON; only an explicit persisted false opts out.
+      if (typeof data.coldParkEnabled === 'boolean') state.coldParkEnabled = data.coldParkEnabled;
       if (typeof data.startupDirectory === 'string') state.startupDirectory = data.startupDirectory.trim();
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
       if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;

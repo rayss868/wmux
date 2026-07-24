@@ -4,6 +4,11 @@ import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { markRetentionMigrationDone } from '../retentionMigration';
 import type { FleetSortMode } from '../selectors/fleet';
 import {
+  normalizeRoleBinding,
+  type OrchestratorRoleBindings,
+  type RoleBinding,
+} from '../../../shared/orchestratorRole';
+import {
   generateId,
   createLeafPane,
   assignPaneOrdinals,
@@ -136,6 +141,15 @@ export interface UISlice {
   deckBrainModel: string;
   setDeckBrainModel: (model: string) => void;
 
+  // D2 — global operator-level role→model enforcement map. Keyed by role name
+  // (Builder/Reviewer/Tester/Planner ∪ custom). An agent launched in a pane
+  // carrying a bound role is transparently rewritten to run the bound
+  // agent+model (main's input.send chokepoint). All roles unbound by default;
+  // persisted like deckBrainModel. See shared/orchestratorRole.applyRoleBinding.
+  orchestratorRoleBindings: OrchestratorRoleBindings;
+  /** Upsert one role's binding; an empty/undefined binding clears it. */
+  setOrchestratorRoleBinding: (role: string, binding: RoleBinding | undefined) => void;
+
   // Orchestrator full-power mode (BYOB approach A): load the user's Claude
   // Code ecosystem (skills, CLAUDE.md, hooks) into brain turns. Default OFF —
   // raw mode is the documented safe default (hook storms, personal hooks in
@@ -181,6 +195,14 @@ export interface UISlice {
   // sessions only — the flag is ignored in local PTY mode.
   hiddenPaneRetentionEnabled: boolean;
   setHiddenPaneRetentionEnabled: (enabled: boolean) => void;
+
+  // TASK-9 cold-park (default ON): hidden workspaces idle past a threshold have
+  // their terminal components unmounted to reclaim renderer RAM (daemon PTY +
+  // store row survive; reveal remounts and replays via the daemon snapshot).
+  // The escape hatch for anyone who prefers instant reveals over RAM. Depends on
+  // daemon-backed sessions — like retention, it's a no-op in local PTY mode.
+  coldParkEnabled: boolean;
+  setColdParkEnabled: (enabled: boolean) => void;
 
   // #517 browser lightweight mode (default OFF while dogfooding): CPU-throttle
   // embedded browser guests that are effectively invisible (hidden workspace /
@@ -803,6 +825,19 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.deckBrainModel = model;
   }),
 
+  orchestratorRoleBindings: {},
+
+  setOrchestratorRoleBinding: (role, binding) => set((state) => {
+    const key = role.trim();
+    if (!key) return;
+    const normalized = normalizeRoleBinding(binding);
+    if (normalized) {
+      state.orchestratorRoleBindings[key] = normalized;
+    } else {
+      delete state.orchestratorRoleBindings[key];
+    }
+  }),
+
   deckBrainFullPower: false,
 
   setDeckBrainFullPower: (enabled) => set((state) => {
@@ -851,6 +886,14 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   // pre-flip profiles (which persisted the old `false` default) are migrated
   // exactly once.
   hiddenPaneRetentionEnabled: true,
+
+  // TASK-9 cold-park — default ON. Renderer-only view state; the flag itself is
+  // persisted with the rest of uiSlice so a user's opt-out survives restart.
+  coldParkEnabled: true,
+
+  setColdParkEnabled: (enabled) => set((state) => {
+    state.coldParkEnabled = enabled;
+  }),
 
   setHiddenPaneRetentionEnabled: (enabled) => set((state) => {
     state.hiddenPaneRetentionEnabled = enabled;
@@ -1097,6 +1140,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       }
       if (!state.multiviewIds.includes(wsId)) {
         state.multiviewIds.push(wsId);
+      }
+      // Cold-park (TASK-9): a workspace joining the multiview grid becomes
+      // visible — un-park it synchronously so the tile renders live this frame.
+      // Guarded for tests that mount uiSlice without the workspaceSlice maps.
+      if (state.parkedWorkspaceIds && state.lastVisibleAt) {
+        for (const id of state.multiviewIds) {
+          if (state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
+          if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+        }
       }
     }
     // If only 1 or 0 left, clear multiview

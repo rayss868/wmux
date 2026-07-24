@@ -1,8 +1,8 @@
 {
   "name": "wmux",
   "productName": "wmux",
-  "version": "3.30.0",
-  "description": "cmux for Windows — run multiple AI CLI agents (Claude Code, Codex, Gemini) side-by-side with an MCP bridge and browser automation",
+  "version": "3.32.0",
+  "description": "Workspace multiplexer for AI coding agents — run fleets of Claude Code, Codex & Gemini in parallel on Windows & macOS, with MCP browser automation built in",
   "private": true,
   "main": ".vite/build/index.js",
   "bin": {
@@ -17,7 +17,7 @@
     "build:daemon": "tsc -p tsconfig.daemon.json && esbuild dist/daemon/daemon/index.js --bundle --platform=node --outfile=dist/daemon-bundle/index.js --external:node-pty",
     "build:cli": "tsc -p tsconfig.cli.json && esbuild dist/cli/cli/index.js --bundle --platform=node --outfile=dist/cli-bundle/index.js && node scripts/copy-bridge.mjs",
     "build:mcp": "tsc -p tsconfig.mcp.json && node scripts/build-mcp.js",
-    "mcp": "node dist/mcp/mcp/index.js",
+    "mcp": "node dist/mcp/mcp/entry.js",
     "notices": "node scripts/generate-notices.mjs",
     "test": "npm run test:parallel && npm run test:runtime",
     "test:parallel": "vitest run --exclude \"**/*.runtime.test.ts\" --exclude \"**/*.runtime.test.tsx\" --exclude \"**/*.runtime.test.mjs\"",
@@ -30,11 +30,13 @@
     "spike:sa1:verify": "bash core/wmux-term/verify.sh"
   },
   "keywords": [
-    "terminal",
-    "multiplexer",
+    "workspace-multiplexer",
+    "terminal-multiplexer",
+    "ai-coding-agent",
+    "multi-agent",
     "mcp",
-    "ai-agent",
-    "windows",
+    "browser-automation",
+    "claude-code",
     "electron"
   ],
   "author": {

@@ -212,19 +212,257 @@ describe('StateWriter', () => {
       state: 'suspended',
       lastActivity: new Date(now - 6 * 24 * HOUR).toISOString(),
     });
-    // Live sessions and detached ones should never be touched by TTL.
-    const detached = makeSession({ id: 'detached', state: 'detached' });
+    // Live attached sessions should never be touched by TTL — a client is
+    // connected and the session is in active use.
     const attached = makeSession({ id: 'attached', state: 'attached' });
 
-    writer.saveImmediate(makeState([stale, fresh, detached, attached]));
+    writer.saveImmediate(makeState([stale, fresh, attached]));
 
     const loaded = writer.load();
     const ids = loaded.sessions.map((s) => s.id);
 
     expect(ids).not.toContain('stale-suspended');
     expect(ids).toContain('fresh-suspended');
-    expect(ids).toContain('detached');
     expect(ids).toContain('attached');
+  });
+
+  it('load prunes DETACHED sessions past the detached TTL (#557)', () => {
+    // A crash/forced-kill leaves detached records on disk (the 30 s snapshot
+    // runner writes listSessions() verbatim). Without a detached TTL these
+    // accumulated forever and were re-spawned on every restart. Default TTL
+    // is 8 h; a stale orphan (10 h idle) must be pruned before recovery runs.
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const stale = makeSession({
+      id: 'stale-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 10 * HOUR).toISOString(),
+    });
+    const fresh = makeSession({
+      id: 'fresh-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 1 * HOUR).toISOString(),
+    });
+    // Attached is never TTL-reaped regardless of age.
+    const attached = makeSession({
+      id: 'old-attached',
+      state: 'attached',
+      lastActivity: new Date(now - 30 * 24 * HOUR).toISOString(),
+    });
+
+    writer.saveImmediate(makeState([stale, fresh, attached]));
+
+    const loaded = writer.load();
+    const ids = loaded.sessions.map((s) => s.id);
+
+    expect(ids).not.toContain('stale-detached');
+    expect(ids).toContain('fresh-detached');
+    expect(ids).toContain('old-attached');
+  });
+
+  it('load restamps sessions with a corrupt lastActivity instead of leaking them (#557)', () => {
+    // A malformed lastActivity makes `now - getTime()` NaN, and every
+    // `NaN < ttl` comparison is false — so without the restamp guard these
+    // records would be KEPT forever (fail-open), defeating the reaper. The fix
+    // restamps to now (not prune) so a possibly-live session survives one bad
+    // timestamp yet the TTL clock restarts and can age out on a later load.
+    const corruptDetached = makeSession({
+      id: 'corrupt-detached',
+      state: 'detached',
+      lastActivity: 'not-a-date',
+    });
+    const corruptDead = makeSession({
+      id: 'corrupt-dead',
+      state: 'dead',
+      lastActivity: 'not-a-date',
+    });
+
+    writer.saveImmediate(makeState([corruptDetached, corruptDead]));
+
+    const before = Date.now();
+    const loaded = writer.load();
+    const after = Date.now();
+    const ids = loaded.sessions.map((s) => s.id);
+
+    // Both survive this load...
+    expect(ids).toContain('corrupt-detached');
+    expect(ids).toContain('corrupt-dead');
+
+    // ...and their timestamps are now valid, recent ISO strings.
+    for (const s of loaded.sessions) {
+      const t = new Date(s.lastActivity).getTime();
+      expect(Number.isNaN(t)).toBe(false);
+      expect(t).toBeGreaterThanOrEqual(before);
+      expect(t).toBeLessThanOrEqual(after);
+    }
+  });
+
+  it('heals a non-string lastActivity (null / number) instead of reaping it as ancient (#557)', () => {
+    // `new Date(null).getTime()` and `new Date(0).getTime()` both coerce to a
+    // VALID epoch 0, so a NaN-only guard would miss them and the record would
+    // look ~56 years old and be silently reaped. isDaemonState() validates only
+    // minimal fields, so disk corruption / legacy records can carry a non-string
+    // lastActivity here. Both must heal (kept + restamped), like a bad string.
+    const nullActivity = makeSession({
+      id: 'null-activity',
+      state: 'detached',
+      lastActivity: null as unknown as string,
+    });
+    const numericActivity = makeSession({
+      id: 'numeric-activity',
+      state: 'dead',
+      lastActivity: 0 as unknown as string,
+    });
+
+    writer.saveImmediate(makeState([nullActivity, numericActivity]));
+
+    const before = Date.now();
+    const loaded = writer.load();
+    const after = Date.now();
+    const ids = loaded.sessions.map((s) => s.id);
+
+    expect(ids).toContain('null-activity');
+    expect(ids).toContain('numeric-activity');
+    for (const s of loaded.sessions) {
+      const t = new Date(s.lastActivity).getTime();
+      expect(Number.isNaN(t)).toBe(false);
+      expect(t).toBeGreaterThanOrEqual(before);
+      expect(t).toBeLessThanOrEqual(after);
+    }
+  });
+
+  it('persists the restamp to disk so it survives a restart and eventually ages out (#557)', () => {
+    // The real leak the persist guard closes: an in-memory-only restamp would be
+    // re-read as corrupt on the next boot and restamped again forever. The main
+    // recovery writer (persistHealedOnLoad=true) must write the healed value to
+    // disk, and the persisted restamp must then age out normally once the TTL
+    // elapses against it — exercising the full corrupt→persist→age-out path.
+    const HOUR = 60 * 60 * 1000;
+    const filePath = path.join(tmpDir, 'sessions.json');
+    const corrupt = makeSession({
+      id: 'corrupt-detached',
+      state: 'detached',
+      lastActivity: 'not-a-date',
+    });
+
+    vi.useFakeTimers();
+    try {
+      const t0 = new Date('2026-07-23T00:00:00.000Z').getTime();
+      vi.setSystemTime(t0);
+
+      // Recovery writer: persistHealedOnLoad ON. Default 8h detached TTL.
+      const recoveryWriter = new StateWriter(tmpDir, 7 * 24, 8, true);
+      recoveryWriter.saveImmediate(makeState([corrupt]));
+
+      // First load heals the corrupt timestamp AND writes it back to disk.
+      const firstLoad = recoveryWriter.load();
+      expect(firstLoad.sessions.map((s) => s.id)).toContain('corrupt-detached');
+
+      // The healed value is on disk (not just in memory): re-reading the raw
+      // file shows a valid ISO timestamp equal to t0, not 'not-a-date'.
+      const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as {
+        sessions: Array<{ id: string; lastActivity: string }>;
+      };
+      const persisted = onDisk.sessions.find((s) => s.id === 'corrupt-detached');
+      expect(persisted).toBeDefined();
+      expect(new Date(persisted!.lastActivity).getTime()).toBe(t0);
+
+      // Advance the clock past the detached TTL relative to the PERSISTED
+      // restamp. A fresh writer over the same dir (a daemon restart) rereads the
+      // persisted value and now ages it out — proving it can never leak forever.
+      vi.setSystemTime(t0 + 10 * HOUR); // 10h > 8h TTL
+      const restarted = new StateWriter(tmpDir, 7 * 24, 8, true);
+      const afterRestart = restarted.load().sessions.map((s) => s.id);
+      expect(afterRestart).not.toContain('corrupt-detached');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does NOT persist a restamp when persistHealedOnLoad is off (one-shot lock path) (#557)', () => {
+    // The acquireLock() one-shot writer only reads bootId and must never write
+    // sessions.json (it would race the main instance). With the flag off, load()
+    // still heals the timestamp in memory but leaves the on-disk record corrupt.
+    const filePath = path.join(tmpDir, 'sessions.json');
+    const corrupt = makeSession({
+      id: 'corrupt-detached',
+      state: 'detached',
+      lastActivity: 'not-a-date',
+    });
+
+    // Default `writer` (constructed in beforeEach) has persistHealedOnLoad off.
+    writer.saveImmediate(makeState([corrupt]));
+
+    const loaded = writer.load();
+    // In-memory copy is healed...
+    expect(Number.isNaN(new Date(loaded.sessions[0].lastActivity).getTime())).toBe(false);
+
+    // ...but the on-disk file was NOT rewritten by load(): still 'not-a-date'.
+    const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as {
+      sessions: Array<{ id: string; lastActivity: string }>;
+    };
+    expect(onDisk.sessions[0].lastActivity).toBe('not-a-date');
+  });
+
+  it('honours a custom detachedTtlHours from the constructor (#557)', () => {
+    // A writer configured with a 2 h detached TTL instead of the 8 h default.
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const customWriter = new StateWriter(tmpDir, 7 * 24, 2);
+    const stale = makeSession({
+      id: 'stale-3h',
+      state: 'detached',
+      lastActivity: new Date(now - 3 * HOUR).toISOString(), // 3h > 2h → pruned
+    });
+    const fresh = makeSession({
+      id: 'fresh-1h',
+      state: 'detached',
+      lastActivity: new Date(now - 1 * HOUR).toISOString(), // 1h < 2h → survives
+    });
+    customWriter.saveImmediate(makeState([stale, fresh]));
+
+    const ids = customWriter.load().sessions.map((s) => s.id);
+    expect(ids).not.toContain('stale-3h');
+    expect(ids).toContain('fresh-1h');
+  });
+
+  it('load keeps an exec/supervised detached session past the detached TTL (#557)', () => {
+    // exec units (X8 reboot-survival) are intentionally long-lived unattached
+    // sessions that may sit silent for >8 h. The detached TTL must not reap
+    // them, or supervision breaks. A plain detached session of the same age IS
+    // pruned — proving the exemption is exec-specific, not TTL-wide.
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const supervised = makeSession({
+      id: 'supervised-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 100 * HOUR).toISOString(),
+      exec: { command: 'node server.js' },
+    });
+    // supervision is an independent optional field: a supervised plain shell
+    // can carry supervision WITHOUT exec, and must be exempt too.
+    const supervisionOnly = makeSession({
+      id: 'supervision-only-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 100 * HOUR).toISOString(),
+      supervision: {
+        restart: 'on-failure',
+        limit: { burst: 5, healthyUptimeSec: 300 },
+        status: 'armed',
+      },
+    });
+    const plain = makeSession({
+      id: 'plain-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 100 * HOUR).toISOString(),
+    });
+
+    writer.saveImmediate(makeState([supervised, supervisionOnly, plain]));
+
+    const ids = writer.load().sessions.map((s) => s.id);
+    expect(ids).toContain('supervised-detached');
+    expect(ids).toContain('supervision-only-detached');
+    expect(ids).not.toContain('plain-detached');
   });
 
   it('load uses suspended TTL even when deadTtlHours is short', () => {

@@ -1,15 +1,100 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { PlaywrightEngine } from '../PlaywrightEngine';
-import { withAutomationLease } from '../automationLease';
 import { validateNavigationUrl } from '../../../shared/types';
 import { sendRpc } from '../../wmux-client';
+import {
+  browserTabsError,
+  isBrowserTabsResult,
+  type BrowserTabDescriptor,
+  type BrowserTabsAction,
+  type BrowserTabsErrorResult,
+  type BrowserTabsSuccessResult,
+} from '../../../shared/browserTabs';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
   .string()
   .optional()
   .describe('Target a specific surface by ID. Omit to use the active surface.');
+
+// Module-scope parameter shapes: hoisted out of the per-registration path so
+// every createWmuxServer() instance shares one set of zod schema objects
+// (per-connection memory reduction). Shapes carry no per-call state — only the
+// handlers (which stay inside the register* functions) close over runtime deps.
+const BROWSER_NAVIGATE_SHAPE = {
+  url: z.string().describe('The URL to navigate to'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_NAVIGATE_BACK_SHAPE = {
+  surfaceId: optionalSurfaceId,
+};
+
+export const BROWSER_TABS_SHAPE = {
+  action: z
+    .enum(['list', 'new', 'select', 'close'])
+    .optional()
+    .describe('Action to perform. Defaults to "list".'),
+  surfaceId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Stable browser surface ID returned by "list" or "new". Required for "select" and "close".'),
+  url: z
+    .string()
+    .optional()
+    .describe('URL to open when action is "new".'),
+  tabId: z
+    .never()
+    .optional()
+    .describe('Removed unsafe numeric index. Use surfaceId returned by "list" or "new".'),
+};
+
+export interface NavigationToolDeps {
+  /** Strict per-connection resolver. It throws rather than falling back to the UI-active workspace. */
+  resolveWorkspaceId: () => Promise<string>;
+}
+
+function tabsToolError(result: BrowserTabsErrorResult) {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: `Error [${result.error.code}]: ${result.error.message}`,
+      },
+    ],
+    isError: true,
+  };
+}
+
+function publicTab(tab: BrowserTabDescriptor): BrowserTabDescriptor {
+  return {
+    surfaceId: tab.surfaceId,
+    paneId: tab.paneId,
+    url: tab.url,
+    title: tab.title,
+    selected: tab.selected,
+  };
+}
+
+function tabsToolSuccess(result: BrowserTabsSuccessResult) {
+  let payload: Record<string, unknown>;
+  switch (result.action) {
+    case 'list':
+      payload = { action: result.action, tabs: result.tabs.map(publicTab) };
+      break;
+    case 'new':
+    case 'select':
+      payload = { action: result.action, tab: publicTab(result.tab) };
+      break;
+    case 'close':
+      payload = { action: result.action, closed: publicTab(result.closed) };
+      break;
+  }
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }],
+  };
+}
 
 /**
  * Register navigation-related MCP tools on the given server.
@@ -19,19 +104,14 @@ const optionalSurfaceId = z
  *  - browser_navigate_back — go back in history
  *  - browser_tabs          — list / new / select / close tabs
  */
-export function registerNavigationTools(server: McpServer): void {
-  const engine = PlaywrightEngine.getInstance();
-
+export function registerNavigationTools(server: McpServer, deps: NavigationToolDeps): void {
   // -----------------------------------------------------------------------
   // browser_navigate
   // -----------------------------------------------------------------------
   server.tool(
     'browser_navigate',
     'Navigate the browser page to a URL. Returns the final URL after navigation.',
-    {
-      url: z.string().describe('The URL to navigate to'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_NAVIGATE_SHAPE,
     async ({ url, surfaceId }) => {
       try {
         const urlCheck = validateNavigationUrl(url);
@@ -63,9 +143,7 @@ export function registerNavigationTools(server: McpServer): void {
   server.tool(
     'browser_navigate_back',
     'Go back in browser history. Returns the current URL after going back.',
-    {
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_NAVIGATE_BACK_SHAPE,
     async ({ surfaceId }) => {
       try {
         await sendRpc('browser.goBack', {
@@ -98,137 +176,94 @@ export function registerNavigationTools(server: McpServer): void {
   // -----------------------------------------------------------------------
   server.tool(
     'browser_tabs',
-    'Manage browser tabs: list all tabs, open a new tab, select a tab, or close a tab.',
-    {
-      action: z
-        .enum(['list', 'new', 'select', 'close'])
-        .optional()
-        .describe('Action to perform. Defaults to "list".'),
-      tabId: z
-        .number()
-        .optional()
-        .describe('Tab index (0-based) for "select" or "close" actions.'),
-      url: z
-        .string()
-        .optional()
-        .describe('URL to open when action is "new".'),
-    },
-    async ({ action, tabId, url }) => withAutomationLease(undefined, async () => {
+    'Manage browser surfaces in the calling workspace. Address a surface only by the opaque surfaceId returned by list or new — a list position is never an address. select moves this workspace\'s UI focus only: it does NOT change which surface the other browser tools act on when they omit surfaceId, so pass surfaceId explicitly on every follow-up browser call.',
+    BROWSER_TABS_SHAPE,
+    async ({ action, surfaceId, url }) => {
+      const resolvedAction: BrowserTabsAction = action ?? 'list';
       try {
-        const browser = await engine.getBrowser();
-        if (!browser) {
-          throw new Error('No browser connected. Call browser_open with a URL first to establish a CDP connection.');
+        if ((resolvedAction === 'select' || resolvedAction === 'close') && !surfaceId) {
+          return tabsToolError(
+            browserTabsError(
+              'BROWSER_TABS_INVALID_ARGUMENT',
+              `browser_tabs ${resolvedAction} requires a surfaceId returned by browser_tabs list.`,
+            ),
+          );
+        }
+        if ((resolvedAction === 'list' || resolvedAction === 'new') && surfaceId) {
+          return tabsToolError(
+            browserTabsError(
+              'BROWSER_TABS_INVALID_ARGUMENT',
+              `browser_tabs ${resolvedAction} does not accept surfaceId.`,
+            ),
+          );
+        }
+        if (resolvedAction !== 'new' && url !== undefined) {
+          return tabsToolError(
+            browserTabsError(
+              'BROWSER_TABS_INVALID_ARGUMENT',
+              `browser_tabs ${resolvedAction} does not accept url.`,
+            ),
+          );
+        }
+        if (resolvedAction === 'new' && url !== undefined) {
+          const urlCheck = validateNavigationUrl(url);
+          if (!urlCheck.valid) {
+            return tabsToolError(
+              browserTabsError(
+                'BROWSER_TAB_URL_BLOCKED',
+                urlCheck.reason ?? 'Browser tab URL is not allowed.',
+              ),
+            );
+          }
         }
 
-        const resolvedAction = action ?? 'list';
-
-        // Collect all pages across all contexts
-        const contexts = browser.contexts();
-        const allPages = contexts.flatMap((ctx) => ctx.pages());
-
-        switch (resolvedAction) {
-          case 'list': {
-            const tabList = allPages.map((p, i) => ({
-              tabId: i,
-              url: p.url(),
-              title: '', // title requires async; filled below
-            }));
-
-            // Populate titles
-            for (let i = 0; i < allPages.length; i++) {
-              try {
-                tabList[i].title = await allPages[i].title();
-              } catch {
-                tabList[i].title = '(unknown)';
-              }
-            }
-
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify(tabList, null, 2),
-                },
-              ],
-            };
-          }
-
-          case 'new': {
-            // Use the first context, or fail
-            const context = contexts[0];
-            if (!context) {
-              throw new Error('No browser context available.');
-            }
-
-            const newPage = await context.newPage();
-            if (url) {
-              const urlCheck = validateNavigationUrl(url);
-              if (!urlCheck.valid) {
-                return {
-                  content: [{ type: 'text' as const, text: `URL blocked: ${urlCheck.reason}` }],
-                  isError: true,
-                };
-              }
-              await newPage.goto(url, { waitUntil: 'domcontentloaded' });
-            }
-
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `Opened new tab (index ${allPages.length}) at ${newPage.url()}`,
-                },
-              ],
-            };
-          }
-
-          case 'select': {
-            if (tabId === undefined || tabId < 0 || tabId >= allPages.length) {
-              throw new Error(
-                `Invalid tabId=${tabId}. Available tabs: 0-${allPages.length - 1}`,
-              );
-            }
-
-            await allPages[tabId].bringToFront();
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `Selected tab ${tabId}: ${allPages[tabId].url()}`,
-                },
-              ],
-            };
-          }
-
-          case 'close': {
-            if (tabId === undefined || tabId < 0 || tabId >= allPages.length) {
-              throw new Error(
-                `Invalid tabId=${tabId}. Available tabs: 0-${allPages.length - 1}`,
-              );
-            }
-
-            const closedUrl = allPages[tabId].url();
-            await allPages[tabId].close();
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `Closed tab ${tabId}: ${closedUrl}`,
-                },
-              ],
-            };
-          }
-
-          default:
-            throw new Error(`Unknown action: ${resolvedAction}`);
+        let workspaceId: string;
+        try {
+          workspaceId = await deps.resolveWorkspaceId();
+        } catch {
+          return tabsToolError(
+            browserTabsError(
+              'BROWSER_TABS_WORKSPACE_UNRESOLVED',
+              'The calling workspace is unavailable.',
+            ),
+          );
         }
+        if (!workspaceId) {
+          return tabsToolError(
+            browserTabsError(
+              'BROWSER_TABS_WORKSPACE_UNRESOLVED',
+              'The calling workspace is unavailable.',
+            ),
+          );
+        }
+
+        const result = await sendRpc('browser.tabs', {
+          action: resolvedAction,
+          workspaceId,
+          ...(surfaceId && { surfaceId }),
+          ...(url !== undefined && { url }),
+        });
+        if (!isBrowserTabsResult(result)) {
+          throw new Error('Invalid browser.tabs response from wmux main.');
+        }
+        return result.ok ? tabsToolSuccess(result) : tabsToolError(result);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        if (/Unknown method:\s*browser\.tabs/i.test(message)) {
+          return tabsToolError(
+            browserTabsError(
+              'BROWSER_TABS_UNSUPPORTED',
+              'The connected wmux main process does not support workspace-scoped browser tabs.',
+            ),
+          );
+        }
+        return tabsToolError(
+          browserTabsError(
+            'BROWSER_TABS_UNAVAILABLE',
+            'Workspace-scoped browser tabs are temporarily unavailable.',
+          ),
+        );
       }
-    }),
+    },
   );
 }

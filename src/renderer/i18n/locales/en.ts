@@ -215,6 +215,10 @@ export const en = {
   // as a process that wmux auto-restarts. {restart}=on-failure|always,
   // {burst}=consecutive-failure cap before the runaway guard stops it.
   'project.supervisionBadge': '↻ auto-restarts ({restart}, up to {burst} consecutive)',
+  // D2 — a declared role makes wmux rewrite the command shown beside it, using
+  // the agent/model YOU bound to that role in Settings. Shown on the approval
+  // screen so the command list is not read as the literal thing that runs.
+  'project.roleBadge': '[role: {role} — launches with your binding for it]',
   // Unattended reboot-survival consent — a SEPARATE opt-in from base trust. The
   // checkbox restores each unattended pane's last-used permission mode on reboot
   // (may include --dangerously-skip-permissions), so it is surfaced explicitly.
@@ -324,6 +328,24 @@ export const en = {
   'settings.orchestratorFullPower': 'Full-power mode',
   'settings.orchestratorFullPowerDesc':
     'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks run inside brain turns (your own code, outside any wmux sandbox), tool calls may get slower, and the brain cannot write its memory notes while this is on. Applies from the next brain turn.',
+  // D2 — role → agent/model enforcement editor (Settings › Orchestrator).
+  'settings.roleBindings': 'Role → model enforcement',
+  'settings.roleBindingsDesc':
+    'Pin an agent and model to each role. Launches that wmux itself assembles for a pane carrying that role run with the bound model: agent launches the orchestrator issues, the seeded command of a project pane whose wmux.json leaf declares a role, and the pane resume command. A launcher you type into the terminal yourself is not rewritten. Leave a row blank to keep the role unbound.',
+  'settings.roleBindingAgentPlaceholder': 'agent',
+  'settings.roleBindingModelPlaceholder': 'model (optional)',
+  'settings.roleBindingArgsPlaceholder': 'extra args (optional)',
+  'settings.roleBindingAgentLabel': '{role} agent',
+  'settings.roleBindingModelLabel': '{role} model',
+  'settings.roleBindingArgsLabel': '{role} extra args',
+  'settings.roleBindingHintNoAgent':
+    'Pick an agent too — a model on its own is not enforced (wmux can’t tell whose --model flag it is).',
+  'settings.roleBindingHintNoGrammar':
+    'wmux has no verified --model flag for {agent}, so the model is ignored. Extra args still apply.',
+  'settings.roleBindingHintInert': 'Add a model or extra args — an agent alone enforces nothing.',
+  // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
+  'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',
+  'pane.enforcedLaunch': 'Role-enforced launch: {binding}',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
@@ -421,6 +443,8 @@ export const en = {
   'settings.imeResidueGuardDesc': 'Protects against voice-input tools that replace leftover IME text destructively. Leave off unless you use such a tool — the clearing can confuse some IMEs.',
   'settings.hiddenPaneRetention': 'Pause hidden pane rendering',
   'settings.hiddenPaneRetentionDesc': 'Default on. Hidden panes pause screen rendering while everything keeps running — output is captured by the daemon and the pane catches up when you switch back (briefly shown as "catching up"). Turn off to render every hidden pane continuously; that costs real CPU per busy hidden pane. Daemon sessions only; local-mode sessions always render.',
+  'settings.coldPark': 'Unload idle hidden workspaces',
+  'settings.coldParkDesc': 'Default on. A workspace you have not looked at in a few minutes has its terminals unloaded to free memory, so RAM stops growing with the number of workspaces you keep open. The sessions keep running in the daemon; switching back reloads the workspace and replays its screen from the daemon. Turn off to keep every workspace loaded for instant reveals. Daemon sessions only.',
   'settings.browserLightweight': 'Lightweight background browsers',
   'settings.browserLightweightDesc': 'Throttle CPU usage of built-in browser panes that are not visible (hidden workspaces, zoomed-away panes, minimized window). Automation (MCP/screenshots) still runs full-speed. Reduces CPU only, not memory.',
   'settings.browserDiscard': 'Discard hidden browsers (frees memory)',
@@ -913,6 +937,48 @@ export const en = {
   'deck.decisionPlaceholder': 'Type your answer…',
   'deck.decisionAnswerLabel': 'Your answer to the orchestrator decision',
   'deck.recoveryDismiss': 'Dismiss',
+  // Command Deck D1 — the deterministic "welcome home" briefing card.
+  // The headline and the while-away line are assembled in the RENDERER from
+  // structured counts, so every fragment below is a whole sentence/clause with a
+  // {count} (or {items} / {clauses}) placeholder and its own one/other variants.
+  // Main ships numbers only — it has no locale.
+  'deck.briefing.eyebrow': 'Briefing',
+  'deck.briefing.welcomeBack': 'Welcome back.',
+  'deck.briefing.headline.empty': 'Nothing running here yet.',
+  'deck.briefing.headline.decisionOnly': 'One decision is waiting on you.',
+  'deck.briefing.headline.sentence': '{clauses}.',
+  'deck.briefing.headline.join': ', ',
+  'deck.briefing.headline.allIdle.one': 'The agent is idle.',
+  'deck.briefing.headline.allIdle.other': 'All {count} agents are idle.',
+  'deck.briefing.clause.blocked.one': '{count} needs you',
+  'deck.briefing.clause.blocked.other': '{count} need you',
+  'deck.briefing.clause.errored.one': '{count} in error',
+  'deck.briefing.clause.errored.other': '{count} in error',
+  'deck.briefing.clause.running.one': '{count} running',
+  'deck.briefing.clause.running.other': '{count} running',
+  'deck.briefing.clause.done.one': '{count} finished',
+  'deck.briefing.clause.done.other': '{count} finished',
+  'deck.briefing.whileAway': 'While you were away: {items}',
+  'deck.briefing.delta.join': ' · ',
+  'deck.briefing.delta.finished.one': '{count} finished',
+  'deck.briefing.delta.finished.other': '{count} finished',
+  'deck.briefing.delta.nowBlocked.one': '{count} is now blocked on you',
+  'deck.briefing.delta.nowBlocked.other': '{count} are now blocked on you',
+  'deck.briefing.delta.errored.one': '{count} hit an error',
+  'deck.briefing.delta.errored.other': '{count} hit an error',
+  'deck.briefing.delta.newDecision': 'a new decision',
+  'deck.briefing.decisionPointer': 'A decision is waiting on you below.',
+  'deck.briefing.loopLabel': 'Loop:',
+  'deck.briefing.unnamedPane': 'shell',
+  'deck.briefing.jumpTo': 'Jump to {name}',
+  'deck.briefing.channelsUnread': '{count} unread in channels',
+  // Settings — briefing toggles.
+  'settings.briefing': 'Welcome-home briefing',
+  'settings.briefingDesc':
+    'Show a one-shot summary of what changed while you were away when you open a workspace.',
+  'settings.briefingAutoShow': 'Auto-expand briefing',
+  'settings.briefingAutoShowDesc':
+    'Expand the briefing automatically on cold start, a new decision, or a newly-blocked pane.',
   // Command Deck — the control bar (Mode·Loop·Schedules) is component-owned.
   // Command Deck P3d — orchestrator schedules (reboot-surviving).
   'deck.schedules': 'Schedules',

@@ -85,6 +85,9 @@ export const COMMANDER_TOOL_SURFACE: readonly string[] = [
   'send_message',
   // Decision gate — pause-and-ask, the opposite of destructive.
   'deck_ask_decision',
+  // WP3 — self-resolve of the brain's OWN stale decision (server-gated:
+  // auto mode + TTL elapsed + substance floor, enforced in deck.rpc.ts).
+  'deck_resolve_decision',
 ];
 
 /** Pipe RPC methods the commander tool surface actually invokes — the
@@ -118,6 +121,7 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   'deck.resolvePaneRoute',
   'deck.resolveCommanderWorkspace',
   'deck.requestDecision',
+  'deck.resolveDecision',
   // events
   'events.poll',
   // agent-to-agent + channels + missions
@@ -154,6 +158,7 @@ export const COMMANDER_TEARDOWN_DENY: ReadonlySet<string> = new Set<string>([
   'pane.close',
   'surface.close',
   'workspace.close',
+  'browser.tabs',
   'browser.close',
   'daemon.destroySession',
 ]);

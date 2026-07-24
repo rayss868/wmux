@@ -18,22 +18,30 @@ export interface DaemonInfo {
 }
 
 /**
- * Show a synchronous Electron dialog asking the user whether to recover
- * from an unverified-live daemon PID. Returns `true` if the user accepts
- * the stale-cleanup + spawn path, `false` if they cancel (we re-throw).
+ * Ask the user whether to recover from an unverified-live daemon PID.
+ * Returns `true` if the user accepts the stale-cleanup + spawn path,
+ * `false` if they cancel (we re-throw).
  *
- * Dialog is suppressed (and the function returns `false`) when:
+ * This dialog is ASYNCHRONOUS on purpose. It used to call
+ * `dialog.showMessageBoxSync`, which blocks the entire Electron main-process
+ * event loop for as long as the dialog stays open — freezing the pipe server,
+ * the PTY relay, and all IPC. At fleet scale (many concurrent sessions) a
+ * modal nobody has clicked yet reads as "the whole app just died". The async
+ * `dialog.showMessageBox` keeps the main process live while the user decides,
+ * so panes keep streaming behind the dialog.
+ *
+ * Dialog is suppressed (and the function resolves `false`) when:
  *  - `WMUX_NO_DIALOG=1` is set in the environment (test / headless runs)
  *  - the Electron `app` module is unavailable or not ready yet
  *
  * In those cases the caller falls back to the legacy throw so the
  * automation path is preserved exactly.
  */
-function askUserToRecoverFromStalePid(opts: {
+async function askUserToRecoverFromStalePid(opts: {
   reason: string;
   pid: number;
   pidFile: string;
-}): boolean {
+}): Promise<boolean> {
   if (process.env.WMUX_NO_DIALOG === '1') return false;
   // `app` may be undefined when launcher is exercised by unit tests
   // (vitest doesn't import the full Electron runtime).
@@ -51,7 +59,7 @@ function askUserToRecoverFromStalePid(opts: {
     `    elevated PowerShell:  taskkill /F /PID ${opts.pid}`,
   ].join('\n');
 
-  const choice = dialog.showMessageBoxSync({
+  const { response } = await dialog.showMessageBox({
     type: 'warning',
     title: 'wmux daemon recovery',
     message: 'Could not verify the existing daemon process.',
@@ -61,7 +69,7 @@ function askUserToRecoverFromStalePid(opts: {
     cancelId: 1,
     noLink: true,
   });
-  return choice === 0;
+  return response === 0;
 }
 
 // `ProcessLiveness` + the pure classifiers now live in shared/processLiveness so
@@ -297,6 +305,47 @@ export async function tryEscalatedReping(
 }
 
 /**
+ * Recovery decision shared by the two "process probe was blocked" branches of
+ * ensureDaemon — image-lookup-failure and command-line-lookup-failure. On
+ * fleets running aggressive anti-virus, tasklist.exe / PowerShell
+ * Get-CimInstance can be silently blocked and return null, so the launcher
+ * cannot prove WHAT process owns the daemon PID.
+ *
+ * The old code went straight from a null probe to the recovery dialog. But a
+ * daemon that ANSWERS A PING is provably alive regardless of what an AV-blocked
+ * process probe reports — so, exactly like the verified branch already does
+ * before its SIGKILL, give the busy-but-alive daemon the SAME cheap, decisive
+ * escalated re-ping FIRST. A missed two-shot startup ping under ~13 concurrent
+ * sessions is a busy event loop, not a dead daemon. Only if the escalated
+ * re-ping ALSO fails (or there is no auth token to ping with) do we fall
+ * through to the dialog.
+ *
+ * Injectable (`reping`/`sleep`/`askUser` passed in) so the reuse-before-dialog
+ * ordering is unit-testable without a live daemon or an Electron dialog — the
+ * same seam `tryEscalatedReping` already uses.
+ *
+ * Returns:
+ *   'reuse'   — an escalated ping answered; reuse the existing daemon (no
+ *               dialog, no kill).
+ *   'recover' — re-ping failed (or no token) AND the user approved cleanup.
+ *   'refuse'  — re-ping failed (or no token) AND the user declined (or the
+ *               dialog was suppressed); the caller re-throws the legacy error.
+ */
+export async function recoverFromBlockedProbe(deps: {
+  token: string;
+  reping: (timeoutMs: number) => Promise<boolean>;
+  sleep: (ms: number) => Promise<void>;
+  askUser: () => Promise<boolean>;
+}): Promise<'reuse' | 'recover' | 'refuse'> {
+  if (deps.token) {
+    // Same [500, 1000] budget / 200 ms backoff the verified branch uses.
+    const alive = await tryEscalatedReping(deps.reping, [500, 1000], 200, deps.sleep);
+    if (alive) return 'reuse';
+  }
+  return (await deps.askUser()) ? 'recover' : 'refuse';
+}
+
+/**
  * Poll cadence for the freshly-spawned daemon readiness loop.
  *
  * The daemon typically writes its pipe file and answers its first ping
@@ -313,6 +362,17 @@ export function nextPollDelayMs(elapsedMs: number): number {
   return elapsedMs < 2_000 ? 40 : 200;
 }
 
+/**
+ * Issue #537 — absolute wall-clock ceiling for waiting on a freshly-spawned
+ * daemon that is alive but still cold-recovering (no pipe file yet). Sized for
+ * the worst realistic recovery: the cap is MAX_RECOVER_SESSIONS (40) ConPTY
+ * spawns, measured ~0.9 s each (~36 s), with margin for ConPTY-87 retry bursts
+ * and Defender cold-scan. A boot still alive but silent past this is treated as
+ * genuinely hung → reject → the app falls back to local mode (old behavior),
+ * rather than hanging forever. Only applies while `isChildAlive` reports alive.
+ */
+export const DAEMON_READY_HARD_CEILING_MS = 90_000;
+
 export interface DaemonReadinessPollOptions {
   budgetMs: number;
   readPipeName: () => string | null;
@@ -320,6 +380,35 @@ export interface DaemonReadinessPollOptions {
   ping: (pipeName: string, token: string) => Promise<boolean>;
   onPipeFileSeen?: () => void;
   onPingOk?: () => void;
+  /**
+   * Issue #537 — the spawned daemon writes daemon.pid at acquireLock (boot
+   * start) but its daemon-pipe file only AFTER `recoverSessions` finishes, and
+   * cold-recovering a large session set is slow: measured ~23 s for 30 ConPTY
+   * sessions, well past `budgetMs`. Rejecting at `budgetMs` there declares a
+   * live, hard-working daemon "not responding" → ensureDaemon throws →
+   * replacement dead-ends → the renderer falls to local mode and every pane
+   * self-creates (duplicate agent sessions, the reported symptom).
+   *
+   * When provided, this reports whether the child we spawned is still alive. A
+   * live child that hasn't written its pipe file yet is, by construction, still
+   * in its boot/recovery path (acquireLock → config → recoverSessions are the
+   * only steps before the pipe file), NOT wedged — so we keep waiting past
+   * `budgetMs`, up to `hardCeilingMs`, instead of abandoning it. Absent →
+   * behavior is exactly the old flat-`budgetMs` give-up (callers/tests that
+   * don't spawn a child, e.g. the reuse path, are unaffected).
+   */
+  isChildAlive?: () => boolean;
+  /**
+   * Absolute wall-clock cap for the `isChildAlive` extension. Only meaningful
+   * with `isChildAlive`; without it the effective ceiling stays `budgetMs`.
+   * Bounds a genuinely-hung-but-alive boot so the app still falls back to local
+   * mode eventually rather than hanging forever. Fired-once `onSlowStart`
+   * surfaces that we crossed `budgetMs` while the child was still alive.
+   */
+  hardCeilingMs?: number;
+  /** Fired once, the first time the wait is extended past `budgetMs` because
+   *  the spawned child is still alive (recovery in progress). */
+  onSlowStart?: () => void;
 }
 
 /**
@@ -353,7 +442,15 @@ export function pollDaemonReady(
     rejectFn = rej;
   });
   const start = Date.now();
-  const budgetLabel = `${Math.round(opts.budgetMs / 1000)} seconds`;
+  // Issue #537 — the base `budgetMs` is the fast-path expectation; the
+  // effective ceiling extends to `hardCeilingMs` while the spawned child is
+  // provably alive (cold recovery). Without `isChildAlive` the ceiling stays
+  // `budgetMs`, preserving the old flat give-up.
+  const hardCeilingMs = opts.isChildAlive
+    ? Math.max(opts.budgetMs, opts.hardCeilingMs ?? opts.budgetMs)
+    : opts.budgetMs;
+  const elapsedLabel = (): string => `${Math.round((Date.now() - start) / 1000)} seconds`;
+  let slowStartFired = false;
 
   const finish = (fn: () => void): void => {
     if (settled) return;
@@ -372,7 +469,22 @@ export function pollDaemonReady(
     }, nextPollDelayMs(Date.now() - start));
   };
 
-  const overBudget = (): boolean => Date.now() - start >= opts.budgetMs;
+  // Give up when we hit the hard ceiling, OR when we pass the base budget and
+  // the child is not provably alive (dead, or no liveness signal supplied).
+  // While the child is alive past the base budget it is still recovering —
+  // keep waiting. `child died` is surfaced fast by spawnDaemon's exit handler
+  // (cancel), so this predicate only tops out at the ceiling in practice.
+  const overBudget = (): boolean => {
+    const elapsed = Date.now() - start;
+    if (elapsed >= hardCeilingMs) return true;
+    if (elapsed < opts.budgetMs) return false;
+    const childAlive = opts.isChildAlive ? opts.isChildAlive() : false;
+    if (childAlive && !slowStartFired) {
+      slowStartFired = true;
+      opts.onSlowStart?.();
+    }
+    return !childAlive;
+  };
 
   const check = async (): Promise<void> => {
     if (settled) return;
@@ -381,7 +493,7 @@ export function pollDaemonReady(
     const pipeName = opts.readPipeName();
     if (!pipeName) {
       if (overBudget()) {
-        finish(() => rejectFn(new Error(`Daemon spawned but pipe name file not created after ${budgetLabel}`)));
+        finish(() => rejectFn(new Error(`Daemon spawned but pipe name file not created after ${elapsedLabel()}`)));
       } else {
         schedule();
       }
@@ -395,7 +507,7 @@ export function pollDaemonReady(
     const token = opts.readToken();
     if (!token) {
       if (overBudget()) {
-        finish(() => rejectFn(new Error(`Daemon spawned but auth token not found after ${budgetLabel}`)));
+        finish(() => rejectFn(new Error(`Daemon spawned but auth token not found after ${elapsedLabel()}`)));
       } else {
         schedule();
       }
@@ -424,7 +536,7 @@ export function pollDaemonReady(
     // inside the budget can settle up to one ping-timeout past it — same
     // property as the old attempt-count loop, intentional.
     if (overBudget()) {
-      finish(() => rejectFn(new Error(`Daemon spawned but not responding after ${budgetLabel}`)));
+      finish(() => rejectFn(new Error(`Daemon spawned but not responding after ${elapsedLabel()}`)));
       return;
     }
     schedule();
@@ -515,7 +627,24 @@ function spawnDaemon(): Promise<number> {
     // guard live in pollDaemonReady (extracted so the chain is unit-testable
     // with fake timers).
     const readiness = pollDaemonReady({
-      budgetMs: 15_000, // wall-clock 15 s (the old loop's 75 × 200 ms ceiling, now measured directly)
+      budgetMs: 15_000, // wall-clock 15 s fast-path expectation for a warm daemon
+      // Issue #537 — extend the wait while THIS spawned child is still alive.
+      // The daemon writes daemon.pid at boot start but its pipe file only after
+      // `recoverSessions`, and cold-recovering a big session set runs long (~23 s
+      // for 30 ConPTY sessions, and the recovery cap is 40). A live child that
+      // hasn't produced its pipe file yet is recovering, not wedged — waiting is
+      // correct, and it is what stops the replacement/respawn machinery from
+      // declaring a dead-end and dropping every recovered session on the floor.
+      // The ceiling still bounds a genuinely hung boot so the app can fall back.
+      isChildAlive: () => child.exitCode === null,
+      hardCeilingMs: DAEMON_READY_HARD_CEILING_MS,
+      onSlowStart: () => {
+        markBoot('daemon-recovery-slow');
+        console.warn(
+          `[launcher] daemon (PID ${child.pid}) still booting past 15 s but alive — waiting up to ` +
+            `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s (large session recovery in progress)`,
+        );
+      },
       readPipeName: () => readPipeNameFromFile(getWmuxDir()),
       readToken: readDaemonAuthToken,
       ping: (pipeName, token) => pingDaemon(pipeName, token, 2000),
@@ -528,15 +657,23 @@ function spawnDaemon(): Promise<number> {
     // detect) yields the canonical pipe to the live owner and exits with
     // DAEMON_EXIT_ALREADY_RUNNING (split-brain Defect 3). Surface that as a
     // distinct error so ensureDaemon reconnects to the existing daemon instead
-    // of treating it as a spawn failure. Other early exits fall through to the
-    // poll's own 15s timeout.
+    // of treating it as a spawn failure. Any OTHER early exit means the boot
+    // genuinely crashed — cancel the readiness poll immediately (Issue #537:
+    // the poll now waits on child liveness, so without this a crash-exit would
+    // otherwise idle out the whole hard ceiling instead of failing fast).
     child.on('exit', (code) => {
+      // readiness.cancel routes through the poll's own settled-guard, so a
+      // post-ready exit here is a harmless no-op.
       if (code === DAEMON_EXIT_ALREADY_RUNNING) {
         const e = new Error(
           'daemon yielded: another daemon already owns the canonical control pipe',
         ) as NodeJS.ErrnoException;
         e.code = 'EDAEMON_ALREADY_RUNNING';
         readiness.cancel(e);
+      } else {
+        readiness.cancel(
+          new Error(`Daemon process exited during startup (code ${code ?? 'null'}) before becoming ready`),
+        );
       }
     });
   });
@@ -654,18 +791,31 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     } else {
       const imageName = getProcessImageName(existingPid);
       if (imageName === null) {
-        // (c) Could not even read the image — ask the user whether to
-        // recover. Refusing outright used to leave the user stranded
-        // when AV blocked tasklist.exe or PowerShell. The user keeps
-        // ultimate authority (cancel re-throws the same error), but
-        // the common case — yes, it really is a stale pid file — now
-        // resolves without manual filesystem work.
-        const recovered = askUserToRecoverFromStalePid({
-          reason: `image lookup for PID ${existingPid} failed (anti-virus may be blocking tasklist.exe / ps / WMI)`,
-          pid: existingPid,
-          pidFile,
+        // (c) Could not even read the image (AV blocked tasklist.exe / ps /
+        // WMI). Before popping the recovery dialog, give the daemon the SAME
+        // escalated re-ping the verified branch uses: a daemon that answers a
+        // ping is alive regardless of what an AV-blocked process probe says.
+        // Only when the re-ping ALSO fails do we ask the user. Refusing/asking
+        // outright used to leave the user stranded (or worse, spawn a second
+        // daemon over the live one) whenever AV blocked the probe.
+        const outcome = await recoverFromBlockedProbe({
+          token,
+          reping: (timeoutMs) => pingDaemon(pipeName, token, timeoutMs),
+          sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+          askUser: () =>
+            askUserToRecoverFromStalePid({
+              reason: `image lookup for PID ${existingPid} failed (anti-virus may be blocking tasklist.exe / ps / WMI)`,
+              pid: existingPid,
+              pidFile,
+            }),
         });
-        if (!recovered) {
+        if (outcome === 'reuse') {
+          console.log(
+            `[launcher] Daemon (PID ${existingPid}) answered escalated re-ping despite a blocked image lookup — reusing, no kill`,
+          );
+          return { pid: existingPid, authToken: token, pipeName, spawned: false };
+        }
+        if (outcome === 'refuse') {
           throw new Error(
             `[launcher] daemon.pid=${existingPid} alive but image lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
           );
@@ -683,14 +833,30 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
         // app. Use the command line to decide.
         const cmdline = getProcessCommandLine(existingPid);
         if (cmdline === null) {
-          // (c) Lookup failed — same recovery dance as the image
-          // path: ask the user, treat cancel as the legacy throw.
-          const recovered = askUserToRecoverFromStalePid({
-            reason: `command-line lookup for PID ${existingPid} (image "${imageName}") failed (anti-virus may be blocking PowerShell / Get-CimInstance)`,
-            pid: existingPid,
-            pidFile,
+          // (c) Lookup failed — same recovery dance as the image path, and the
+          // same escalated re-ping FIRST. The image already matches wmux here,
+          // so a daemon that answers a ping is almost certainly the real one:
+          // an AV-blocked Get-CimInstance must not be allowed to trigger a
+          // spawn-over-live-daemon. Only when the re-ping ALSO fails do we ask
+          // the user; cancel stays the legacy throw.
+          const outcome = await recoverFromBlockedProbe({
+            token,
+            reping: (timeoutMs) => pingDaemon(pipeName, token, timeoutMs),
+            sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+            askUser: () =>
+              askUserToRecoverFromStalePid({
+                reason: `command-line lookup for PID ${existingPid} (image "${imageName}") failed (anti-virus may be blocking PowerShell / Get-CimInstance)`,
+                pid: existingPid,
+                pidFile,
+              }),
           });
-          if (!recovered) {
+          if (outcome === 'reuse') {
+            console.log(
+              `[launcher] Daemon (PID ${existingPid}) answered escalated re-ping despite a blocked command-line lookup — reusing, no kill`,
+            );
+            return { pid: existingPid, authToken: token, pipeName, spawned: false };
+          }
+          if (outcome === 'refuse') {
             throw new Error(
               `[launcher] daemon.pid=${existingPid} alive (image "${imageName}" matches wmux) but command-line lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
             );

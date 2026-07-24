@@ -1,10 +1,14 @@
 import React, { useState } from 'react';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
+import { isPaneAgentBusy } from '../../stores/selectors/fleet';
 import {
   type ResumeBinding,
+  agentSupportsPermissionFlag,
   permissionFlagFor,
   resumeGrammarFor,
 } from '../../../shared/agentResume';
+import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
 
 /**
  * Assemble the resume command for a pane from its binding + LIVE cwd
@@ -27,13 +31,22 @@ import {
  * auto-runs — the user presses Enter); a false negative silently resumes the
  * WRONG conversation. Loud beats silent.
  *
+ * `skipPermissions` (the pane toggle, default on) forces
+ * `--dangerously-skip-permissions` for Claude regardless of the captured mode;
+ * when off, the captured permission mode (acceptEdits/plan) is restored if any.
+ * Unlike the exact `<id>`, this launch preference is NOT conversation-scoped, so
+ * it rides EITHER grammar branch (exact `--resume` and fallback `--continue`).
+ * Codex takes no permission flag, so the toggle is inert there.
+ *
  * Returns `null` for a non-resumable agent (no grammar). Pure + exported so the
  * exact-vs-fallback decision is unit-testable without rendering.
  */
 export function buildPaneResumeCommand(
   binding: ResumeBinding,
   paneCwds: ReadonlyArray<string | undefined>,
-): { command: string; exact: boolean } | null {
+  skipPermissions: boolean,
+  roleBinding?: RoleBinding,
+): { command: string; exact: boolean; roleRewritten: boolean } | null {
   const grammar = resumeGrammarFor(binding.agent);
   if (!grammar) return null;
   // Lowercase ONLY a leading Windows drive letter; POSIX stays case-sensitive.
@@ -44,11 +57,26 @@ export function buildPaneResumeCommand(
   };
   const target = normCwd(binding.cwd);
   const exact = paneCwds.some((c) => !!c && normCwd(c) === target);
-  const permFlag = exact ? permissionFlagFor(binding.permissionMode) : '';
-  const command = exact
-    ? `${binding.agent}${permFlag ? ` ${permFlag}` : ''} ${grammar.withId(binding.sessionId)}`
-    : `${binding.agent} ${grammar.fallback}`;
-  return { command, exact };
+  // Explicit toggle (default on) → force --dangerously-skip-permissions on
+  // EITHER branch (a launch preference, not conversation-scoped). Toggle off →
+  // restore the captured permission mode, but only on an EXACT resume (that
+  // mode belongs to the exact conversation; a cwd-relative --continue drops it).
+  const permFlag = agentSupportsPermissionFlag(binding.agent)
+    ? (skipPermissions
+        ? permissionFlagFor('bypassPermissions')
+        : (exact ? permissionFlagFor(binding.permissionMode) : ''))
+    : '';
+  const resumeArg = exact ? grammar.withId(binding.sessionId) : grammar.fallback;
+  const base = `${binding.agent}${permFlag ? ` ${permFlag}` : ''} ${resumeArg}`;
+  // D2 — re-assert the role's enforced model on resume. The reconstruction above
+  // rebuilds from the agent stem + resume/permission flags only, so a bound
+  // model would silently drop; applyRoleBinding re-injects it (unless the
+  // operator already put an explicit --model on the line).
+  // `roleRewritten` is reported rather than logged here so this stays a pure
+  // function (it runs on every render of the chip); the caller emits the audit
+  // line once, from an effect.
+  const rewrite = applyRoleBinding(base, roleBinding);
+  return { command: rewrite.command, exact, roleRewritten: rewrite.changed };
 }
 
 /**
@@ -70,13 +98,21 @@ export default function ResumeInfoChip(props: {
    *  surface.cwd (OSC 7-tracked shell cwd), then the workspace's hook-reported
    *  agent cwd (metadata.cwd) — see buildPaneResumeCommand. */
   paneCwds: ReadonlyArray<string | undefined>;
+  /** D2 — the pane's enforced role→model binding (re-asserted on resume). */
+  roleBinding?: RoleBinding;
+  /** D2 — the role name that supplied `roleBinding`, for the audit log. */
+  role?: string;
 }): React.ReactElement | null {
-  const { ptyId, binding, paneCwds } = props;
+  const { ptyId, binding, paneCwds, roleBinding, role } = props;
   const t = useT();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Default ON — the owner routinely resumes with --dangerously-skip-permissions,
+  // so the chip pre-checks it. Claude-only (Codex has no such flag).
+  const canSkipPermissions = agentSupportsPermissionFlag(binding.agent);
+  const [skipPermissions, setSkipPermissions] = useState(true);
 
-  const built = buildPaneResumeCommand(binding, paneCwds);
+  const built = buildPaneResumeCommand(binding, paneCwds, skipPermissions, roleBinding);
   if (!built) return null; // not a resumable agent — nothing to offer
   const { command } = built;
 
@@ -84,6 +120,15 @@ export default function ResumeInfoChip(props: {
 
   const onRecover = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (built.roleRewritten) {
+      // Audit trail — a role silently changed what this chip types. Logged at
+      // the ACTION (not while building the preview) so it fires once per use.
+      console.log('[wmux:role-binding] resume command rewritten', {
+        role,
+        agent: binding.agent,
+        after: command,
+      });
+    }
     // No trailing \r — the user presses Enter to run (D6: bypass is re-granted
     // only by an explicit keystroke, never automatically).
     window.electronAPI.pty.write(ptyId, command);
@@ -185,6 +230,31 @@ export default function ResumeInfoChip(props: {
             </button>
           </div>
 
+          {/* Skip-permissions toggle (Claude only) — default on. Forces
+              --dangerously-skip-permissions onto the resume line; the preview
+              below updates live as it toggles. */}
+          {canSkipPermissions && (
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                cursor: 'pointer',
+                color: 'var(--text-sub)',
+                userSelect: 'none',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <input
+                type="checkbox"
+                checked={skipPermissions}
+                onChange={(e) => setSkipPermissions(e.target.checked)}
+                style={{ accentColor: 'var(--accent-cursor)', cursor: 'pointer', margin: 0 }}
+              />
+              <span style={{ fontFamily: 'ui-monospace, monospace' }}>--dangerously-skip-permissions</span>
+            </label>
+          )}
+
           {/* Exact command preview — WYSIWYG with what 복구 types. */}
           <code
             style={{
@@ -223,5 +293,54 @@ export default function ResumeInfoChip(props: {
         </div>
       )}
     </span>
+  );
+}
+
+/**
+ * Subscription boundary for the persistent resume chip's "is this pane's agent
+ * busy?" gate. This exists purely to keep the store-wide `agentClockMs` decay
+ * clock OUT of the Pane body.
+ *
+ * `useAgentActivityClock` bumps `agentClockMs` ~every 2 s while ANY agent is
+ * active. Pane used to subscribe to it directly to recompute `isPaneAgentBusy`
+ * — so at N mounted panes a single active agent re-ran ALL N Pane bodies every
+ * tick, even though the busy flag only ever gates THIS chip. The subscription
+ * lives here now: Pane mounts this leaf only for a pane that actually carries a
+ * resume binding, and a clock tick re-renders just this tiny gate, never the
+ * Pane body. A pane with no binding never mounts the leaf → zero work per tick.
+ *
+ * Busy semantics are unchanged (isPaneAgentBusy): typing a resume command into
+ * a LIVE agent TUI would land in the agent's input, not a shell, so the chip
+ * stays hidden until the agent has settled or exited.
+ */
+export function ResumeInfoChipGate(props: {
+  ptyId: string;
+  binding: ResumeBinding;
+  paneCwds: ReadonlyArray<string | undefined>;
+  roleBinding?: RoleBinding;
+  role?: string;
+}): React.ReactElement | null {
+  const { ptyId, binding, paneCwds, roleBinding, role } = props;
+  // The reactive decay clock — subscribing HERE (not in Pane) is the whole point.
+  const agentClockMs = useStore((s) => s.agentClockMs);
+  const activityAt = useStore((s) => s.surfaceActivityAt[ptyId] ?? 0);
+  const status = useStore((s) => s.surfaceAgentStatus[ptyId]);
+  // OSC 133 authoritative shell state (undefined = shell integration off →
+  // process-truth tier, then heuristic fallback inside isPaneAgentBusy).
+  const commandRunning = useStore((s) => s.commandRunningByPtyId[ptyId]);
+  // Process-truth agent liveness (daemon AgentProcessTracker) — the edge
+  // trigger that keeps the chip hidden while a QUIET agent is still alive on
+  // a pane without shell integration, and lets it appear on the exit edge.
+  const agentProcessAlive = useStore((s) => s.agentAliveByPtyId[ptyId]);
+  const agentBusy = isPaneAgentBusy({ activityAt, agentClockMs, status, commandRunning, agentProcessAlive });
+  if (agentBusy) return null;
+  return (
+    <ResumeInfoChip
+      ptyId={ptyId}
+      binding={binding}
+      paneCwds={paneCwds}
+      roleBinding={roleBinding}
+      role={role}
+    />
   );
 }
