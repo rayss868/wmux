@@ -915,6 +915,48 @@ export const en = {
   'deck.decisionPlaceholder': 'Type your answer…',
   'deck.decisionAnswerLabel': 'Your answer to the orchestrator decision',
   'deck.recoveryDismiss': 'Dismiss',
+  // Command Deck D1 — the deterministic "welcome home" briefing card.
+  // The headline and the while-away line are assembled in the RENDERER from
+  // structured counts, so every fragment below is a whole sentence/clause with a
+  // {count} (or {items} / {clauses}) placeholder and its own one/other variants.
+  // Main ships numbers only — it has no locale.
+  'deck.briefing.eyebrow': 'Briefing',
+  'deck.briefing.welcomeBack': 'Welcome back.',
+  'deck.briefing.headline.empty': 'Nothing running here yet.',
+  'deck.briefing.headline.decisionOnly': 'One decision is waiting on you.',
+  'deck.briefing.headline.sentence': '{clauses}.',
+  'deck.briefing.headline.join': ', ',
+  'deck.briefing.headline.allIdle.one': 'The agent is idle.',
+  'deck.briefing.headline.allIdle.other': 'All {count} agents are idle.',
+  'deck.briefing.clause.blocked.one': '{count} needs you',
+  'deck.briefing.clause.blocked.other': '{count} need you',
+  'deck.briefing.clause.errored.one': '{count} in error',
+  'deck.briefing.clause.errored.other': '{count} in error',
+  'deck.briefing.clause.running.one': '{count} running',
+  'deck.briefing.clause.running.other': '{count} running',
+  'deck.briefing.clause.done.one': '{count} finished',
+  'deck.briefing.clause.done.other': '{count} finished',
+  'deck.briefing.whileAway': 'While you were away: {items}',
+  'deck.briefing.delta.join': ' · ',
+  'deck.briefing.delta.finished.one': '{count} finished',
+  'deck.briefing.delta.finished.other': '{count} finished',
+  'deck.briefing.delta.nowBlocked.one': '{count} is now blocked on you',
+  'deck.briefing.delta.nowBlocked.other': '{count} are now blocked on you',
+  'deck.briefing.delta.errored.one': '{count} hit an error',
+  'deck.briefing.delta.errored.other': '{count} hit an error',
+  'deck.briefing.delta.newDecision': 'a new decision',
+  'deck.briefing.decisionPointer': 'A decision is waiting on you below.',
+  'deck.briefing.loopLabel': 'Loop:',
+  'deck.briefing.unnamedPane': 'shell',
+  'deck.briefing.jumpTo': 'Jump to {name}',
+  'deck.briefing.channelsUnread': '{count} unread in channels',
+  // Settings — briefing toggles.
+  'settings.briefing': 'Welcome-home briefing',
+  'settings.briefingDesc':
+    'Show a one-shot summary of what changed while you were away when you open a workspace.',
+  'settings.briefingAutoShow': 'Auto-expand briefing',
+  'settings.briefingAutoShowDesc':
+    'Expand the briefing automatically on cold start, a new decision, or a newly-blocked pane.',
   // Command Deck — the control bar (Mode·Loop·Schedules) is component-owned.
   // Command Deck P3d — orchestrator schedules (reboot-surviving).
   'deck.schedules': 'Schedules',
