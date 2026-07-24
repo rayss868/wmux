@@ -215,6 +215,10 @@ export const en = {
   // as a process that wmux auto-restarts. {restart}=on-failure|always,
   // {burst}=consecutive-failure cap before the runaway guard stops it.
   'project.supervisionBadge': '↻ auto-restarts ({restart}, up to {burst} consecutive)',
+  // D2 — a declared role makes wmux rewrite the command shown beside it, using
+  // the agent/model YOU bound to that role in Settings. Shown on the approval
+  // screen so the command list is not read as the literal thing that runs.
+  'project.roleBadge': '[role: {role} — launches with your binding for it]',
   // Unattended reboot-survival consent — a SEPARATE opt-in from base trust. The
   // checkbox restores each unattended pane's last-used permission mode on reboot
   // (may include --dangerously-skip-permissions), so it is surfaced explicitly.
@@ -324,6 +328,24 @@ export const en = {
   'settings.orchestratorFullPower': 'Full-power mode',
   'settings.orchestratorFullPowerDesc':
     'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks run inside brain turns (your own code, outside any wmux sandbox), tool calls may get slower, and the brain cannot write its memory notes while this is on. Applies from the next brain turn.',
+  // D2 — role → agent/model enforcement editor (Settings › Orchestrator).
+  'settings.roleBindings': 'Role → model enforcement',
+  'settings.roleBindingsDesc':
+    'Pin an agent and model to each role. Launches that wmux itself assembles for a pane carrying that role run with the bound model: agent launches the orchestrator issues, the seeded command of a project pane whose wmux.json leaf declares a role, and the pane resume command. A launcher you type into the terminal yourself is not rewritten. Leave a row blank to keep the role unbound.',
+  'settings.roleBindingAgentPlaceholder': 'agent',
+  'settings.roleBindingModelPlaceholder': 'model (optional)',
+  'settings.roleBindingArgsPlaceholder': 'extra args (optional)',
+  'settings.roleBindingAgentLabel': '{role} agent',
+  'settings.roleBindingModelLabel': '{role} model',
+  'settings.roleBindingArgsLabel': '{role} extra args',
+  'settings.roleBindingHintNoAgent':
+    'Pick an agent too — a model on its own is not enforced (wmux can’t tell whose --model flag it is).',
+  'settings.roleBindingHintNoGrammar':
+    'wmux has no verified --model flag for {agent}, so the model is ignored. Extra args still apply.',
+  'settings.roleBindingHintInert': 'Add a model or extra args — an agent alone enforces nothing.',
+  // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
+  'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',
+  'pane.enforcedLaunch': 'Role-enforced launch: {binding}',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
